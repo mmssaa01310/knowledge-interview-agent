@@ -1,0 +1,15 @@
+{
+  "name": "ai-interviewer",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.11.0",
+  "scripts": {
+    "dev:web": "pnpm --dir app/web dev",
+    "build:web": "pnpm --dir app/web build",
+    "lint:web": "pnpm --dir app/web lint",
+    "docker:config": "docker compose -f infra/docker-compose.yml config",
+    "docker:build": "docker compose -f infra/docker-compose.yml build",
+    "docker:up": "docker compose -f infra/docker-compose.yml up",
+    "docker:down": "docker compose -f infra/docker-compose.yml down"
+  }
+}

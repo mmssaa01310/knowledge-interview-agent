@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.codex
+.pytest_cache
+.venv*
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/node_modules/
+**/dist/
+**/*.pyc
+app/api/.venv/
+app/worker/.venv/
+infra/cdk/node_modules/

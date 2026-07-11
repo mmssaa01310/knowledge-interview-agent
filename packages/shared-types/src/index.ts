@@ -1,0 +1,72 @@
+export type UserRole = "admin" | "knowledge_manager" | "interviewer" | "viewer";
+
+export type ApprovalStatus = "draft" | "needs_review" | "approved" | "rejected";
+
+export type DocumentIngestionStatus =
+  | "uploaded"
+  | "queued"
+  | "processing"
+  | "text_extracted"
+  | "chunked"
+  | "embedding"
+  | "indexed"
+  | "completed"
+  | "failed";
+
+export type BaseEntity = {
+  id: string;
+  tenantId: string;
+  createdByUserId: string;
+  updatedByUserId: string;
+  ownerUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt?: string | null;
+};
+
+export type KnowledgeDb = BaseEntity & {
+  name: string;
+  description?: string;
+  language: "ja" | "en" | "multi";
+  defaultModelId?: string;
+  status: "active" | "archived";
+  knowledgeCount: number;
+};
+
+export type Knowledge = BaseEntity & {
+  knowledgeDbId: string;
+  name: string;
+  description?: string;
+  summary?: string;
+  systemPrompt?: string;
+  purpose?: string;
+  targetEquipment?: string;
+  targetBusiness?: string;
+  category?: string;
+  language: "ja" | "en" | "multi";
+  defaultModelId?: string;
+  status: "active" | "archived";
+  recordCount: number;
+  documentCount: number;
+  fieldCount: number;
+};
+
+export type InterviewPromptProfile = BaseEntity & {
+  name: string;
+  description?: string;
+  prompt: string;
+  status: "active" | "archived";
+};
+
+export type InterviewRecord = BaseEntity & {
+  knowledgeId: string;
+  knowledgeName: string;
+  title: string;
+  status: "draft" | "needs_review" | "approved" | "rejected" | "archived";
+  targetEquipment?: string;
+  targetProcess?: string;
+  summary?: string;
+  approvedFieldCount: number;
+  unapprovedFieldCount: number;
+  rejectedFieldCount: number;
+};

@@ -1,0 +1,37 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: app/api/Dockerfile.dev
+    working_dir: /workspace
+    environment:
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+      AWS_REGION: ${AWS_REGION:-ap-northeast-1}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-ap-northeast-1}
+      AWS_SDK_LOAD_CONFIG: "1"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ..:/workspace
+      - ${HOME}/.aws:/root/.aws:ro
+
+  web:
+    build:
+      context: ..
+      dockerfile: app/web/Dockerfile.dev
+    working_dir: /workspace
+    depends_on:
+      - api
+    environment:
+      VITE_API_BASE_URL: http://localhost:${API_PORT:-8000}
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "${WEB_PORT:-5173}:5173"
+    volumes:
+      - ..:/workspace
+      - root-node-modules:/workspace/node_modules
+      - web-node-modules:/workspace/app/web/node_modules
+
+volumes:
+  root-node-modules:
+  web-node-modules:
