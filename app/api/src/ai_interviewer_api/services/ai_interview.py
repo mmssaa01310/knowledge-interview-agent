@@ -1,8 +1,22 @@
+import logging
+from dataclasses import dataclass
+from typing import Any
+
+from ai_interviewer_api.agents.interview.adapter import run_adapted_interview_turn as _run_adapted_interview_turn
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
-from ai_interviewer_api.services.prompts.loader import build_interview_system_prompt
+
+
+logger = logging.getLogger(__name__)
+_SAFE_INTERVIEW_ERROR_REPLY = "一時的にAI応答を生成できませんでした。少し時間をおいて再度送信してください。"
+
+
+@dataclass(frozen=True)
+class InterviewStreamResult:
+    reply_chunks: list[str]
+    metadata: dict[str, Any] | None = None
 
 
 def build_mock_proposal(user: UserContext, record_id: str, knowledge_id: str, content: str) -> AiProposal:
@@ -183,125 +197,74 @@ def _fallback_knowledge_summary(knowledge: dict, user: UserContext) -> str:
     return f"{knowledge.get('name', 'ナレッジ')}では、{titled}などの記録をもとに現場ノウハウを整理しています。内容を確認してから保存してください。"
 
 
-def generate_interview_reply(record: dict, user: UserContext) -> list[str]:
+def generate_interview_reply(record: dict, user: UserContext) -> InterviewStreamResult:
     knowledge = store.get("knowledges", record["knowledgeId"])
-    if settings.bedrock_enabled:
-        try:
-            return _generate_interview_reply_with_bedrock(record, knowledge, user)
-        except Exception:
-            pass
-    return _fallback_interview_reply(record, knowledge, user)
+    try:
+        logger.info(
+            "Using Strands interview agent record_id=%s knowledge_id=%s",
+            record["id"],
+            record["knowledgeId"],
+        )
+        return _generate_interview_stream_result_with_strands(record, knowledge, user)
+    except Exception:
+        logger.exception("Strands interview agent failed; returning safe error response")
+        return InterviewStreamResult(
+            reply_chunks=[_SAFE_INTERVIEW_ERROR_REPLY],
+            metadata={"error": "strands_interview_failed"},
+        )
 
 
-def _generate_interview_reply_with_bedrock(record: dict, knowledge: dict, user: UserContext) -> list[str]:
-    import boto3
-
-    client = boto3.client("bedrock-runtime", region_name=settings.bedrock_aws_region)
-    response = client.converse(
-        modelId=knowledge.get("defaultModelId") or settings.bedrock_model_id,
-        system=[{"text": build_interview_system_prompt(knowledge.get("systemPrompt"))}],
-        messages=[
-            {
-                "role": "user",
-                "content": [{"text": _format_record_for_interview(record, knowledge, user)}],
-            }
-        ],
-        inferenceConfig={
-            "maxTokens": min(settings.bedrock_max_tokens, 500),
-            "temperature": 0.2,
-        },
+def _generate_interview_stream_result_with_strands(
+    record: dict,
+    knowledge: dict,
+    user: UserContext,
+) -> InterviewStreamResult:
+    result = run_adapted_interview_turn(
+        record,
+        knowledge,
+        _list_record_messages(record, user),
+        _list_interview_fields(knowledge, user),
     )
-    content = response.get("output", {}).get("message", {}).get("content", [])
-    text = "\n".join(part["text"] for part in content if "text" in part).strip()
-    if not text:
-        return _fallback_interview_reply(record, knowledge, user)
-    return _split_interview_reply(text)
+    if result.reply_chunks:
+        return InterviewStreamResult(
+            reply_chunks=result.reply_chunks,
+            metadata={
+                "answer_status": result.answer_status,
+                "reask_question": result.reask_question,
+                "next_questions": list(result.next_questions),
+                "draft_updates": dict(result.draft_updates),
+                "used_tools": list(result.used_tools),
+            },
+        )
+    logger.warning(
+        "Strands interview agent returned empty reply; using safe error response record_id=%s knowledge_id=%s",
+        record["id"],
+        record["knowledgeId"],
+    )
+    return InterviewStreamResult(
+        reply_chunks=[_SAFE_INTERVIEW_ERROR_REPLY],
+        metadata={"error": "strands_interview_empty_reply"},
+    )
 
 
-def _format_record_for_interview(record: dict, knowledge: dict, user: UserContext) -> str:
-    messages = [
+def _list_record_messages(record: dict, user: UserContext) -> list[dict]:
+    return [
         row
         for row in store.list("messages", user.tenant_id)
         if row.get("recordId") == record["id"]
     ]
-    fields = [
+
+
+def _list_interview_fields(knowledge: dict, user: UserContext) -> list[dict]:
+    return [
         row
         for row in store.list("knowledge_fields", user.tenant_id)
         if row.get("knowledgeId") == knowledge["id"] and row.get("askByAi")
     ]
-    lines = [
-        f"ナレッジ名: {knowledge.get('name') or '未設定'}",
-        f"ナレッジ説明: {knowledge.get('description') or '未設定'}",
-        f"対象業務: {knowledge.get('targetBusiness') or '未設定'}",
-        f"対象設備: {knowledge.get('targetEquipment') or '未設定'}",
-        f"記録タイトル: {record.get('title') or '未設定'}",
-        "ヒアリング項目:",
-    ]
-    lines.extend(
-        f"- {field.get('name')}: {field.get('description') or '説明未設定'}"
-        for field in sorted(fields, key=lambda field: field.get("displayOrder", 0))
-    )
-    lines.append("直近会話:")
-    lines.extend(
-        f"- {message.get('role', 'user')}: {message.get('content', '')}"
-        for message in messages[-8:]
-    )
-    lines.append("次にインタビューで返す日本語の質問だけを1文から2文で作成してください。")
-    return "\n".join(lines)
-
-
-def _fallback_interview_reply(record: dict, knowledge: dict, user: UserContext) -> list[str]:
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
-    fields = [
-        row
-        for row in store.list("knowledge_fields", user.tenant_id)
-        if row.get("knowledgeId") == knowledge["id"] and row.get("askByAi")
-    ]
-    next_field = next(
-        iter(sorted(fields, key=lambda field: field.get("displayOrder", 0))),
-        None,
-    )
-    latest_message = messages[-1]["content"] if messages else ""
-    custom_prompt = (knowledge.get("systemPrompt") or "").strip()
-
-    intro = "状況を具体化するため、まず再現条件から確認します。"
-    if "停止判断" in custom_prompt:
-        intro = "停止判断に関わる条件を優先して確認します。"
-    elif "切り分け" in custom_prompt:
-        intro = "原因の切り分けに必要な条件から順に確認します。"
-
-    if next_field:
-        question = f"{next_field.get('name')}として、{_field_question_hint(next_field, latest_message)}"
-    else:
-        question = "その事象が起きた条件やタイミングをもう少し具体的に教えてください。"
-    return [intro, question]
-
-
-def _field_question_hint(field: dict, latest_message: str) -> str:
-    examples = field.get("aiQuestionExamples") or []
-    if examples:
-        return str(examples[0]).strip()
-    field_name = field.get("name") or "確認項目"
-    if latest_message and "いつ" not in latest_message:
-        return f"{field_name}について、いつ・どの条件で発生したのか教えてください。"
-    return f"{field_name}について、現場でどう見分けているか教えてください。"
-
-
-def _split_interview_reply(text: str) -> list[str]:
-    normalized = text.replace("\r\n", "\n").strip()
-    if not normalized:
-        return []
-    chunks = [part.strip() for part in normalized.split("\n") if part.strip()]
-    if len(chunks) >= 2:
-        return chunks[:2]
-
-    sentence_like_chunks = [
-        part.strip()
-        for part in normalized.replace("。", "。\n").split("\n")
-        if part.strip()
-    ]
-    return sentence_like_chunks[:2] or [normalized]
+def run_adapted_interview_turn(
+    record: dict,
+    knowledge: dict,
+    messages: list[dict],
+    knowledge_fields: list[dict],
+):
+    return _run_adapted_interview_turn(record, knowledge, messages, knowledge_fields)

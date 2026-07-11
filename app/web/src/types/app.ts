@@ -33,3 +33,16 @@ export type ChatMessage = {
   text: string;
   evidences?: ChatMessageEvidence[];
 };
+
+export type InterviewAnswerTarget = {
+  scope: "configured" | "extra";
+  answerKey: string;
+};
+
+export type InterviewStreamMetadata = {
+  answer_status?: "answered" | "not_answered";
+  reask_question?: string | null;
+  next_questions: string[];
+  draft_updates: Record<string, unknown>;
+  used_tools: string[];
+};

@@ -207,6 +207,29 @@ input:disabled {
   font-size: 12px;
 }
 
+.stream-metadata-panel {
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #f8fbfd;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.stream-metadata-panel strong {
+  color: #1f2d3d;
+}
+
+.stream-metadata-panel ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #40546a;
+}
+
+.stream-metadata-panel li + li {
+  margin-top: 4px;
+}
+
 .workspace-empty {
   margin: 0;
   padding: 8px 2px;
@@ -1277,6 +1300,218 @@ label {
   align-items: start;
 }
 
+.interview-page {
+  gap: 16px;
+}
+
+.interview-page-header {
+  min-height: auto;
+}
+
+.interview-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.75fr) minmax(0, 1.45fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.interview-sidebar,
+.interview-chat-panel {
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #fbfcfd;
+}
+
+.interview-sidebar {
+  padding: 16px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.interview-sidebar-header,
+.interview-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.interview-chat-header {
+  padding: 16px 18px 0;
+}
+
+.interview-chat-header p {
+  margin-top: 4px;
+}
+
+.interview-sidebar-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.interview-sidebar-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #40546a;
+  padding: 10px 12px;
+  font-weight: 700;
+}
+
+.interview-sidebar-tab span {
+  min-width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #eef2f5;
+  color: #40546a;
+  font-size: 12px;
+}
+
+.interview-sidebar-tab.active {
+  border-color: #5f8cc7;
+  background: #eef6ff;
+  color: #245f9f;
+}
+
+.interview-sidebar-tab.active span {
+  background: #d7e8fb;
+  color: #245f9f;
+}
+
+.interview-question-list {
+  display: grid;
+  gap: 8px;
+}
+
+.interview-question-item {
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 9px;
+  display: grid;
+  gap: 4px;
+}
+
+.interview-question-item.active {
+  border-color: #5f8cc7;
+  background: #eef6ff;
+}
+
+.interview-question-item.answered {
+  border-color: #b7d9c3;
+  background: #f2fbf5;
+}
+
+.interview-question-item.dynamic {
+  background: #fffdf7;
+  border-color: #e4dbc0;
+}
+
+.interview-question-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.interview-question-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.interview-question-item p {
+  margin: 0;
+  color: #6b7d90;
+  font-size: 13px;
+}
+
+.interview-question-text {
+  line-height: 1.55;
+}
+
+.interview-answer-block {
+  display: grid;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(152, 171, 189, 0.32);
+}
+
+.interview-answer-label,
+.interview-sidebar-subtitle {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #5a6d80;
+}
+
+.interview-answer-text {
+  white-space: pre-wrap;
+  color: #1f2d3d;
+}
+
+.interview-answer-input {
+  min-height: 42px;
+  padding: 6px 8px;
+  resize: vertical;
+  background: #ffffff;
+  border: 1px solid #cbd7e2;
+}
+
+.extra-question-list {
+  border-top: 1px solid #e1e8ef;
+  padding-top: 12px;
+}
+
+.question-status {
+  font-size: 12px;
+  font-weight: 700;
+  color: #5a6d80;
+}
+
+.question-status.active {
+  color: #245f9f;
+}
+
+.question-status.answered {
+  color: #287a4b;
+}
+
+.next-question-panel {
+  border-top: 1px solid #e1e8ef;
+  padding-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.next-question-list {
+  display: grid;
+  gap: 8px;
+}
+
+.next-question-chip {
+  border: 1px solid #c9d9ea;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #245f9f;
+  text-align: left;
+  padding: 8px 12px;
+}
+
+.next-question-chip:hover {
+  background: #eef6ff;
+}
+
 .chat-panel,
 .proposal-panel,
 .work-surface {
@@ -1290,6 +1525,47 @@ label {
 .structured-form {
   display: grid;
   gap: 10px;
+}
+
+.voice-session-card,
+.interview-guide-card {
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #f8fbfd;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.voice-session-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.voice-session-note {
+  color: #40546a;
+}
+
+.interview-guide-list {
+  display: grid;
+  gap: 8px;
+}
+
+.interview-guide-item {
+  border: 1px solid #d7e0e8;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.interview-guide-item p {
+  margin: 4px 0 0;
+  color: #6b7d90;
+  font-size: 13px;
 }
 
 .question-list span {
@@ -1337,6 +1613,52 @@ label {
   margin-top: 14px;
 }
 
+.interview-chat-panel {
+  padding: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: clamp(560px, calc(100vh - 190px), 760px);
+  overflow: hidden;
+}
+
+.interview-chat-panel .chat-log {
+  padding: 16px 18px;
+  margin: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.answer-composer {
+  border-top: 1px solid #d7e0e8;
+  background: #ffffff;
+  padding: 14px 18px 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.answer-composer textarea {
+  min-height: 110px;
+}
+
+.answer-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.voice-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.interview-inline-notice {
+  margin: 0;
+}
+
 textarea {
   width: 100%;
   min-height: 88px;
@@ -1360,6 +1682,22 @@ textarea {
   border-radius: 8px;
   background: #eef6ff;
   padding: 12px;
+}
+
+.conversation-mode-strip {
+  border: 1px solid #d7e0e8;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.conversation-mode-strip p {
+  margin-top: 4px;
 }
 
 .proposal-list {
@@ -1536,6 +1874,7 @@ textarea {
   .settings-workspace,
   .settings-split,
   .interview-layout,
+  .interview-shell,
   .record-columns,
   .reference-layout,
   .reference-chat-layout,
@@ -1708,6 +2047,10 @@ textarea {
   .chat-log {
     height: min(360px, 48vh);
     min-height: 0;
+  }
+
+  .interview-chat-panel {
+    height: min(640px, calc(100vh - 120px));
   }
 
   .settings-ai-chat {

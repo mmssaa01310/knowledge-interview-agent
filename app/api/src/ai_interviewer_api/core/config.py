@@ -14,6 +14,9 @@ class Settings:
         "SQS_DOCUMENT_QUEUE_URL", "memory://document-ingestion"
     )
     bedrock_enabled: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
+    strands_interview_agent_enabled: bool = (
+        os.getenv("STRANDS_INTERVIEW_AGENT_ENABLED", "false").lower() == "true"
+    )
     bedrock_aws_region: str = os.getenv("BEDROCK_AWS_REGION", "ap-northeast-1")
     bedrock_model_id: str = os.getenv(
         "BEDROCK_MODEL_ID",

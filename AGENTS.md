@@ -24,6 +24,8 @@ AIエージェント、GitHub Copilot、Cursor、Codex、Claude Code 等は、�
 * `docs/technology-stack.md`: 技術スタック
 * `docs/aws-architecture.md`: AWS構成
 * `docs/agent-architecture.md`: AIエージェントの責務分離
+* `docs/agents/interview-agent-strands.md`: Strands interview agent の walking skeleton
+* `docs/agents/question-design-agent-strands.md`: Strands question design agent の実装方針
 * `docs/repository-structure.md`: フォルダ構成、責務分離
 * `docs/development-workflow.md`: 実装前後の進め方
 * `docs/verification.md`: 確認項目、実行コマンド

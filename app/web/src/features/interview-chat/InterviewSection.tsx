@@ -11,9 +11,9 @@ type InterviewSectionProps = {
 };
 
 const initialMessages = [
-  { role: "AI", text: "対象設備と発生している現象を教えてください。" },
-  { role: "User", text: "朝一と段取り替え直後に多いです。" },
-  { role: "AI", text: "ありがとうございます。原因候補と確認観点を構造化提案に反映します。" }
+  { role: "AI", text: "まず、今回整理したい内容を教えてください。" },
+  { role: "User", text: "朝一と段取り替え直後に起きやすい事象を整理したいです。" },
+  { role: "AI", text: "ありがとうございます。状況を確認しながら、構造化提案の下書きを作成します。" }
 ];
 
 export function InterviewSection({

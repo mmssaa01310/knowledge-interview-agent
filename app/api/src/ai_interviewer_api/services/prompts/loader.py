@@ -33,15 +33,3 @@ def build_field_fill_system_prompt(custom_prompt: str | None) -> str:
 def get_json_repair_system_prompt() -> str:
     return _read_prompt("field_fill/json_repair.md")
 
-
-@lru_cache(maxsize=None)
-def get_interview_base_system_prompt() -> str:
-    return _read_prompt("interview/base.md")
-
-
-def build_interview_system_prompt(custom_prompt: str | None) -> str:
-    base_prompt = get_interview_base_system_prompt()
-    normalized_custom_prompt = custom_prompt.strip() if custom_prompt else ""
-    if not normalized_custom_prompt:
-        return base_prompt
-    return f"{base_prompt}\n\n{normalized_custom_prompt}"

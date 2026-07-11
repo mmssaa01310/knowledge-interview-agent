@@ -126,11 +126,12 @@ DB更新してはいけない。
 
 ## 6. Strands Agent 方針
 
-今回は Strands Agent 本体を実装しない。
+現在は interview agent と question design agent を Strands Agent ベースへ移行済みである。
 
 短期方針:
 
-* `field-suggestions` は通常の service として維持する
+* `field-suggestions` は router 互換のため service ラッパーを維持する
+* 実際の質問項目生成は Strands question design agent で行う
 * validate-retry loop を検討する
 
 中期方針:
@@ -141,8 +142,8 @@ DB更新してはいけない。
 
 長期方針:
 
-* interview agent を Strands Agent 化する
-* 必要なら question design / tacit answer も部分的に agent runtime へ寄せる
+* tacit answer agent を必要に応じて agent runtime へ寄せる
+* question design / interview は validate-retry や tool 拡張を段階的に進める
 
 制約:
 

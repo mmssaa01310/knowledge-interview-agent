@@ -1,100 +1,401 @@
-import { AiProposalCard } from "../features/interviews/components/AiProposalCard";
-import type { AiProposal } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
+type InterviewSidebarTab = "configured" | "extra";
+
+type ConversationQuestionAnswer = {
+  question: string;
+  answer?: string;
+};
+
+type InterviewSidebarItem = {
+  id: string;
+  answerKey: string;
+  label: string;
+  question: string;
+  answer?: string;
+  status: "answered" | "active" | "pending";
+  source: "field" | "dynamic";
+};
+
+function normalizeQuestionText(value: string) {
+  return value.replace(/\s+/g, "").toLowerCase();
+}
+
+function buildFieldQuestion(field: KnowledgeLayoutProps["sortedFields"][number]) {
+  return field.aiQuestionExamples?.find((example) => example.trim())
+    ?? field.description?.trim()
+    ?? field.name;
+}
+
+function isLikelyQuestionSentence(value: string) {
+  const text = value.trim();
+  if (!text) {
+    return false;
+  }
+
+  if (/[?？]$/.test(text)) {
+    return true;
+  }
+
+  return /(ですか。?|ますか。?|でしょうか。?|でしたか。?|ありませんか。?|教えてください。?|どこ|いつ|なに|何|どの|どう|なぜ|誰)/.test(text);
+}
+
+function extractQuestionFromAiMessage(value: string) {
+  const segments = value
+    .split(/\r?\n|(?<=[。!?？])/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const segment = segments[index];
+    if (isLikelyQuestionSentence(segment)) {
+      return segment;
+    }
+  }
+
+  return "";
+}
+
+function buildConversationQuestionAnswers(messages: KnowledgeLayoutProps["interviewMessages"]) {
+  const pairs: ConversationQuestionAnswer[] = [];
+  let currentQuestion = "";
+  let answerParts: string[] = [];
+
+  function flushCurrent() {
+    const question = currentQuestion.trim();
+    if (!question) return;
+    const answer = answerParts
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join("\n");
+    pairs.push({
+      question,
+      answer: answer || undefined,
+    });
+  }
+
+  for (const message of messages) {
+    if (message.role === "ai") {
+      flushCurrent();
+      currentQuestion = extractQuestionFromAiMessage(message.text);
+      answerParts = [];
+      continue;
+    }
+
+    if (currentQuestion.trim()) {
+      answerParts.push(message.text);
+    }
+  }
+
+  flushCurrent();
+  return pairs;
+}
+
+function findConversationMatchIndex(
+  field: KnowledgeLayoutProps["sortedFields"][number],
+  conversationItems: ConversationQuestionAnswer[],
+  consumedIndexes: Set<number>
+) {
+  const fieldSignals = [
+    field.name,
+    field.description ?? "",
+    ...field.aiQuestionExamples ?? [],
+  ]
+    .map((value) => normalizeQuestionText(value))
+    .filter(Boolean);
+
+  const matchedIndex = conversationItems.findIndex((item, index) => {
+    if (consumedIndexes.has(index)) return false;
+    const question = normalizeQuestionText(item.question);
+    return fieldSignals.some((signal) => signal.includes(question) || question.includes(signal));
+  });
+
+  if (matchedIndex >= 0) {
+    return matchedIndex;
+  }
+
+  return conversationItems.findIndex((item, index) => !consumedIndexes.has(index) && Boolean(item.answer));
+}
+
 export function InterviewRecordPage(props: KnowledgeLayoutProps) {
-  function applyProposal(proposal: AiProposal) {
-    if (proposal.proposalType === "record_summary") {
-      const summary = proposal.structuredData.summary;
-      if (typeof summary === "string") {
-        props.setRecordNotice("要約候補を確認しました");
-      }
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const [activeSidebarTab, setActiveSidebarTab] = useState<InterviewSidebarTab>("configured");
+  const conversationItems = buildConversationQuestionAnswers(props.interviewMessages);
+  const consumedConversationIndexes = new Set<number>();
+
+  const configuredItems = props.sortedFields.map((field) => {
+    const matchIndex = findConversationMatchIndex(field, conversationItems, consumedConversationIndexes);
+    if (matchIndex >= 0) {
+      consumedConversationIndexes.add(matchIndex);
+    }
+
+    const metadataAnswer = props.structuredDraft[field.name]?.trim();
+
+    return {
+      id: field.id ?? `field-${field.displayOrder}-${field.name}`,
+      answerKey: field.name,
+      label: field.name,
+      question: buildFieldQuestion(field),
+      answer: metadataAnswer,
+      source: "field" as const,
+    };
+  });
+
+  const firstPendingConfiguredIndex = configuredItems.findIndex((item) => !item.answer);
+
+  const configuredQuestionItems: InterviewSidebarItem[] = configuredItems.map((item, index) => ({
+    ...item,
+    status: item.answer
+      ? "answered"
+      : firstPendingConfiguredIndex === index
+        ? "active"
+        : "pending",
+  }));
+
+  const extraConversationItems: InterviewSidebarItem[] = conversationItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ index, item }) => !consumedConversationIndexes.has(index) && !props.deletedExtraQuestionIds.includes(`conversation-${index}`) && (item.question.trim() || item.answer?.trim()))
+    .map(({ item, index }) => ({
+      id: `conversation-${index}`,
+      answerKey: `conversation-${index}`,
+      label: "",
+      question: item.question,
+      answer: props.interviewAnswerOverrides[`conversation-${index}`],
+      status: props.interviewAnswerOverrides[`conversation-${index}`] ? "answered" : "active",
+      source: "dynamic" as const,
+    }));
+
+  useEffect(() => {
+    const container = chatLogRef.current;
+    if (!container) {
       return;
     }
 
+    container.scrollTop = container.scrollHeight;
+  }, [props.interviewMessages.length]);
+
+  useEffect(() => {
+    if (activeSidebarTab === "extra" && extraConversationItems.length === 0) {
+      setActiveSidebarTab("configured");
+    }
+  }, [activeSidebarTab, extraConversationItems.length]);
+
+  function handleChatInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
+    }
+
+    event.preventDefault();
+    handleSendInterviewMessage();
+  }
+
+  function handleConfiguredAnswerChange(answerKey: string, value: string) {
     props.setStructuredDraft({
       ...props.structuredDraft,
-      ...Object.fromEntries(Object.entries(proposal.structuredData).map(([key, value]) => [key, String(value)]))
+      [answerKey]: value,
     });
-    props.setRecordNotice("AI提案を項目へ反映しました");
+  }
+
+  function handleExtraAnswerChange(answerKey: string, value: string) {
+    props.setInterviewAnswerOverrides({
+      ...props.interviewAnswerOverrides,
+      [answerKey]: value,
+    });
+  }
+
+  function handleConfiguredAnswerDelete(answerKey: string) {
+    if (!window.confirm("この質問の回答を削除しますか？")) {
+      return;
+    }
+
+    const nextDraft = { ...props.structuredDraft };
+    delete nextDraft[answerKey];
+    props.setStructuredDraft(nextDraft);
+  }
+
+  function handleExtraQuestionDelete(answerKey: string) {
+    if (!window.confirm("この追加質問カードを削除しますか？")) {
+      return;
+    }
+
+    const nextOverrides = { ...props.interviewAnswerOverrides };
+    delete nextOverrides[answerKey];
+    props.setInterviewAnswerOverrides(nextOverrides);
+    props.setDeletedExtraQuestionIds([...props.deletedExtraQuestionIds, answerKey]);
+  }
+
+  function resolveInterviewAnswerTarget() {
+    if (activeSidebarTab === "extra" && extraConversationItems.length > 0) {
+      const extraTarget = extraConversationItems.find((item) => item.status === "active")
+        ?? extraConversationItems[extraConversationItems.length - 1];
+      return extraTarget ? { scope: "extra" as const, answerKey: extraTarget.answerKey } : null;
+    }
+
+    const configuredTarget = configuredQuestionItems.find((item) => item.status === "active")
+      ?? configuredQuestionItems.find((item) => item.status === "pending")
+      ?? configuredQuestionItems[configuredQuestionItems.length - 1];
+    return configuredTarget ? { scope: "configured" as const, answerKey: configuredTarget.answerKey } : null;
+  }
+
+  function handleSendInterviewMessage() {
+    if (!props.chatInput.trim() || props.isInterviewStreaming) {
+      return;
+    }
+
+    props.onSendInterviewMessage(resolveInterviewAnswerTarget());
   }
 
   return (
     <section className="panel interview-page">
-      <div className="panel-header">
+      <div className="panel-header interview-page-header">
         <div>
-          <p className="eyebrow">AI Interview Record</p>
-          <h2>{props.selectedRecord?.title ?? "記録"}</h2>
-          <p className="lede">左で構造化項目を編集し、右でAIチャットと提案カードを確認します。</p>
-        </div>
-        <div className="actions">
-          <span className={props.selectedRecord?.status === "approved" ? "status-pill" : "status-pill muted"}>{props.selectedRecord?.status ?? "draft"}</span>
-          <button className="primary" onClick={() => props.setRecordNotice("構造化項目を保存しました")}>保存</button>
-          <button className="ghost" onClick={props.onApproveAllForRecord}>全承認</button>
+          <h2>AIインタビュー</h2>
+          <p className="lede">{props.selectedRecord?.title ?? "記録"}</p>
         </div>
       </div>
 
-      <div className="record-columns">
-        <aside className="structured-form">
-          <div className="rail-title">
-            <strong>構造化項目入力</strong>
-            <span>{props.sortedFields.length}項目</span>
+      <div className="interview-shell">
+        <aside className="interview-sidebar">
+          <div className="interview-sidebar-header">
+            <strong>質問リスト</strong>
           </div>
-          {props.sortedFields.map((field) => (
-            <label key={field.id ?? field.name}>
-              <span>{field.name}</span>
-              <textarea
-                value={props.structuredDraft[field.name] ?? ""}
-                onChange={(event) => props.setStructuredDraft({ ...props.structuredDraft, [field.name]: event.target.value })}
-                placeholder={field.description ?? "ヒアリング内容を入力"}
-              />
-              <div className="toolbar">
-                <span className="status-pill muted">{field.required ? "必須" : "任意"}</span>
-                <span className="status-pill muted">{field.askByAi ? "AI質問対象" : "手入力"}</span>
+          <div className="interview-sidebar-tabs" role="tablist" aria-label="質問一覧の切り替え">
+            <button
+              type="button"
+              className={`interview-sidebar-tab ${activeSidebarTab === "configured" ? "active" : ""}`}
+              onClick={() => setActiveSidebarTab("configured")}
+            >
+              項目の質問
+              <span>{configuredQuestionItems.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`interview-sidebar-tab ${activeSidebarTab === "extra" ? "active" : ""}`}
+              onClick={() => setActiveSidebarTab("extra")}
+              disabled={extraConversationItems.length === 0}
+            >
+              追加質問
+              <span>{extraConversationItems.length}</span>
+            </button>
+          </div>
+
+          {activeSidebarTab === "configured" ? (
+            configuredQuestionItems.length ? (
+              <div className="interview-question-list">
+                {configuredQuestionItems.map((item) => {
+                  const statusLabel = item.status === "answered"
+                    ? "回答済み"
+                    : item.status === "active"
+                      ? "確認中"
+                      : "未回答";
+
+                  return (
+                    <div key={item.id} className={`interview-question-item ${item.status}`}>
+                      <div className="interview-question-head">
+                        <strong>{item.label}</strong>
+                        <div className="interview-question-actions">
+                          <span className={`question-status ${item.status}`}>{statusLabel}</span>
+                          <button className="ghost compact" type="button" onClick={() => handleConfiguredAnswerDelete(item.answerKey)}>
+                            削除
+                          </button>
+                        </div>
+                      </div>
+                      <p className="interview-question-text">{item.question}</p>
+                      <div className="interview-answer-block">
+                        <span className="interview-answer-label">回答</span>
+                        <textarea
+                          className="interview-answer-input"
+                          value={item.answer ?? ""}
+                          onChange={(event) => handleConfiguredAnswerChange(item.answerKey, event.target.value)}
+                          placeholder="回答を入力"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </label>
-          ))}
-          {props.recordNotice && <span className="notice">{props.recordNotice}</span>}
+            ) : (
+              <p className="empty">質問がありません</p>
+            )
+          ) : extraConversationItems.length ? (
+            <div className="interview-question-list extra-question-list">
+              {extraConversationItems.map((item) => (
+                <div key={item.id} className={`interview-question-item ${item.status} ${item.source}`}>
+                  <div className="interview-question-head">
+                    <div className="interview-question-actions">
+                      <span className={`question-status ${item.status}`}>{item.answer ? "回答済み" : "確認中"}</span>
+                      <button className="ghost compact" type="button" onClick={() => handleExtraQuestionDelete(item.answerKey)}>
+                        削除
+                      </button>
+                    </div>
+                  </div>
+                  <p className="interview-question-text">{item.question}</p>
+                  <div className="interview-answer-block">
+                    <span className="interview-answer-label">回答</span>
+                    <textarea
+                      className="interview-answer-input"
+                      value={item.answer ?? ""}
+                      onChange={(event) => handleExtraAnswerChange(item.answerKey, event.target.value)}
+                      placeholder="回答を入力"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="empty">追加質問はまだありません</p>
+          )}
+
+          {props.interviewStreamMetadata?.answer_status !== "not_answered" && props.interviewStreamMetadata?.next_questions?.length ? (
+            <div className="next-question-panel">
+              <strong>次に聞く候補</strong>
+              <div className="next-question-list">
+                {props.interviewStreamMetadata.next_questions.map((question, index) => (
+                  <button
+                    key={`${question}-${index}`}
+                    type="button"
+                    className="next-question-chip"
+                    onClick={() => props.setChatInput(question)}
+                  >
+                    {question}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </aside>
 
-        <div className="proposal-panel">
-          <div className="stream-banner">
-            <strong>SSEストリーム</strong>
-            <span>stream_start / delta / stream_end / proposal_created の順で更新します。</span>
+        <div className="interview-chat-panel">
+          <div className="interview-chat-header">
+            <div>
+              <strong>チャット</strong>
+            </div>
           </div>
-          <div className="chat-log">
+          <div ref={chatLogRef} className="chat-log">
             {props.interviewMessages.map((message, index) => (
               <div key={index} className={`bubble ${message.role === "ai" ? "ai" : "user"}`}>
                 <p>{message.text}</p>
               </div>
             ))}
           </div>
-          <div className="message-box">
-            <textarea value={props.chatInput} onChange={(event) => props.setChatInput(event.target.value)} placeholder="回答を入力" />
-            <div className="actions">
-              <button className="primary" onClick={props.onSendInterviewMessage}>送信</button>
-              <button className="ghost">音声入力</button>
+          <div className="answer-composer">
+            <textarea
+              value={props.chatInput}
+              onChange={(event) => props.setChatInput(event.target.value)}
+              onKeyDown={handleChatInputKeyDown}
+              placeholder="回答を入力"
+            />
+            <div className="answer-composer-actions">
+              <button className="primary" onClick={handleSendInterviewMessage} disabled={props.isInterviewStreaming}>
+                {props.isInterviewStreaming ? "受信中..." : "送信"}
+              </button>
+              <div className="voice-controls">
+                <button className="ghost" type="button" disabled>音声開始（準備中）</button>
+                <button className="ghost" type="button" disabled>停止</button>
+              </div>
             </div>
-          </div>
-
-          <div className="panel-header compact-header">
-            <div>
-              <strong>AI提案カード</strong>
-              <p className="lede">承認前の提案だけを確認し、必要に応じて修正して反映します。</p>
-            </div>
-            <button className="ghost compact" onClick={props.onApproveAllForRecord}>全承認</button>
-          </div>
-          <div className="proposal-list">
-            {props.proposals.length === 0 ? <p className="empty">AI提案はまだありません。</p> : props.proposals.map((proposal) => (
-              <AiProposalCard
-                key={proposal.id}
-                proposal={proposal}
-                onApply={applyProposal}
-                onApprove={props.onApproveOne}
-                onReject={props.onRejectProposal}
-                onRemove={props.onRemoveProposal}
-              />
-            ))}
+            {props.recordNotice ? <p className="notice interview-inline-notice">{props.recordNotice}</p> : null}
           </div>
         </div>
       </div>

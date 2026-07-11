@@ -1,7 +1,7 @@
 import type { InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
 import type { AiProposal, DocumentSummary, KnowledgeField } from "../lib/api";
 import type { Route } from "../routes/routeTypes";
-import type { Chatbot, ChatMessage, DocumentReadState } from "./app";
+import type { Chatbot, ChatMessage, DocumentReadState, InterviewAnswerTarget, InterviewStreamMetadata } from "./app";
 
 export type PromptProfile = {
   id: string;
@@ -59,8 +59,14 @@ export type KnowledgeLayoutProps = {
   chatInput: string;
   setChatInput: (value: string) => void;
   interviewMessages: ChatMessage[];
+  interviewStreamMetadata: InterviewStreamMetadata | null;
+  isInterviewStreaming: boolean;
   structuredDraft: Record<string, string>;
   setStructuredDraft: (value: Record<string, string>) => void;
+  interviewAnswerOverrides: Record<string, string>;
+  setInterviewAnswerOverrides: (value: Record<string, string>) => void;
+  deletedExtraQuestionIds: string[];
+  setDeletedExtraQuestionIds: (value: string[]) => void;
   summaryDraft: string;
   setSummaryDraft: (value: string) => void;
   isGeneratingSummary: boolean;
@@ -88,7 +94,10 @@ export type KnowledgeLayoutProps = {
   onCreateRecord: () => void;
   onDeleteRecord: (recordId: string) => void;
   onBulkApproveRecords: () => void;
-  onSendInterviewMessage: () => void;
+  onSaveInterviewDraft: () => void;
+  onDeleteInterviewAnswers: () => void;
+  onDeleteInterviewChat: () => void;
+  onSendInterviewMessage: (target?: InterviewAnswerTarget | null) => void;
   onGenerateRecordSummary: () => void;
   onSaveRecordSummary: () => void;
   onRevertRecordSummary: () => void;

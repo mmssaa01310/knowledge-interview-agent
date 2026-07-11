@@ -234,7 +234,7 @@ agents/question_design/
 
 質問項目設計を置く。
 既存の `field-suggestions` と `services/prompts/field_fill/` はこの責務に属する。
-当面は既存の `services/field_suggestions.py` を維持し、将来的に実処理を小さく移す。
+`services/field_suggestions.py` は router 互換の薄いラッパーとして残し、実処理は Strands question design agent に置く。
 
 ```text
 agents/interview/

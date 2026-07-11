@@ -1,1 +1,1 @@
-"""Shared agent infrastructure package."""
+"""Common agent runtime and reusable read-only tools."""

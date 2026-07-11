@@ -109,13 +109,14 @@ async def stream_record(record_id: str, user: UserContext = Depends(get_current_
     record = get_scoped_item("records", record_id, user, "record_not_found")
     proposals = [row for row in store.list("proposals", user.tenant_id) if row["recordId"] == record_id]
     proposal_id = proposals[-1]["id"] if proposals else "pending"
-    reply_chunks = generate_interview_reply(record, user)
+    stream_result = generate_interview_reply(record, user)
 
     async def event_generator():
+        stream_end_data = {"metadata": stream_result.metadata} if stream_result.metadata is not None else {}
         events = [("stream_start", {})]
-        events.extend(("delta", {"text": chunk}) for chunk in reply_chunks)
+        events.extend(("delta", {"text": chunk}) for chunk in stream_result.reply_chunks)
         events.extend([
-            ("stream_end", {}),
+            ("stream_end", stream_end_data),
             ("proposal_created", {"proposalId": proposal_id}),
         ])
         for event, data in events:
