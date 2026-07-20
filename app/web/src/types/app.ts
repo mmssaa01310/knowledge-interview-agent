@@ -28,21 +28,75 @@ export type DocumentReadState = {
   acknowledgedAt?: string;
 };
 
+export type InterviewQuestionType = "configured_field" | "follow_up";
+
+export type InterviewQuestion = {
+  questionId: string;
+  questionType: InterviewQuestionType;
+  fieldId: string | null;
+  text: string;
+  retrievalPolicy?: "never" | "auto" | "required";
+};
+
+export type InterviewFieldState = {
+  fieldId: string;
+  status: "pending" | "asking" | "completed";
+  answerSummary: string | null;
+  missingInformation: string[];
+  answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+  candidateAnswer?: string | null;
+  candidateEvidenceTranscriptIds?: string[];
+  needsClarification?: boolean;
+  clarificationQuestion?: string | null;
+};
+
+export type InterviewState = {
+  status: "in_progress" | "completed";
+  currentFieldId: string | null;
+  currentQuestionId: string | null;
+  completedFieldIds: string[];
+  pendingFieldIds: string[];
+  askedQuestions: InterviewQuestion[];
+  followUpCounts: Record<string, number>;
+  fieldStates: Record<string, InterviewFieldState>;
+  lastProcessedUserMessageId: string | null;
+};
+
 export type ChatMessage = {
-  role: "user" | "ai";
+  id?: string;
+  recordId?: string;
+  role: "user" | "assistant" | "ai";
   text: string;
   evidences?: ChatMessageEvidence[];
+  questionId?: string;
+  questionType?: InterviewQuestionType;
+  fieldId?: string | null;
+  answerToQuestionId?: string;
+  answerToFieldId?: string | null;
+  voiceSessionId?: string | null;
+  voiceTurnId?: string | null;
+  voiceResponseId?: string | null;
+  isActualUtterance?: boolean;
+  isLegacy?: boolean;
 };
 
 export type InterviewAnswerTarget = {
-  scope: "configured" | "extra";
-  answerKey: string;
+  questionId: string;
+  questionType: InterviewQuestionType;
+  fieldId: string | null;
 };
 
 export type InterviewStreamMetadata = {
-  answer_status?: "answered" | "not_answered";
-  reask_question?: string | null;
-  next_questions: string[];
-  draft_updates: Record<string, unknown>;
+  status: "in_progress" | "completed";
+  action: "ask_configured_field" | "ask_follow_up" | "finish";
+  reply: string;
+  question: InterviewQuestion | null;
+  completedFieldId: string | null;
+  currentFieldId: string | null;
+  answerSummary: string | null;
+  missingInformation: string[];
   used_tools: string[];
+  assistantMessage?: ChatMessage | null;
+  interviewState?: InterviewState | null;
+  structuredDraft?: Record<string, string>;
 };

@@ -7,9 +7,13 @@ from typing import Any
 from ai_interviewer_api.agents.common.tools import READ_ONLY_TOOL_NAMES
 from ai_interviewer_api.agents.interview.agent import build_interview_agent
 from ai_interviewer_api.agents.interview.schemas import (
+    InterviewFieldEvaluation,
     InterviewTurnInput,
     InterviewTurnOutput,
 )
+
+DEFAULT_FOLLOW_UP_REPLY = "もう少し詳しく確認させてください。"
+DEFAULT_FOLLOW_UP_QUESTION = "その点をもう少し詳しく教えてください。"
 
 
 def run_interview_turn(
@@ -29,7 +33,17 @@ def run_interview_turn(
 
     if agent_runner is None:
         factory = agent_factory or build_interview_agent
-        agent = factory(model_id=model_id, region_name=region_name, temperature=temperature)
+        retrieval_policy = (
+            interview_input.current_field.retrievalPolicy
+            if interview_input.current_field
+            else "auto"
+        )
+        agent = factory(
+            model_id=model_id,
+            region_name=region_name,
+            temperature=temperature,
+            allow_retrieval=retrieval_policy != "never",
+        )
         agent_runner = agent
 
     result = agent_runner(
@@ -37,7 +51,7 @@ def run_interview_turn(
         invocation_state=invocation_state,
         structured_output_model=InterviewTurnOutput,
     )
-    return _normalize_output(_coerce_output(result), invocation_state)
+    return _normalize_output(_coerce_output(result, interview_input), invocation_state, interview_input)
 
 
 def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
@@ -46,9 +60,19 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         for message in interview_input.conversation_history
     ]
     field_lines = [
-        f"- {field.name}: {field.description or '説明未設定'}"
+        f"- {field.name} | field_id: {field.fieldId or 'none'} | question_examples: {', '.join(field.aiQuestionExamples) if field.aiQuestionExamples else 'none'}"
         for field in interview_input.approved_fields
     ]
+    field_state_lines = []
+    if interview_input.interview_state:
+        for field_id, field_state in interview_input.interview_state.fieldStates.items():
+            field_state_lines.append(
+                f"- {field_id}: status={field_state.status}, answer_state={field_state.answerState}, "
+                f"candidate={field_state.candidateAnswer or 'none'}, "
+                f"answer_summary={field_state.answerSummary or 'none'}, "
+                f"missing={', '.join(field_state.missingInformation) or 'none'}"
+            )
+
     knowledge_context_items = [
         ("ナレッジ名", interview_input.knowledge_name),
         ("ナレッジ説明", interview_input.knowledge_description),
@@ -68,32 +92,36 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         *(knowledge_context_lines or ["- none"]),
         "runtime_custom_prompt:",
         interview_input.custom_prompt or "none",
-        "turn_rules:",
-        "- 質問する場合は、このターンの質問を1つだけにする。",
-        "- 質問が不要な場合は、質問を含めなくてよい。",
-        "- reply で複数の確認事項をまとめて聞かない。",
-        "- next_questions は最大1件にする。",
-        "current_interviewer_question:",
-        _resolve_latest_assistant_message(interview_input.conversation_history) or "none",
+        "current_field:",
+        f"- id: {interview_input.current_field.fieldId if interview_input.current_field else 'none'}",
+        f"- name: {interview_input.current_field.name if interview_input.current_field else 'none'}",
+        f"- description: {interview_input.current_field.description if interview_input.current_field and interview_input.current_field.description else 'none'}",
+        f"- retrieval_policy: {interview_input.current_field.retrievalPolicy if interview_input.current_field else 'auto'}",
+        f"- question_examples: {', '.join(interview_input.current_field.aiQuestionExamples) if interview_input.current_field and interview_input.current_field.aiQuestionExamples else 'none'}",
+        "current_question:",
+        f"- id: {interview_input.current_question.questionId if interview_input.current_question else 'none'}",
+        f"- type: {interview_input.current_question.questionType if interview_input.current_question else 'none'}",
+        f"- text: {interview_input.current_question.text if interview_input.current_question else 'none'}",
+        "interview_state:",
+        f"- status: {interview_input.interview_state.status if interview_input.interview_state else 'none'}",
+        f"- completed_field_ids: {', '.join(interview_input.interview_state.completedFieldIds) if interview_input.interview_state else 'none'}",
+        f"- pending_field_ids: {', '.join(interview_input.interview_state.pendingFieldIds) if interview_input.interview_state else 'none'}",
+        f"- follow_up_count_for_current_field: {interview_input.follow_up_count}",
+        f"- max_follow_up_questions_per_field: {interview_input.max_follow_up_questions_per_field}",
+        "field_states:",
+        *(field_state_lines or ["- none"]),
         "approved_fields:",
         *(field_lines or ["- none"]),
         "conversation_history:",
         *(history_lines or ["- none"]),
         "latest_expert_message:",
-        interview_input.user_message,
-        "Return the interview response using the structured output contract.",
+        interview_input.user_message or "none",
+        "Return the interview field evaluation response using the structured output contract.",
     ]
     return "\n".join(sections)
 
 
-def _resolve_latest_assistant_message(conversation_history: list[InterviewMessage]) -> str:
-    for message in reversed(conversation_history):
-        if message.role == "assistant":
-            return message.content
-    return ""
-
-
-def _coerce_output(result: Any) -> InterviewTurnOutput:
+def _coerce_output(result: Any, interview_input: InterviewTurnInput) -> InterviewTurnOutput:
     if isinstance(result, InterviewTurnOutput):
         return result
 
@@ -116,16 +144,25 @@ def _coerce_output(result: Any) -> InterviewTurnOutput:
             except Exception:
                 pass
 
+    field_id = interview_input.current_field.fieldId if interview_input.current_field else "unknown"
     return InterviewTurnOutput(
-        reply="回答を受け取りました。次に確認する質問を整理しながら続けます。",
+        reply=DEFAULT_FOLLOW_UP_REPLY,
+        field_evaluation=InterviewFieldEvaluation(
+            fieldId=field_id or "unknown",
+            isComplete=False,
+            answerSummary="",
+            missingInformation=[],
+            nextAction="follow_up",
+        ),
+        follow_up_question=DEFAULT_FOLLOW_UP_QUESTION,
+        used_tools=[],
     )
 
 
 def _extract_result_text(result: Any) -> str:
     if isinstance(result, str):
         return result.strip()
-    text = str(result).strip()
-    return text
+    return str(result).strip()
 
 
 def _filter_used_tools(tool_names: list[Any]) -> list[str]:
@@ -136,35 +173,51 @@ def _filter_used_tools(tool_names: list[Any]) -> list[str]:
     return filtered
 
 
-def _normalize_output(output: InterviewTurnOutput, invocation_state: dict[str, Any]) -> InterviewTurnOutput:
-    answer_status = output.answer_status
-    reask_question = output.reask_question.strip() if isinstance(output.reask_question, str) and output.reask_question.strip() else None
-    answer_evaluation_reason = (
-        output.answer_evaluation_reason.strip()
-        if isinstance(output.answer_evaluation_reason, str) and output.answer_evaluation_reason.strip()
-        else None
+def _normalize_output(
+    output: InterviewTurnOutput,
+    invocation_state: dict[str, Any],
+    interview_input: InterviewTurnInput,
+) -> InterviewTurnOutput:
+    reply = output.reply.strip() or DEFAULT_FOLLOW_UP_REPLY
+    follow_up_question = output.follow_up_question.strip() if isinstance(output.follow_up_question, str) and output.follow_up_question.strip() else None
+    evaluation = output.field_evaluation
+    answer_summary = evaluation.answerSummary.strip() if isinstance(evaluation.answerSummary, str) else ""
+    missing_information = [
+        item.strip()
+        for item in evaluation.missingInformation
+        if isinstance(item, str) and item.strip()
+    ]
+    field_id = evaluation.fieldId or (
+        interview_input.current_field.fieldId if interview_input.current_field else "unknown"
     )
-    next_questions = output.next_questions[:1]
-    draft_updates = dict(output.draft_updates)
+    next_action = "next_field" if evaluation.isComplete else evaluation.nextAction
+    decision = evaluation.decision
+    if decision is None:
+        if evaluation.isComplete and answer_summary:
+            decision = "CONFIRMABLE"
+        elif answer_summary:
+            decision = "NEEDS_MORE_INFORMATION"
+        else:
+            decision = "NOT_ANSWER"
+    if next_action == "follow_up" and not follow_up_question:
+        follow_up_question = DEFAULT_FOLLOW_UP_QUESTION
     merged_used_tools = _filter_used_tools([*output.used_tools, *invocation_state.get("used_tools", [])])
-
-    reply = output.reply.strip()
-    if answer_status == "not_answered":
-        next_questions = []
-        draft_updates = {}
-        if not reply:
-            reply = reask_question or "現在の質問への回答がまだ確認できませんでした。もう少し具体的に教えてください。"
-    else:
-        reply = reply or "回答を受け取りました。次に確認する質問を整理しながら続けます。"
 
     return output.model_copy(
         update={
             "reply": reply,
-            "answer_status": answer_status,
-            "reask_question": reask_question,
-            "answer_evaluation_reason": answer_evaluation_reason,
-            "next_questions": next_questions,
-            "draft_updates": draft_updates,
+            "follow_up_question": follow_up_question,
+            "field_evaluation": evaluation.model_copy(
+                update={
+                    "fieldId": field_id or "unknown",
+                    "answerSummary": answer_summary,
+                    "missingInformation": missing_information,
+                    "nextAction": next_action,
+                    "decision": decision,
+                    "isRelevant": evaluation.isRelevant if evaluation.isRelevant is not None else decision not in {"NOT_ANSWER", "UNCLEAR"},
+                    "isSufficient": evaluation.isSufficient if evaluation.isSufficient is not None else decision == "CONFIRMABLE",
+                }
+            ),
             "used_tools": merged_used_tools,
         }
     )

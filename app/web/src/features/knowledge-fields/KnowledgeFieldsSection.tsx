@@ -30,7 +30,7 @@ export function KnowledgeFieldsSection({ fields }: KnowledgeFieldsSectionProps) 
             <span>{field.displayOrder}</span>
             <span>
               <strong>{field.name}</strong>
-              <small>{field.description ?? field.aiQuestionExamples?.[0] ?? "説明未設定"}</small>
+              <small>{field.aiQuestionExamples?.[0] ?? "質問例は未設定"}</small>
             </span>
             <span>{field.inputType}</span>
             <span>{field.required ? "必須" : "任意"}</span>

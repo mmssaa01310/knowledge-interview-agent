@@ -3,14 +3,49 @@ services:
     build:
       context: ..
       dockerfile: app/api/Dockerfile.dev
-    working_dir: /workspace
+    working_dir: /workspace/app/api
     environment:
       AWS_PROFILE: ${AWS_PROFILE:-default}
       AWS_REGION: ${AWS_REGION:-ap-northeast-1}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-ap-northeast-1}
       AWS_SDK_LOAD_CONFIG: "1"
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token}
+      DEV_AUTO_SEED_VOICE_DEMO: ${DEV_AUTO_SEED_VOICE_DEMO:-true}
+      DEV_AUTO_SEED_MAINTENANCE_DEMO: ${DEV_AUTO_SEED_MAINTENANCE_DEMO:-true}
+      QUESTION_DESIGN_TEMPERATURE: ${QUESTION_DESIGN_TEMPERATURE:-0.0}
+      VOICE_BEDROCK_MODEL_ID: ${VOICE_BEDROCK_MODEL_ID:-apac.amazon.nova-pro-v1:0}
+      VOICE_BEDROCK_TEMPERATURE: ${VOICE_BEDROCK_TEMPERATURE:-0.0}
+      VOICE_BEDROCK_MAX_TOKENS: ${VOICE_BEDROCK_MAX_TOKENS:-600}
+      VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS: ${VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS:-2.0}
+      VOICE_BEDROCK_CONNECT_TIMEOUT_SECONDS: ${VOICE_BEDROCK_CONNECT_TIMEOUT_SECONDS:-0.5}
+      VOICE_BEDROCK_READ_TIMEOUT_SECONDS: ${VOICE_BEDROCK_READ_TIMEOUT_SECONDS:-1.8}
     ports:
       - "${API_PORT:-8000}:8000"
+    dns:
+      - "${DOCKER_DNS_SERVER:-172.21.96.1}"
+    volumes:
+      - ..:/workspace
+      - ${HOME}/.aws:/root/.aws:ro
+
+  voice:
+    build:
+      context: ..
+      dockerfile: app/voice/Dockerfile.dev
+    working_dir: /workspace/app/voice
+    network_mode: host
+    depends_on:
+      - api
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      VOICE_API_BASE_URL: http://127.0.0.1:8000
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token}
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+      AWS_REGION: ${AWS_REGION:-ap-northeast-1}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-ap-northeast-1}
+      AWS_SDK_LOAD_CONFIG: "1"
+      VOICE_KVS_TURN_CHANNEL_ARN: ${VOICE_KVS_TURN_CHANNEL_ARN:-}
+      NOVA_SONIC_MODEL_ID: ${NOVA_SONIC_MODEL_ID:-amazon.nova-2-sonic-v1:0}
+      NOVA_SONIC_VOICE_ID: ${NOVA_SONIC_VOICE_ID:-matthew}
     volumes:
       - ..:/workspace
       - ${HOME}/.aws:/root/.aws:ro
@@ -22,9 +57,13 @@ services:
     working_dir: /workspace
     depends_on:
       - api
+      - voice
     environment:
-      VITE_API_BASE_URL: http://localhost:${API_PORT:-8000}
+      VITE_API_PROXY_TARGET: http://api:8000
+      VITE_VOICE_PROXY_TARGET: http://host.docker.internal:8010
       CHOKIDAR_USEPOLLING: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${WEB_PORT:-5173}:5173"
     volumes:

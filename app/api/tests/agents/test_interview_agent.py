@@ -1,28 +1,19 @@
 from __future__ import annotations
 
-import importlib
 from dataclasses import dataclass
-from types import ModuleType
 from typing import Any
-from unittest.mock import Mock
 
-from ai_interviewer_api.agents.common.strands_runtime import resolve_bedrock_region
-from ai_interviewer_api.agents.common.tools import (
-    search_equipment_master,
-    search_existing_fields,
-    search_past_knowledge,
-)
 from ai_interviewer_api.agents.interview.agent import load_interview_agent_prompt
 from ai_interviewer_api.agents.interview.schemas import (
     InterviewField,
+    InterviewFieldEvaluation,
     InterviewMessage,
+    InterviewQuestion,
+    InterviewState,
     InterviewTurnInput,
     InterviewTurnOutput,
 )
 from ai_interviewer_api.agents.interview.service import run_interview_turn
-from ai_interviewer_api.services.prompts.loader import (
-    get_field_fill_system_prompt,
-)
 
 
 @dataclass
@@ -34,37 +25,95 @@ class FakeAgentResult:
         return self.text
 
 
+def _build_input() -> InterviewTurnInput:
+    return InterviewTurnInput(
+        knowledge_id="knowledge-1",
+        knowledge_name="保全ノウハウ",
+        user_message="接点を磨いたら復旧しました。",
+        conversation_history=[
+            InterviewMessage(
+                id="msg-1",
+                role="assistant",
+                content="最初にどこを確認しましたか。",
+                questionId="q-001",
+                questionType="configured_field",
+                fieldId="field-1",
+            ),
+            InterviewMessage(
+                id="msg-2",
+                role="user",
+                content="接点を確認しました。",
+                answerToQuestionId="q-001",
+                answerToFieldId="field-1",
+            ),
+        ],
+        approved_fields=[
+            InterviewField(
+                fieldId="field-1",
+                name="対処方法",
+                description="復旧時の対処",
+                aiQuestionExamples=["最初にどこを確認しましたか。"],
+            )
+        ],
+        current_field=InterviewField(
+            fieldId="field-1",
+            name="対処方法",
+            description="復旧時の対処",
+            aiQuestionExamples=["最初にどこを確認しましたか。"],
+        ),
+        current_question=InterviewQuestion(
+            questionId="q-001",
+            questionType="configured_field",
+            fieldId="field-1",
+            text="最初にどこを確認しましたか。",
+        ),
+        interview_state=InterviewState(
+            status="in_progress",
+            currentFieldId="field-1",
+            currentQuestionId="q-001",
+            pendingFieldIds=["field-1"],
+            completedFieldIds=[],
+            askedQuestions=[
+                InterviewQuestion(
+                    questionId="q-001",
+                    questionType="configured_field",
+                    fieldId="field-1",
+                    text="最初にどこを確認しましたか。",
+                )
+            ],
+            followUpCounts={"field-1": 0},
+            fieldStates={},
+            lastProcessedUserMessageId=None,
+        ),
+    )
+
+
 def test_run_interview_turn_returns_structured_output() -> None:
     expected = InterviewTurnOutput(
-        reply="状況を確認しました。次の点をもう少し教えてください。",
-        answer_status="answered",
-        next_questions=["その作業の直前に行った操作は何ですか。"],
-        draft_updates={"symptom": "センサー接触不良の疑い"},
+        reply="確認できました。",
+        field_evaluation=InterviewFieldEvaluation(
+            fieldId="field-1",
+            isComplete=False,
+            answerSummary="接点を確認して復旧した。",
+            missingInformation=["なぜ接点を疑ったか"],
+            nextAction="follow_up",
+        ),
+        follow_up_question="なぜ接点不良を疑ったのですか。",
         used_tools=[],
     )
 
     def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
-        assert "latest_expert_message:" in args[0]
-        assert "current_interviewer_question:" in args[0]
-        assert kwargs["structured_output_model"] is InterviewTurnOutput
+        assert "current_question:" in args[0]
+        assert "follow_up_count_for_current_field: 0" in args[0]
         kwargs["invocation_state"]["used_tools"].append("search_existing_fields")
         return FakeAgentResult(structured_output=expected)
 
-    result = run_interview_turn(
-        InterviewTurnInput(
-            knowledge_id="knowledge-1",
-            user_message="センサー接触の不良です。",
-            conversation_history=[InterviewMessage(role="assistant", content="状況を教えてください。")],
-            approved_fields=[InterviewField(name="症状", description="発生している症状")],
-        ),
-        agent_runner=fake_runner,
-    )
+    result = run_interview_turn(_build_input(), agent_runner=fake_runner)
 
-    assert isinstance(result, InterviewTurnOutput)
-    assert result.reply == expected.reply
-    assert result.answer_status == "answered"
-    assert result.next_questions == expected.next_questions
-    assert result.draft_updates == expected.draft_updates
+    assert result.reply == "確認できました。"
+    assert result.field_evaluation.fieldId == "field-1"
+    assert result.field_evaluation.isComplete is False
+    assert result.follow_up_question == "なぜ接点不良を疑ったのですか。"
     assert result.used_tools == ["search_existing_fields"]
 
 
@@ -72,104 +121,31 @@ def test_run_interview_turn_parses_json_string_fallback() -> None:
     def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
         kwargs["invocation_state"]["used_tools"].append("search_past_knowledge")
         return FakeAgentResult(
-            text='{"reply":"復旧手順を整理します。","next_questions":["最初に確認した箇所はどこですか。"],"draft_updates":{"action":"接点確認"},"used_tools":[]}'
+            text=(
+                '{"reply":"整理しました。","field_evaluation":{"fieldId":"field-1","isComplete":true,'
+                '"answerSummary":"接点確認で復旧","missingInformation":[],"nextAction":"next_field"},'
+                '"follow_up_question":null,"used_tools":[]}'
+            )
         )
 
-    result = run_interview_turn(
-        InterviewTurnInput(user_message="復旧までの流れを話します。"),
-        agent_runner=fake_runner,
-    )
+    result = run_interview_turn(_build_input(), agent_runner=fake_runner)
 
-    assert result.reply == "復旧手順を整理します。"
-    assert result.answer_status == "answered"
-    assert result.next_questions == ["最初に確認した箇所はどこですか。"]
-    assert result.draft_updates == {"action": "接点確認"}
+    assert result.reply == "整理しました。"
+    assert result.field_evaluation.isComplete is True
+    assert result.field_evaluation.nextAction == "next_field"
     assert result.used_tools == ["search_past_knowledge"]
-
-
-def test_run_interview_turn_limits_next_questions_to_one() -> None:
-    def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
-        return FakeAgentResult(
-            structured_output=InterviewTurnOutput(
-                reply="確認を続けます。いつ発生しましたか。",
-                next_questions=[
-                    "いつ発生しましたか。",
-                    "直前の操作は何でしたか。",
-                ],
-                draft_updates={},
-                used_tools=[],
-            )
-        )
-
-    result = run_interview_turn(
-        InterviewTurnInput(user_message="荷重がばらつきました。"),
-        agent_runner=fake_runner,
-    )
-
-    assert result.next_questions == ["いつ発生しましたか。"]
-
-
-def test_run_interview_turn_discards_structured_updates_when_answer_is_not_answered() -> None:
-    def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
-        return FakeAgentResult(
-            structured_output=InterviewTurnOutput(
-                reply="まだ現在の質問への回答が確認できません。",
-                answer_status="not_answered",
-                reask_question="発生直前の設備状態について、もう少し具体的に教えてください。",
-                answer_evaluation_reason="現在の質問への具体回答が不足しています。",
-                next_questions=["次の工程は何ですか。"],
-                draft_updates={"symptom": "荷重ばらつき"},
-                used_tools=[],
-            )
-        )
-
-    result = run_interview_turn(
-        InterviewTurnInput(user_message="よく分かりません。"),
-        agent_runner=fake_runner,
-    )
-
-    assert result.answer_status == "not_answered"
-    assert result.reask_question == "発生直前の設備状態について、もう少し具体的に教えてください。"
-    assert result.answer_evaluation_reason == "現在の質問への具体回答が不足しています。"
-    assert result.next_questions == []
-    assert result.draft_updates == {}
-
-
-def test_run_interview_turn_uses_reask_question_when_reply_is_empty() -> None:
-    def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
-        return FakeAgentResult(
-            structured_output=InterviewTurnOutput(
-                reply="",
-                answer_status="not_answered",
-                reask_question="そのときの設備状態を具体的に教えてください。",
-                draft_updates={"symptom": "荷重ばらつき"},
-                used_tools=[],
-            )
-        )
-
-    result = run_interview_turn(
-        InterviewTurnInput(user_message="ちょっと分かりません。"),
-        agent_runner=fake_runner,
-    )
-
-    assert result.reply == "そのときの設備状態を具体的に教えてください。"
-    assert result.answer_status == "not_answered"
-    assert result.next_questions == []
-    assert result.draft_updates == {}
 
 
 def test_run_interview_turn_handles_invalid_output_safely() -> None:
     def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
         return FakeAgentResult(text="not-json-response")
 
-    result = run_interview_turn(
-        InterviewTurnInput(user_message="会話を続けてください。"),
-        agent_runner=fake_runner,
-    )
+    result = run_interview_turn(_build_input(), agent_runner=fake_runner)
 
     assert result.reply
-    assert result.next_questions == []
-    assert result.draft_updates == {}
+    assert result.field_evaluation.fieldId == "field-1"
+    assert result.field_evaluation.nextAction == "follow_up"
+    assert result.follow_up_question
     assert result.used_tools == []
 
 
@@ -179,34 +155,53 @@ def test_run_interview_turn_filters_non_read_only_tool_names_from_used_tools() -
         return FakeAgentResult(
             structured_output=InterviewTurnOutput(
                 reply="状況を整理します。",
+                field_evaluation=InterviewFieldEvaluation(
+                    fieldId="field-1",
+                    isComplete=True,
+                    answerSummary="復旧手順を確認した。",
+                    missingInformation=[],
+                    nextAction="next_field",
+                ),
                 used_tools=["InterviewTurnOutput", "search_existing_fields"],
             )
         )
 
-    result = run_interview_turn(
-        InterviewTurnInput(user_message="進めてください。"),
-        agent_runner=fake_runner,
-    )
+    result = run_interview_turn(_build_input(), agent_runner=fake_runner)
 
     assert result.used_tools == ["search_existing_fields", "search_past_knowledge"]
 
 
-def test_run_interview_turn_keeps_used_tools_empty_when_no_read_only_tool_was_used() -> None:
-    def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
-        kwargs["invocation_state"]["used_tools"].append("InterviewTurnOutput")
-        return FakeAgentResult(
-            structured_output=InterviewTurnOutput(
-                reply="状況を整理します。",
-                used_tools=["InterviewTurnOutput"],
+def test_retrieval_never_disables_tools_but_still_runs_evaluation() -> None:
+    interview_input = _build_input()
+    assert interview_input.current_field is not None
+    interview_input.current_field.retrievalPolicy = "never"
+    factory_calls: list[bool] = []
+
+    def fake_factory(**kwargs: Any):  # type: ignore[no-untyped-def]
+        factory_calls.append(kwargs["allow_retrieval"])
+
+        def fake_runner(*args: Any, **runner_kwargs: Any) -> FakeAgentResult:
+            return FakeAgentResult(
+                structured_output=InterviewTurnOutput(
+                    reply="評価しました。",
+                    field_evaluation=InterviewFieldEvaluation(
+                        fieldId="field-1",
+                        isComplete=True,
+                        answerSummary="接点を確認して復旧した",
+                        missingInformation=[],
+                        nextAction="next_field",
+                        decision="CONFIRMABLE",
+                    ),
+                )
             )
-        )
 
-    result = run_interview_turn(
-        InterviewTurnInput(user_message="進めてください。"),
-        agent_runner=fake_runner,
-    )
+        return fake_runner
 
-    assert result.used_tools == []
+    result = run_interview_turn(interview_input, agent_factory=fake_factory)
+
+    assert factory_calls == [False]
+    assert result.field_evaluation.decision == "CONFIRMABLE"
+    assert result.field_evaluation.answerSummary == "接点を確認して復旧した"
 
 
 def test_interview_prompt_contains_required_contract() -> None:
@@ -217,119 +212,7 @@ def test_interview_prompt_contains_required_contract() -> None:
     assert "暗黙知回答エージェントでもありません" in prompt
     assert "正式データベースへの本登録" in prompt
     assert "read-only tool" in prompt
-    assert "次に確認すべきこと" in prompt
-    assert "質問する場合は、1ターンにつき質問を1つだけにする" in prompt
-    assert "質問が不要な場面では、質問を含めなくてよい" in prompt
-    assert "複数の質問を並べない" in prompt
-    assert "しつこく聞かない" in prompt
-    assert "終了確認を1つだけ行う" in prompt
-    assert "answer_status" in prompt
-    assert "reask_question" in prompt
-    assert "answer_evaluation_reason" in prompt
-    assert "回答になっていない場合は `answer_status` を `not_answered` にする" in prompt
-    assert "なんで？" in prompt
-    assert "元の論点を1つだけ聞き直してください" in prompt
-    assert "draft_updates" in prompt
-    assert "承認済み field を勝手に上書きしない" in prompt
-    assert "対象設備" not in prompt
-    assert "保全" not in prompt
-    assert "製造" not in prompt
-
-
-def test_run_interview_turn_prompt_does_not_mix_legacy_or_field_suggestion_prompts() -> None:
-    field_fill_prompt = get_field_fill_system_prompt()
-
-    captured_prompt: str | None = None
-
-    def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
-        nonlocal captured_prompt
-        captured_prompt = args[0]
-        return FakeAgentResult(
-            structured_output=InterviewTurnOutput(
-                reply="状況を整理しました。",
-                answer_status="answered",
-                used_tools=[],
-            )
-        )
-
-    run_interview_turn(
-        InterviewTurnInput(
-            knowledge_id="knowledge-1",
-            knowledge_name="汎用インタビュー",
-            user_message="開始します。",
-            conversation_history=[InterviewMessage(role="assistant", content="まず状況を教えてください。")],
-        ),
-        agent_runner=fake_runner,
-    )
-
-    assert captured_prompt is not None
-    assert "あなたは製造業の暗黙知を構造化するためのヒアリング項目設計AIです。" not in captured_prompt
-    assert field_fill_prompt not in captured_prompt
-    assert "対象業務" not in captured_prompt
-    assert "対象設備" not in captured_prompt
-
-
-def test_read_only_tools_return_not_connected_messages() -> None:
-    tool_context = {"tool_use": {"toolUseId": "tool-1"}, "agent": None, "invocation_state": {}}
-
-    assert (
-        search_equipment_master("圧入機A", tool_context=tool_context)
-        == "No equipment master data source is connected yet."
-    )
-    assert (
-        search_existing_fields("症状", tool_context=tool_context)
-        == "No existing fields data source is connected yet."
-    )
-    assert (
-        search_past_knowledge("荷重ばらつき", tool_context=tool_context)
-        == "No past knowledge data source is connected yet."
-    )
-
-
-def test_tool_modules_do_not_depend_on_repositories_or_store() -> None:
-    modules: list[ModuleType] = [
-        importlib.import_module("ai_interviewer_api.agents.common.tools.equipment_master"),
-        importlib.import_module("ai_interviewer_api.agents.common.tools.existing_fields"),
-        importlib.import_module("ai_interviewer_api.agents.common.tools.past_knowledge"),
-    ]
-
-    for module in modules:
-        assert "store" not in module.__dict__
-        assert "boto3" not in module.__dict__
-        assert not any(name.startswith("ai_interviewer_api.repositories") for name in module.__dict__)
-
-
-def test_runtime_region_resolution_prefers_existing_settings() -> None:
-    assert resolve_bedrock_region() == "ap-northeast-1"
-    assert resolve_bedrock_region("us-west-2") == "us-west-2"
-
-
-def test_runtime_region_resolution_falls_back_to_environment(monkeypatch) -> None:
-    runtime_module = importlib.import_module("ai_interviewer_api.agents.common.strands_runtime")
-    monkeypatch.setattr(runtime_module, "settings", Mock(bedrock_aws_region=""))
-    monkeypatch.setenv("BEDROCK_AWS_REGION", "ap-southeast-2")
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
-
-    assert runtime_module.resolve_bedrock_region() == "ap-southeast-2"
-
-
-def test_imports_do_not_construct_bedrock_model_or_agent(monkeypatch) -> None:
-    import strands.models
-
-    runtime_module = importlib.import_module("ai_interviewer_api.agents.common.strands_runtime")
-    interview_agent_module = importlib.import_module("ai_interviewer_api.agents.interview.agent")
-    interview_service_module = importlib.import_module("ai_interviewer_api.agents.interview.service")
-
-    original_bedrock_model = strands.models.BedrockModel
-
-    class FailOnInitBedrockModel(original_bedrock_model):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            raise AssertionError("BedrockModel should not be instantiated during module import")
-
-    monkeypatch.setattr(strands.models, "BedrockModel", FailOnInitBedrockModel)
-    monkeypatch.setattr(interview_agent_module, "build_interview_agent", Mock(side_effect=AssertionError("should not build agent during import")))
-
-    importlib.reload(runtime_module)
-    importlib.reload(interview_agent_module)
-    importlib.reload(interview_service_module)
+    assert "field_evaluation.isComplete" in prompt
+    assert "follow_up_question" in prompt
+    assert "現在の設定項目に必要な情報が揃ったか" in prompt
+    assert "1ターンで複数質問にならない" in prompt

@@ -8,6 +8,7 @@ from ai_interviewer_api.agents.question_design.schemas import (
     QuestionDesignMessage,
     QuestionDesignOutput,
 )
+from ai_interviewer_api.agents.question_design.service import DEFAULT_CLARIFICATION
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest, KnowledgeFieldCreate
 
 ALLOWED_INPUT_TYPES = {
@@ -63,14 +64,20 @@ def build_question_design_input(payload: FieldSuggestionRequest) -> QuestionDesi
 
 
 def adapt_question_design_output(output: QuestionDesignOutput) -> AdaptedQuestionDesignResult:
+    if output.design_status == "needs_info":
+        return AdaptedQuestionDesignResult(
+            reply=DEFAULT_CLARIFICATION,
+            fields=[],
+            used_tools=list(output.used_tools),
+        )
+
     fields: list[KnowledgeFieldCreate] = []
     for index, suggestion in enumerate(output.suggestions, start=1):
         input_type = suggestion.input_type if suggestion.input_type in ALLOWED_INPUT_TYPES else "long_text"
-        description = suggestion.description or suggestion.reason
         fields.append(
             KnowledgeFieldCreate(
                 name=suggestion.label,
-                description=description,
+                description=None,
                 inputType=input_type,
                 required=suggestion.required,
                 askByAi=suggestion.ask_by_ai,

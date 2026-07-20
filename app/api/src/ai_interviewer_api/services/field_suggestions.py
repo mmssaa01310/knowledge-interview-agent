@@ -15,14 +15,15 @@ from ai_interviewer_api.agents.question_design.adapter import (
     adapt_question_design_output,
     build_question_design_input,
 )
-from ai_interviewer_api.agents.question_design.service import run_question_design
+from ai_interviewer_api.agents.question_design.service import (
+    QuestionDesignInternalError,
+    run_question_design,
+)
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest
 
 logger = logging.getLogger(__name__)
-
-_SAFE_REPLY = "一時的に質問項目を生成できませんでした。少し時間をおいて再度お試しください。"
 
 
 def suggest_fields_with_bedrock(payload: FieldSuggestionRequest, user: UserContext) -> dict:
@@ -38,10 +39,13 @@ def suggest_fields_with_bedrock(payload: FieldSuggestionRequest, user: UserConte
             "bedrockInvoked": False,
         }
 
+    question_input = build_question_design_input(payload)
+
     try:
         output = run_question_design(
-            build_question_design_input(payload),
+            question_input,
             model_id=model_id,
+            temperature=settings.question_design_temperature,
         )
     except (ConnectTimeoutError, ReadTimeoutError, EndpointConnectionError) as exc:
         logger.warning("Strands question design request timed out or failed to connect: %s", exc)
@@ -52,14 +56,16 @@ def suggest_fields_with_bedrock(payload: FieldSuggestionRequest, user: UserConte
     except BotoCoreError as exc:
         logger.warning("Strands question design request failed with botocore error: %s", exc)
         raise HTTPException(status_code=503, detail="bedrock_connection_error") from exc
-    except Exception:
+    except QuestionDesignInternalError as exc:
+        logger.error(
+            "question_design_internal_error code=%s model_id=%s",
+            exc.code,
+            model_id,
+        )
+        raise HTTPException(status_code=502, detail=exc.code) from exc
+    except Exception as exc:
         logger.exception("Failed to generate field suggestions with Strands question design agent")
-        return {
-            "reply": _SAFE_REPLY,
-            "fields": [],
-            "modelId": model_id,
-            "bedrockInvoked": True,
-        }
+        raise HTTPException(status_code=500, detail="question_design_internal_error") from exc
 
     adapted = adapt_question_design_output(output)
     existing_names = {field.name.strip() for field in payload.existingFields if field.name.strip()}

@@ -43,18 +43,33 @@ function toRecentAssistMessages(messages: AssistMessage[]): FieldSuggestionChatM
     .slice(-20);
 }
 
-function isStatusCodeError(error: unknown): error is { status?: number } {
+function isStatusCodeError(error: unknown): error is { status?: number; detail?: string } {
   return typeof error === "object" && error !== null && "status" in error;
 }
 
 function toFieldSuggestionErrorMessage(error: unknown) {
   if (isStatusCodeError(error)) {
-    if (!error.status || [408, 429, 502, 503, 504].includes(error.status)) {
-      return "通信混戦しています。しばらく待ってからお試しください。";
+    if (!error.status || [408, 503, 504].includes(error.status)) {
+      return "通信エラーが発生しました。接続を確認して、もう一度お試しください。";
+    }
+    if (error.status === 429) {
+      return "AIサービスが混雑しています。少し待ってから、もう一度お試しください。";
+    }
+    if (error.detail === "question_design_output_invalid" || error.detail === "question_design_empty_suggestions") {
+      return "AIの質問項目出力を正しく読み取れませんでした。もう一度お試しください。";
+    }
+    if (error.detail === "question_design_validation_output_invalid" || error.detail === "question_design_validation_failed") {
+      return "AIが作成した質問項目の検証に失敗しました。内容を少し具体化して、もう一度お試しください。";
+    }
+    if (error.status === 502) {
+      return "AIサービスから有効な回答を取得できませんでした。もう一度お試しください。";
+    }
+    if (error.status === 500) {
+      return "質問項目の生成中に内部エラーが発生しました。もう一度お試しください。";
     }
     return `エラー（コード:${error.status}） 管理者にお問い合わせください。`;
   }
-  return "通信混戦しています。しばらく待ってからお試しください。";
+  return "通信エラーが発生しました。接続を確認して、もう一度お試しください。";
 }
 
 export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
@@ -229,7 +244,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         },
         existingFields: props.draftFields,
         recentMessages: toRecentAssistMessages(nextMessages),
-        maxFields: 8
+        maxFields: 5
       });
 
       const existingNames = new Set(props.draftFields.map((field) => field.name.trim()).filter(Boolean));
@@ -386,7 +401,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   </div>
                   <button className="ghost compact" onClick={() => {
                     clearSettingsNotice();
-                    props.setDraftFields([...props.draftFields, { name: "新規項目", description: "", inputType: "short_text", required: false, askByAi: true, aiQuestionExamples: [], displayOrder: props.draftFields.length + 1 }]);
+                    props.setDraftFields([...props.draftFields, { name: "新規項目", inputType: "short_text", required: false, askByAi: true, aiQuestionExamples: [], displayOrder: props.draftFields.length + 1 }]);
                   }}>項目追加</button>
                 </div>
                 <div className="field-list">
@@ -401,7 +416,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                       </div>
                       <div className="form-grid field-form-grid">
                         <label>項目名<input value={field.name} onChange={(event) => updateField(index, { name: event.target.value })} /></label>
-                        <label className="wide-field">項目説明<textarea value={field.description ?? ""} onChange={(event) => updateField(index, { description: event.target.value })} /></label>
                         <label className="wide-field">AI質問例
                           <textarea value={(field.aiQuestionExamples ?? []).join("\n")} onChange={(event) => updateField(index, { aiQuestionExamples: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} placeholder="例: いつ、どこで、どの条件で発生しましたか" />
                         </label>
@@ -432,7 +446,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                       <article key={field.proposalId} className="proposal-card settings-suggestion-card">
                         <div className="proposal-fields">
                           <div className="proposal-field"><strong>項目</strong><p>{field.name}</p></div>
-                          <div className="proposal-field"><strong>詳細</strong><p>{field.description ?? "項目説明は未設定です。"}</p></div>
                           <div className="proposal-field"><strong>質問例</strong><p>{field.aiQuestionExamples?.join(" / ") || "質問例はまだありません。"}</p></div>
                         </div>
                         <div className="actions">

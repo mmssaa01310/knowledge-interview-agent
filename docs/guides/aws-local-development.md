@@ -45,9 +45,30 @@ Bedrock 呼び出しに必要な IAM 権限は次を含める。
 
 ```env
 BEDROCK_MODEL_ID=apac.amazon.nova-pro-v1:0
+VOICE_BEDROCK_MODEL_ID=apac.amazon.nova-pro-v1:0
+VOICE_BEDROCK_TEMPERATURE=0.0
+VOICE_BEDROCK_MAX_TOKENS=600
 AWS_REGION=ap-northeast-1
 AWS_DEFAULT_REGION=ap-northeast-1
 ```
+
+`VOICE_BEDROCK_MODEL_ID`はリアルタイム音声の回答評価だけに適用する。比較時は次のいずれかを設定し、APIコンテナを再作成する。
+
+```env
+# Nova Pro
+VOICE_BEDROCK_MODEL_ID=apac.amazon.nova-pro-v1:0
+
+# Claude Sonnet 4.5 (Japan cross-region inference profile)
+VOICE_BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-5-20250929-v1:0
+VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS=6.0
+VOICE_BEDROCK_READ_TIMEOUT_SECONDS=5.5
+```
+
+```bash
+docker compose -f infra/docker-compose.yml up -d --force-recreate api
+```
+
+Sonnet 4.5の上記timeout値は品質比較用であり、2秒以内を要求するリアルタイム会話の既定値にはしない。通常運用へ戻す場合は、モデルIDをNova Proへ戻し、deadlineを`2.0`、read timeoutを`1.8`に戻す。
 
 ### profile の例
 

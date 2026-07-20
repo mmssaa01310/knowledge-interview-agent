@@ -46,6 +46,7 @@ class KnowledgeField(BaseEntity):
     inputType: str
     required: bool
     askByAi: bool
+    retrievalPolicy: Literal["never", "auto", "required"] = "auto"
     aiQuestionExamples: list[str] = Field(default_factory=list)
     aiAssistPrompt: str | None = None
     options: list[str] = Field(default_factory=list)
@@ -63,6 +64,41 @@ class InterviewRecord(BaseEntity):
     approvedFieldCount: int = 0
     unapprovedFieldCount: int = 0
     rejectedFieldCount: int = 0
+
+
+class VoiceSession(BaseEntity):
+    recordId: str
+    provider: str = "nova_sonic"
+    status: str = "active"
+    connectionStatus: str = "created"
+    currentQuestionId: str | None = None
+    initialReplyText: str | None = None
+    initialQuestionId: str | None = None
+    initialReplyStatus: Literal["pending", "sending", "sent", "failed_retryable", "failed_terminal"] | None = None
+    initialReplySentAt: str | None = None
+    lastTurnSequence: int = 0
+    stateVersion: int = 0
+    startedAt: str | None = None
+    stoppedAt: str | None = None
+
+
+class VoiceTurn(BaseEntity):
+    voiceSessionId: str
+    recordId: str
+    sequence: int
+    speaker: Literal["user", "assistant"] = "user"
+    transcript: str
+    answerToQuestionId: str | None = None
+    answerToFieldId: str | None = None
+    processingMode: Literal["answer_evaluation", "confirmation_reply"] = "answer_evaluation"
+    processingStatus: Literal["pending", "processing", "completed", "failed"] = "pending"
+    responseText: str | None = None
+    action: str | None = None
+    stateVersion: int | None = None
+    responseId: str | None = None
+    questionId: str | None = None
+    startedAtMs: int | None = None
+    endedAtMs: int | None = None
 
 
 class AiProposal(BaseEntity):

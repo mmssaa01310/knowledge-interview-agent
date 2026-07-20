@@ -60,6 +60,7 @@ class KnowledgeFieldCreate(BaseModel):
     inputType: str = "short_text"
     required: bool = False
     askByAi: bool = True
+    retrievalPolicy: str = "auto"
     aiQuestionExamples: list[str] = Field(default_factory=list)
     options: list[str] = Field(default_factory=list)
     displayOrder: int = 0
@@ -71,6 +72,7 @@ class KnowledgeFieldUpdate(BaseModel):
     inputType: str | None = None
     required: bool | None = None
     askByAi: bool | None = None
+    retrievalPolicy: str | None = None
     aiQuestionExamples: list[str] | None = None
     options: list[str] | None = None
     displayOrder: int | None = None
@@ -114,12 +116,17 @@ class RecordUpdate(BaseModel):
     summary: str | None = None
 
 
+class InterviewAnswerUpdate(BaseModel):
+    answerSummary: str = Field(min_length=1, max_length=10000)
+
+
 class BulkApproveRequest(BaseModel):
     recordIds: list[str]
 
 
 class ChatMessageCreate(BaseModel):
     content: str
+    answerToQuestionId: str | None = None
     modelId: str | None = None
     referenceKnowledgeDbIds: list[str] = Field(default_factory=list)
     referenceKnowledgeIds: list[str] = Field(default_factory=list)

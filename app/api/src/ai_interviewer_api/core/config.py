@@ -6,6 +6,12 @@ import os
 class Settings:
     app_name: str = os.getenv("APP_NAME", "AI Interviewer API")
     app_env: str = os.getenv("APP_ENV", "local")
+    dev_auto_seed_voice_demo: bool = (
+        os.getenv("DEV_AUTO_SEED_VOICE_DEMO", "false").lower() == "true"
+    )
+    dev_auto_seed_maintenance_demo: bool = (
+        os.getenv("DEV_AUTO_SEED_MAINTENANCE_DEMO", "false").lower() == "true"
+    )
     cognito_user_pool_id: str = os.getenv("COGNITO_USER_POOL_ID", "local-placeholder")
     cognito_region: str = os.getenv("COGNITO_REGION", "ap-northeast-1")
     cognito_app_client_id: str = os.getenv("COGNITO_APP_CLIENT_ID", "local-placeholder")
@@ -25,6 +31,27 @@ class Settings:
     bedrock_fallback_model_id: str = os.getenv("BEDROCK_FALLBACK_MODEL_ID", "global.amazon.nova-2-lite-v1:0")
     bedrock_max_tokens: int = int(os.getenv("BEDROCK_MAX_TOKENS", "2400"))
     bedrock_temperature: float = float(os.getenv("BEDROCK_TEMPERATURE", "0.2"))
+    question_design_temperature: float = float(
+        os.getenv("QUESTION_DESIGN_TEMPERATURE", "0.0")
+    )
+    voice_answer_evaluation_deadline_seconds: float = float(
+        os.getenv("VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS", "2.0")
+    )
+    voice_bedrock_model_id: str = os.getenv(
+        "VOICE_BEDROCK_MODEL_ID",
+        os.getenv("BEDROCK_MODEL_ID", "apac.amazon.nova-pro-v1:0"),
+    )
+    voice_bedrock_temperature: float = float(
+        os.getenv("VOICE_BEDROCK_TEMPERATURE", "0.0")
+    )
+    voice_bedrock_max_tokens: int = int(os.getenv("VOICE_BEDROCK_MAX_TOKENS", "600"))
+    voice_bedrock_connect_timeout_seconds: float = float(
+        os.getenv("VOICE_BEDROCK_CONNECT_TIMEOUT_SECONDS", "0.5")
+    )
+    voice_bedrock_read_timeout_seconds: float = float(
+        os.getenv("VOICE_BEDROCK_READ_TIMEOUT_SECONDS", "1.8")
+    )
+    internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")
 
 
 settings = Settings()

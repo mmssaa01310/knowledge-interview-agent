@@ -6,16 +6,76 @@ from pydantic import BaseModel, Field
 
 
 class InterviewMessage(BaseModel):
+    id: str | None = None
     role: Literal["user", "assistant", "system"]
     content: str
+    questionId: str | None = None
+    questionType: Literal["configured_field", "follow_up"] | None = None
+    fieldId: str | None = None
+    answerToQuestionId: str | None = None
+    answerToFieldId: str | None = None
+    isLegacy: bool = False
+
+
+class InterviewQuestion(BaseModel):
+    questionId: str
+    questionType: Literal["configured_field", "follow_up"]
+    fieldId: str | None = None
+    text: str
+    retrievalPolicy: Literal["never", "auto", "required"] = "auto"
 
 
 class InterviewField(BaseModel):
     fieldId: str | None = None
     name: str
     description: str | None = None
+    aiQuestionExamples: list[str] = Field(default_factory=list)
     inputType: str | None = None
     required: bool = False
+    retrievalPolicy: Literal["never", "auto", "required"] = "auto"
+
+
+class InterviewFieldState(BaseModel):
+    fieldId: str
+    status: Literal["pending", "asking", "completed"] = "pending"
+    answerSummary: str | None = None
+    missingInformation: list[str] = Field(default_factory=list)
+    answerState: Literal["UNANSWERED", "CANDIDATE_PENDING", "AWAITING_CONFIRMATION", "CONFIRMED"] = "UNANSWERED"
+    candidateAnswer: str | None = None
+
+
+class InterviewState(BaseModel):
+    status: Literal["in_progress", "completed"] = "in_progress"
+    currentFieldId: str | None = None
+    currentQuestionId: str | None = None
+    completedFieldIds: list[str] = Field(default_factory=list)
+    pendingFieldIds: list[str] = Field(default_factory=list)
+    askedQuestions: list[InterviewQuestion] = Field(default_factory=list)
+    followUpCounts: dict[str, int] = Field(default_factory=dict)
+    fieldStates: dict[str, InterviewFieldState] = Field(default_factory=dict)
+    lastProcessedUserMessageId: str | None = None
+
+
+class InterviewFieldEvaluation(BaseModel):
+    fieldId: str
+    isComplete: bool
+    answerSummary: str
+    missingInformation: list[str] = Field(default_factory=list)
+    nextAction: Literal["follow_up", "next_field"]
+    decision: Literal[
+        "CONFIRMABLE",
+        "NEEDS_MORE_INFORMATION",
+        "NOT_ANSWER",
+        "UNCLEAR",
+        "REQUEST_GUIDANCE",
+        "CORRECT_PREVIOUS_FIELD",
+    ] | None = None
+    isRelevant: bool | None = None
+    isSufficient: bool | None = None
+    targetFieldId: str | None = None
+    retrievalNeeded: bool = False
+    evaluationReason: str | None = None
+    confirmationQuestion: str | None = None
 
 
 class InterviewTurnInput(BaseModel):
@@ -29,13 +89,27 @@ class InterviewTurnInput(BaseModel):
     user_message: str
     conversation_history: list[InterviewMessage] = Field(default_factory=list)
     approved_fields: list[InterviewField] = Field(default_factory=list)
+    current_field: InterviewField | None = None
+    current_question: InterviewQuestion | None = None
+    interview_state: InterviewState | None = None
+    follow_up_count: int = 0
+    max_follow_up_questions_per_field: int = 2
 
 
 class InterviewTurnOutput(BaseModel):
+    reply: str = ""
+    field_evaluation: InterviewFieldEvaluation
+    follow_up_question: str | None = None
+    used_tools: list[str] = Field(default_factory=list)
+
+
+class InterviewAgentResult(BaseModel):
+    status: Literal["in_progress", "completed"]
+    action: Literal["ask_configured_field", "ask_follow_up", "finish"]
     reply: str
-    answer_status: Literal["answered", "not_answered"] = "answered"
-    reask_question: str | None = None
-    answer_evaluation_reason: str | None = None
-    next_questions: list[str] = Field(default_factory=list)
-    draft_updates: dict[str, Any] = Field(default_factory=dict)
+    question: InterviewQuestion | None = None
+    completedFieldId: str | None = None
+    currentFieldId: str | None = None
+    answerSummary: str | None = None
+    missingInformation: list[str] = Field(default_factory=list)
     used_tools: list[str] = Field(default_factory=list)

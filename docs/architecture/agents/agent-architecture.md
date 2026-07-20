@@ -128,6 +128,9 @@ DB更新してはいけない。
 
 現在は interview agent と question design agent を Strands Agent ベースへ移行済みである。
 
+判断原則は「判断はAI、保証はbackend」とする。
+質問設計可否、聞き返し要否、回答判定を挨拶辞書やキーワード一致の deterministic precheck で置き換えない。
+
 短期方針:
 
 * `field-suggestions` は router 互換のため service ラッパーを維持する

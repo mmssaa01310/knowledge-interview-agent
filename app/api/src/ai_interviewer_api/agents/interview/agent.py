@@ -43,6 +43,7 @@ def build_interview_agent(
     model_id: str | None = None,
     region_name: str | None = None,
     temperature: float | None = None,
+    allow_retrieval: bool = True,
 ) -> Agent:
     model = create_bedrock_model(
         model_id=model_id,
@@ -52,7 +53,7 @@ def build_interview_agent(
     return create_agent(
         model=model,
         system_prompt=load_interview_agent_prompt(),
-        tools=get_interview_tools(),
+        tools=get_interview_tools() if allow_retrieval else [],
         hooks=[_record_used_tool],
         name="Interview Agent",
         description="Conducts expert interviews and proposes the next questions.",

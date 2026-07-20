@@ -43,3 +43,10 @@
 * import 時に AWS 接続が走らないことを前提にする
 
 Bedrock を使う手動確認は `RUN_STRANDS_SMOKE=1` を付けた smoke script だけで行う。
+
+回答判定や聞き返し要否の判断は、原則として interview agent に任せる。
+backend は `answer_status` と `draft_updates` の整合などの invariant を保証し、会話内容を rule-based に先回り判定しない。
+
+`retrievalPolicy=never`はread-only検索toolを無効にするが、interview agent自体の回答評価は実行する。agentは発話意図、関連性、十分性、正規化済み候補、追加質問、確認質問を構造化出力し、backendは候補と確定回答の保存境界を保証する。
+
+確認質問の自然な表現はagentが現在質問と項目定義から生成する。backendのfallbackは項目名と候補を使うドメイン非依存の形式に限定し、特定の業務・項目名・回答語尾を条件分岐で列挙しない。

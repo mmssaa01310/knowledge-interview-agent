@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { API_BASE_URL } from "../../../lib/api";
-import type { ChatMessage, InterviewStreamMetadata } from "../../../types/app";
+import type { InterviewStreamMetadata } from "../../../types/app";
 
 type UseInterviewStreamArgs = {
-  onDelta: (message: ChatMessage) => void;
+  onDelta: (chunk: string) => void;
   onStreamEnd: (metadata: InterviewStreamMetadata | null) => void;
   onProposalCreated: () => void;
   onError?: () => void;
@@ -24,7 +24,7 @@ export function useInterviewStream({ onDelta, onStreamEnd, onProposalCreated, on
     sourceRef.current = source;
     source.addEventListener("delta", (event) => {
       const data = JSON.parse((event as MessageEvent).data) as { text: string };
-      onDelta({ role: "ai", text: data.text });
+      onDelta(data.text);
     });
     source.addEventListener("proposal_created", onProposalCreated);
     source.addEventListener("stream_end", (event) => {

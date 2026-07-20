@@ -1,0 +1,25 @@
+export function shouldUseVoiceAnswerSummary(fieldState: {
+  answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+  status?: "pending" | "asking" | "completed";
+} | null | undefined): boolean;
+
+export function isRawVoiceUserMessageHiddenFromAnswer(message: {
+  voiceSessionId?: string | null;
+} | null | undefined): boolean;
+
+export function getInterviewAnswerValue(fieldState: {
+  answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+  answerSummary?: string | null;
+} | null | undefined): string;
+
+export function getInterviewDisplayAnswer(
+  fieldState: {
+    answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+    answerSummary?: string | null;
+  } | null | undefined,
+  editedValue?: string,
+): string;
+
+export function getInterviewAnswerStatusLabel(fieldState: {
+  answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+} | null | undefined): "未回答" | "追加確認中" | "確認中" | "回答済み";

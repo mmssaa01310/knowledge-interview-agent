@@ -4,6 +4,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from botocore.config import Config as BotocoreConfig
 from strands import Agent
 from strands.models import BedrockModel
 
@@ -40,13 +41,28 @@ def create_bedrock_model(
     region_name: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    boto_client_config: BotocoreConfig | None = None,
 ) -> BedrockModel:
     return BedrockModel(
+        boto_client_config=boto_client_config,
         region_name=resolve_bedrock_region(region_name),
         model_id=model_id or settings.bedrock_model_id,
         temperature=settings.bedrock_temperature if temperature is None else temperature,
         max_tokens=settings.bedrock_max_tokens if max_tokens is None else max_tokens,
         streaming=False,
+    )
+
+
+def create_voice_evaluation_bedrock_model() -> BedrockModel:
+    return create_bedrock_model(
+        model_id=settings.voice_bedrock_model_id,
+        temperature=settings.voice_bedrock_temperature,
+        max_tokens=settings.voice_bedrock_max_tokens,
+        boto_client_config=BotocoreConfig(
+            connect_timeout=settings.voice_bedrock_connect_timeout_seconds,
+            read_timeout=settings.voice_bedrock_read_timeout_seconds,
+            retries={"total_max_attempts": 1, "mode": "standard"},
+        )
     )
 
 

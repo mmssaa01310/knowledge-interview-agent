@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi import HTTPException
 
@@ -10,6 +11,10 @@ from ai_interviewer_api.agents.question_design.adapter import (
     build_question_design_input,
 )
 from ai_interviewer_api.agents.question_design.schemas import QuestionDesignOutput, QuestionFieldSuggestion
+from ai_interviewer_api.agents.question_design.service import (
+    DEFAULT_CLARIFICATION,
+    QuestionDesignInternalError,
+)
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest, KnowledgeFieldCreate
 from ai_interviewer_api.services import field_suggestions
 
@@ -59,6 +64,7 @@ def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
     result = adapt_question_design_output(
         QuestionDesignOutput(
             reply="質問項目候補を提案します。",
+            design_status="ready",
             suggestions=[
                 QuestionFieldSuggestion(
                     label="判断基準",
@@ -75,6 +81,7 @@ def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
 
     assert result.reply == "質問項目候補を提案します。"
     assert result.fields[0].name == "判断基準"
+    assert result.fields[0].description is None
     assert result.fields[0].aiQuestionExamples == ["正常と異常をどのように見分けますか。"]
     assert result.used_tools == ["search_existing_fields"]
 
@@ -82,12 +89,14 @@ def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
 def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatch) -> None:
     before_proposals = dict(store.tables["proposals"])
     before_fields = dict(store.tables["knowledge_fields"])
+    captured_temperature = None
 
-    monkeypatch.setattr(
-        field_suggestions,
-        "run_question_design",
-        lambda *args, **kwargs: QuestionDesignOutput(
+    def fake_run_question_design(*args, **kwargs):
+        nonlocal captured_temperature
+        captured_temperature = kwargs.get("temperature")
+        return QuestionDesignOutput(
             reply="質問項目候補を提案します。",
+            design_status="ready",
             suggestions=[
                 QuestionFieldSuggestion(
                     label="判断基準",
@@ -101,7 +110,12 @@ def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatc
                 ),
             ],
             used_tools=["search_existing_fields"],
-        ),
+        )
+
+    monkeypatch.setattr(
+        field_suggestions,
+        "run_question_design",
+        fake_run_question_design,
     )
 
     result = field_suggestions.suggest_fields_with_bedrock(
@@ -121,9 +135,29 @@ def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatc
 
     assert result["bedrockInvoked"] is True
     assert result["modelId"] == field_suggestions.settings.bedrock_model_id
+    assert captured_temperature == 0.0
     assert [field["name"] for field in result["fields"]] == ["判断基準"]
     assert store.tables["proposals"] == before_proposals
     assert store.tables["knowledge_fields"] == before_fields
+
+
+def test_suggest_fields_with_bedrock_returns_empty_fields_when_validation_failed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        field_suggestions,
+        "run_question_design",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            QuestionDesignInternalError("question_design_validation_failed")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        field_suggestions.suggest_fields_with_bedrock(
+            FieldSuggestionRequest(content="質問考えて"),
+            DEV_TOKENS["dev-manager"],
+        )
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "question_design_validation_failed"
 
 
 def test_suggest_fields_with_bedrock_returns_safe_empty_response_when_strands_fails(monkeypatch) -> None:
@@ -133,14 +167,41 @@ def test_suggest_fields_with_bedrock_returns_safe_empty_response_when_strands_fa
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("strands failure")),
     )
 
+    with pytest.raises(HTTPException) as exc_info:
+        field_suggestions.suggest_fields_with_bedrock(
+            FieldSuggestionRequest(content="質問項目を考えて"),
+            DEV_TOKENS["dev-manager"],
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "question_design_internal_error"
+
+
+def test_suggest_fields_with_bedrock_returns_reply_only_when_materials_are_insufficient(monkeypatch) -> None:
+    runner_called = False
+
+    def fake_runner(*args, **kwargs):
+        nonlocal runner_called
+        runner_called = True
+        return QuestionDesignOutput(
+            reply="まずテーマを確認します。",
+            design_status="needs_info",
+            clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+            suggestions=[],
+        )
+
+    monkeypatch.setattr(field_suggestions, "run_question_design", fake_runner)
+
     result = field_suggestions.suggest_fields_with_bedrock(
-        FieldSuggestionRequest(content="質問項目を考えて"),
+        FieldSuggestionRequest(content="こんにちは"),
         DEV_TOKENS["dev-manager"],
     )
 
     assert result["fields"] == []
     assert result["bedrockInvoked"] is True
-    assert "一時的に質問項目を生成できませんでした" in result["reply"]
+    assert result["reply"] == DEFAULT_CLARIFICATION
+    assert "業務の概要" not in result["reply"]
+    assert runner_called is True
 
 
 def test_suggest_fields_with_bedrock_maps_endpoint_connection_error(monkeypatch) -> None:
@@ -154,7 +215,7 @@ def test_suggest_fields_with_bedrock_maps_endpoint_connection_error(monkeypatch)
 
     try:
         field_suggestions.suggest_fields_with_bedrock(
-            FieldSuggestionRequest(content="こんにちは"),
+            FieldSuggestionRequest(content="月次請求処理の質問項目を作って"),
             DEV_TOKENS["dev-manager"],
         )
     except HTTPException as exc:
@@ -178,7 +239,7 @@ def test_suggest_fields_with_bedrock_maps_client_error_without_legacy_fallback(m
 
     try:
         field_suggestions.suggest_fields_with_bedrock(
-            FieldSuggestionRequest(content="こんにちは"),
+            FieldSuggestionRequest(content="月次請求処理の質問項目を作って"),
             DEV_TOKENS["dev-manager"],
         )
     except HTTPException as exc:

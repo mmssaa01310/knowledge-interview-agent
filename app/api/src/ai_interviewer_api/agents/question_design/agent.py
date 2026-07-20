@@ -18,6 +18,11 @@ def load_question_design_prompt() -> str:
     return (_PROMPTS_DIR / "base.md").read_text(encoding="utf-8").strip()
 
 
+@lru_cache(maxsize=1)
+def load_question_design_validation_prompt() -> str:
+    return (_PROMPTS_DIR / "validation.md").read_text(encoding="utf-8").strip()
+
+
 def _record_used_tool(event: AfterToolCallEvent) -> None:
     used_tools = event.invocation_state.setdefault("used_tools", [])
     tool_name = event.tool_use.get("name")
@@ -50,4 +55,25 @@ def build_question_design_agent(
         hooks=[_record_used_tool],
         name="Question Design Agent",
         description="Designs question field suggestions before interviews start.",
+    )
+
+
+def build_question_design_validator(
+    *,
+    model_id: str | None = None,
+    region_name: str | None = None,
+    temperature: float | None = None,
+) -> Agent:
+    model = create_bedrock_model(
+        model_id=model_id,
+        region_name=region_name,
+        temperature=temperature,
+    )
+    return create_agent(
+        model=model,
+        system_prompt=load_question_design_validation_prompt(),
+        tools=[],
+        hooks=[],
+        name="Question Design Validator",
+        description="Validates whether question design suggestions match the user's intent.",
     )

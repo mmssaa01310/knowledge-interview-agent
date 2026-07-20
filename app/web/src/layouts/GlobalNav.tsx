@@ -31,16 +31,18 @@ export function GlobalNav({ activeSection, user, onNavigate }: GlobalNavProps) {
       >
         チャットボット作成
       </button>
-      <button
-        type="button"
-        className={activeSection === "settings" ? "global-nav-item active" : "global-nav-item"}
-        onClick={() => onNavigate("/settings")}
-      >
-        設定
-      </button>
-      <div className="global-nav-user">
-        <p>ログイン中</p>
-        <strong>{user ? `${user.displayName} / ${user.role}` : "未接続"}</strong>
+      <div className="global-nav-footer">
+        <button
+          type="button"
+          className={activeSection === "settings" ? "global-nav-item active" : "global-nav-item"}
+          onClick={() => onNavigate("/settings")}
+        >
+          設定
+        </button>
+        <div className="global-nav-user">
+          <p>ログイン中</p>
+          <strong>{user ? `${user.displayName} / ${user.role}` : "未接続"}</strong>
+        </div>
       </div>
     </nav>
   );

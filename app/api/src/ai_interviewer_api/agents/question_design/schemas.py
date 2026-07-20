@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -45,5 +47,16 @@ class QuestionFieldSuggestion(BaseModel):
 
 class QuestionDesignOutput(BaseModel):
     reply: str = ""
+    design_status: Literal["ready", "needs_info"] = "ready"
+    clarification_question: str | None = None
+    reason: str | None = None
     suggestions: list[QuestionFieldSuggestion] = Field(default_factory=list)
     used_tools: list[str] = Field(default_factory=list)
+
+
+class QuestionDesignValidation(BaseModel):
+    is_aligned: bool
+    validation_reason: str | None = None
+    issues: list[str] = Field(default_factory=list)
+    should_retry: bool = False
+    retry_instruction: str | None = None

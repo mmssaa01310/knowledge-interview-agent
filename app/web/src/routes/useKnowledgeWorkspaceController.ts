@@ -32,14 +32,16 @@ import {
   createRecordMessage,
   createRecordSummaryProposal,
   deleteRecord,
+  fetchInterviewState,
   fetchProposals,
   fetchRecords,
+  updateInterviewAnswer,
   updateRecord,
   type AiProposal
 } from "../features/interviews/api/interviewApi";
 import { useInterviewStream } from "../features/interviews/hooks/useInterviewStream";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
-import type { ChatMessage, DocumentReadState, InterviewAnswerTarget, InterviewStreamMetadata } from "../types/app";
+import type { ChatMessage, DocumentReadState, InterviewAnswerTarget, InterviewState, InterviewStreamMetadata } from "../types/app";
 import type { CreateKnowledgeDbDialogProps } from "./CreateKnowledgeDbDialog";
 import { getRouteKnowledgeDbId, getRouteKnowledgeId } from "./routeUtils";
 import type { Route } from "./routeTypes";
@@ -61,74 +63,10 @@ function inferDocumentContentType(fileName: string) {
   return "text/plain";
 }
 
-function mergeSubmittedInterviewAnswer(currentValue: string | undefined, submittedValue: string) {
-  const trimmedSubmittedValue = submittedValue.trim();
-  if (!trimmedSubmittedValue) {
-    return currentValue ?? "";
-  }
-
-  const trimmedCurrentValue = currentValue?.trim() ?? "";
-  if (!trimmedCurrentValue) {
-    return trimmedSubmittedValue;
-  }
-
-  if (trimmedCurrentValue.includes(trimmedSubmittedValue)) {
-    return currentValue ?? trimmedCurrentValue;
-  }
-
-  return `${trimmedCurrentValue}\n${trimmedSubmittedValue}`;
-}
-
 type UseKnowledgeWorkspaceControllerArgs = {
   route: Route;
   navigate: (path: string) => void;
 };
-
-type PersistedInterviewState = {
-  interviewMessages: ChatMessage[];
-  interviewStreamMetadata: InterviewStreamMetadata | null;
-  structuredDraft: Record<string, string>;
-  interviewAnswerOverrides: Record<string, string>;
-  deletedExtraQuestionIds: string[];
-};
-
-type PendingInterviewSubmission = {
-  content: string;
-  target: InterviewAnswerTarget | null;
-};
-
-function buildInterviewStateStorageKey(recordId: string) {
-  return `ai-interviewer:record-interview-state:${recordId}`;
-}
-
-function loadPersistedInterviewState(recordId: string): PersistedInterviewState | null {
-  const raw = window.sessionStorage.getItem(buildInterviewStateStorageKey(recordId));
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<PersistedInterviewState>;
-    return {
-      interviewMessages: Array.isArray(parsed.interviewMessages) ? parsed.interviewMessages : [],
-      interviewStreamMetadata: parsed.interviewStreamMetadata ?? null,
-      structuredDraft: parsed.structuredDraft && typeof parsed.structuredDraft === "object"
-        ? parsed.structuredDraft as Record<string, string>
-        : {},
-      interviewAnswerOverrides: parsed.interviewAnswerOverrides && typeof parsed.interviewAnswerOverrides === "object"
-        ? parsed.interviewAnswerOverrides as Record<string, string>
-        : {},
-      deletedExtraQuestionIds: Array.isArray(parsed.deletedExtraQuestionIds) ? parsed.deletedExtraQuestionIds : [],
-    };
-  } catch {
-    window.sessionStorage.removeItem(buildInterviewStateStorageKey(recordId));
-    return null;
-  }
-}
-
-function savePersistedInterviewState(recordId: string, state: PersistedInterviewState) {
-  window.sessionStorage.setItem(buildInterviewStateStorageKey(recordId), JSON.stringify(state));
-}
 
 export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceControllerArgs) {
   function buildDefaultRecordTitle() {
@@ -171,7 +109,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [createKnowledgeDbError, setCreateKnowledgeDbError] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
+  const [interviewState, setInterviewState] = useState<InterviewState | null>(null);
   const [interviewStreamMetadata, setInterviewStreamMetadata] = useState<InterviewStreamMetadata | null>(null);
+  const [streamingInterviewReply, setStreamingInterviewReply] = useState("");
   const [isInterviewStreaming, setIsInterviewStreaming] = useState(false);
   const [structuredDraft, setStructuredDraft] = useState<Record<string, string>>({});
   const [interviewAnswerOverrides, setInterviewAnswerOverrides] = useState<Record<string, string>>({});
@@ -180,7 +120,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [recordNotice, setRecordNotice] = useState("");
   const [documentReadStates, setDocumentReadStates] = useState<Record<string, DocumentReadState>>({});
-  const pendingInterviewSubmissionRef = useRef<PendingInterviewSubmission | null>(null);
+  const pendingInterviewSubmissionRef = useRef<{
+    content: string;
+    target: InterviewAnswerTarget | null;
+  } | null>(null);
 
   const routeKnowledgeDbId = getRouteKnowledgeDbId(args.route);
   const routeKnowledgeId = getRouteKnowledgeId(args.route);
@@ -202,52 +145,57 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setProposals(await fetchProposals(recordId));
   }
 
-  function shouldApplyInterviewAnswer(metadata: InterviewStreamMetadata | null) {
-    return metadata?.answer_status !== "not_answered";
-  }
-
-  function applyPendingInterviewSubmission(metadata: InterviewStreamMetadata | null) {
-    const pendingSubmission = pendingInterviewSubmissionRef.current;
-    pendingInterviewSubmissionRef.current = null;
-
-    if (!pendingSubmission || !shouldApplyInterviewAnswer(metadata) || !pendingSubmission.target) {
-      return;
-    }
-
-    const target = pendingSubmission.target;
-
-    if (target.scope === "configured") {
-      setStructuredDraft((current) => ({
-        ...current,
-        [target.answerKey]: mergeSubmittedInterviewAnswer(
-          current[target.answerKey],
-          pendingSubmission.content,
-        ),
+  async function loadInterviewSnapshot(recordId: string) {
+    const snapshot = await fetchInterviewState(recordId);
+    setInterviewState(snapshot.interviewState);
+    const snapshotMessages = snapshot.messages
+      .filter((message) => message.isActualUtterance !== false)
+      .map((message) => ({
+        id: message.id,
+        recordId,
+        role: normalizeInterviewMessageRole(message.role),
+        text: message.content,
+        questionId: message.questionId,
+        questionType: message.questionType,
+        fieldId: message.fieldId,
+        answerToQuestionId: message.answerToQuestionId,
+        answerToFieldId: message.answerToFieldId,
+        voiceSessionId: message.voiceSessionId,
+        voiceTurnId: message.voiceTurnId,
+        voiceResponseId: message.voiceResponseId,
+        isActualUtterance: message.isActualUtterance,
+        isLegacy: !message.questionId && !message.answerToQuestionId,
       }));
-      return;
-    }
-
-    setInterviewAnswerOverrides((current) => ({
-      ...current,
-      [target.answerKey]: mergeSubmittedInterviewAnswer(
-        current[target.answerKey],
-        pendingSubmission.content,
-      ),
-    }));
+    setInterviewMessages((messages) => mergeVoiceMessages(messages, snapshotMessages));
+    setStructuredDraft(snapshot.structuredDraft ?? {});
   }
 
   const interviewStream = useInterviewStream({
-    onDelta: (message) => setInterviewMessages((messages) => [...messages, message]),
+    onDelta: (chunk) => setStreamingInterviewReply((current) => `${current}${chunk}`),
     onStreamEnd: (metadata) => {
-      const sanitizedMetadata = metadata
-        ? {
-            ...metadata,
-            next_questions: metadata.answer_status === "not_answered" ? [] : metadata.next_questions,
-            draft_updates: {},
-          }
-        : null;
-      setInterviewStreamMetadata(sanitizedMetadata);
-      applyPendingInterviewSubmission(sanitizedMetadata);
+      setInterviewStreamMetadata(metadata);
+        if (metadata?.assistantMessage) {
+        const assistantMessage = metadata.assistantMessage as ChatMessage & { content?: string };
+        setInterviewMessages((messages) => [...messages, {
+          id: assistantMessage.id,
+          recordId: selectedRecordId,
+          role: assistantMessage.role === "user" ? "user" : "assistant",
+          text: assistantMessage.text ?? assistantMessage.content ?? metadata.reply,
+          questionId: assistantMessage.questionId,
+          questionType: assistantMessage.questionType,
+          fieldId: assistantMessage.fieldId,
+          answerToQuestionId: assistantMessage.answerToQuestionId,
+          answerToFieldId: assistantMessage.answerToFieldId,
+        }]);
+      }
+      if (metadata?.interviewState) {
+        setInterviewState(metadata.interviewState);
+      }
+      if (metadata?.structuredDraft) {
+        setStructuredDraft(metadata.structuredDraft);
+      }
+      setStreamingInterviewReply("");
+      pendingInterviewSubmissionRef.current = null;
       setIsInterviewStreaming(false);
     },
     onProposalCreated: () => {
@@ -257,6 +205,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     },
     onError: () => {
       pendingInterviewSubmissionRef.current = null;
+      setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
       setRecordNotice("AI応答の受信に失敗しました");
     }
@@ -447,12 +396,17 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
   async function handleSaveOverviewSummary() {
     if (!selectedKnowledgeDb || !selectedKnowledge) return;
-    await updateKnowledge(selectedKnowledge.id, {
-      summary: overviewSummaryDraft.trim() || null
-    });
-    await loadKnowledgeDbs();
-    await loadKnowledgeWorkspace(selectedKnowledge.id);
-    setRecordNotice("概要の記録要約を保存しました");
+    try {
+      await updateKnowledge(selectedKnowledge.id, {
+        summary: overviewSummaryDraft.trim() || null
+      });
+      await loadKnowledgeDbs();
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      setRecordNotice("概要の記録要約を保存しました");
+    } catch (error) {
+      console.error("Failed to save knowledge overview summary", error);
+      setRecordNotice("概要の記録要約を保存できませんでした");
+    }
   }
 
   function handleRevertOverviewSummary() {
@@ -545,15 +499,19 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
   function handleSaveInterviewDraft() {
     if (!selectedRecord?.id) return;
+    setRecordNotice("インタビュー状態は自動保存されています");
+  }
 
-    savePersistedInterviewState(selectedRecord.id, {
-      interviewMessages,
-      interviewStreamMetadata,
-      structuredDraft,
-      interviewAnswerOverrides,
-      deletedExtraQuestionIds,
-    });
-    setRecordNotice("インタビュー下書きを保存しました");
+  async function handleSaveInterviewAnswer(fieldId: string, answerSummary: string) {
+    if (!selectedRecord?.id) return;
+    try {
+      await updateInterviewAnswer(selectedRecord.id, fieldId, answerSummary);
+      await loadInterviewSnapshot(selectedRecord.id);
+      setRecordNotice("回答を保存しました");
+    } catch (error) {
+      console.error("Failed to save interview answer", error);
+      setRecordNotice("回答を保存できませんでした");
+    }
   }
 
   function handleDeleteInterviewAnswers() {
@@ -571,7 +529,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
     setChatInput("");
     setInterviewMessages([]);
+    setInterviewState(null);
     setInterviewStreamMetadata(null);
+    setStreamingInterviewReply("");
     setInterviewAnswerOverrides({});
     setDeletedExtraQuestionIds([]);
     pendingInterviewSubmissionRef.current = null;
@@ -579,39 +539,78 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setRecordNotice("チャットを削除しました");
   }
 
+  function handleStartInterview() {
+    if (!selectedRecord || isInterviewStreaming) return;
+    pendingInterviewSubmissionRef.current = null;
+    setStreamingInterviewReply("");
+    setInterviewStreamMetadata(null);
+    setIsInterviewStreaming(true);
+    setRecordNotice("");
+    interviewStream.start(selectedRecord.id);
+  }
+
   async function handleSendInterviewMessage(target?: InterviewAnswerTarget | null) {
     if (!selectedRecord || !chatInput.trim() || isInterviewStreaming) return;
     const content = chatInput.trim();
     pendingInterviewSubmissionRef.current = { content, target: target ?? null };
     setChatInput("");
+    setStreamingInterviewReply("");
     setInterviewStreamMetadata(null);
     setIsInterviewStreaming(true);
-    setInterviewMessages((messages) => [...messages, { role: "user", text: content }]);
     try {
-      await createRecordMessage(selectedRecord.id, content);
+      const response = await createRecordMessage(selectedRecord.id, {
+        content,
+        answerToQuestionId: target?.questionId ?? null,
+      });
+      const userMessage = response.recordMessage;
+      setInterviewMessages((messages) => [...messages, {
+        id: userMessage.id,
+        recordId: selectedRecord.id,
+        role: userMessage.role === "assistant" ? "assistant" : "user",
+        text: userMessage.content,
+        questionId: userMessage.questionId,
+        questionType: userMessage.questionType,
+        fieldId: userMessage.fieldId,
+        answerToQuestionId: userMessage.answerToQuestionId,
+        answerToFieldId: userMessage.answerToFieldId,
+      }]);
       interviewStream.start(selectedRecord.id);
     } catch (error) {
       console.error("Failed to send interview message", error);
       pendingInterviewSubmissionRef.current = null;
+      setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
       setRecordNotice("メッセージを送信できませんでした");
-      setInterviewMessages((messages) => {
-        const nextMessages = [...messages];
-        let index = -1;
-        for (let i = nextMessages.length - 1; i >= 0; i -= 1) {
-          const message = nextMessages[i];
-          if (message.role === "user" && message.text === content) {
-            index = i;
-            break;
-          }
-        }
-        if (index >= 0) {
-          nextMessages.splice(index, 1);
-        }
-        return nextMessages;
-      });
       setChatInput(content);
     }
+  }
+
+  function appendRealtimeVoiceInterviewMessage(message: ChatMessage) {
+    const scopedMessage = {
+      ...message,
+      recordId: message.recordId ?? selectedRecord?.id,
+    };
+    setInterviewMessages((messages) => {
+      const index = messages.findIndex((item) => isSameInterviewMessage(item, scopedMessage));
+      if (index === -1) {
+        return [...messages, scopedMessage];
+      }
+      const next = [...messages];
+      next[index] = {
+        ...next[index],
+        ...scopedMessage,
+      };
+      return next;
+    });
+  }
+
+  function refreshInterviewSnapshotForSelectedRecord() {
+    if (!selectedRecord?.id) {
+      return;
+    }
+    loadInterviewSnapshot(selectedRecord.id).catch(() => {
+      setRecordNotice("インタビュー状態の取得に失敗しました");
+    });
   }
 
   async function handleApproveOne(proposalId: string) {
@@ -713,7 +712,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   useEffect(() => {
     setChatInput("");
     setIsInterviewStreaming(false);
+    setStreamingInterviewReply("");
     if (!selectedRecord?.id) {
+      setInterviewState(null);
       setStructuredDraft({});
       setInterviewAnswerOverrides({});
       setDeletedExtraQuestionIds([]);
@@ -723,28 +724,17 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       return;
     }
 
-    const persistedState = loadPersistedInterviewState(selectedRecord.id);
-    setStructuredDraft(persistedState?.structuredDraft ?? {});
-    setInterviewAnswerOverrides(persistedState?.interviewAnswerOverrides ?? {});
-    setDeletedExtraQuestionIds(persistedState?.deletedExtraQuestionIds ?? []);
-    setInterviewMessages(persistedState?.interviewMessages ?? []);
-    setInterviewStreamMetadata(persistedState?.interviewStreamMetadata ?? null);
+    setInterviewState(null);
+    setStructuredDraft({});
+    setInterviewAnswerOverrides({});
+    setDeletedExtraQuestionIds([]);
+    setInterviewMessages([]);
+    setInterviewStreamMetadata(null);
     pendingInterviewSubmissionRef.current = null;
-  }, [selectedKnowledge?.id, selectedRecord?.id]);
-
-  useEffect(() => {
-    if (!selectedRecord?.id) {
-      return;
-    }
-
-    savePersistedInterviewState(selectedRecord.id, {
-      interviewMessages,
-      interviewStreamMetadata,
-      structuredDraft,
-      interviewAnswerOverrides,
-      deletedExtraQuestionIds,
+    loadInterviewSnapshot(selectedRecord.id).catch(() => {
+      setRecordNotice("インタビュー状態の取得に失敗しました");
     });
-  }, [deletedExtraQuestionIds, interviewAnswerOverrides, interviewMessages, interviewStreamMetadata, selectedRecord?.id, structuredDraft]);
+  }, [selectedKnowledge?.id, selectedRecord?.id]);
 
   useEffect(() => {
     setDocumentReadStates((current) => ({
@@ -807,7 +797,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     chatInput,
     setChatInput,
     interviewMessages,
+    interviewState,
     interviewStreamMetadata,
+    streamingInterviewReply,
     isInterviewStreaming,
     structuredDraft,
     setStructuredDraft,
@@ -838,9 +830,13 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onDeleteRecord: handleDeleteRecord,
     onBulkApproveRecords: handleBulkApproveRecords,
     onSaveInterviewDraft: handleSaveInterviewDraft,
+    onSaveInterviewAnswer: handleSaveInterviewAnswer,
     onDeleteInterviewAnswers: handleDeleteInterviewAnswers,
     onDeleteInterviewChat: handleDeleteInterviewChat,
+    onStartInterview: handleStartInterview,
     onSendInterviewMessage: handleSendInterviewMessage,
+    onAppendInterviewMessage: appendRealtimeVoiceInterviewMessage,
+    onRefreshInterviewSnapshot: refreshInterviewSnapshotForSelectedRecord,
     onGenerateRecordSummary: handleGenerateRecordSummary,
     onSaveRecordSummary: handleSaveRecordSummary,
     onRevertRecordSummary: handleRevertRecordSummary,
@@ -876,4 +872,62 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     isCreatingKnowledgeDb,
     createKnowledgeDbDialogProps
   };
+}
+
+function isSameInterviewMessage(current: ChatMessage, incoming: ChatMessage) {
+  const currentRecordId = current.recordId ?? null;
+  const incomingRecordId = incoming.recordId ?? null;
+  if (currentRecordId !== incomingRecordId) {
+    return false;
+  }
+  if (normalizeInterviewMessageRole(current.role) !== normalizeInterviewMessageRole(incoming.role)) {
+    return false;
+  }
+  if (
+    normalizeInterviewMessageRole(current.role) === "assistant"
+    && normalizeInterviewMessageRole(incoming.role) === "assistant"
+    && current.voiceResponseId
+    && incoming.voiceResponseId
+  ) {
+    return current.voiceResponseId === incoming.voiceResponseId
+      && (current.voiceSessionId ?? incoming.voiceSessionId ?? null) === (incoming.voiceSessionId ?? current.voiceSessionId ?? null);
+  }
+  if (
+    normalizeInterviewMessageRole(current.role) === "user"
+    && normalizeInterviewMessageRole(incoming.role) === "user"
+  ) {
+    const sameVoiceSession =
+      (current.voiceSessionId ?? incoming.voiceSessionId ?? null) ===
+      (incoming.voiceSessionId ?? current.voiceSessionId ?? null);
+    if (current.voiceTurnId && incoming.voiceTurnId) {
+      return current.voiceTurnId === incoming.voiceTurnId && sameVoiceSession;
+    }
+    return Boolean(
+      sameVoiceSession
+      && current.text === incoming.text
+      && (current.answerToQuestionId ?? current.questionId ?? null) ===
+        (incoming.answerToQuestionId ?? incoming.questionId ?? null),
+    );
+  }
+  return Boolean(current.id && incoming.id && current.id === incoming.id);
+}
+
+function normalizeInterviewMessageRole(role: ChatMessage["role"]): "user" | "assistant" {
+  return role === "user" ? "user" : "assistant";
+}
+
+function mergeVoiceMessages(current: ChatMessage[], incoming: ChatMessage[]) {
+  const merged: ChatMessage[] = [];
+  for (const message of [...current, ...incoming]) {
+    const index = merged.findIndex((item) => isSameInterviewMessage(item, message));
+    if (index === -1) {
+      merged.push(message);
+      continue;
+    }
+    merged[index] = {
+      ...merged[index],
+      ...message,
+    };
+  }
+  return merged;
 }

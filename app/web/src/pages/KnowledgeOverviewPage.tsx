@@ -9,6 +9,7 @@ export function KnowledgeOverviewPage({
   overviewSummaryDraft,
   setOverviewSummaryDraft,
   isGeneratingOverviewSummary,
+  recordNotice,
   navigate,
   onGenerateOverviewSummary,
   onSaveOverviewSummary,
@@ -72,6 +73,7 @@ export function KnowledgeOverviewPage({
             <button type="button" className="ghost compact" onClick={onRevertOverviewSummary}>元に戻す</button>
           </div>
         </label>
+        {recordNotice ? <p className="notice">{recordNotice}</p> : null}
         <div className="summary-list">
           {records.length === 0 ? (
             <p className="empty compact-empty">記録がまだありません。</p>

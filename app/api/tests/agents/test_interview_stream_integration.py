@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from ai_interviewer_api.agents.interview.adapter import AdaptedInterviewTurnResult
 from ai_interviewer_api.auth.deps import DEV_TOKENS
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers import records as records_router
@@ -25,8 +23,6 @@ def _seed_stream_context() -> tuple[dict, object]:
         "tenantId": user.tenant_id,
         "name": "保全ノウハウ",
         "description": "圧入工程のインタビュー",
-        "targetBusiness": "保全",
-        "targetEquipment": "圧入機A",
         "systemPrompt": "停止判断を優先して確認してください。",
     }
     record = {
@@ -35,25 +31,8 @@ def _seed_stream_context() -> tuple[dict, object]:
         "knowledgeId": "knowledge-1",
         "knowledgeName": "保全ノウハウ",
         "title": "圧入機A 朝一の荷重ばらつき",
-        "targetEquipment": "圧入機A",
     }
-    messages = [
-        {
-            "id": "msg-1",
-            "tenantId": user.tenant_id,
-            "recordId": "record-1",
-            "role": "assistant",
-            "content": "どの現象から始まりましたか。",
-        },
-        {
-            "id": "msg-2",
-            "tenantId": user.tenant_id,
-            "recordId": "record-1",
-            "role": "user",
-            "content": "朝一だけ圧入荷重が不安定です。",
-        },
-    ]
-    field = {
+    field_1 = {
         "id": "field-1",
         "tenantId": user.tenant_id,
         "knowledgeId": "knowledge-1",
@@ -65,34 +44,23 @@ def _seed_stream_context() -> tuple[dict, object]:
         "displayOrder": 1,
         "aiQuestionExamples": ["どのような現象が起きていますか。"],
     }
-
-    store.upsert("knowledges", knowledge)
-    store.upsert("records", record)
-    for message in messages:
-        store.upsert("messages", message)
-    store.upsert("knowledge_fields", field)
-    return record, user
-
-
-def _seed_greeting_context() -> tuple[dict, object]:
-    user = DEV_TOKENS["dev-manager"]
-    knowledge = {
-        "id": "knowledge-greeting",
+    field_2 = {
+        "id": "field-2",
         "tenantId": user.tenant_id,
-        "name": "汎用ヒアリング",
-        "description": "挨拶のみの確認",
-        "systemPrompt": "",
-    }
-    record = {
-        "id": "record-greeting",
-        "tenantId": user.tenant_id,
-        "knowledgeId": "knowledge-greeting",
-        "knowledgeName": "汎用ヒアリング",
-        "title": "挨拶確認",
+        "knowledgeId": "knowledge-1",
+        "name": "原因",
+        "description": "疑った原因",
+        "inputType": "long_text",
+        "required": True,
+        "askByAi": True,
+        "displayOrder": 2,
+        "aiQuestionExamples": ["最初に何を原因候補として疑いましたか。"],
     }
 
     store.upsert("knowledges", knowledge)
     store.upsert("records", record)
+    store.upsert("knowledge_fields", field_1)
+    store.upsert("knowledge_fields", field_2)
     return record, user
 
 
@@ -103,99 +71,212 @@ async def _no_sleep(_: float) -> None:
 async def _collect_stream_text(response) -> str:
     chunks: list[str] = []
     async for chunk in response.body_iterator:
-        if isinstance(chunk, bytes):
-            chunks.append(chunk.decode("utf-8"))
-        else:
-            chunks.append(chunk)
+        chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
     return "".join(chunks)
 
 
-def test_generate_interview_reply_uses_strands_adapter_and_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generate_interview_reply_first_turn_adds_configured_question_metadata() -> None:
     record, user = _seed_stream_context()
-    captured: dict[str, Any] = {}
-
-    def fake_run_adapted_interview_turn(record_data, knowledge_data, messages, knowledge_fields, **kwargs):
-        captured["record_id"] = record_data["id"]
-        captured["knowledge_id"] = knowledge_data["id"]
-        captured["messages"] = [message["content"] for message in messages]
-        captured["knowledge_fields"] = [field["name"] for field in knowledge_fields]
-        return AdaptedInterviewTurnResult(
-            reply_text="strands intro\nstrands question",
-            reply_chunks=["strands intro", "strands question"],
-            next_questions=["朝一のどのタイミングで発生しますか。"],
-            draft_updates={"symptom": "朝一の荷重ばらつき"},
-            used_tools=["search_existing_fields"],
-            answer_status="answered",
-            reask_question=None,
-        )
-
-    monkeypatch.setattr(ai_interview, "run_adapted_interview_turn", fake_run_adapted_interview_turn)
 
     result = ai_interview.generate_interview_reply(record, user)
 
-    assert captured == {
-        "record_id": "record-1",
-        "knowledge_id": "knowledge-1",
-        "messages": ["どの現象から始まりましたか。", "朝一だけ圧入荷重が不安定です。"],
-        "knowledge_fields": ["現象"],
-    }
-    assert result.reply_chunks == ["strands intro", "strands question"]
-    assert result.metadata == {
-        "answer_status": "answered",
-        "reask_question": None,
-        "next_questions": ["朝一のどのタイミングで発生しますか。"],
-        "draft_updates": {"symptom": "朝一の荷重ばらつき"},
-        "used_tools": ["search_existing_fields"],
-    }
+    assert result.metadata is not None
+    assert result.metadata["action"] == "ask_configured_field"
+    assert result.metadata["question"]["questionType"] == "configured_field"
+    assert result.metadata["question"]["fieldId"] == "field-1"
+    assert result.metadata["interviewState"]["currentFieldId"] == "field-1"
+    assert result.metadata["assistantMessage"]["questionId"] == result.metadata["question"]["questionId"]
+    saved_messages = list(store.tables["messages"].values())
+    assert any(message.get("questionType") == "configured_field" for message in saved_messages)
+
+
+def test_retrieval_never_still_evaluates_and_requires_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    record, user = _seed_stream_context()
+    field = store.get("knowledge_fields", "field-1")
+    field["retrievalPolicy"] = "never"
+    store.upsert("knowledge_fields", field)
+    first = ai_interview.generate_interview_reply(record, user)
+    question_id = first.metadata["question"]["questionId"]
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-user-1",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "圧入機Bです。違う、圧入機Aです。",
+            "answerToQuestionId": question_id,
+            "answerToFieldId": "field-1",
+        },
+    )
+    calls: list[str] = []
+
+    def fake_run_adapted_interview_turn(*args: Any, **kwargs: Any):
+        calls.append("evaluated")
+        return ai_interview.AdaptedInterviewTurnResult(
+            reply_text="",
+            field_evaluation={
+                "fieldId": "field-1",
+                "decision": "CONFIRMABLE",
+                "isComplete": True,
+                "isRelevant": True,
+                "isSufficient": True,
+                "answerSummary": "圧入機A",
+                "missingInformation": [],
+                "nextAction": "next_field",
+            },
+            follow_up_question=None,
+            used_tools=[],
+        )
+
+    monkeypatch.setattr(ai_interview, "run_adapted_interview_turn", fake_run_adapted_interview_turn)
+    evaluated = ai_interview.generate_interview_reply(record, user)
+    state = evaluated.metadata["interviewState"]
+    field_state = state["fieldStates"]["field-1"]
+
+    assert calls == ["evaluated"]
+    assert evaluated.metadata["retrievalPolicy"] == "never"
+    assert field_state["answerState"] == "AWAITING_CONFIRMATION"
+    assert field_state["candidateAnswer"] == "圧入機A"
+    assert field_state["answerSummary"] is None
+    assert state["completedFieldIds"] == []
+
+    confirmation_question_id = evaluated.metadata["question"]["questionId"]
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-user-2",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "はい、そうです",
+            "answerToQuestionId": confirmation_question_id,
+            "answerToFieldId": "field-1",
+        },
+    )
+    confirmed = ai_interview.generate_interview_reply(record, user)
+    confirmed_state = confirmed.metadata["interviewState"]
+
+    assert confirmed_state["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
+    assert confirmed_state["fieldStates"]["field-1"]["answerSummary"] == "圧入機A"
+    assert confirmed_state["completedFieldIds"] == ["field-1"]
+    assert confirmed.metadata["question"]["fieldId"] == "field-2"
 
 
 @pytest.mark.anyio
-async def test_stream_record_uses_strands_path_and_propagates_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_stream_record_uses_metadata_from_saved_question(monkeypatch: pytest.MonkeyPatch) -> None:
     record, user = _seed_stream_context()
-
     monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
-    monkeypatch.setattr(
-        ai_interview,
-        "settings",
-        SimpleNamespace(strands_interview_agent_enabled=False, bedrock_enabled=False),
-    )
-    monkeypatch.setattr(
-        ai_interview,
-        "run_adapted_interview_turn",
-        lambda *args, **kwargs: AdaptedInterviewTurnResult(
-            reply_text="strands intro\nstrands question",
-            reply_chunks=["strands intro", "strands question"],
-            next_questions=["朝一のどのタイミングで発生しますか。"],
-            draft_updates={"symptom": "朝一の荷重ばらつき"},
-            used_tools=["search_existing_fields"],
-            answer_status="answered",
-            reask_question=None,
-        ),
-    )
 
     response = await records_router.stream_record(record["id"], user)
     body = await _collect_stream_text(response)
 
-    assert body.count("event: delta") == 2
-    assert 'data: {"text": "strands intro"}' in body
-    assert 'data: {"text": "strands question"}' in body
-    assert (
-        'event: stream_end\ndata: {"metadata": {"answer_status": "answered", "reask_question": null, '
-        '"next_questions": ["朝一のどのタイミングで発生しますか。"], '
-        '"draft_updates": {"symptom": "朝一の荷重ばらつき"}, "used_tools": ["search_existing_fields"]}}'
-    ) in body
-    assert body.count("event: stream_start") == 1
-    assert body.count("event: stream_end") == 1
+    assert "event: delta" in body
+    assert '"action": "ask_configured_field"' in body
+    assert '"questionType": "configured_field"' in body
+    assert '"fieldId": "field-1"' in body
+
+
+@pytest.mark.anyio
+async def test_stream_record_follow_up_is_saved_as_follow_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    record, user = _seed_stream_context()
+    first = ai_interview.generate_interview_reply(record, user)
+    question_id = first.metadata["question"]["questionId"]
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-user-1",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "朝一だけ荷重が不安定です。",
+            "answerToQuestionId": question_id,
+            "answerToFieldId": "field-1",
+        },
+    )
+
+    monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
+
+    def fake_run_adapted_interview_turn(*args: Any, **kwargs: Any):
+        return ai_interview.AdaptedInterviewTurnResult(
+            reply_text="確認します。",
+            field_evaluation={
+                "fieldId": "field-1",
+                "isComplete": False,
+                "answerSummary": "朝一だけ荷重が不安定。",
+                "missingInformation": ["発生タイミング"],
+                "nextAction": "follow_up",
+            },
+            follow_up_question="朝一のどのタイミングで発生しますか。",
+            used_tools=["search_existing_fields"],
+        )
+
+    monkeypatch.setattr(ai_interview, "run_adapted_interview_turn", fake_run_adapted_interview_turn)
+    response = await records_router.stream_record(record["id"], user)
+    body = await _collect_stream_text(response)
+
+    assert '"action": "ask_follow_up"' in body
+    assert '"questionType": "follow_up"' in body
+    assert '"fieldId": "field-1"' in body
+    saved_messages = list(store.tables["messages"].values())
+    assert any(message.get("questionType") == "follow_up" for message in saved_messages)
+
+
+@pytest.mark.anyio
+async def test_stream_record_completed_state_returns_finish_without_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    record, user = _seed_stream_context()
+    state = {
+        "id": f"interview-state-{record['id']}",
+        "tenantId": user.tenant_id,
+        "recordId": record["id"],
+        "status": "completed",
+        "currentFieldId": None,
+        "currentQuestionId": None,
+        "completedFieldIds": ["field-1", "field-2"],
+        "pendingFieldIds": [],
+        "askedQuestions": [],
+        "followUpCounts": {"field-1": 1, "field-2": 0},
+        "fieldStates": {
+            "field-1": {
+                "fieldId": "field-1",
+                "status": "completed",
+                "answerState": "CONFIRMED",
+                "answerSummary": "荷重が不安定。",
+                "missingInformation": [],
+            },
+            "field-2": {
+                "fieldId": "field-2",
+                "status": "completed",
+                "answerState": "CONFIRMED",
+                "answerSummary": "接点不良を疑った。",
+                "missingInformation": [],
+            },
+        },
+        "lastProcessedUserMessageId": "msg-user-1",
+        "createdByUserId": user.user_id,
+        "updatedByUserId": user.user_id,
+        "createdAt": "2026-01-01T00:00:00+00:00",
+        "updatedAt": "2026-01-01T00:00:00+00:00",
+    }
+    store.upsert("interview_states", state)
+    monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
+
+    response = await records_router.stream_record(record["id"], user)
+    body = await _collect_stream_text(response)
+
+    assert '"status": "completed"' in body
+    assert '"action": "finish"' in body
+    assert '"question": null' in body
+    assert "ご協力ありがとうございました" in body
 
 
 @pytest.mark.anyio
 async def test_stream_record_returns_safe_error_when_strands_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     record, user = _seed_stream_context()
-
     monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
     monkeypatch.setattr(
         ai_interview,
-        "run_adapted_interview_turn",
+        "_generate_interview_stream_result_with_strands",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("strands failure")),
     )
 
@@ -203,109 +284,22 @@ async def test_stream_record_returns_safe_error_when_strands_raises(monkeypatch:
     body = await _collect_stream_text(response)
 
     assert "一時的にAI応答を生成できませんでした。少し時間をおいて再度送信してください。" in body
-    assert 'event: stream_end\ndata: {"metadata": {"error": "strands_interview_failed"}}' in body
-    assert "legacy" not in body
+    assert '"error": "strands_interview_failed"' in body
 
 
 @pytest.mark.anyio
-async def test_stream_record_logs_strands_usage_without_prompt_or_message_body(
+async def test_stream_record_logs_without_prompt_or_message_body(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    record, _user = _seed_stream_context()
-
+    record, user = _seed_stream_context()
     monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
-    monkeypatch.setattr(
-        ai_interview,
-        "run_adapted_interview_turn",
-        lambda *args, **kwargs: AdaptedInterviewTurnResult(
-            reply_text="strands only",
-            reply_chunks=["strands only"],
-            next_questions=[],
-            draft_updates={},
-            used_tools=[],
-            answer_status="answered",
-            reask_question=None,
-        ),
-    )
-
     caplog.set_level(logging.INFO)
 
-    response = await records_router.stream_record(record["id"], DEV_TOKENS["dev-manager"])
+    response = await records_router.stream_record(record["id"], user)
     _ = await _collect_stream_text(response)
 
     log_text = caplog.text
     assert "Using Strands interview agent record_id=record-1 knowledge_id=knowledge-1" in log_text
-    assert "朝一だけ圧入荷重が不安定です。" not in log_text
+    assert "どのような現象が起きていますか。" not in log_text
     assert "停止判断を優先して確認してください。" not in log_text
-    assert "knowledge_context:" not in log_text
-
-
-@pytest.mark.anyio
-async def test_stream_record_does_not_save_proposals_or_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    record, user = _seed_stream_context()
-    before_proposals = dict(store.tables["proposals"])
-    before_fields = dict(store.tables["knowledge_fields"])
-    before_messages = dict(store.tables["messages"])
-
-    monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
-    monkeypatch.setattr(
-        ai_interview,
-        "run_adapted_interview_turn",
-        lambda *args, **kwargs: AdaptedInterviewTurnResult(
-            reply_text="strands only",
-            reply_chunks=["strands only"],
-            next_questions=["次の確認ポイントは何ですか。"],
-            draft_updates={"action": "接点確認"},
-            used_tools=[],
-            answer_status="answered",
-            reask_question=None,
-        ),
-    )
-
-    response = await records_router.stream_record(record["id"], user)
-    _ = await _collect_stream_text(response)
-
-    assert store.tables["proposals"] == before_proposals
-    assert store.tables["knowledge_fields"] == before_fields
-    assert store.tables["messages"] == before_messages
-    assert store.tables["records"][record["id"]]["title"] == "圧入機A 朝一の荷重ばらつき"
-    assert store.tables["records"][record["id"]].get("summary") is None
-
-
-def test_generate_interview_reply_does_not_reference_legacy_prompt_helpers() -> None:
-    from ai_interviewer_api.services.prompts import loader as prompts_loader
-
-    assert not hasattr(ai_interview, "_generate_interview_reply_with_bedrock")
-    assert not hasattr(prompts_loader, "get_interview_base_system_prompt")
-    assert not hasattr(prompts_loader, "build_interview_system_prompt")
-
-
-@pytest.mark.anyio
-async def test_stream_record_for_greeting_does_not_add_legacy_business_terms(monkeypatch: pytest.MonkeyPatch) -> None:
-    record, user = _seed_greeting_context()
-
-    monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
-    monkeypatch.setattr(
-        ai_interview,
-        "run_adapted_interview_turn",
-        lambda *args, **kwargs: AdaptedInterviewTurnResult(
-            reply_text="こんにちは。まず状況を確認します。",
-            reply_chunks=["こんにちは。まず状況を確認します。"],
-            next_questions=[],
-            draft_updates={},
-            used_tools=[],
-            answer_status="answered",
-            reask_question=None,
-        ),
-    )
-
-    response = await records_router.stream_record(record["id"], user)
-    body = await _collect_stream_text(response)
-
-    assert "こんにちは。まず状況を確認します。" in body
-    assert "対象業務" not in body
-    assert "対象設備" not in body
-    assert "設備" not in body
-    assert "保全" not in body
-    assert "製造" not in body

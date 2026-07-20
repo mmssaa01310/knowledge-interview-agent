@@ -1,6 +1,7 @@
 import type { InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { ChatMessage, InterviewState } from "../types/app";
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+export const API_BASE_URL = "";
 
 type ApiRequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
@@ -82,6 +83,7 @@ export type KnowledgeField = {
   inputType: string;
   required: boolean;
   askByAi: boolean;
+  retrievalPolicy?: "never" | "auto" | "required";
   aiQuestionExamples?: string[];
   displayOrder: number;
 };
@@ -112,6 +114,26 @@ export type FieldSuggestionResponse = {
 export type FieldSuggestionChatMessage = {
   role: "user" | "ai" | "assistant";
   content: string;
+};
+
+export type InterviewStateResponse = {
+  status: "in_progress" | "completed";
+  interviewState: InterviewState;
+  messages: Array<{
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    questionId?: string;
+    questionType?: "configured_field" | "follow_up";
+    fieldId?: string | null;
+    answerToQuestionId?: string;
+    answerToFieldId?: string | null;
+    voiceSessionId?: string | null;
+    voiceTurnId?: string | null;
+    voiceResponseId?: string | null;
+    isActualUtterance?: boolean;
+  }>;
+  structuredDraft: Record<string, string>;
 };
 
 export async function fetchMe() {
@@ -251,11 +273,31 @@ export async function fetchProposals(recordId: string) {
   return apiRequest<AiProposal[]>(`/api/records/${recordId}/proposals`);
 }
 
-export async function createRecordMessage(recordId: string, content: string) {
-  return apiRequest<{ message: string; proposalId: string }>(`/api/records/${recordId}/messages`, {
+export async function createRecordMessage(
+  recordId: string,
+  payload: { content: string; answerToQuestionId?: string | null }
+) {
+  return apiRequest<{
+    message: string;
+    proposalId: string;
+    recordMessage: {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      questionId?: string;
+      questionType?: "configured_field" | "follow_up";
+      fieldId?: string | null;
+      answerToQuestionId?: string;
+      answerToFieldId?: string | null;
+    };
+  }>(`/api/records/${recordId}/messages`, {
     method: "POST",
-    body: { content }
+    body: payload
   });
+}
+
+export async function fetchInterviewState(recordId: string) {
+  return apiRequest<InterviewStateResponse>(`/api/records/${recordId}/interview-state`);
 }
 
 export async function answerChat(
@@ -314,6 +356,18 @@ export async function updateRecord(recordId: string, payload: Partial<InterviewR
   return apiRequest<InterviewRecord>(`/api/records/${recordId}`, {
     method: "PATCH",
     body: payload
+  });
+}
+
+export async function updateInterviewAnswer(recordId: string, fieldId: string, answerSummary: string) {
+  return apiRequest<{
+    recordId: string;
+    fieldId: string;
+    answerState: "CONFIRMED";
+    answerSummary: string;
+  }>(`/api/records/${recordId}/interview-answers/${fieldId}`, {
+    method: "PATCH",
+    body: { answerSummary }
   });
 }
 
@@ -383,4 +437,12 @@ export async function createDemoDataset() {
   });
 
   return knowledgeDb;
+}
+
+export async function resetDevVoiceDemo() {
+  return apiRequest<{
+    knowledgeDbId: string;
+    knowledgeId: string;
+    recordId: string;
+  }>("/api/dev/voice-demo/reset", { method: "POST" });
 }

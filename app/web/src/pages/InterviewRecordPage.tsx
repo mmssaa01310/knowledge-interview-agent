@@ -1,191 +1,117 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  getInterviewAnswerStatusLabel,
+  getInterviewDisplayAnswer,
+} from "../features/interviews/answerVisibility.js";
+import { VoiceConversationButton } from "../features/realtime-voice/components/VoiceConversationButton";
+import { VoiceConversationStatus } from "../features/realtime-voice/components/VoiceConversationStatus";
+import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
+import { resetDevVoiceDemo } from "../lib/api";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
-type InterviewSidebarTab = "configured" | "extra";
-
-type ConversationQuestionAnswer = {
-  question: string;
-  answer?: string;
-};
+const DEV_VOICE_DEMO_RECORD_ID = "dev-voice-demo-record";
 
 type InterviewSidebarItem = {
   id: string;
-  answerKey: string;
+  fieldId: string | null;
+  questionId: string | null;
   label: string;
   question: string;
   answer?: string;
   status: "answered" | "active" | "pending";
-  source: "field" | "dynamic";
 };
 
-function normalizeQuestionText(value: string) {
-  return value.replace(/\s+/g, "").toLowerCase();
+function toSpokenQuestionFromLabel(label: string) {
+  const text = label.trim();
+  if (!text) {
+    return "この項目について教えてください。";
+  }
+  if (/[?？]$/.test(text) || /(ですか|ますか|でしょうか|教えてください)$/.test(text)) {
+    return text;
+  }
+  return `${text}について教えてください。`;
 }
 
 function buildFieldQuestion(field: KnowledgeLayoutProps["sortedFields"][number]) {
-  return field.aiQuestionExamples?.find((example) => example.trim())
-    ?? field.description?.trim()
-    ?? field.name;
-}
-
-function isLikelyQuestionSentence(value: string) {
-  const text = value.trim();
-  if (!text) {
-    return false;
-  }
-
-  if (/[?？]$/.test(text)) {
-    return true;
-  }
-
-  return /(ですか。?|ますか。?|でしょうか。?|でしたか。?|ありませんか。?|教えてください。?|どこ|いつ|なに|何|どの|どう|なぜ|誰)/.test(text);
-}
-
-function extractQuestionFromAiMessage(value: string) {
-  const segments = value
-    .split(/\r?\n|(?<=[。!?？])/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
-
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    const segment = segments[index];
-    if (isLikelyQuestionSentence(segment)) {
-      return segment;
-    }
-  }
-
-  return "";
-}
-
-function buildConversationQuestionAnswers(messages: KnowledgeLayoutProps["interviewMessages"]) {
-  const pairs: ConversationQuestionAnswer[] = [];
-  let currentQuestion = "";
-  let answerParts: string[] = [];
-
-  function flushCurrent() {
-    const question = currentQuestion.trim();
-    if (!question) return;
-    const answer = answerParts
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .join("\n");
-    pairs.push({
-      question,
-      answer: answer || undefined,
-    });
-  }
-
-  for (const message of messages) {
-    if (message.role === "ai") {
-      flushCurrent();
-      currentQuestion = extractQuestionFromAiMessage(message.text);
-      answerParts = [];
-      continue;
-    }
-
-    if (currentQuestion.trim()) {
-      answerParts.push(message.text);
-    }
-  }
-
-  flushCurrent();
-  return pairs;
-}
-
-function findConversationMatchIndex(
-  field: KnowledgeLayoutProps["sortedFields"][number],
-  conversationItems: ConversationQuestionAnswer[],
-  consumedIndexes: Set<number>
-) {
-  const fieldSignals = [
-    field.name,
-    field.description ?? "",
-    ...field.aiQuestionExamples ?? [],
-  ]
-    .map((value) => normalizeQuestionText(value))
-    .filter(Boolean);
-
-  const matchedIndex = conversationItems.findIndex((item, index) => {
-    if (consumedIndexes.has(index)) return false;
-    const question = normalizeQuestionText(item.question);
-    return fieldSignals.some((signal) => signal.includes(question) || question.includes(signal));
-  });
-
-  if (matchedIndex >= 0) {
-    return matchedIndex;
-  }
-
-  return conversationItems.findIndex((item, index) => !consumedIndexes.has(index) && Boolean(item.answer));
+  return field.aiQuestionExamples?.find((example) => example.trim()) ?? toSpokenQuestionFromLabel(field.name);
 }
 
 export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const chatLogRef = useRef<HTMLDivElement | null>(null);
-  const [activeSidebarTab, setActiveSidebarTab] = useState<InterviewSidebarTab>("configured");
-  const conversationItems = buildConversationQuestionAnswers(props.interviewMessages);
-  const consumedConversationIndexes = new Set<number>();
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [isResettingDemo, setIsResettingDemo] = useState(false);
+  const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
 
-  const configuredItems = props.sortedFields.map((field) => {
-    const matchIndex = findConversationMatchIndex(field, conversationItems, consumedConversationIndexes);
-    if (matchIndex >= 0) {
-      consumedConversationIndexes.add(matchIndex);
+  async function handleResetVoiceDemo() {
+    if (isResettingDemo || realtimeVoice.isActive) return;
+    setIsResettingDemo(true);
+    try {
+      await resetDevVoiceDemo();
+      window.location.reload();
+    } finally {
+      setIsResettingDemo(false);
     }
+  }
 
-    const metadataAnswer = props.structuredDraft[field.name]?.trim();
+  const assistantMessages = useMemo(
+    () => props.interviewMessages.filter((message) => message.role === "assistant" || message.role === "ai"),
+    [props.interviewMessages],
+  );
+  const configuredQuestionMessages = useMemo(
+    () => assistantMessages.filter((message) => message.questionType === "configured_field" && message.fieldId),
+    [assistantMessages],
+  );
 
-    return {
-      id: field.id ?? `field-${field.displayOrder}-${field.name}`,
-      answerKey: field.name,
-      label: field.name,
-      question: buildFieldQuestion(field),
-      answer: metadataAnswer,
-      source: "field" as const,
-    };
+  const configuredQuestionItems: InterviewSidebarItem[] = useMemo(
+    () => props.sortedFields.map((field) => {
+      const latestConfiguredQuestion = [...configuredQuestionMessages]
+        .reverse()
+        .find((message) => message.fieldId === field.id);
+      const fieldState = field.id ? props.interviewState?.fieldStates?.[field.id] : undefined;
+      const answer = getInterviewDisplayAnswer(
+        fieldState,
+        props.structuredDraft[field.name],
+      ) || undefined;
+      const status: InterviewSidebarItem["status"] = fieldState?.answerState === "CONFIRMED"
+        ? "answered"
+        : fieldState?.answerState === "AWAITING_CONFIRMATION" || fieldState?.answerState === "CANDIDATE_PENDING"
+          ? "active"
+          : "pending";
+      return {
+        id: field.id ?? `field-${field.displayOrder}-${field.name}`,
+        fieldId: field.id ?? null,
+        questionId: latestConfiguredQuestion?.questionId ?? null,
+        label: field.name,
+        question: latestConfiguredQuestion?.text ?? buildFieldQuestion(field),
+        answer,
+        status,
+      };
+    }),
+    [configuredQuestionMessages, props.interviewState, props.sortedFields, props.structuredDraft],
+  );
+  const hasVoiceQuestions = props.sortedFields.some((field) => field.askByAi);
+
+  const realtimeVoice = useRealtimeVoiceInterview({
+    recordId: props.selectedRecord?.id,
+    hasQuestions: hasVoiceQuestions,
+    remoteAudioRef,
+    onMessage: props.onAppendInterviewMessage,
+    onInterviewStateChanged: props.onRefreshInterviewSnapshot,
+    onCompleted: props.onRefreshInterviewSnapshot,
   });
-
-  const firstPendingConfiguredIndex = configuredItems.findIndex((item) => !item.answer);
-
-  const configuredQuestionItems: InterviewSidebarItem[] = configuredItems.map((item, index) => ({
-    ...item,
-    status: item.answer
-      ? "answered"
-      : firstPendingConfiguredIndex === index
-        ? "active"
-        : "pending",
-  }));
-
-  const extraConversationItems: InterviewSidebarItem[] = conversationItems
-    .map((item, index) => ({ item, index }))
-    .filter(({ index, item }) => !consumedConversationIndexes.has(index) && !props.deletedExtraQuestionIds.includes(`conversation-${index}`) && (item.question.trim() || item.answer?.trim()))
-    .map(({ item, index }) => ({
-      id: `conversation-${index}`,
-      answerKey: `conversation-${index}`,
-      label: "",
-      question: item.question,
-      answer: props.interviewAnswerOverrides[`conversation-${index}`],
-      status: props.interviewAnswerOverrides[`conversation-${index}`] ? "answered" : "active",
-      source: "dynamic" as const,
-    }));
 
   useEffect(() => {
     const container = chatLogRef.current;
     if (!container) {
       return;
     }
-
     container.scrollTop = container.scrollHeight;
-  }, [props.interviewMessages.length]);
-
-  useEffect(() => {
-    if (activeSidebarTab === "extra" && extraConversationItems.length === 0) {
-      setActiveSidebarTab("configured");
-    }
-  }, [activeSidebarTab, extraConversationItems.length]);
+  }, [props.interviewMessages.length, props.streamingInterviewReply]);
 
   function handleChatInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
       return;
     }
-
     event.preventDefault();
     handleSendInterviewMessage();
   }
@@ -197,54 +123,61 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     });
   }
 
-  function handleExtraAnswerChange(answerKey: string, value: string) {
-    props.setInterviewAnswerOverrides({
-      ...props.interviewAnswerOverrides,
-      [answerKey]: value,
-    });
-  }
-
   function handleConfiguredAnswerDelete(answerKey: string) {
-    if (!window.confirm("この質問の回答を削除しますか？")) {
+    if (!window.confirm("この項目メモを削除しますか？")) {
       return;
     }
-
     const nextDraft = { ...props.structuredDraft };
     delete nextDraft[answerKey];
     props.setStructuredDraft(nextDraft);
   }
 
-  function handleExtraQuestionDelete(answerKey: string) {
-    if (!window.confirm("この追加質問カードを削除しますか？")) {
-      return;
+  async function handleConfiguredAnswerSave(item: InterviewSidebarItem) {
+    if (!item.fieldId || !item.answer?.trim() || savingFieldId) return;
+    setSavingFieldId(item.fieldId);
+    try {
+      await props.onSaveInterviewAnswer(item.fieldId, item.answer.trim());
+    } finally {
+      setSavingFieldId(null);
     }
-
-    const nextOverrides = { ...props.interviewAnswerOverrides };
-    delete nextOverrides[answerKey];
-    props.setInterviewAnswerOverrides(nextOverrides);
-    props.setDeletedExtraQuestionIds([...props.deletedExtraQuestionIds, answerKey]);
   }
 
   function resolveInterviewAnswerTarget() {
-    if (activeSidebarTab === "extra" && extraConversationItems.length > 0) {
-      const extraTarget = extraConversationItems.find((item) => item.status === "active")
-        ?? extraConversationItems[extraConversationItems.length - 1];
-      return extraTarget ? { scope: "extra" as const, answerKey: extraTarget.answerKey } : null;
+    const currentQuestionId = props.interviewState?.currentQuestionId;
+    if (!currentQuestionId) {
+      return null;
     }
-
-    const configuredTarget = configuredQuestionItems.find((item) => item.status === "active")
-      ?? configuredQuestionItems.find((item) => item.status === "pending")
-      ?? configuredQuestionItems[configuredQuestionItems.length - 1];
-    return configuredTarget ? { scope: "configured" as const, answerKey: configuredTarget.answerKey } : null;
+    const currentQuestion = props.interviewState?.askedQuestions.find(
+      (question) => question.questionId === currentQuestionId,
+    );
+    return currentQuestion
+      ? {
+          questionId: currentQuestion.questionId,
+          questionType: currentQuestion.questionType,
+          fieldId: currentQuestion.fieldId,
+        }
+      : null;
   }
 
   function handleSendInterviewMessage() {
-    if (!props.chatInput.trim() || props.isInterviewStreaming) {
+    if (
+      !props.chatInput.trim()
+      || props.isInterviewStreaming
+      || props.interviewState?.status === "completed"
+      || realtimeVoice.isActive
+    ) {
       return;
     }
-
     props.onSendInterviewMessage(resolveInterviewAnswerTarget());
   }
+
+  const canStartInterview = Boolean(props.selectedRecord)
+    && !props.isInterviewStreaming
+    && !realtimeVoice.isActive
+    && props.interviewMessages.length === 0
+    && props.interviewState?.status !== "completed";
+  const isCompleted = props.interviewState?.status === "completed";
+  const isTextInputDisabled = isCompleted || realtimeVoice.isActive;
 
   return (
     <section className="panel interview-page">
@@ -253,42 +186,29 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           <h2>AIインタビュー</h2>
           <p className="lede">{props.selectedRecord?.title ?? "記録"}</p>
         </div>
+        {props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID ? (
+          <button
+            type="button"
+            className="ghost compact"
+            onClick={handleResetVoiceDemo}
+            disabled={isResettingDemo || realtimeVoice.isActive}
+          >
+            {isResettingDemo ? "リセット中" : "テスト状態をリセット"}
+          </button>
+        ) : null}
       </div>
 
       <div className="interview-shell">
         <aside className="interview-sidebar">
           <div className="interview-sidebar-header">
             <strong>質問リスト</strong>
+            <span>{configuredQuestionItems.length}</span>
           </div>
-          <div className="interview-sidebar-tabs" role="tablist" aria-label="質問一覧の切り替え">
-            <button
-              type="button"
-              className={`interview-sidebar-tab ${activeSidebarTab === "configured" ? "active" : ""}`}
-              onClick={() => setActiveSidebarTab("configured")}
-            >
-              項目の質問
-              <span>{configuredQuestionItems.length}</span>
-            </button>
-            <button
-              type="button"
-              className={`interview-sidebar-tab ${activeSidebarTab === "extra" ? "active" : ""}`}
-              onClick={() => setActiveSidebarTab("extra")}
-              disabled={extraConversationItems.length === 0}
-            >
-              追加質問
-              <span>{extraConversationItems.length}</span>
-            </button>
-          </div>
-
-          {activeSidebarTab === "configured" ? (
-            configuredQuestionItems.length ? (
+          {configuredQuestionItems.length ? (
               <div className="interview-question-list">
                 {configuredQuestionItems.map((item) => {
-                  const statusLabel = item.status === "answered"
-                    ? "回答済み"
-                    : item.status === "active"
-                      ? "確認中"
-                      : "未回答";
+                  const fieldState = item.fieldId ? props.interviewState?.fieldStates?.[item.fieldId] : undefined;
+                  const statusLabel = getInterviewAnswerStatusLabel(fieldState);
 
                   return (
                     <div key={item.id} className={`interview-question-item ${item.status}`}>
@@ -296,7 +216,17 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                         <strong>{item.label}</strong>
                         <div className="interview-question-actions">
                           <span className={`question-status ${item.status}`}>{statusLabel}</span>
-                          <button className="ghost compact" type="button" onClick={() => handleConfiguredAnswerDelete(item.answerKey)}>
+                          {fieldState?.answerState === "CONFIRMED" ? (
+                            <button
+                              className="ghost compact"
+                              type="button"
+                              onClick={() => void handleConfiguredAnswerSave(item)}
+                              disabled={!item.answer?.trim() || savingFieldId !== null}
+                            >
+                              {savingFieldId === item.fieldId ? "保存中" : "保存"}
+                            </button>
+                          ) : null}
+                          <button className="ghost compact" type="button" onClick={() => handleConfiguredAnswerDelete(item.label)}>
                             削除
                           </button>
                         </div>
@@ -307,7 +237,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                         <textarea
                           className="interview-answer-input"
                           value={item.answer ?? ""}
-                          onChange={(event) => handleConfiguredAnswerChange(item.answerKey, event.target.value)}
+                          onChange={(event) => handleConfiguredAnswerChange(item.label, event.target.value)}
                           placeholder="回答を入力"
                         />
                       </div>
@@ -317,53 +247,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               </div>
             ) : (
               <p className="empty">質問がありません</p>
-            )
-          ) : extraConversationItems.length ? (
-            <div className="interview-question-list extra-question-list">
-              {extraConversationItems.map((item) => (
-                <div key={item.id} className={`interview-question-item ${item.status} ${item.source}`}>
-                  <div className="interview-question-head">
-                    <div className="interview-question-actions">
-                      <span className={`question-status ${item.status}`}>{item.answer ? "回答済み" : "確認中"}</span>
-                      <button className="ghost compact" type="button" onClick={() => handleExtraQuestionDelete(item.answerKey)}>
-                        削除
-                      </button>
-                    </div>
-                  </div>
-                  <p className="interview-question-text">{item.question}</p>
-                  <div className="interview-answer-block">
-                    <span className="interview-answer-label">回答</span>
-                    <textarea
-                      className="interview-answer-input"
-                      value={item.answer ?? ""}
-                      onChange={(event) => handleExtraAnswerChange(item.answerKey, event.target.value)}
-                      placeholder="回答を入力"
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="empty">追加質問はまだありません</p>
           )}
-
-          {props.interviewStreamMetadata?.answer_status !== "not_answered" && props.interviewStreamMetadata?.next_questions?.length ? (
-            <div className="next-question-panel">
-              <strong>次に聞く候補</strong>
-              <div className="next-question-list">
-                {props.interviewStreamMetadata.next_questions.map((question, index) => (
-                  <button
-                    key={`${question}-${index}`}
-                    type="button"
-                    className="next-question-chip"
-                    onClick={() => props.setChatInput(question)}
-                  >
-                    {question}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
         </aside>
 
         <div className="interview-chat-panel">
@@ -371,28 +255,63 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             <div>
               <strong>チャット</strong>
             </div>
+            <button className="ghost compact" type="button" onClick={props.onStartInterview} disabled={!canStartInterview}>
+              インタビュー開始
+            </button>
           </div>
           <div ref={chatLogRef} className="chat-log">
             {props.interviewMessages.map((message, index) => (
-              <div key={index} className={`bubble ${message.role === "ai" ? "ai" : "user"}`}>
+              <div key={message.id ?? `${message.role}-${index}`} className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}`}>
                 <p>{message.text}</p>
               </div>
             ))}
+            {props.streamingInterviewReply ? (
+              <div className="bubble ai">
+                <p>{props.streamingInterviewReply}</p>
+              </div>
+            ) : null}
           </div>
+          {isCompleted ? (
+            <div className="interview-completed-banner">
+              <p>以上で、設定されているすべての質問項目へのインタビューが完了しました。ご協力ありがとうございました。</p>
+            </div>
+          ) : null}
           <div className="answer-composer">
+            <VoiceConversationStatus
+              status={realtimeVoice.status}
+              message={realtimeVoice.message}
+              partialTranscript={realtimeVoice.partialTranscript}
+            />
             <textarea
               value={props.chatInput}
               onChange={(event) => props.setChatInput(event.target.value)}
               onKeyDown={handleChatInputKeyDown}
-              placeholder="回答を入力"
+              placeholder={
+                isCompleted
+                  ? "インタビューは完了しています"
+                  : realtimeVoice.isActive
+                    ? "音声会話中はテキスト入力を利用できません"
+                    : "回答を入力"
+              }
+              disabled={isTextInputDisabled}
             />
+            <audio ref={remoteAudioRef} className="voice-remote-audio" autoPlay playsInline />
+            {realtimeVoice.requiresManualPlayback ? (
+              <button className="secondary" type="button" onClick={() => void realtimeVoice.playRemoteAudio()}>
+                音声を再生
+              </button>
+            ) : null}
             <div className="answer-composer-actions">
-              <button className="primary" onClick={handleSendInterviewMessage} disabled={props.isInterviewStreaming}>
-                {props.isInterviewStreaming ? "受信中..." : "送信"}
+              <button className="primary" onClick={handleSendInterviewMessage} disabled={props.isInterviewStreaming || isTextInputDisabled}>
+                {props.isInterviewStreaming ? "受信中..." : isCompleted ? "完了済み" : "送信"}
               </button>
               <div className="voice-controls">
-                <button className="ghost" type="button" disabled>音声開始（準備中）</button>
-                <button className="ghost" type="button" disabled>停止</button>
+                <VoiceConversationButton
+                  status={realtimeVoice.status}
+                  disabled={!props.selectedRecord || isCompleted || realtimeVoice.status === "completed"}
+                  onStart={() => void realtimeVoice.start()}
+                  onStop={() => void realtimeVoice.stop()}
+                />
               </div>
             </div>
             {props.recordNotice ? <p className="notice interview-inline-notice">{props.recordNotice}</p> : null}

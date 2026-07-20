@@ -39,6 +39,7 @@ from ai_interviewer_api.schemas.requests import (
 )
 from ai_interviewer_api.agents.question_design.agent import load_question_design_prompt
 from ai_interviewer_api.agents.question_design.schemas import QuestionDesignOutput, QuestionFieldSuggestion
+from ai_interviewer_api.agents.question_design.service import DEFAULT_CLARIFICATION
 from ai_interviewer_api.services.field_suggestions import suggest_fields_with_bedrock
 
 
@@ -230,7 +231,12 @@ def test_field_suggestion_effective_prompt_uses_field_design_prompt_only() -> No
 def test_field_suggestions_accept_context_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run_question_design(question_input, **kwargs):
         assert question_input.custom_prompt == "質問例は現場向けの口調にしてください。"
-        return QuestionDesignOutput(reply="こんにちは。どの場面の質問項目を作りたいですか？", suggestions=[])
+        return QuestionDesignOutput(
+            reply="こんにちは。どの場面の質問項目を作りたいですか？",
+            design_status="needs_info",
+            clarification_question="こんにちは。どの場面の質問項目を作りたいですか？",
+            suggestions=[],
+        )
 
     monkeypatch.setattr(
         "ai_interviewer_api.services.field_suggestions.run_question_design",
@@ -250,6 +256,7 @@ def test_field_suggestions_accept_context_system_prompt(monkeypatch: pytest.Monk
 
     assert result["bedrockInvoked"] is True
     assert result["fields"] == []
+    assert result["reply"] == DEFAULT_CLARIFICATION
 
 
 def test_field_suggestions_raise_504_when_bedrock_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -264,7 +271,7 @@ def test_field_suggestions_raise_504_when_bedrock_unreachable(monkeypatch: pytes
     with pytest.raises(HTTPException) as exc_info:
         suggest_fields_with_bedrock(
             FieldSuggestionRequest(
-                content="こんにちは！",
+                content="月次請求処理の質問項目を作って",
                 context={"name": "保全ノウハウ"},
             ),
             DEV_TOKENS["dev-manager"],
@@ -289,7 +296,7 @@ def test_field_suggestions_raise_503_for_bedrock_throttling(monkeypatch: pytest.
     with pytest.raises(HTTPException) as exc_info:
         suggest_fields_with_bedrock(
             FieldSuggestionRequest(
-                content="こんにちは！",
+                content="月次請求処理の質問項目を作って",
                 context={"name": "保全ノウハウ"},
             ),
             DEV_TOKENS["dev-manager"],
@@ -316,7 +323,7 @@ def test_field_suggestions_raise_502_for_non_transient_bedrock_client_error(
     with pytest.raises(HTTPException) as exc_info:
         suggest_fields_with_bedrock(
             FieldSuggestionRequest(
-                content="こんにちは！",
+                content="月次請求処理の質問項目を作って",
                 context={"name": "保全ノウハウ"},
             ),
             DEV_TOKENS["dev-manager"],
@@ -327,9 +334,17 @@ def test_field_suggestions_raise_502_for_non_transient_bedrock_client_error(
 
 
 def test_field_suggestions_invoke_bedrock_for_greeting_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner_called = False
+
     def fake_run_question_design(question_input, **kwargs):
-        assert question_input.user_instruction == "こんにちは！"
-        return QuestionDesignOutput(reply="こんにちは。どんな場面の質問を作りたいか、ざっくり教えてください。", suggestions=[])
+        nonlocal runner_called
+        runner_called = True
+        return QuestionDesignOutput(
+            reply="まずテーマや目的を確認します。",
+            design_status="needs_info",
+            clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+            suggestions=[],
+        )
 
     monkeypatch.setattr(
         "ai_interviewer_api.services.field_suggestions.run_question_design",
@@ -350,7 +365,8 @@ def test_field_suggestions_invoke_bedrock_for_greeting_only(monkeypatch: pytest.
 
     assert result["fields"] == []
     assert result["bedrockInvoked"] is True
-    assert "どんな場面の質問を作りたいか" in result["reply"]
+    assert "テーマや目的" in result["reply"]
+    assert runner_called is True
 
 
 def test_field_suggestions_allow_reply_only_turn_without_field_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -360,6 +376,8 @@ def test_field_suggestions_allow_reply_only_turn_without_field_candidates(monkey
         assert question_input.user_instruction == "まず何を決めればいい？"
         return QuestionDesignOutput(
             reply="まずは対象を1つに絞るか、カテゴリ別に分けるかを決めたいです。どちらを想定していますか？",
+            design_status="needs_info",
+            clarification_question="まずは対象を1つに絞るか、カテゴリ別に分けるかを決めたいです。どちらを想定していますか？",
             suggestions=[],
         )
 
@@ -375,7 +393,7 @@ def test_field_suggestions_allow_reply_only_turn_without_field_candidates(monkey
 
     assert result["fields"] == []
     assert result["bedrockInvoked"] is True
-    assert "どちらを想定していますか" in result["reply"]
+    assert result["reply"] == DEFAULT_CLARIFICATION
 
 
 def test_field_suggestions_keep_conversational_reply_when_suggestions_duplicate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -390,6 +408,7 @@ def test_field_suggestions_keep_conversational_reply_when_suggestions_duplicate(
         ]
         return QuestionDesignOutput(
             reply="私は質問項目候補を整理するAI設定アシスタントです。対象や知識化したいテーマを教えていただければ、次に深掘りする観点を整理します。",
+            design_status="ready",
             suggestions=[
                 QuestionFieldSuggestion(
                     label="現象",
@@ -431,6 +450,36 @@ def test_field_suggestions_keep_conversational_reply_when_suggestions_duplicate(
     assert result["fields"] == []
     assert result["bedrockInvoked"] is True
     assert "AI設定アシスタント" in result["reply"]
+
+
+def test_field_suggestions_return_reply_only_when_question_design_needs_more_materials(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner_called = False
+
+    def fake_run_question_design(question_input, **kwargs):
+        nonlocal runner_called
+        runner_called = True
+        return QuestionDesignOutput(
+            reply="まずテーマや目的を確認します。",
+            design_status="needs_info",
+            clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+            suggestions=[],
+        )
+
+    monkeypatch.setattr(
+        "ai_interviewer_api.services.field_suggestions.run_question_design",
+        fake_run_question_design,
+    )
+
+    result = suggest_fields_with_bedrock(
+        FieldSuggestionRequest(content="こんにちは"),
+        DEV_TOKENS["dev-manager"],
+    )
+
+    assert result.keys() == {"reply", "fields", "modelId", "bedrockInvoked"}
+    assert result["fields"] == []
+    assert result["reply"] == "質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。"
+    assert result["bedrockInvoked"] is True
+    assert runner_called is True
 
 
 def test_bulk_approve_marks_proposals_with_list_bulk_method() -> None:

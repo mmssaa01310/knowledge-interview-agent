@@ -1,140 +1,125 @@
 # AGENTS.md
 
 このリポジトリは「AIインタビュー / ナレッジ構造化アプリ」を実装するためのリポジトリです。
-AIエージェント、GitHub Copilot、Cursor、Codex、Claude Code 等は、このファイルを最上位ルールとして扱ってください。
+
+AIエージェント、GitHub Copilot、Cursor、Codex、Claude Code等は、このファイルをリポジトリ全体の最上位ルールとして扱ってください。
 
 ## 1. 最優先ルール
 
 * ユーザーの直近の明示指示を最優先する。
-* 仕様の正本は `docs/spec.md` とする。
-* `docs/` と `specs/` の扱いは `docs/spec-governance.md` に従う。
+* プロダクト仕様の正本は`docs/spec.md`とする。
+* `docs/`と`specs/`の扱いは`docs/reference/spec-governance.md`に従う。
 * 仕様にない機能、画面、ライブラリ、AWSサービス、DBを勝手に追加しない。
-* 既存の設計、命名、フォルダ構成に合わせる。
+* 既存の設計、命名、フォルダ構成、実装パターンに合わせる。
 * 依頼された範囲だけを変更する。
 * 依頼外の大規模リファクタリング、広範囲フォーマット、命名変更、ディレクトリ移動はしない。
-* 秘密情報、認証情報、`.env` をコミットしない。
+* 秘密情報、認証情報、トークン、`.env`をコミットしない。
 * 回答は日本語で行う。
 
-## 2. 正本ドキュメント
+## 2. ドキュメント
 
-詳細ルールは以下を参照する。
+変更内容に応じて、以下の正本を参照・更新する。
 
-* `docs/spec.md`: 機能仕様、業務ルール、状態管理、承認仕様
-* `docs/spec-governance.md`: `docs/` と `specs/` の役割、優先順位、競合時ルール
-* `docs/technology-stack.md`: 技術スタック
-* `docs/aws-architecture.md`: AWS構成
-* `docs/agent-architecture.md`: AIエージェントの責務分離
-* `docs/agents/interview-agent-strands.md`: Strands interview agent の walking skeleton
-* `docs/agents/question-design-agent-strands.md`: Strands question design agent の実装方針
-* `docs/repository-structure.md`: フォルダ構成、責務分離
-* `docs/development-workflow.md`: 実装前後の進め方
-* `docs/verification.md`: 確認項目、実行コマンド
-* `docs/response-format.md`: 回答フォーマット
-* `docs/package-management.md`: pnpm workspace、Docker build、Node.js依存管理
-* `docs/python-development.md`: Python、uv、`.venv` の運用
-* `docs/refactoring.md`: リファクタリング方針
-* `docs/agent-change-control.md`: AIエージェントの変更管理
+* プロダクト仕様: `docs/spec.md`
+* システム構成: `docs/architecture/`
+* 個別AIエージェント仕様: `docs/agents/`
+* 開発手順: `docs/guides/`
+* 共通ルール・技術情報: `docs/reference/`
+* 未実装機能の計画: `docs/plans/`
 
 同じ内容を複数ファイルに重ねて維持しない。
-仕様追加や構成変更があれば、責務を持つ正本だけを更新する。
 
-## 3. docs と specs の扱い
+`docs/plans/`は実装計画であり、確定仕様として扱わない。
 
-* `docs/` はプロダクト全体の正規ドキュメントとして扱う。
-* `specs/` は変更単位の作業仕様として扱う。
-* `docs/` と `specs/` が矛盾する場合は、原則として `docs/` を正とする。
-* 現在の作業依頼で `specs/<id>` が明示されている場合のみ、その `specs/<id>` を作業指示として読む。
-* 完了済みの古い `specs/` は、正規仕様ではなく過去の変更履歴として扱う。
+## 3. docsとspecs
+
+* `docs/`はプロダクト全体の正規ドキュメントとする。
+* `specs/`は変更単位の作業仕様とする。
+* 両者が矛盾する場合は、原則として`docs/`を正とする。
+* 現在の依頼で`specs/<id>`が明示されている場合のみ、その内容を作業指示として扱う。
+* 完了済みの古い`specs/`は過去の変更履歴として扱う。
 
 ## 4. 実装方針
 
-* 小さく変更する。
-* 1ファイルに複数責務を詰め込まない。
-* UI、API呼び出し、状態管理、型定義、バリデーション、ビジネスロジックを必要に応じて分離する。
+* 小さく安全に変更する。
+* 既存のservice、repository、schema、agentを再利用し、類似ロジックを複製しない。
+* UI、API、状態管理、型、バリデーション、ビジネスロジックを必要に応じて分離する。
 * 認証ユーザーIDを保存データに含める。
 * 認可チェックを省略しない。
 * AI出力を人の承認なしに正式ナレッジ化しない。
-* リファクタリングは外部仕様を変えず、小さく安全に行う。
-* AI関連処理は `docs/agent-architecture.md` の責務分離に従う。
-* 質問設計エージェント、インタビューエージェント、暗黙知回答エージェントを混同しない。
-* 質問設計エージェントはユーザーに答えを聞くのではなく、熟練者に聞く質問項目を設計する。
-* 暗黙知回答エージェントは回答専用であり、DB更新してはいけない。
+* 外部サービス固有処理と業務ロジックを混在させない。
 
-## 5. 相談と実装依頼の区別
+AI関連処理は以下に従う。
 
-以下のような依頼は、原則としてコード変更しない。
+* `docs/architecture/agents/agent-architecture.md`
+* `docs/agents/agent-behavior-policy.md`
+* `docs/agents/interview-agent-strands.md`
+* `docs/agents/question-design-agent-strands.md`
 
-* 「原因わかる？」
-* 「おかしくない？」
-* 「方針どうする？」
-* 「調べて」
+Strands Agentでは「判断はAI、保証はbackend」を原則とする。
+挨拶辞書、キーワード一致、文字数などの固定ルールでAI判断を過剰に置き換えない。
 
-この場合は、まず原因分析、影響範囲、修正案を回答する。
-コード変更は、ユーザーが明示的に「修正して」「実装して」「反映して」と依頼した場合のみ行う。
+## 5. リアルタイム音声
 
-## 6. 要件として扱ってはいけないもの
+リアルタイム音声機能は以下に従う。
 
-以下は、明示的な実装指示がない限り、要件として扱ってはいけない。
+* `docs/architecture/voice/realtime-voice.md`
+* `docs/plans/realtime-voice-v1.md`
 
-* 会話要約
-* Continuation Plan
-* assistantの過去の提案
-* pending task
-* 推測した改善案
-* 一時的なデバッグ仮説
-* 相談中の「こうするとよい」という案
+基本原則:
 
-これらを根拠にコードを変更してはいけない。
+* 音声機能は既存Interview Agentの別入出力経路として扱う。
+* 質問進行、回答評価、RAG、状態更新の正本は`app/api`に置く。
+* `app/voice`にインタビュー評価やRAGを複製しない。
+* `app/voice`から`app/api`のPythonモジュールを直接importしない。
+* `app/api`にNova Sonic、aiortc、PyAV、FFmpeg等の音声固有依存を追加しない。
+* Nova SonicとTranscribe + Pollyは共通Runtime契約の下で分離する。
+* 質問作成エージェントは音声対応の変更対象に含めない。
+
+## 6. 相談と実装依頼
+
+「原因わかる？」「方針どうする？」「調べて」「設計としてどう？」などの相談では、原則としてコードを変更しない。
+
+コードやドキュメントを変更するのは、ユーザーが「修正して」「実装して」「反映して」「更新して」などと明示した場合とする。
+
+会話要約、過去の提案、一時的な仮説、`docs/plans/`の未確定事項を、明示指示なしに実装要件として扱わない。
 
 ## 7. 事前確認が必要な変更
 
-以下の変更は、実装前に変更方針を提示し、ユーザーの承認を得る。
+以下は、ユーザーから明示的に指示されていない限り、実装前に方針を確認する。
 
-* backendの分岐条件追加
-* fallbackロジック追加
-* APIレスポンス形式の変更
-* 状態遷移の変更
+* backendの分岐やfallback追加
+* API形式や状態遷移の変更
 * 認証・認可の変更
-* データ保存形式の変更
+* データ保存形式やDB構造の変更
 * LLM出力の後処理変更
 * UI表示条件の変更
-* テスト期待値に合わせた実装変更
+* 新しいAWSサービスやライブラリの追加
+* サービスやデプロイ単位の追加
 
-特に、prompt調整で済む可能性がある問題に対して、backend固定ロジックを勝手に追加してはいけない。
+## 8. パッケージ管理と検証
 
-## 8. LLM挙動修正の切り分け
+* Frontendはpnpm workspaceを使用する。
+* Pythonはuvを使用する。
+* 未使用ライブラリを追加しない。
+* 変更後は、変更範囲に応じてテスト、型チェック、lint、buildを実行する。
+* 実行していない検証を成功したと報告しない。
+* 確認できていない動作を対応済みと断定しない。
 
-LLMの応答がおかしい場合は、原因を切り分ける。
+詳細:
 
-* promptの問題
-* Bedrock呼び出し失敗
-* Bedrockの出力形式崩れ
-* JSON parse failure
-* backendの後処理問題
-* frontendの表示条件問題
+* `docs/guides/package-management.md`
+* `docs/guides/verification.md`
+* `docs/reference/response-format.md`
 
-原因が未確定のまま、backendにdeterministicな固定ルールを追加してはいけない。
-まずはログ追加、出力観察、prompt最小修正、テスト追加を優先する。
+## 9. 禁止事項
 
-## 9. パッケージ管理
-
-* Node.js / Frontend は pnpm workspace を使用する。
-* pnpm workspace と build script 承認の正規設定は `pnpm-workspace.yaml` とする。
-* pnpm 11 では `onlyBuiltDependencies` ではなく `allowBuilds` を使う。
-* Pythonパッケージ管理はuvを標準とする。
-* ネットワーク不安定時や同期不要の検証では `uv run --no-sync` を優先する。
-* 詳細は `docs/package-management.md` と `docs/python-development.md` を参照する。
-
-## 10. 絶対に避けること
-
-* 仕様にないDBを追加する。
-* ElasticsearchをPostgreSQLやDynamoDBに置き換える。
-* Next.jsへ変更する。
-* CloudFront / S3フロント配信を追加する。
-* EventBridgeをMVPに追加する。
+* 仕様にないDBやAWSサービスを追加する。
+* Elasticsearchを別DBへ無断で置き換える。
+* フロントエンドを別フレームワークへ変更する。
 * 認証なしAPIを作る。
-* ログインユーザーに紐づかない保存をする。
+* ログインユーザーに紐づかない保存を行う。
 * AI出力を自動で正式ナレッジ化する。
-* 依頼外の大規模リファクタリングをする。
+* 依頼外の大規模リファクタリングを行う。
 * 既存コードを広範囲にフォーマットする。
-* 未使用ライブラリを追加する。
+* 実装計画を確定仕様として扱う。
