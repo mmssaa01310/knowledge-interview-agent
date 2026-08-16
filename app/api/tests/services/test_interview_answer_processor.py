@@ -93,17 +93,17 @@ def test_retrieval_never_still_runs_initial_evaluation() -> None:
     assert state["fieldStates"]["field-1"]["candidateAnswer"] == "候補"
 
 
-def test_confirmation_question_uses_raw_answer_not_llm_summary() -> None:
+def test_confirmation_question_uses_llm_natural_question_not_llm_summary() -> None:
     _, result, _ = _process(
         AnswerEvaluation(
             decision="CONFIRMABLE",
             normalized_answer="宮崎",
-            confirmation_question="自己紹介として、氏名が回答されました。という理解でよろしいですか？",
+            confirmation_question="宮崎さんでよろしいですか？",
         ),
         transcript="宮崎です",
     )
 
-    assert result.reply_text == "項目は「宮崎です」という理解でよろしいですか？"
+    assert result.reply_text == "宮崎さんでよろしいですか？"
 
 
 def test_confirmation_is_the_only_transition_that_saves_answer() -> None:
@@ -180,6 +180,7 @@ def test_confirmation_uses_llm_record_answer_and_captured_items() -> None:
             outcome="REVISE_WITH_CONTENT",
             record_answer="保全管理です",
             revised_answer="保全管理です",
+            confirmation_question="担当業務は保全管理でよろしいですか？",
             captured_items=[{"itemId": "current_role", "value": "保全管理"}],
         ),
     )
@@ -203,6 +204,7 @@ def test_confirmation_uses_llm_record_answer_and_captured_items() -> None:
         "いいえ、保全管理です。",
     ]
     assert state["fieldStates"]["field-1"]["candidateAnswer"] == "保全管理です"
+    assert correction.reply_text == "担当業務は保全管理でよろしいですか？"
     assert state["fieldStates"]["field-1"]["capturedItems"] == [
         {"itemId": "current_role", "value": "保全管理", "evidenceTranscriptIds": []}
     ]
@@ -484,6 +486,7 @@ def test_required_items_block_confirmation_until_all_items_are_captured() -> Non
             AnswerEvaluation(
                 decision="CONFIRMABLE",
                 normalized_answer="自己紹介として、氏名と担当業務が回答されました。",
+                confirmation_question="宮崎さんと設備保全でよろしいですか？",
                 captured_items=[{"itemId": "role", "value": "設備保全"}],
                 answer_disposition="ANSWERED",
             ),
@@ -535,7 +538,7 @@ def test_required_items_block_confirmation_until_all_items_are_captured() -> Non
     assert second.decision == "COMPLETE"
     assert second.action == "ask_confirmation"
     assert second.missing_required_item_ids == []
-    assert second.reply_text == "自己紹介は「宮崎です\n設備保全です」という理解でよろしいですか？"
+    assert second.reply_text == "宮崎さんと設備保全でよろしいですか？"
 
 
 def test_confirmation_state_with_missing_required_items_is_reopened_as_follow_up() -> None:

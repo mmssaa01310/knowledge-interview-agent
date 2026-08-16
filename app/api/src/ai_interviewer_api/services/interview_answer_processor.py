@@ -71,6 +71,7 @@ class ConfirmationEvaluation:
     outcome: ConfirmationOutcome
     revised_answer: str | None = None
     record_answer: str | None = None
+    confirmation_question: str | None = None
     clarification_question: str | None = None
     captured_items: list[dict[str, Any]] = field(default_factory=list)
     evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
@@ -411,7 +412,11 @@ class InterviewAnswerProcessor:
             return InterviewTurnResult(
                 decision=evaluation.decision,
                 action="ask_confirmation",
-                reply_text=_confirmation_prompt(field_name, raw_answer.strip()),
+                reply_text=_confirmation_prompt(
+                    field_name,
+                    raw_answer.strip(),
+                    evaluation.confirmation_question,
+                ),
                 question_id=question_id,
                 field_id=field_id,
                 retrieval_policy=retrieval_policy,
@@ -496,7 +501,11 @@ class InterviewAnswerProcessor:
                 return InterviewTurnResult(
                     decision="COMPLETE",
                     action="ask_confirmation",
-                    reply_text=_confirmation_prompt(field_name, candidate),
+                    reply_text=_confirmation_prompt(
+                        field_name,
+                        candidate,
+                        evaluation.confirmation_question,
+                    ),
                     question_id=question_id,
                     field_id=field_id,
                     retrieval_policy=retrieval_policy,
@@ -630,7 +639,11 @@ class InterviewAnswerProcessor:
             return InterviewTurnResult(
                 decision=confirmation.outcome,
                 action="ask_confirmation",
-                reply_text=_confirmation_prompt(field_name, revised_record_answer),
+                reply_text=_confirmation_prompt(
+                    field_name,
+                    revised_record_answer,
+                    confirmation.confirmation_question,
+                ),
                 question_id=question_id,
                 field_id=field_id,
                 retrieval_policy=retrieval_policy,
@@ -791,7 +804,14 @@ def _missing_required_item_labels(
     return [labels_by_id.get(item_id, item_id) for item_id in item_ids]
 
 
-def _confirmation_prompt(field_name: str, candidate: str) -> str:
+def _confirmation_prompt(
+    field_name: str,
+    candidate: str,
+    confirmation_question: str | None = None,
+) -> str:
+    generated_question = str(confirmation_question or "").strip()
+    if generated_question:
+        return generated_question
     if field_name:
         return f"{field_name}は「{candidate}」という理解でよろしいですか？"
     return f"「{candidate}」でよろしいですか？"

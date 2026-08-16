@@ -102,6 +102,7 @@ class VoiceConfirmationEvaluation:
     outcome: Literal["CONFIRM", "REVISE_WITH_CONTENT", "REJECT_WITHOUT_CONTENT", "UNCLEAR"]
     revised_answer: str | None = None
     record_answer: str | None = None
+    confirmation_question: str | None = None
     clarification_question: str | None = None
     captured_items: list[dict[str, Any]] = field(default_factory=list)
     evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
@@ -128,6 +129,7 @@ class VoiceConfirmationEvaluationOutput(BaseModel):
     outcome: Literal["CONFIRM", "REVISE_WITH_CONTENT", "REJECT_WITHOUT_CONTENT", "UNCLEAR"]
     revised_answer: str | None = None
     record_answer: str | None = None
+    confirmation_question: str | None = None
     clarification_question: str | None = None
     captured_items: list[CapturedInterviewItem] = Field(default_factory=list)
 
@@ -1260,6 +1262,7 @@ def _process_confirmation_turn(
             outcome=decision.outcome,
             revised_answer=decision.revised_answer,
             record_answer=decision.record_answer,
+            confirmation_question=decision.confirmation_question,
             clarification_question=decision.clarification_question,
             captured_items=decision.captured_items,
             evaluation_status=decision.evaluation_status,
@@ -1546,6 +1549,7 @@ def _evaluate_confirmation_response(
         outcome=result.outcome,
         revised_answer=result.revised_answer.strip() if isinstance(result.revised_answer, str) and result.revised_answer.strip() else None,
         record_answer=result.record_answer.strip() if isinstance(result.record_answer, str) and result.record_answer.strip() else None,
+        confirmation_question=result.confirmation_question.strip() if isinstance(result.confirmation_question, str) and result.confirmation_question.strip() else None,
         clarification_question=result.clarification_question.strip() if isinstance(result.clarification_question, str) and result.clarification_question.strip() else None,
         captured_items=[item.model_dump() for item in result.captured_items],
     )
@@ -1666,7 +1670,11 @@ def _voice_answer_evaluation_system_prompt() -> str:
         "短い名詞回答は、意味を変えずに不要な文末の丁寧表現を除き、"
         "normalized_answerを簡潔な名詞句にしてください。\n"
         "CONFIRMABLEでは、質問と項目の意味に合う自然なconfirmation_questionを返してください。"
-        "固定の項目名辞書や定型的な引用表現に依存せず、候補の意味を変えてはいけません。\n"
+        "固定の項目名辞書や定型的な引用表現に依存せず、候補の意味を変えてはいけません。"
+        "confirmation_questionはユーザーがそのまま聞いて自然な質問文にし、"
+        "生発話を括弧や引用符でそのまま包んだ『という理解でよろしいですか』形式にしないでください。"
+        "例えば趣味の候補がバスケなら『趣味はバスケでいいですか？』、"
+        "氏名の候補が宮崎なら『宮崎さんでよろしいですか？』のように返してください。\n"
         "NEEDS_MORE_INFORMATIONではmissing_informationと、次に答える内容が分かる"
         "具体的なfollow_up_questionを必ず返してください。元の質問をそのまま繰り返してはいけません。\n"
         "ユーザーが『何を答えればよいか』『どんな内容か』と案内を求めた場合は、"
@@ -1683,7 +1691,11 @@ def _voice_confirmation_system_prompt() -> str:
         "CONFIRMでは候補の回答内容だけをrecord_answerに返してください。"
         "REVISE_WITH_CONTENTでは、訂正後の回答内容だけをrecord_answerに返し、"
         "『はい』『いいえ』『違います』等の会話制御語やメタ説明を含めないでください。"
-        "同時に訂正後のcaptured_itemsを返してください。"
+        "同時に訂正後のcaptured_itemsと、訂正内容を自然に確認するconfirmation_questionを返してください。"
+        "否定や訂正の語に続いて具体的な内容がある場合は、語句の一致ではなく意味として"
+        "REVISE_WITH_CONTENTに分類してください。例えば候補が『宮崎です』で返答が"
+        "『いえ、宮崎、です』なら、record_answerは『宮崎です』、"
+        "confirmation_questionは『宮崎さんでよろしいですか？』です。"
     )
 
 
@@ -1778,6 +1790,7 @@ def _build_voice_confirmation_prompt(
                 "mustKeepPriorContextForRevision": True,
                 "recordAnswerIsAnswerOnly": True,
                 "extractCapturedItems": True,
+                "revisionConfirmationQuestionIsNatural": True,
             },
         },
         ensure_ascii=False,

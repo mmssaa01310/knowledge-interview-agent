@@ -155,6 +155,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
                 outcome="REVISE_WITH_CONTENT",
                 revised_answer="宮崎まさし",
                 record_answer="宮崎まさし",
+                confirmation_question="宮崎まさしさんでよろしいですか？",
                 clarification_question=None,
             )
         if "宮崎健一" in text:
@@ -162,6 +163,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
                 outcome="REVISE_WITH_CONTENT",
                 revised_answer="宮崎健一",
                 record_answer="宮崎健一",
+                confirmation_question="宮崎健一さんでよろしいですか？",
                 clarification_question=None,
             )
         return voice_interview_service.VoiceConfirmationEvaluation(
@@ -496,9 +498,9 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
     def evaluate_answer(**kwargs):  # type: ignore[no-untyped-def]
         field_name = str((kwargs.get("current_field") or {}).get("name") or "")
         confirmation_question = (
-            "お名前が田中さんでよろしかったですか？"
+            "田中さんでよろしいですか？"
             if "自己紹介" in field_name
-            else "バスケでいいですか？"
+            else "趣味はバスケでいいですか？"
         )
         return voice_interview_service.VoiceAnswerEvaluation(
             decision="CONFIRMABLE",
@@ -525,7 +527,7 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
         VoiceTurnCreate(transcript="田中です"),
     )
     self_intro_result = process_internal_voice_turn(session["id"], self_intro_turn["id"])
-    assert self_intro_result["text"] == "自己紹介は「田中です」という理解でよろしいですか？"
+    assert self_intro_result["text"] == "田中さんでよろしいですか？"
 
     confirmation_turn = create_internal_voice_turn(
         session["id"],
@@ -542,7 +544,7 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
         VoiceTurnCreate(transcript="バスケです"),
     )
     hobby_result = process_internal_voice_turn(session["id"], hobby_turn["id"])
-    assert hobby_result["text"] == "趣味は「バスケです」という理解でよろしいですか？"
+    assert hobby_result["text"] == "趣味はバスケでいいですか？"
 
     state = store.get("interview_states", f"interview-state-{record['id']}")
     first_field_id = state["askedQuestions"][0]["fieldId"]
@@ -571,7 +573,7 @@ def test_voice_turn_updates_candidate_on_correction_and_reconfirms() -> None:
     state = store.get("interview_states", f"interview-state-{record['id']}")
     field_id = state["currentFieldId"]
 
-    assert correction_result["text"] == "氏名は「宮崎健一」という理解でよろしいですか？"
+    assert correction_result["text"] == "宮崎健一さんでよろしいですか？"
     assert correction_result["questionId"] == "q-001"
     assert state["completedFieldIds"] == []
     assert state["fieldStates"][field_id]["answerSummary"] is None
@@ -774,7 +776,7 @@ def test_confirmation_revise_with_content_merges_revised_answer() -> None:
     state = store.get("interview_states", f"interview-state-{record['id']}")
     field_id = state["currentFieldId"]
 
-    assert result["text"] == "氏名は「宮崎まさし」という理解でよろしいですか？"
+    assert result["text"] == "宮崎まさしさんでよろしいですか？"
     assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
     assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎まさし"
 
