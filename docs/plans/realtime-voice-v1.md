@@ -3,8 +3,9 @@
 ## 2026-07-27 Transcribe + Polly Runtime実装
 
 共通`RealtimeVoiceRuntime`契約を維持したまま、`transcribe_polly`を実動作Providerとして追加した。
-Nova Sonicは既定Providerとして維持し、`VOICE_RUNTIME_PROVIDER` /
-`VITE_VOICE_RUNTIME_PROVIDER`で新規Voice Sessionの方式を切り替える。
+Transcribe + Pollyを既定Providerとし、Nova Sonicは
+`VOICE_RUNTIME_PROVIDER` / `VITE_VOICE_RUNTIME_PROVIDER`で新規Voice Sessionの方式を
+切り替えられるProviderとして維持する。
 
 実装範囲:
 
