@@ -434,7 +434,7 @@ def test_voice_turn_requires_confirmation_before_answer_is_committed(
 
     assert result["retrievalPolicy"] == "never"
     assert result["retrievalExecuted"] is False
-    assert result["text"] == "氏名は「宮崎です」という理解でよろしいですか？"
+    assert result["text"] == "氏名について、この内容でよろしいですか？"
     assert result["questionId"] == "q-001"
     assert snapshot["currentQuestionId"] == "q-001"
     assert state["completedFieldIds"] == []

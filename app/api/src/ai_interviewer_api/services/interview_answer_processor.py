@@ -813,8 +813,8 @@ def _confirmation_prompt(
     if generated_question:
         return generated_question
     if field_name:
-        return f"{field_name}は「{candidate}」という理解でよろしいですか？"
-    return f"「{candidate}」でよろしいですか？"
+        return f"{field_name}について、この内容でよろしいですか？"
+    return "この内容でよろしいですか？"
 
 
 def _retry_prompt(question_text: str) -> str:

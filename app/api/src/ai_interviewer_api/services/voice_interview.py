@@ -1746,12 +1746,23 @@ def _build_voice_answer_evaluation_prompt(
                 "explicitRequirementsOnly": True,
                 "requireSpecificFollowUpWhenNotConfirmable": True,
                 "mustIntegrateExistingCandidate": True,
+                "confirmationQuestionMustBeNatural": True,
                 "whenNoExplicitRequirements": (
                     "発話に質問に関連する具体的な事実が1つでもあればCONFIRMABLE。"
                     "一般論から不足項目を作らない。"
                 ),
             },
             "decisionExamples": [
+                {
+                    "condition": "趣味の候補が『バスケです』",
+                    "decision": "CONFIRMABLE",
+                    "confirmationQuestion": "趣味はバスケでいいですか？",
+                },
+                {
+                    "condition": "氏名の候補が『宮崎です』",
+                    "decision": "CONFIRMABLE",
+                    "confirmationQuestion": "宮崎さんでよろしいですか？",
+                },
                 {
                     "condition": "広い質問でhasExplicitAnswerRequirements=false、具体的な個人情報を回答",
                     "decision": "CONFIRMABLE",
