@@ -1672,6 +1672,8 @@ def _voice_answer_evaluation_system_prompt() -> str:
         "CONFIRMABLEでは、質問と項目の意味に合う自然なconfirmation_questionを返してください。"
         "固定の項目名辞書や定型的な引用表現に依存せず、候補の意味を変えてはいけません。"
         "confirmation_questionはユーザーがそのまま聞いて自然な質問文にし、"
+        "decisionがCONFIRMABLEの場合はconfirmation_questionを必ず省略せず返し、"
+        "空文字やnullにしないでください。"
         "生発話を括弧や引用符でそのまま包んだ『という理解でよろしいですか』形式にしないでください。"
         "例えば趣味の候補がバスケなら『趣味はバスケでいいですか？』、"
         "氏名の候補が宮崎なら『宮崎さんでよろしいですか？』のように返してください。\n"
@@ -1747,12 +1749,20 @@ def _build_voice_answer_evaluation_prompt(
                 "requireSpecificFollowUpWhenNotConfirmable": True,
                 "mustIntegrateExistingCandidate": True,
                 "confirmationQuestionMustBeNatural": True,
+                "confirmationQuestionRequiredWhenConfirmable": True,
                 "whenNoExplicitRequirements": (
                     "発話に質問に関連する具体的な事実が1つでもあればCONFIRMABLE。"
                     "一般論から不足項目を作らない。"
                 ),
             },
             "decisionExamples": [
+                {
+                    "transcript": "バスケです",
+                    "question": "具体的な趣味を教えてください。",
+                    "decision": "CONFIRMABLE",
+                    "recordAnswer": "バスケです",
+                    "confirmationQuestion": "趣味はバスケでいいですか？",
+                },
                 {
                     "condition": "趣味の候補が『バスケです』",
                     "decision": "CONFIRMABLE",
