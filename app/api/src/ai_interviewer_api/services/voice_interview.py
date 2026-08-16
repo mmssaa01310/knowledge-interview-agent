@@ -115,7 +115,7 @@ class VoiceAnswerEvaluationOutput(BaseModel):
     follow_up_question: str | None = None
     confirmation_question: str | None = None
     evidence_transcript_ids: list[str] = Field(default_factory=list)
-    record_answer: str = ""
+    record_answer: str | None = None
     retrieval_needed: bool = False
     evaluation_reason: str | None = None
     captured_items: list[CapturedInterviewItem] = Field(default_factory=list)
@@ -1361,7 +1361,7 @@ def _evaluate_voice_answer_candidate(
     evaluation = VoiceAnswerEvaluation(
         decision=result.decision,
         normalized_answer=result.normalized_answer.strip(),
-        record_answer=result.record_answer.strip(),
+        record_answer=result.record_answer.strip() if isinstance(result.record_answer, str) else "",
         is_relevant=result.is_relevant,
         is_sufficient=result.is_sufficient,
         missing_information=[item.strip() for item in result.missing_information if item.strip()],

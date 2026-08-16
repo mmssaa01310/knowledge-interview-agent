@@ -77,7 +77,7 @@ class InterviewFieldEvaluation(BaseModel):
     fieldId: str
     isComplete: bool = False
     answerSummary: str = ""
-    recordAnswer: str = ""
+    recordAnswer: str | None = None
     missingInformation: list[str] = Field(default_factory=list)
     nextAction: Literal["follow_up", "next_field"] = "follow_up"
     decision: Literal[

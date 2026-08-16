@@ -95,6 +95,7 @@ def test_run_interview_turn_returns_structured_output() -> None:
             fieldId="field-1",
             isComplete=False,
             answerSummary="接点を確認して復旧した。",
+            recordAnswer=None,
             missingInformation=["なぜ接点を疑ったか"],
             nextAction="follow_up",
         ),
@@ -113,6 +114,7 @@ def test_run_interview_turn_returns_structured_output() -> None:
     assert result.reply == "確認できました。"
     assert result.field_evaluation.fieldId == "field-1"
     assert result.field_evaluation.isComplete is False
+    assert result.field_evaluation.recordAnswer == ""
     assert result.follow_up_question == "なぜ接点不良を疑ったのですか。"
     assert result.used_tools == ["search_existing_fields"]
 
