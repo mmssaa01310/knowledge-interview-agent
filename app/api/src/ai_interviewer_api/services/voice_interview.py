@@ -15,7 +15,7 @@ import json
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
-from time import monotonic
+from time import monotonic, time
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -471,6 +471,7 @@ def claim_initial_reply(voice_session_id: str) -> dict:
 
 
 def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
+    process_started_at = monotonic()
     session = _get_voice_session_for_internal_use(voice_session_id)
     _ensure_session_accepts_turns(session)
     turn = _get_voice_turn_for_session(turn_id, session)
@@ -655,7 +656,7 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             ),
         )
         logger.info(
-            "voice_interview_process_completed voice_session_id=%s turn_id=%s question_id=%s state_version=%s retrieval_policy=%s retrieval_executed=%s response_id=%s",
+            "voice_interview_process_completed voice_session_id=%s turn_id=%s question_id=%s state_version=%s retrieval_policy=%s retrieval_executed=%s response_id=%s process_total_ms=%s",
             voice_session_id,
             turn_id,
             current_question_id,
@@ -663,6 +664,7 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             retrieval_policy,
             retrieval_executed,
             response_id,
+            round((monotonic() - process_started_at) * 1000, 1),
         )
         return _build_process_result(session, turn).model_dump()
     except Exception:
@@ -997,6 +999,7 @@ def _process_candidate_turn(
     user_message: dict[str, Any],
 ) -> dict[str, Any]:
     evaluation_started_at = monotonic()
+    evaluation_started_at_ms = int(time() * 1000)
     current_question_id = (
         field_state.get("pendingQuestionId")
         or turn.get("answerToQuestionId")
@@ -1038,7 +1041,7 @@ def _process_candidate_turn(
         round((monotonic() - state_persist_started_at) * 1000, 1),
     )
     logger.info(
-        "answer_evaluation_started voice_session_id=%s turn_id=%s question_id=%s field_id=%s playback_generation_id=%s input_state=%s monotonic_timestamp_ms=%s",
+        "answer_evaluation_started voice_session_id=%s turn_id=%s question_id=%s field_id=%s playback_generation_id=%s input_state=%s monotonic_timestamp_ms=%s transcript_ended_at_ms=%s evaluation_deadline_ms=%s",
         session["id"],
         turn["id"],
         current_question_id,
@@ -1046,6 +1049,8 @@ def _process_candidate_turn(
         None,
         "ANSWER_PROCESSING",
         int(monotonic() * 1000),
+        turn.get("endedAtMs"),
+        int(VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS * 1000),
     )
     logger.info(
         "knowledge_retrieval_started voice_session_id=%s turn_id=%s question_id=%s field_id=%s playback_generation_id=%s input_state=%s monotonic_timestamp_ms=%s retrieval_policy=%s",
@@ -1112,8 +1117,15 @@ def _process_candidate_turn(
         retrieval_policy,
         False,
     )
+    evaluation_completed_at_ms = int(time() * 1000)
+    transcript_to_evaluation_completed_ms = None
+    if isinstance(turn.get("endedAtMs"), (int, float)):
+        transcript_to_evaluation_completed_ms = max(
+            0,
+            evaluation_completed_at_ms - int(turn["endedAtMs"]),
+        )
     logger.info(
-        "answer_evaluation_completed voice_session_id=%s turn_id=%s question_id=%s field_id=%s evaluation_request_id=%s playback_generation_id=%s input_state=%s monotonic_timestamp_ms=%s decision=%s is_relevant=%s is_sufficient=%s retrieval_policy=%s retrieval_executed=%s answer_evaluation_total_ms=%s knowledge_retrieval_ms=%s",
+        "answer_evaluation_completed voice_session_id=%s turn_id=%s question_id=%s field_id=%s evaluation_request_id=%s playback_generation_id=%s input_state=%s monotonic_timestamp_ms=%s decision=%s is_relevant=%s is_sufficient=%s retrieval_policy=%s retrieval_executed=%s answer_evaluation_total_ms=%s knowledge_retrieval_ms=%s transcript_to_evaluation_start_ms=%s transcript_to_evaluation_completed_ms=%s",
         session["id"],
         turn["id"],
         current_question_id,
@@ -1129,6 +1141,12 @@ def _process_candidate_turn(
         False,
         round((monotonic() - evaluation_started_at) * 1000, 1),
         0.0,
+        (
+            max(0, evaluation_started_at_ms - int(turn["endedAtMs"]))
+            if isinstance(turn.get("endedAtMs"), (int, float))
+            else None
+        ),
+        transcript_to_evaluation_completed_ms,
     )
     field_state["evaluationDegraded"] = evaluation.evaluation_degraded
     field_state["degradedReason"] = evaluation.degraded_reason

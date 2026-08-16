@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -297,7 +298,10 @@ async def test_five_hundred_ms_pause_ack_does_not_finalize_turn() -> None:
 
 
 @pytest.mark.anyio
-async def test_final_transcript_is_the_only_text_sent_to_interview_bridge() -> None:
+async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
     transcribe = FakeTranscribe()
     bridge = FakeBridge()
     runtime = TranscribePollyRuntime(
@@ -327,6 +331,10 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge() -> N
     assert bridge.process_calls[0]["turn_type"] == "ANSWER"
     assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
     assert bridge.intent_calls[0]["transcript"] == "最終回答です"
+    assert "voice_turn_api_completed" in caplog.text
+    assert "voice_turn_polly_started" in caplog.text
+    assert "voice_turn_polly_first_chunk_ready" in caplog.text
+    assert "voice_turn_pipeline_latency" in caplog.text
     await runtime.close()
 
 

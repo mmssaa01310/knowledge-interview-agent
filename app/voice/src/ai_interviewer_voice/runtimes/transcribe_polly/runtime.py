@@ -14,7 +14,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from enum import StrEnum
-from time import monotonic
+from time import monotonic, time
 from typing import Literal
 from uuid import uuid4
 
@@ -176,6 +176,7 @@ class TranscribePollyRuntime:
         self._assistant_response_states: dict[str, AssistantResponseState] = {}
         self._interrupt_emitted_for: set[str] = set()
         self._backchannel_metadata: dict[str, tuple[OutputKind, str]] = {}
+        self._pipeline_timings: dict[str, dict[str, float | int]] = {}
         self._pending_listening_state: Literal[
             "ANSWER_LISTENING",
             "CONFIRMATION_LISTENING",
@@ -329,6 +330,7 @@ class TranscribePollyRuntime:
             return_exceptions=True,
         )
         self._notice_tasks.clear()
+        self._pipeline_timings.clear()
         self._background_tasks.clear()
         await self._transcribe.close()
         await self._emit(RuntimeClosed())
@@ -530,6 +532,7 @@ class TranscribePollyRuntime:
         self._speech_active = False
         self._silence_started_at = None
         self._hard_endpoint_started_at = None
+        transcript_final_at_ms = int(time() * 1000)
         await self._emit(UserSpeechEnded())
         await self._emit_input_state("ANSWER_PROCESSING")
         self._processing_task = asyncio.create_task(
@@ -538,6 +541,7 @@ class TranscribePollyRuntime:
                 generation=self._generation,
                 expected_state_version=self._state_version,
                 client_turn_id=uuid4().hex,
+                transcript_final_at_ms=transcript_final_at_ms,
             )
         )
 
@@ -548,6 +552,7 @@ class TranscribePollyRuntime:
         generation: int,
         expected_state_version: int,
         client_turn_id: str,
+        transcript_final_at_ms: int | None = None,
     ) -> None:
         if self._interview_bridge is None or self._context is None:
             await self._emit(RuntimeError(message="interview_bridge_unavailable", fatal=True))
@@ -570,6 +575,7 @@ class TranscribePollyRuntime:
             generation=generation,
         )
         result_received = False
+        api_started_at = monotonic()
         try:
             intent = await self._interview_bridge.classify_turn_intent(
                 voice_session_id=self._context.voice_session_id,
@@ -613,6 +619,23 @@ class TranscribePollyRuntime:
             self._clear_active_client_turn(client_turn_id)
             return
         self._apply_bridge_result(result)
+        api_completed_at = monotonic()
+        pipeline_timing: dict[str, float | int] = {
+            "transcript_final_at_ms": transcript_final_at_ms or int(time() * 1000),
+            "api_started_at": api_started_at,
+            "api_completed_at": api_completed_at,
+            "api_completed_at_ms": int(time() * 1000),
+        }
+        self._pipeline_timings[result.response_id] = pipeline_timing
+        logger.info(
+            "voice_turn_api_completed voice_session_id=%s turn_id=%s response_id=%s question_id=%s api_processing_ms=%s transcribe_to_api_completed_ms=%s",
+            self._context.voice_session_id,
+            result.turn_id,
+            result.response_id,
+            result.question_id,
+            round((api_completed_at - api_started_at) * 1000, 1),
+            max(0, pipeline_timing["api_completed_at_ms"] - pipeline_timing["transcript_final_at_ms"]),
+        )
         self._clear_active_client_turn(client_turn_id)
         await self.send_reply(
             AssistantReply(
@@ -748,7 +771,11 @@ class TranscribePollyRuntime:
             response_id=reply.response_id,
             generation=generation,
             kind=OutputKind.FORMAL_REPLY,
-            pcm_chunks=self._synthesize_chunks(reply.text, generation),
+            pcm_chunks=self._synthesize_chunks(
+                reply.text,
+                generation,
+                response_id=reply.response_id,
+            ),
         )
         self._assistant_response_states[reply.response_id] = (
             AssistantResponseState.SYNTHESIZING
@@ -756,6 +783,7 @@ class TranscribePollyRuntime:
         try:
             result = await self._output.play(request)
         except PollySynthesisError as exc:
+            self._pipeline_timings.pop(reply.response_id, None)
             self._assistant_speaking = False
             self._formal_response_id = None
             self._formal_generation = None
@@ -773,6 +801,7 @@ class TranscribePollyRuntime:
             await self._emit_input_state(self._next_input_state(action))
             return
         if not result.accepted or result.cancelled:
+            self._pipeline_timings.pop(reply.response_id, None)
             return
         if action is InterviewAction.END_INTERVIEW:
             self._interview_status = "completed"
@@ -782,7 +811,17 @@ class TranscribePollyRuntime:
         self,
         text: str,
         generation: int,
+        response_id: str | None = None,
     ) -> AsyncIterator[bytes]:
+        timing = self._pipeline_timings.get(response_id) if response_id else None
+        if timing is not None:
+            timing["polly_started_at"] = monotonic()
+            timing["polly_started_at_ms"] = int(time() * 1000)
+            logger.info(
+                "voice_turn_polly_started response_id=%s polly_started_at_ms=%s",
+                response_id,
+                timing["polly_started_at_ms"],
+            )
         chunks = split_text_for_polly(
             text,
             PollyTextChunkerConfig(
@@ -805,6 +844,14 @@ class TranscribePollyRuntime:
                 pcm = await tasks.pop(index)
                 if generation != self._generation or self._closed:
                     return
+                if timing is not None and index == 0:
+                    timing["polly_first_chunk_ready_at"] = monotonic()
+                    timing["polly_first_chunk_ready_at_ms"] = int(time() * 1000)
+                    logger.info(
+                        "voice_turn_polly_first_chunk_ready response_id=%s polly_first_chunk_ms=%s",
+                        response_id,
+                        round((timing["polly_first_chunk_ready_at"] - timing["polly_started_at"]) * 1000, 1),
+                    )
                 yield pcm
                 if next_to_schedule < len(chunks):
                     tasks[next_to_schedule] = asyncio.create_task(
@@ -841,6 +888,18 @@ class TranscribePollyRuntime:
         self._assistant_response_states[request.response_id] = (
             AssistantResponseState.PLAYING
         )
+        timing = self._pipeline_timings.get(request.response_id)
+        if timing is not None:
+            output_started_at = monotonic()
+            timing["output_started_at"] = output_started_at
+            timing["output_started_at_ms"] = int(time() * 1000)
+            logger.info(
+                "voice_turn_pipeline_latency response_id=%s transcribe_to_playback_start_ms=%s api_to_playback_start_ms=%s polly_to_playback_start_ms=%s",
+                request.response_id,
+                max(0, timing["output_started_at_ms"] - timing["transcript_final_at_ms"]),
+                round((output_started_at - timing["api_completed_at"]) * 1000, 1),
+                round((output_started_at - timing.get("polly_started_at", output_started_at)) * 1000, 1),
+            )
         backchannel = self._backchannel_metadata.get(request.response_id)
         if backchannel is not None:
             kind, text = backchannel
@@ -895,6 +954,8 @@ class TranscribePollyRuntime:
             self._assistant_response_states[request.response_id] = (
                 AssistantResponseState.PLAYED
             )
+        else:
+            self._pipeline_timings.pop(request.response_id, None)
 
     async def _on_output_interrupted(self, request: AudioOutputRequest) -> None:
         if self._formal_response_id == request.response_id:
@@ -905,6 +966,8 @@ class TranscribePollyRuntime:
         self._assistant_response_states[request.response_id] = (
             AssistantResponseState.INTERRUPTED
         )
+        if request.kind is OutputKind.FORMAL_REPLY:
+            self._pipeline_timings.pop(request.response_id, None)
         if self._output.active_response_id in {None, request.response_id}:
             self._assistant_speaking = False
         if request.response_id in self._interrupt_emitted_for:
