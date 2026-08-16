@@ -7,6 +7,7 @@ from ai_interviewer_api.services.interview_answer_processor import (
     ANSWER_STATE_CANDIDATE_PENDING,
     ANSWER_STATE_CONFIRMED,
     AnswerEvaluation,
+    ConfirmationEvaluation,
     InterviewAnswerProcessor,
 )
 
@@ -26,6 +27,7 @@ def _process(
     *,
     policy: str = "never",
     transcript: str = "回答",
+    confirmation: ConfirmationEvaluation | None = None,
 ) -> tuple[dict, object, list[str]]:
     calls: list[str] = []
 
@@ -34,7 +36,10 @@ def _process(
         return evaluation
 
     state = _state()
-    result = InterviewAnswerProcessor(evaluator=evaluator).process_turn_sync(
+    result = InterviewAnswerProcessor(
+        evaluator=evaluator,
+        confirmation_evaluator=(lambda **_: confirmation) if confirmation else None,
+    ).process_turn_sync(
         record_id="record-1",
         question_id="question-1",
         field_id="field-1",
@@ -51,8 +56,8 @@ def _process(
 @pytest.mark.parametrize(
     ("evaluation", "answer_state", "candidate"),
     [
-        (AnswerEvaluation(decision="CONFIRMABLE", normalized_answer="整形済み回答", is_relevant=True, is_sufficient=True), ANSWER_STATE_AWAITING_CONFIRMATION, "整形済み回答"),
-        (AnswerEvaluation(decision="NEEDS_MORE_INFORMATION", normalized_answer="取得済み情報", is_relevant=True, missing_information=["根拠"]), ANSWER_STATE_CANDIDATE_PENDING, "取得済み情報"),
+        (AnswerEvaluation(decision="CONFIRMABLE", normalized_answer="分析用要約", record_answer="整形済み回答", is_relevant=True, is_sufficient=True), ANSWER_STATE_AWAITING_CONFIRMATION, "整形済み回答"),
+        (AnswerEvaluation(decision="NEEDS_MORE_INFORMATION", normalized_answer="分析用要約", record_answer="取得済み情報", is_relevant=True, missing_information=["根拠"]), ANSWER_STATE_CANDIDATE_PENDING, "取得済み情報"),
         (AnswerEvaluation(decision="NOT_ANSWER", is_relevant=False), ANSWER_STATE_CANDIDATE_PENDING, None),
         (AnswerEvaluation(decision="UNCLEAR", is_relevant=False), ANSWER_STATE_CANDIDATE_PENDING, None),
     ],
@@ -76,7 +81,8 @@ def test_retrieval_never_still_runs_initial_evaluation() -> None:
     state, result, calls = _process(
         AnswerEvaluation(
             decision="CONFIRMABLE",
-            normalized_answer="候補",
+            normalized_answer="分析用要約",
+            record_answer="候補",
             retrieval_needed=False,
         ),
         policy="never",
@@ -101,14 +107,21 @@ def test_confirmation_question_uses_raw_answer_not_llm_summary() -> None:
 
 
 def test_confirmation_is_the_only_transition_that_saves_answer() -> None:
-    state, _, _ = _process(AnswerEvaluation(decision="CONFIRMABLE", normalized_answer="確定候補"))
-    processor = InterviewAnswerProcessor(evaluator=lambda **_: AnswerEvaluation(decision="UNCLEAR"))
+    state, _, _ = _process(
+        AnswerEvaluation(decision="CONFIRMABLE", normalized_answer="確定候補", record_answer="確定候補")
+    )
+    processor = InterviewAnswerProcessor(
+        evaluator=lambda **_: AnswerEvaluation(decision="UNCLEAR"),
+        confirmation_evaluator=lambda **_: ConfirmationEvaluation(
+            outcome="CONFIRM", record_answer="確定候補"
+        ),
+    )
 
     result = processor.process_turn_sync(
         record_id="record-1",
         question_id="question-1",
         field_id="field-1",
-        transcript="はい、そうです",
+        transcript="確認します",
         current_state=state,
         question={"questionId": "question-1", "text": "質問ですか？"},
         field={"id": "field-1", "name": "項目"},
@@ -120,19 +133,13 @@ def test_confirmation_is_the_only_transition_that_saves_answer() -> None:
     assert result.action == "confirmed"
     assert field_state["answerState"] == ANSWER_STATE_CONFIRMED
     assert field_state["answerSummary"] is None
-    assert field_state["recordAnswer"] == "回答"
+    assert field_state["recordAnswer"] == "確定候補"
     assert field_state["candidateAnswer"] is None
     assert state["completedFieldIds"] == ["field-1"]
     assert state["pendingFieldIds"] == []
 
 
-@pytest.mark.parametrize(
-    "confirmation_text",
-    ["はい", "はい、そうです", "はい、それで合っています", "問題ありません"],
-)
-def test_explicit_confirmation_phrases_confirm_the_held_candidate(
-    confirmation_text: str,
-) -> None:
+def test_confirmation_does_not_guess_from_user_words_without_llm_evaluation() -> None:
     state, _, _ = _process(AnswerEvaluation(decision="CONFIRMABLE", normalized_answer="確定候補"))
     evaluator_calls: list[str] = []
     processor = InterviewAnswerProcessor(
@@ -143,7 +150,7 @@ def test_explicit_confirmation_phrases_confirm_the_held_candidate(
         record_id="record-1",
         question_id="question-1",
         field_id="field-1",
-        transcript=confirmation_text,
+        transcript="はい",
         current_state=state,
         question={"questionId": "question-1", "text": "質問ですか？"},
         field={"id": "field-1", "name": "項目"},
@@ -152,9 +159,73 @@ def test_explicit_confirmation_phrases_confirm_the_held_candidate(
     )
 
     assert evaluator_calls == []
-    assert result.action == "confirmed"
+    assert result.action == "ask_follow_up"
     assert state["fieldStates"]["field-1"]["answerSummary"] is None
-    assert state["fieldStates"]["field-1"]["recordAnswer"] == "回答"
+    assert state["fieldStates"]["field-1"]["answerState"] == ANSWER_STATE_AWAITING_CONFIRMATION
+
+
+def test_confirmation_uses_llm_record_answer_and_captured_items() -> None:
+    state, _, _ = _process(
+        AnswerEvaluation(
+            decision="CONFIRMABLE",
+            normalized_answer="設備保全です",
+            record_answer="設備保全です",
+            captured_items=[{"itemId": "current_role", "value": "設備保全"}],
+        ),
+        transcript="設備保全です",
+    )
+    processor = InterviewAnswerProcessor(
+        evaluator=lambda **_: AnswerEvaluation(decision="UNCLEAR"),
+        confirmation_evaluator=lambda **_: ConfirmationEvaluation(
+            outcome="REVISE_WITH_CONTENT",
+            record_answer="保全管理です",
+            revised_answer="保全管理です",
+            captured_items=[{"itemId": "current_role", "value": "保全管理"}],
+        ),
+    )
+
+    correction = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-1",
+        field_id="field-1",
+        transcript="いいえ、保全管理です。",
+        current_state=state,
+        question={"questionId": "question-1", "text": "担当業務を教えてください。"},
+        field={"id": "field-1", "name": "担当業務"},
+        evidence_transcript_id="message-2",
+        retrieval_policy="never",
+    )
+
+    assert correction.action == "ask_confirmation"
+    assert state["fieldStates"]["field-1"]["rawAnswer"] == "いいえ、保全管理です。"
+    assert state["fieldStates"]["field-1"]["rawAnswerHistory"] == [
+        "設備保全です",
+        "いいえ、保全管理です。",
+    ]
+    assert state["fieldStates"]["field-1"]["candidateAnswer"] == "保全管理です"
+    assert state["fieldStates"]["field-1"]["capturedItems"] == [
+        {"itemId": "current_role", "value": "保全管理", "evidenceTranscriptIds": []}
+    ]
+
+    confirmed_processor = InterviewAnswerProcessor(
+        evaluator=lambda **_: AnswerEvaluation(decision="UNCLEAR"),
+        confirmation_evaluator=lambda **_: ConfirmationEvaluation(
+            outcome="CONFIRM", record_answer="保全管理です"
+        ),
+    )
+    confirmed_processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-1",
+        field_id="field-1",
+        transcript="はい",
+        current_state=state,
+        question={"questionId": "question-1", "text": "担当業務を教えてください。"},
+        field={"id": "field-1", "name": "担当業務"},
+        evidence_transcript_id="message-3",
+        retrieval_policy="never",
+    )
+
+    assert state["fieldStates"]["field-1"]["recordAnswer"] == "保全管理です"
 
 
 def test_knowledge_required_with_never_policy_does_not_confirm() -> None:
@@ -184,7 +255,8 @@ def test_knowledge_required_with_never_policy_does_not_confirm() -> None:
             "とりあえず機械が動いたので復旧としました。",
             AnswerEvaluation(
                 decision="NEEDS_MORE_INFORMATION",
-                normalized_answer="機械が動作したことを確認して復旧と判断した",
+                normalized_answer="分析用要約",
+                record_answer="機械が動作したことを確認して復旧と判断した",
                 is_relevant=True,
                 is_sufficient=False,
                 missing_information=["品質確認", "連続運転確認", "数値確認"],
@@ -197,7 +269,8 @@ def test_knowledge_required_with_never_policy_does_not_confirm() -> None:
             "圧入機Bの2号機です。あ、違う、Bじゃなくて圧入機Aの2号機です。",
             AnswerEvaluation(
                 decision="CONFIRMABLE",
-                normalized_answer="圧入機Aの2号機",
+                normalized_answer="分析用要約",
+                record_answer="圧入機Aの2号機",
                 is_relevant=True,
                 is_sufficient=True,
             ),
@@ -208,7 +281,8 @@ def test_knowledge_required_with_never_policy_does_not_confirm() -> None:
             "サーボ過負荷が出ました。ところで昨日の野球は面白かったです。",
             AnswerEvaluation(
                 decision="CONFIRMABLE",
-                normalized_answer="サーボ過負荷が発生した",
+                normalized_answer="分析用要約",
+                record_answer="サーボ過負荷が発生した",
                 is_relevant=True,
                 is_sufficient=True,
             ),
@@ -252,6 +326,7 @@ def test_previous_field_correction_does_not_update_current_field() -> None:
         evaluator=lambda **_: AnswerEvaluation(
             decision="CORRECT_PREVIOUS_FIELD",
             normalized_answer="圧入機Aの2号機",
+            record_answer="圧入機Aの2号機",
             target_field_id="field-1",
             follow_up_question="設備名を圧入機Aの2号機へ訂正してよろしいですか？",
         )
@@ -342,7 +417,12 @@ def test_question_plan_accumulates_required_items_across_turns() -> None:
             ),
         ]
     )
-    processor = InterviewAnswerProcessor(evaluator=lambda **_: next(evaluations))
+    processor = InterviewAnswerProcessor(
+        evaluator=lambda **_: next(evaluations),
+        confirmation_evaluator=lambda **_: ConfirmationEvaluation(
+            outcome="CONFIRM", record_answer="昨日です\n異音がします"
+        ),
+    )
 
     first = processor.process_turn_sync(
         record_id="record-1",

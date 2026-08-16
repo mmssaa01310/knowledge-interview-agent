@@ -69,6 +69,7 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
             field_state_lines.append(
                 f"- {field_id}: status={field_state.status}, answer_state={field_state.answerState}, "
                 f"candidate={field_state.candidateAnswer or 'none'}, "
+                f"record_answer={field_state.recordAnswer or 'none'}, "
                 f"answer_summary={field_state.answerSummary or 'none'}, "
                 f"missing={', '.join(field_state.missingInformation) or 'none'}"
             )
@@ -121,6 +122,9 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         interview_input.user_message or "none",
         "evaluation_contract:",
         "- Extract only capturedItems from the latest expert message and classify its meaning as ANSWERED, UNCLEAR, or IRRELEVANT.",
+        "- Generate recordAnswer as the natural answer text that should be recorded for the current question. Never use a meta explanation such as '回答されました'.",
+        "- When answer_state is AWAITING_CONFIRMATION, classify the latest expert message in context using confirmationOutcome. For a correction, recordAnswer must contain only the corrected answer, not confirmation language.",
+        "- For CONFIRM, return the current candidate as recordAnswer. For REVISE_WITH_CONTENT, return the latest consistent corrected answer and its capturedItems.",
         "- Do not merge with prior field state, calculate missing required items, or decide COMPLETE/NEEDS_FOLLOWUP. The backend does those deterministically from question_plan.",
         "- If a question_plan exists, capturedItems.itemId must be one of its requiredItems or optionalItems. Preserve the value exactly enough for the interview record.",
         "- Keep follow_up_question as a compatibility field; the backend decides whether it is needed and which required items are missing.",
@@ -191,6 +195,7 @@ def _normalize_output(
     follow_up_question = output.follow_up_question.strip() if isinstance(output.follow_up_question, str) and output.follow_up_question.strip() else None
     evaluation = output.field_evaluation
     answer_summary = evaluation.answerSummary.strip() if isinstance(evaluation.answerSummary, str) else ""
+    record_answer = evaluation.recordAnswer.strip() if isinstance(evaluation.recordAnswer, str) else ""
     missing_information = [
         item.strip()
         for item in evaluation.missingInformation
@@ -206,7 +211,7 @@ def _normalize_output(
     next_action = evaluation.nextAction if has_question_plan else ("next_field" if evaluation.isComplete else evaluation.nextAction)
     decision = evaluation.decision
     if decision is None:
-        if evaluation.isComplete and answer_summary:
+        if evaluation.isComplete and (answer_summary or record_answer):
             decision = "CONFIRMABLE"
         elif answer_summary:
             decision = "NEEDS_MORE_INFORMATION"
@@ -224,6 +229,7 @@ def _normalize_output(
                 update={
                     "fieldId": field_id or "unknown",
                     "answerSummary": answer_summary,
+                    "recordAnswer": record_answer,
                     "missingInformation": missing_information,
                     "nextAction": next_action,
                     "decision": decision,

@@ -85,6 +85,7 @@ class VoiceAnswerEvaluation:
     missing_information: list[str]
     follow_up_question: str | None
     evidence_transcript_ids: list[str]
+    record_answer: str = ""
     confirmation_question: str | None = None
     retrieval_needed: bool = False
     evaluation_reason: str | None = None
@@ -99,7 +100,10 @@ class VoiceAnswerEvaluation:
 class VoiceConfirmationEvaluation:
     outcome: Literal["CONFIRM", "REVISE_WITH_CONTENT", "REJECT_WITHOUT_CONTENT", "UNCLEAR"]
     revised_answer: str | None = None
+    record_answer: str | None = None
     clarification_question: str | None = None
+    captured_items: list[dict[str, Any]] = field(default_factory=list)
+    evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
 
 
 class VoiceAnswerEvaluationOutput(BaseModel):
@@ -111,6 +115,7 @@ class VoiceAnswerEvaluationOutput(BaseModel):
     follow_up_question: str | None = None
     confirmation_question: str | None = None
     evidence_transcript_ids: list[str] = Field(default_factory=list)
+    record_answer: str = ""
     retrieval_needed: bool = False
     evaluation_reason: str | None = None
     captured_items: list[CapturedInterviewItem] = Field(default_factory=list)
@@ -121,7 +126,9 @@ class VoiceAnswerEvaluationOutput(BaseModel):
 class VoiceConfirmationEvaluationOutput(BaseModel):
     outcome: Literal["CONFIRM", "REVISE_WITH_CONTENT", "REJECT_WITHOUT_CONTENT", "UNCLEAR"]
     revised_answer: str | None = None
+    record_answer: str | None = None
     clarification_question: str | None = None
+    captured_items: list[CapturedInterviewItem] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1057,6 +1064,7 @@ def _process_candidate_turn(
         return AnswerEvaluation(
             decision=evaluation.decision,
             normalized_answer=evaluation.normalized_answer,
+            record_answer=evaluation.record_answer,
             is_relevant=evaluation.is_relevant,
             is_sufficient=evaluation.is_sufficient,
             missing_information=list(evaluation.missing_information),
@@ -1140,33 +1148,31 @@ def _process_confirmation_turn(
         raise RuntimeError("candidate evaluation called while awaiting confirmation")
 
     def evaluate_confirmation(**kwargs: Any) -> ConfirmationEvaluation:
-        decision = _classify_explicit_voice_confirmation(kwargs["user_reply"])
-        if decision is None:
-            try:
-                decision = _evaluate_confirmation_response(
-                    current_question=current_question,
-                    candidate_answer=kwargs["candidate_answer"],
-                    user_reply=kwargs["user_reply"],
-                    field_state=field_state,
-                )
-            except Exception:
-                logger.exception(
-                    "voice_confirmation_evaluation_failed voice_session_id=%s turn_id=%s question_id=%s",
-                    session["id"],
-                    turn["id"],
-                    current_question_id,
-                )
-                decision = VoiceConfirmationEvaluation(
-                    outcome="UNCLEAR",
-                    clarification_question=(
-                        "内容を確定してよいか判断できませんでした。"
-                        "正しければ『はい』、修正があれば正しい内容を教えてください。"
-                    ),
-                )
+        try:
+            decision = _evaluate_confirmation_response(
+                current_question=current_question,
+                candidate_answer=kwargs["candidate_answer"],
+                user_reply=kwargs["user_reply"],
+                field_state=field_state,
+            )
+        except Exception:
+            logger.exception(
+                "voice_confirmation_evaluation_failed voice_session_id=%s turn_id=%s question_id=%s",
+                session["id"],
+                turn["id"],
+                current_question_id,
+            )
+            decision = VoiceConfirmationEvaluation(
+                outcome="UNCLEAR",
+                evaluation_status="EVALUATION_ERROR",
+            )
         return ConfirmationEvaluation(
             outcome=decision.outcome,
             revised_answer=decision.revised_answer,
+            record_answer=decision.record_answer,
             clarification_question=decision.clarification_question,
+            captured_items=decision.captured_items,
+            evaluation_status=decision.evaluation_status,
         )
 
     turn_result = InterviewAnswerProcessor(
@@ -1355,6 +1361,7 @@ def _evaluate_voice_answer_candidate(
     evaluation = VoiceAnswerEvaluation(
         decision=result.decision,
         normalized_answer=result.normalized_answer.strip(),
+        record_answer=result.record_answer.strip(),
         is_relevant=result.is_relevant,
         is_sufficient=result.is_sufficient,
         missing_information=[item.strip() for item in result.missing_information if item.strip()],
@@ -1379,13 +1386,14 @@ def _stabilize_voice_answer_evaluation(
 ) -> VoiceAnswerEvaluation:
     decision = evaluation.decision
     normalized_answer = evaluation.normalized_answer
+    record_answer = evaluation.record_answer
     is_relevant = evaluation.is_relevant
     is_sufficient = evaluation.is_sufficient
     missing_information = evaluation.missing_information
     follow_up_question = evaluation.follow_up_question
     captured_items = evaluation.captured_items
 
-    if decision == "CONFIRMABLE" and (normalized_answer or captured_items):
+    if decision == "CONFIRMABLE" and (normalized_answer or record_answer or captured_items):
         is_relevant = True
         is_sufficient = True
         missing_information = []
@@ -1401,6 +1409,7 @@ def _stabilize_voice_answer_evaluation(
         missing_information = []
     elif decision in {"NOT_ANSWER", "UNCLEAR"}:
         normalized_answer = ""
+        record_answer = ""
         is_relevant = False
         is_sufficient = False
         missing_information = []
@@ -1413,6 +1422,7 @@ def _stabilize_voice_answer_evaluation(
         missing_information=missing_information,
         follow_up_question=follow_up_question,
         evidence_transcript_ids=evaluation.evidence_transcript_ids,
+        record_answer=record_answer,
         confirmation_question=evaluation.confirmation_question,
         retrieval_needed=evaluation.retrieval_needed,
         evaluation_reason=evaluation.evaluation_reason,
@@ -1445,29 +1455,10 @@ def _evaluate_confirmation_response(
     return VoiceConfirmationEvaluation(
         outcome=result.outcome,
         revised_answer=result.revised_answer.strip() if isinstance(result.revised_answer, str) and result.revised_answer.strip() else None,
+        record_answer=result.record_answer.strip() if isinstance(result.record_answer, str) and result.record_answer.strip() else None,
         clarification_question=result.clarification_question.strip() if isinstance(result.clarification_question, str) and result.clarification_question.strip() else None,
+        captured_items=[item.model_dump() for item in result.captured_items],
     )
-
-
-def _classify_explicit_voice_confirmation(
-    user_reply: str,
-) -> VoiceConfirmationEvaluation | None:
-    compact_reply = "".join(user_reply.split()).replace("、", "").replace("。", "")
-    if compact_reply in {
-        "はい",
-        "はいそうです",
-        "そうです",
-        "そのとおりです",
-        "その通りです",
-        "合っています",
-        "問題ありません",
-    }:
-        return VoiceConfirmationEvaluation(
-            outcome="CONFIRM",
-            revised_answer=None,
-            clarification_question=None,
-        )
-    return None
 
 
 def _build_evaluation_fallback_prompt(current_question: dict[str, Any] | None) -> str:
@@ -1575,7 +1566,8 @@ def _voice_answer_evaluation_system_prompt() -> str:
         "過去の候補とのmerge、不足項目、COMPLETE/NEEDS_FOLLOWUPは判断しないでください。"
         "それらはbackendがquestionPlanを正本として決定します。\n"
         "normalized_answerは評価・確認用の分析値であり、正式な記録用回答ではありません。"
-        "ユーザー発話をメタ説明文へ変換して正式回答として保存しないでください。\n"
+        "record_answerは質問に対する記録用の自然な回答文だけを返し、ユーザー発話をメタ説明文へ変換しないでください。"
+        "確認待ちの訂正では訂正後の内容だけを返し、確認語はrecord_answerに含めないでください。\n"
         "推測で補完せず、不要語や訂正前の誤情報を本文へ残さないこと。\n"
         "回答の必須要素は、questionとfieldに明示された説明、回答要件、"
         "aiAssistPromptだけを根拠にしてください。一般的な期待を勝手に必須要素へ追加してはいけません。\n"
@@ -1598,7 +1590,10 @@ def _voice_confirmation_system_prompt() -> str:
         "あなたは音声インタビューの確認返答判定器です。\n"
         "確認待ちの候補回答とユーザー返答を見て、"
         "CONFIRM / REVISE_WITH_CONTENT / REJECT_WITHOUT_CONTENT / UNCLEAR を返してください。\n"
-        "『はい』『そうです』などを新しい回答本文にしてはいけません。"
+        "CONFIRMでは候補の回答内容だけをrecord_answerに返してください。"
+        "REVISE_WITH_CONTENTでは、訂正後の回答内容だけをrecord_answerに返し、"
+        "『はい』『いいえ』『違います』等の会話制御語やメタ説明を含めないでください。"
+        "同時に訂正後のcaptured_itemsを返してください。"
     )
 
 
@@ -1642,6 +1637,8 @@ def _build_voice_answer_evaluation_prompt(
                 "allowedDecisions": ["CONFIRMABLE", "NEEDS_MORE_INFORMATION", "NOT_ANSWER", "UNCLEAR"],
                 "allowedAnswerDispositions": ["ANSWERED", "UNCLEAR", "IRRELEVANT"],
                 "extractCurrentTurnItemsOnly": True,
+                "recordAnswerIsNaturalAnswerOnly": True,
+                "recordAnswerMustNotBeMetaSummary": True,
                 "backendOwnsCompletion": True,
                 "mustNotInfer": True,
                 "explicitRequirementsOnly": True,
@@ -1684,10 +1681,13 @@ def _build_voice_confirmation_prompt(
                 "answerState": field_state.get("answerState"),
                 "pendingQuestionId": field_state.get("pendingQuestionId"),
                 "pendingFieldId": field_state.get("pendingFieldId"),
+                "candidateItems": field_state.get("candidateItems") or field_state.get("capturedItems") or [],
             },
             "instructions": {
                 "allowedOutcomes": ["CONFIRM", "REVISE_WITH_CONTENT", "REJECT_WITHOUT_CONTENT", "UNCLEAR"],
                 "mustKeepPriorContextForRevision": True,
+                "recordAnswerIsAnswerOnly": True,
+                "extractCapturedItems": True,
             },
         },
         ensure_ascii=False,

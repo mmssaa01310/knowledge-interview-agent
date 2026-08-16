@@ -77,6 +77,7 @@ class InterviewFieldEvaluation(BaseModel):
     fieldId: str
     isComplete: bool = False
     answerSummary: str = ""
+    recordAnswer: str = ""
     missingInformation: list[str] = Field(default_factory=list)
     nextAction: Literal["follow_up", "next_field"] = "follow_up"
     decision: Literal[
@@ -93,6 +94,12 @@ class InterviewFieldEvaluation(BaseModel):
     retrievalNeeded: bool = False
     evaluationReason: str | None = None
     confirmationQuestion: str | None = None
+    confirmationOutcome: Literal[
+        "CONFIRM",
+        "REVISE_WITH_CONTENT",
+        "REJECT_WITHOUT_CONTENT",
+        "UNCLEAR",
+    ] | None = None
     capturedItems: list[CapturedInterviewItem] = Field(default_factory=list)
     answerDisposition: Literal["ANSWERED", "UNCLEAR", "IRRELEVANT"] | None = None
     evaluationStatus: Literal["OK", "EVALUATION_ERROR"] = "OK"

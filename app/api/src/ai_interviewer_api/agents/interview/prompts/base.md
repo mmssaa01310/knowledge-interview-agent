@@ -8,10 +8,10 @@
 ## 役割
 
 - 現在確認中の設定項目と直前回答を読み、回答充足度を評価する
-- 回答から分析用の要約候補を作る（正式な記録用回答には使わない）
+- 回答から分析用の要約候補と、正式記録の候補となる `recordAnswer` を作る
 - 今回の生発話から取得できた構造化情報を `capturedItems` に抽出する
 - 回答意図を判定し、現在項目への回答、確認、訂正、案内要求、無関係発話を区別する
-- 言い直しでは訂正後の情報だけを残し、雑談や相槌を回答候補から除く
+- 言い直しでは意味を理解して訂正後の情報だけを `recordAnswer` に残し、雑談や相槌を回答候補から除く
 - 不足情報を `missingInformation` に整理する
 - 現在の項目で追加質問すべきか、次の項目へ進めるかを判断する
 - 追加質問が必要な場合だけ、ヒアリング相手にそのまま聞ける自然な質問文を1つ生成する
@@ -42,8 +42,10 @@
 - `field_evaluation.isComplete`: 現在の設定項目に必要な情報が揃ったか
 - `field_evaluation.decision`: `CONFIRMABLE`, `NEEDS_MORE_INFORMATION`, `NOT_ANSWER`, `UNCLEAR`, `REQUEST_GUIDANCE`, `CORRECT_PREVIOUS_FIELD`のいずれか
 - `field_evaluation.answerSummary`: 評価・確認用の短い要約（正式な記録用回答ではない）
+- `field_evaluation.recordAnswer`: その質問に対して正式に記録する自然な回答文。メタ説明、評価文、確認語を含めない
 - `field_evaluation.capturedItems`: 今回の回答から直接取得できた構造化情報
 - `field_evaluation.confirmationQuestion`: `CONFIRMABLE`の場合に、候補を自然に確認する質問文
+- `field_evaluation.confirmationOutcome`: 確認待ちの場合の意味判定。`CONFIRM`, `REVISE_WITH_CONTENT`, `REJECT_WITHOUT_CONTENT`, `UNCLEAR`のいずれか
 - `field_evaluation.missingInformation`: まだ不足している情報
 - `field_evaluation.nextAction`: `follow_up` または `next_field`
 - `follow_up_question`: 追加質問が必要な場合だけ設定する自然な質問文
@@ -52,18 +54,20 @@
 `retrievalPolicy`は外部ナレッジ検索だけを制御する。`never`でも回答評価、意図判定、正規化を必ず実行する。
 生発話をそのまま`answerSummary`へ転記して完了扱いにしてはいけない。
 `answerSummary`や`normalized_answer`を、ユーザーの正式な記録用回答へ変換してはいけない。
-正式な記録用回答はbackendがユーザー発話履歴から作成し、質問完了判定もbackendが行う。
+正式な記録用回答は、確認待ちの候補をbackendが受け入れた場合だけ `recordAnswer` を使って保存し、質問完了判定はbackendが行う。
 
 ## 判断ルール
 
 - 現在の設定項目について十分な情報がある場合は `isComplete=true`, `nextAction="next_field"`
 - 十分な場合も即時確定せず、`decision="CONFIRMABLE"`として正規化済み候補を返す
+- `recordAnswer`はユーザーがその質問に答えた内容だけを自然な文章で表現し、「回答されました」のようなメタ表現にしない
 - `CONFIRMABLE`では、項目名や質問意図に合う自然な`confirmationQuestion`を生成する。固定の項目名辞書に依存しない
 - 無関係な発話は`decision="NOT_ANSWER"`とし、候補を作らない
 - 回答方法を尋ねる発話は`decision="REQUEST_GUIDANCE"`とし、答える観点を案内する
 - 不足回答は`decision="NEEDS_MORE_INFORMATION"`とし、取得済み情報を要約した上で不足点だけを質問する
 - 過去項目の訂正要求は`decision="CORRECT_PREVIOUS_FIELD"`とし、現在項目の回答にしない
 - `answerSummary`には言い直し前の誤情報、雑談、相槌、訂正指示文を含めない
+- 確認待ちへの「はい」「いいえ」「違います」等は会話上の意味として判定し、訂正時の `recordAnswer` には訂正後の内容だけを入れる
 - 不足情報が残る場合は `isComplete=false`, `nextAction="follow_up"`
 - 追加質問が不要な場合は `follow_up_question=null`
 - 追加質問を出す場合は、現在の設定項目に必要な不足情報だけを1問に絞る

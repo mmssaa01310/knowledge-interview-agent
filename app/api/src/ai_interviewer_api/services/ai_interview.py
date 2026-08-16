@@ -14,6 +14,7 @@ from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
+    ConfirmationEvaluation,
     InterviewAnswerProcessor,
     compose_record_answer,
 )
@@ -767,6 +768,7 @@ def _process_text_answer_turn(
         evaluation_retrieval_executed = bool(adapted_result.used_tools)
         evaluation = adapted_result.field_evaluation
         normalized_answer = str(evaluation.get("answerSummary") or "").strip()
+        record_answer = str(evaluation.get("recordAnswer") or "").strip()
         decision = evaluation.get("decision")
         if not decision:
             if bool(evaluation.get("isComplete")) and normalized_answer:
@@ -778,6 +780,7 @@ def _process_text_answer_turn(
         return AnswerEvaluation(
             decision=decision,
             normalized_answer=normalized_answer,
+            record_answer=record_answer,
             is_relevant=evaluation.get("isRelevant"),
             is_sufficient=bool(evaluation.get("isSufficient", evaluation.get("isComplete", False))),
             missing_information=list(evaluation.get("missingInformation") or []),
@@ -792,11 +795,46 @@ def _process_text_answer_turn(
             evaluation_status=evaluation.get("evaluationStatus", "OK"),
         )
 
-    turn_result = InterviewAnswerProcessor(evaluator=evaluate_text_answer).process_turn_sync(
+    def evaluate_text_confirmation(**_: Any) -> ConfirmationEvaluation:
+        adapted_result = run_adapted_interview_turn(
+            record,
+            knowledge,
+            messages,
+            knowledge_fields,
+            interview_state=interview_state,
+            current_question=current_question,
+        )
+        evaluation = adapted_result.field_evaluation
+        outcome = evaluation.get("confirmationOutcome")
+        allowed_outcomes = {
+            "CONFIRM",
+            "REVISE_WITH_CONTENT",
+            "REJECT_WITHOUT_CONTENT",
+            "UNCLEAR",
+        }
+        if outcome not in allowed_outcomes:
+            return ConfirmationEvaluation(
+                outcome="UNCLEAR",
+                clarification_question="内容を確定してよいか判断できませんでした。正しければ、確認するか正しい内容を教えてください。",
+            )
+        record_answer = str(evaluation.get("recordAnswer") or "").strip() or None
+        return ConfirmationEvaluation(
+            outcome=outcome,
+            record_answer=record_answer,
+            revised_answer=record_answer if outcome == "REVISE_WITH_CONTENT" else None,
+            clarification_question=adapted_result.follow_up_question
+            or evaluation.get("confirmationQuestion"),
+            captured_items=list(evaluation.get("capturedItems") or []),
+        )
+
+    turn_result = InterviewAnswerProcessor(
+        evaluator=evaluate_text_answer,
+        confirmation_evaluator=evaluate_text_confirmation,
+    ).process_turn_sync(
         record_id=record["id"],
         question_id=str(current_question.get("questionId") or ""),
         field_id=current_field_id,
-        transcript=str(latest_user_message.get("content") or "").strip(),
+        transcript=str(latest_user_message.get("content") or ""),
         current_state=interview_state,
         question=current_question,
         field=current_field,

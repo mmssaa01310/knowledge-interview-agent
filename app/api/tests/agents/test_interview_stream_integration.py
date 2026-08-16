@@ -204,6 +204,15 @@ def test_retrieval_never_still_evaluates_and_requires_confirmation(monkeypatch: 
                 "isRelevant": True,
                 "isSufficient": True,
                 "answerSummary": "圧入機A",
+                "recordAnswer": "圧入機Aです。",
+                "confirmationOutcome": (
+                    "CONFIRM"
+                    if kwargs.get("interview_state", {}).get("fieldStates", {})
+                    .get("field-1", {})
+                    .get("answerState")
+                    == "AWAITING_CONFIRMATION"
+                    else None
+                ),
                 "missingInformation": [],
                 "nextAction": "next_field",
             },
@@ -219,7 +228,7 @@ def test_retrieval_never_still_evaluates_and_requires_confirmation(monkeypatch: 
     assert calls == ["evaluated"]
     assert evaluated.metadata["retrievalPolicy"] == "never"
     assert field_state["answerState"] == "AWAITING_CONFIRMATION"
-    assert field_state["candidateAnswer"] == "圧入機A"
+    assert field_state["candidateAnswer"] == "圧入機Aです。"
     assert field_state["answerSummary"] is None
     assert state["completedFieldIds"] == []
 
@@ -241,12 +250,12 @@ def test_retrieval_never_still_evaluates_and_requires_confirmation(monkeypatch: 
 
     assert confirmed_state["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
     assert confirmed_state["fieldStates"]["field-1"]["answerSummary"] is None
-    assert confirmed_state["fieldStates"]["field-1"]["recordAnswer"] == "圧入機Bです。違う、圧入機Aです。"
+    assert confirmed_state["fieldStates"]["field-1"]["recordAnswer"] == "圧入機Aです。"
     assert [
         message["content"]
         for message in store.tables["messages"].values()
         if message.get("messageType") == "confirmed_answer"
-    ] == ["圧入機Bです。違う、圧入機Aです。"]
+    ] == ["圧入機Aです。"]
     assert confirmed_state["completedFieldIds"] == ["field-1"]
     assert confirmed.metadata["question"]["fieldId"] == "field-2"
 

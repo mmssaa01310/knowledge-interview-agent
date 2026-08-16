@@ -66,6 +66,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
                 return voice_interview_service.VoiceAnswerEvaluation(
                     decision="CONFIRMABLE",
                     normalized_answer="宮崎正之です。設備保全部で担当業務は設備保全です。",
+                    record_answer="宮崎正之です。設備保全部で担当業務は設備保全です。",
                     is_relevant=True,
                     is_sufficient=True,
                     missing_information=[],
@@ -75,6 +76,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
             return voice_interview_service.VoiceAnswerEvaluation(
                 decision="NEEDS_MORE_INFORMATION",
                 normalized_answer="宮崎正之",
+                record_answer="宮崎正之",
                 is_relevant=True,
                 is_sufficient=False,
                 missing_information=["所属", "担当業務"],
@@ -110,6 +112,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
         return voice_interview_service.VoiceAnswerEvaluation(
             decision="CONFIRMABLE",
             normalized_answer=normalized,
+            record_answer=normalized,
             is_relevant=True,
             is_sufficient=True,
             missing_information=[],
@@ -130,6 +133,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
             return voice_interview_service.VoiceConfirmationEvaluation(
                 outcome="CONFIRM",
                 revised_answer=None,
+                record_answer=candidate_answer,
                 clarification_question=None,
             )
         if compact in {"ダメです", "違います", "いいえ", "間違っています"}:
@@ -148,12 +152,14 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
             return voice_interview_service.VoiceConfirmationEvaluation(
                 outcome="REVISE_WITH_CONTENT",
                 revised_answer="宮崎まさし",
+                record_answer="宮崎まさし",
                 clarification_question=None,
             )
         if "宮崎健一" in text:
             return voice_interview_service.VoiceConfirmationEvaluation(
                 outcome="REVISE_WITH_CONTENT",
                 revised_answer="宮崎健一",
+                record_answer="宮崎健一",
                 clarification_question=None,
             )
         return voice_interview_service.VoiceConfirmationEvaluation(
@@ -472,9 +478,9 @@ def test_voice_turn_commits_only_after_explicit_confirmation(
     assert second_result["questionId"] == "q-002"
     assert state["completedFieldIds"] == [first_field_id]
     assert state["fieldStates"][first_field_id]["answerSummary"] is None
-    assert state["fieldStates"][first_field_id]["recordAnswer"] == "はい、宮崎です"
+    assert state["fieldStates"][first_field_id]["recordAnswer"] == "宮崎"
     assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
-    assert [message["content"] for message in messages if message.get("isActualUtterance") is False] == ["はい、宮崎です"]
+    assert [message["content"] for message in messages if message.get("isActualUtterance") is False] == ["宮崎"]
 
 
 def test_voice_confirmation_is_natural_and_reads_next_question(
@@ -503,15 +509,14 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
             confirmation_question=confirmation_question,
         )
 
-    def incorrectly_reject_confirmation(**kwargs):  # type: ignore[no-untyped-def]
+    def confirm_with_llm_record_answer(**kwargs):  # type: ignore[no-untyped-def]
         return voice_interview_service.VoiceConfirmationEvaluation(
-            outcome="REJECT_WITHOUT_CONTENT",
-            revised_answer=None,
-            clarification_question="承知しました。正しい回答内容をもう一度教えてください。",
+            outcome="CONFIRM",
+            record_answer=kwargs["candidate_answer"],
         )
 
     monkeypatch.setattr(voice_interview_service, "_evaluate_voice_answer_candidate", evaluate_answer)
-    monkeypatch.setattr(voice_interview_service, "_evaluate_confirmation_response", incorrectly_reject_confirmation)
+    monkeypatch.setattr(voice_interview_service, "_evaluate_confirmation_response", confirm_with_llm_record_answer)
 
     self_intro_turn = create_internal_voice_turn(
         session["id"],
@@ -528,10 +533,7 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
     assert confirmation_result["text"] == "具体的な趣味を教えてください。"
     assert confirmation_result["questionId"] == "q-002"
     assert store.get("voice_turns", self_intro_turn["id"])["lifecycleStatus"] == "COMMITTED"
-    assert (
-        store.get("voice_turns", confirmation_turn["id"])["lifecycleStatus"]
-        == "COMMITTED"
-    )
+    assert store.get("voice_turns", confirmation_turn["id"])["lifecycleStatus"] == "COMMITTED"
 
     hobby_turn = create_internal_voice_turn(
         session["id"],

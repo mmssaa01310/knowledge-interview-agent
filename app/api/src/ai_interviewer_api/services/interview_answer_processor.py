@@ -51,6 +51,7 @@ def compose_record_answer(raw_answers: list[str]) -> str:
 class AnswerEvaluation:
     decision: AnswerDecision
     normalized_answer: str = ""
+    record_answer: str = ""
     is_relevant: bool | None = None
     is_sufficient: bool = False
     missing_information: list[str] = field(default_factory=list)
@@ -69,7 +70,10 @@ class AnswerEvaluation:
 class ConfirmationEvaluation:
     outcome: ConfirmationOutcome
     revised_answer: str | None = None
+    record_answer: str | None = None
     clarification_question: str | None = None
+    captured_items: list[dict[str, Any]] = field(default_factory=list)
+    evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
 
 
 @dataclass(frozen=True)
@@ -220,6 +224,7 @@ class InterviewAnswerProcessor:
                 evaluation = AnswerEvaluation(
                     decision="NEEDS_MORE_INFORMATION",
                     normalized_answer=evaluation.normalized_answer,
+                    record_answer=evaluation.record_answer,
                     is_relevant=evaluation.is_relevant,
                     is_sufficient=False,
                     missing_information=evaluation.missing_information,
@@ -324,6 +329,12 @@ class InterviewAnswerProcessor:
         field_state["evaluationReason"] = evaluation.evaluation_reason or evaluation.decision
         field_state["candidateEvidenceTranscriptIds"] = list(evaluation.evidence_transcript_ids)
 
+        if evaluation.captured_items:
+            captured_items = _captured_items_by_id(field_state.get("capturedItems"))
+            captured_items.update(_captured_items_by_id(evaluation.captured_items))
+            field_state["capturedItems"] = list(captured_items.values())
+            field_state["candidateItems"] = list(captured_items.values())
+
         question_plan = _resolve_question_plan(question, field)
         if question_plan is not None:
             return self._apply_question_plan_evaluation(
@@ -343,12 +354,17 @@ class InterviewAnswerProcessor:
             target_field_id = evaluation.target_field_id
             if target_field_id and target_field_id in current_state.get("fieldStates", {}):
                 target = _ensure_field_state(current_state, target_field_id)
-                corrected_raw_answer = raw_answer.strip()
-                target["rawAnswer"] = corrected_raw_answer or target.get("rawAnswer")
-                target["rawAnswerHistory"] = [corrected_raw_answer] if corrected_raw_answer else []
+                corrected_raw_answer = str(raw_answer or "")
+                target["rawAnswer"] = (
+                    corrected_raw_answer if corrected_raw_answer.strip() else target.get("rawAnswer")
+                )
+                if corrected_raw_answer.strip():
+                    history = target.setdefault("rawAnswerHistory", [])
+                    if not history or history[-1] != corrected_raw_answer:
+                        history.append(corrected_raw_answer)
                 target["recordAnswer"] = None
                 target["candidateAnswer"] = (
-                    evaluation.normalized_answer.strip()
+                    evaluation.record_answer.strip()
                     or raw_answer.strip()
                     or target.get("candidateAnswer")
                 )
@@ -386,7 +402,8 @@ class InterviewAnswerProcessor:
 
         if evaluation.decision == "CONFIRMABLE" and raw_answer.strip():
             field_state["candidateAnswer"] = (
-                evaluation.normalized_answer.strip() or raw_answer.strip()
+                evaluation.record_answer.strip()
+                or raw_answer.strip()
             )
             field_state["answerState"] = ANSWER_STATE_AWAITING_CONFIRMATION
             field_state["pendingQuestionId"] = question_id
@@ -403,7 +420,8 @@ class InterviewAnswerProcessor:
 
         if raw_answer.strip() and evaluation.decision == "NEEDS_MORE_INFORMATION":
             field_state["candidateAnswer"] = (
-                evaluation.normalized_answer.strip() or raw_answer.strip()
+                evaluation.record_answer.strip()
+                or raw_answer.strip()
             )
         field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
         field_state["status"] = "asking"
@@ -464,7 +482,8 @@ class InterviewAnswerProcessor:
 
         if not missing_ids:
             candidate = (
-                compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
+                evaluation.record_answer.strip()
+                or compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
                 or raw_answer.strip()
                 or _render_captured_items(captured_items, required_items)
                 or str(field_state.get("candidateAnswer") or "").strip()
@@ -488,7 +507,8 @@ class InterviewAnswerProcessor:
                 )
 
         field_state["candidateAnswer"] = (
-            compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
+            evaluation.record_answer.strip()
+            or compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
             or raw_answer.strip()
             or _render_captured_items(captured_items, required_items)
             or str(field_state.get("candidateAnswer") or "").strip()
@@ -524,25 +544,42 @@ class InterviewAnswerProcessor:
         field_name: str,
         retrieval_policy: str,
     ) -> InterviewTurnResult:
-        confirmation = _explicit_confirmation(transcript)
-        if confirmation is None and self._confirmation_evaluator is not None:
-            confirmation = self._confirmation_evaluator(
-                candidate_answer=str(field_state.get("candidateAnswer") or "").strip(),
-                user_reply=transcript,
-                question=question,
-                field_state=field_state,
-            )
+        confirmation = None
+        if self._confirmation_evaluator is not None:
+            try:
+                confirmation = self._confirmation_evaluator(
+                    candidate_answer=str(field_state.get("candidateAnswer") or "").strip(),
+                    user_reply=transcript,
+                    question=question,
+                    field_state=field_state,
+                )
+            except Exception:  # noqa: BLE001 - confirmation failures are system errors
+                confirmation = ConfirmationEvaluation(
+                    outcome="UNCLEAR",
+                    evaluation_status="EVALUATION_ERROR",
+                )
         confirmation = confirmation or ConfirmationEvaluation(
             outcome="UNCLEAR",
             clarification_question="正しければ『はい』、修正があれば正しい内容を教えてください。",
         )
 
+        if confirmation.evaluation_status == "EVALUATION_ERROR":
+            return InterviewTurnResult(
+                decision="EVALUATION_ERROR",
+                action="ask_follow_up",
+                reply_text="回答処理で一時的な問題が発生しました。もう一度お答えください。",
+                question_id=question_id,
+                field_id=field_id,
+                retrieval_policy=retrieval_policy,
+                retrieval_executed=False,
+            )
+
         if confirmation.outcome == "CONFIRM":
             candidate = str(
-                field_state.get("recordAnswer")
-                or compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
-                or field_state.get("rawAnswer")
+                confirmation.record_answer
                 or field_state.get("candidateAnswer")
+                or field_state.get("recordAnswer")
+                or compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
             ).strip()
             if candidate:
                 field_state["answerState"] = ANSWER_STATE_CONFIRMED
@@ -554,6 +591,7 @@ class InterviewAnswerProcessor:
                     or field_state.get("candidateItems")
                     or field_state.get("confirmedItems")
                 )
+                captured_items.update(_captured_items_by_id(confirmation.captured_items))
                 field_state["capturedItems"] = list(captured_items.values())
                 field_state["confirmedItems"] = list(captured_items.values())
                 field_state["candidateItems"] = []
@@ -577,19 +615,22 @@ class InterviewAnswerProcessor:
                     retrieval_executed=False,
                 )
 
-        if confirmation.outcome == "REVISE_WITH_CONTENT" and confirmation.revised_answer:
-            revised_raw_answer = transcript.strip() or confirmation.revised_answer.strip()
-            field_state["rawAnswer"] = revised_raw_answer
-            field_state["rawAnswerHistory"] = [revised_raw_answer] if revised_raw_answer else []
-            field_state["candidateAnswer"] = (
-                confirmation.revised_answer.strip() or revised_raw_answer
-            )
+        revised_record_answer = str(
+            confirmation.record_answer or confirmation.revised_answer or ""
+        ).strip()
+        if confirmation.outcome == "REVISE_WITH_CONTENT" and revised_record_answer:
+            _append_raw_answer(field_state, transcript)
+            field_state["candidateAnswer"] = revised_record_answer
+            captured_items = _captured_items_by_id(field_state.get("capturedItems"))
+            captured_items.update(_captured_items_by_id(confirmation.captured_items))
+            field_state["capturedItems"] = list(captured_items.values())
+            field_state["candidateItems"] = list(captured_items.values())
             field_state["answerSummary"] = None
             field_state["answerState"] = ANSWER_STATE_AWAITING_CONFIRMATION
             return InterviewTurnResult(
                 decision=confirmation.outcome,
                 action="ask_confirmation",
-                reply_text=_confirmation_prompt(field_name, confirmation.revised_answer.strip()),
+                reply_text=_confirmation_prompt(field_name, revised_record_answer),
                 question_id=question_id,
                 field_id=field_id,
                 retrieval_policy=retrieval_policy,
@@ -669,8 +710,8 @@ def _should_capture_raw_answer(
 
 
 def _append_raw_answer(field_state: dict[str, Any], transcript: str) -> None:
-    raw_answer = transcript.strip()
-    if not raw_answer:
+    raw_answer = str(transcript or "")
+    if not raw_answer.strip():
         return
     field_state["rawAnswer"] = raw_answer
     history = field_state.setdefault("rawAnswerHistory", [])
@@ -748,28 +789,6 @@ def _missing_required_item_labels(
     )
     labels_by_id = {str(item["itemId"]): str(item["label"]) for item in items}
     return [labels_by_id.get(item_id, item_id) for item_id in item_ids]
-
-
-def _explicit_confirmation(transcript: str) -> ConfirmationEvaluation | None:
-    normalized = "".join(transcript.strip().lower().split()).strip("。.!！")
-    if normalized in {
-        "はい",
-        "そうです",
-        "はい、そうです",
-        "そのとおりです",
-        "合っています",
-        "はい、合っています",
-        "それで合っています",
-        "はい、それで合っています",
-        "問題ありません",
-    }:
-        return ConfirmationEvaluation(outcome="CONFIRM")
-    if normalized in {"いいえ", "違います", "ダメです", "間違っています"}:
-        return ConfirmationEvaluation(
-            outcome="REJECT_WITHOUT_CONTENT",
-            clarification_question="承知しました。どの部分が違いますか。正しい内容を教えてください。",
-        )
-    return None
 
 
 def _confirmation_prompt(field_name: str, candidate: str) -> str:
