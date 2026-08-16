@@ -59,6 +59,24 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     audioPlayEventAt?: number;
   }>({});
 
+  const cleanupVoiceTransport = useCallback(async (reason: string) => {
+    const voiceSessionId = voiceSessionRef.current?.id;
+    microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+    microphoneStreamRef.current = null;
+    const peer = peerRef.current;
+    peerRef.current = null;
+    peer?.stop();
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = null;
+    }
+    setStats({ microphoneTrackLive: false, remoteAudioTrackReceived: false });
+    setPartialTranscript("");
+    voiceSessionRef.current = null;
+    if (voiceSessionId) {
+      await deleteVoicePeerConnection(voiceSessionId, reason).catch(() => undefined);
+    }
+  }, [remoteAudioRef]);
+
   useEffect(() => {
     onMessageRef.current = onMessage;
     onInterviewStateChangedRef.current = onInterviewStateChanged;
@@ -71,20 +89,8 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     }
     stoppingRef.current = true;
     setStatus((current) => current === "completed" ? current : "stopping");
-    const voiceSessionId = voiceSessionRef.current?.id;
     try {
-      microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
-      microphoneStreamRef.current = null;
-      if (voiceSessionId) {
-        await deleteVoicePeerConnection(voiceSessionId, reason).catch(() => undefined);
-      }
-      peerRef.current?.stop();
-      peerRef.current = null;
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = null;
-      }
-      setStats({ microphoneTrackLive: false, remoteAudioTrackReceived: false });
-      setPartialTranscript("");
+      await cleanupVoiceTransport(reason);
       setConnectionState("closed");
       setStatus((current) => current === "completed" ? "completed" : "idle");
       onInterviewStateChangedRef.current();
@@ -92,7 +98,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       stoppingRef.current = false;
       startingRef.current = false;
     }
-  }, [remoteAudioRef]);
+  }, [cleanupVoiceTransport]);
 
   const handleEvent = useCallback((event: VoiceDataChannelEvent) => {
     switch (event.type) {
@@ -132,10 +138,9 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             onCompletedRef.current();
             break;
           case "INPUT_UNAVAILABLE":
-            microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
-            microphoneStreamRef.current = null;
             setMessage("音声認識を継続できません。テキスト入力をご利用ください。");
             setStatus("error");
+            void cleanupVoiceTransport("transcribe_unavailable");
             break;
           default:
             break;
@@ -244,7 +249,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       default:
         return;
     }
-  }, []);
+  }, [cleanupVoiceTransport]);
 
   const start = useCallback(async () => {
     if (startingRef.current || peerRef.current) {

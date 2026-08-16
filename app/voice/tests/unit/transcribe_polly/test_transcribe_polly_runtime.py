@@ -526,6 +526,11 @@ async def test_polly_failure_keeps_formal_text_and_emits_nonfatal_error() -> Non
         and event.fatal is False
         for event in events
     )
+    assert any(
+        isinstance(event, InputStateChanged)
+        and event.input_state == "ANSWER_LISTENING"
+        for event in events
+    )
     assert not any(
         isinstance(event, AssistantAudioChunk)
         and event.response_id == "response-text-only"
