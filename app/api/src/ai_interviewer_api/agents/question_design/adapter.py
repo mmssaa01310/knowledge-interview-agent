@@ -9,6 +9,7 @@ from ai_interviewer_api.agents.question_design.schemas import (
     QuestionDesignOutput,
 )
 from ai_interviewer_api.agents.question_design.service import DEFAULT_CLARIFICATION
+from ai_interviewer_api.models.interview_plan import InterviewPlan
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest, KnowledgeFieldCreate
 
 ALLOWED_INPUT_TYPES = {
@@ -28,6 +29,7 @@ class AdaptedQuestionDesignResult:
     reply: str
     fields: list[KnowledgeFieldCreate]
     used_tools: list[str]
+    interview_plan: InterviewPlan | None = None
 
 
 def build_question_design_input(payload: FieldSuggestionRequest) -> QuestionDesignInput:
@@ -69,6 +71,7 @@ def adapt_question_design_output(output: QuestionDesignOutput) -> AdaptedQuestio
             reply=DEFAULT_CLARIFICATION,
             fields=[],
             used_tools=list(output.used_tools),
+            interview_plan=output.interview_plan,
         )
 
     fields: list[KnowledgeFieldCreate] = []
@@ -84,12 +87,14 @@ def adapt_question_design_output(output: QuestionDesignOutput) -> AdaptedQuestio
                 aiQuestionExamples=[suggestion.question],
                 options=list(suggestion.options),
                 displayOrder=index,
+                questionPlan=suggestion.question_plan,
             )
         )
     return AdaptedQuestionDesignResult(
         reply=output.reply.strip(),
         fields=fields,
         used_tools=list(output.used_tools),
+        interview_plan=output.interview_plan,
     )
 
 

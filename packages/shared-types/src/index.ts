@@ -33,6 +33,11 @@ export type KnowledgeDb = BaseEntity & {
   knowledgeCount: number;
 };
 
+export type InterviewPlan = {
+  version?: number;
+  purpose?: string | null;
+};
+
 export type Knowledge = BaseEntity & {
   knowledgeDbId: string;
   name: string;
@@ -40,6 +45,7 @@ export type Knowledge = BaseEntity & {
   summary?: string;
   systemPrompt?: string;
   purpose?: string;
+  interviewPlan?: InterviewPlan | null;
   targetEquipment?: string;
   targetBusiness?: string;
   category?: string;

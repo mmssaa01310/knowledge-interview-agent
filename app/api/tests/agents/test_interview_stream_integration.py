@@ -8,6 +8,7 @@ import pytest
 from ai_interviewer_api.auth.deps import DEV_TOKENS
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers import records as records_router
+from ai_interviewer_api.schemas.requests import ChatMessageCreate
 from ai_interviewer_api.services import ai_interview
 
 
@@ -64,6 +65,29 @@ def _seed_stream_context() -> tuple[dict, object]:
     return record, user
 
 
+def test_control_text_turn_is_not_scoped_to_the_current_answer() -> None:
+    record, user = _seed_stream_context()
+    first = ai_interview.generate_interview_reply(record, user)
+    current_question_id = first.metadata["question"]["questionId"]
+
+    control = records_router.create_record_message(
+        record["id"],
+        ChatMessageCreate(content="インタビュー開始して"),
+        user,
+    )
+
+    assert control["proposalId"] is None
+    assert control["recordMessage"]["turnType"] == "CONTROL"
+    assert control["recordMessage"]["answerToQuestionId"] is None
+
+    ai_interview.generate_interview_reply(record, user)
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    field_state = state["fieldStates"]["field-1"]
+    assert state["currentQuestionId"] == current_question_id
+    assert field_state["rawAnswerHistory"] == []
+    assert field_state["capturedItems"] == []
+
+
 async def _no_sleep(_: float) -> None:
     return None
 
@@ -88,6 +112,64 @@ def test_generate_interview_reply_first_turn_adds_configured_question_metadata()
     assert result.metadata["assistantMessage"]["questionId"] == result.metadata["question"]["questionId"]
     saved_messages = list(store.tables["messages"].values())
     assert any(message.get("questionType") == "configured_field" for message in saved_messages)
+
+
+def test_legacy_summary_is_migrated_from_actual_user_utterance() -> None:
+    record, user = _seed_stream_context()
+    store.upsert(
+        "interview_states",
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "status": "completed",
+            "currentFieldId": None,
+            "currentQuestionId": None,
+            "completedFieldIds": ["field-1"],
+            "pendingFieldIds": ["field-2"],
+            "fieldStates": {
+                "field-1": {
+                    "fieldId": "field-1",
+                    "status": "completed",
+                    "answerState": "CONFIRMED",
+                    "answerSummary": "自己紹介として、宮崎という名前が回答されました。",
+                },
+            },
+        },
+    )
+    store.upsert(
+        "messages",
+        {
+            "id": "actual-answer-1",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "isActualUtterance": True,
+            "answerToFieldId": "field-1",
+            "content": "宮崎です",
+        },
+    )
+    store.upsert(
+        "messages",
+        {
+            "id": "confirmed-answer-1",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "isActualUtterance": False,
+            "messageType": "confirmed_answer",
+            "answerToFieldId": "field-1",
+            "content": "自己紹介として、宮崎という名前が回答されました。",
+        },
+    )
+
+    snapshot = ai_interview.get_interview_state_snapshot(record, user)
+    field_state = snapshot["interviewState"]["fieldStates"]["field-1"]
+
+    assert field_state["answerSummary"] is None
+    assert field_state["recordAnswer"] == "宮崎です"
+    assert snapshot["structuredDraft"]["現象"] == "宮崎です"
+    assert store.get("messages", "confirmed-answer-1")["content"] == "宮崎です"
 
 
 def test_retrieval_never_still_evaluates_and_requires_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,7 +240,13 @@ def test_retrieval_never_still_evaluates_and_requires_confirmation(monkeypatch: 
     confirmed_state = confirmed.metadata["interviewState"]
 
     assert confirmed_state["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
-    assert confirmed_state["fieldStates"]["field-1"]["answerSummary"] == "圧入機A"
+    assert confirmed_state["fieldStates"]["field-1"]["answerSummary"] is None
+    assert confirmed_state["fieldStates"]["field-1"]["recordAnswer"] == "圧入機Bです。違う、圧入機Aです。"
+    assert [
+        message["content"]
+        for message in store.tables["messages"].values()
+        if message.get("messageType") == "confirmed_answer"
+    ] == ["圧入機Bです。違う、圧入機Aです。"]
     assert confirmed_state["completedFieldIds"] == ["field-1"]
     assert confirmed.metadata["question"]["fieldId"] == "field-2"
 

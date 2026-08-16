@@ -44,6 +44,8 @@ export type KnowledgeLayoutProps = {
   setSettingsLanguage: (value: Knowledge["language"]) => void;
   settingsDefaultModelId: string;
   setSettingsDefaultModelId: (value: string) => void;
+  settingsInterviewPlan: Knowledge["interviewPlan"];
+  setSettingsInterviewPlan: (value: Knowledge["interviewPlan"]) => void;
   settingsNotice: string;
   newDbName: string;
   setNewDbName: (value: string) => void;
@@ -104,7 +106,7 @@ export type KnowledgeLayoutProps = {
   onDeleteRecord: (recordId: string) => void;
   onBulkApproveRecords: () => void;
   onSaveInterviewDraft: () => void;
-  onSaveInterviewAnswer: (fieldId: string, answerSummary: string) => Promise<void>;
+  onSaveInterviewAnswer: (fieldId: string, recordAnswer: string) => Promise<void>;
   onDeleteInterviewAnswers: () => void;
   onDeleteInterviewChat: () => void;
   onStartInterview: () => void;

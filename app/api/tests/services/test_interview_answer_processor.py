@@ -87,6 +87,19 @@ def test_retrieval_never_still_runs_initial_evaluation() -> None:
     assert state["fieldStates"]["field-1"]["candidateAnswer"] == "候補"
 
 
+def test_confirmation_question_uses_raw_answer_not_llm_summary() -> None:
+    _, result, _ = _process(
+        AnswerEvaluation(
+            decision="CONFIRMABLE",
+            normalized_answer="宮崎",
+            confirmation_question="自己紹介として、氏名が回答されました。という理解でよろしいですか？",
+        ),
+        transcript="宮崎です",
+    )
+
+    assert result.reply_text == "項目は「宮崎です」という理解でよろしいですか？"
+
+
 def test_confirmation_is_the_only_transition_that_saves_answer() -> None:
     state, _, _ = _process(AnswerEvaluation(decision="CONFIRMABLE", normalized_answer="確定候補"))
     processor = InterviewAnswerProcessor(evaluator=lambda **_: AnswerEvaluation(decision="UNCLEAR"))
@@ -106,7 +119,8 @@ def test_confirmation_is_the_only_transition_that_saves_answer() -> None:
     field_state = state["fieldStates"]["field-1"]
     assert result.action == "confirmed"
     assert field_state["answerState"] == ANSWER_STATE_CONFIRMED
-    assert field_state["answerSummary"] == "確定候補"
+    assert field_state["answerSummary"] is None
+    assert field_state["recordAnswer"] == "回答"
     assert field_state["candidateAnswer"] is None
     assert state["completedFieldIds"] == ["field-1"]
     assert state["pendingFieldIds"] == []
@@ -139,7 +153,8 @@ def test_explicit_confirmation_phrases_confirm_the_held_candidate(
 
     assert evaluator_calls == []
     assert result.action == "confirmed"
-    assert state["fieldStates"]["field-1"]["answerSummary"] == "確定候補"
+    assert state["fieldStates"]["field-1"]["answerSummary"] is None
+    assert state["fieldStates"]["field-1"]["recordAnswer"] == "回答"
 
 
 def test_knowledge_required_with_never_policy_does_not_confirm() -> None:
@@ -259,3 +274,261 @@ def test_previous_field_correction_does_not_update_current_field() -> None:
     assert state["fieldStates"]["field-1"]["answerSummary"] is None
     assert state["fieldStates"]["field-2"]["candidateAnswer"] is None
     assert "field-1" not in state["completedFieldIds"]
+
+
+def _planned_question() -> dict:
+    return {
+        "questionId": "question-1",
+        "text": "状況を教えてください。",
+        "questionPlan": {
+            "purpose": "発生状況を記録する",
+            "requiredItems": [
+                {"itemId": "when", "label": "発生時期"},
+                {"itemId": "symptom", "label": "症状"},
+            ],
+            "optionalItems": [{"itemId": "cause", "label": "推定原因"}],
+        },
+    }
+
+
+def test_question_plan_merges_multiple_captured_items_and_backend_completes() -> None:
+    state = _state()
+    processor = InterviewAnswerProcessor(
+        evaluator=lambda **_: AnswerEvaluation(
+            decision="NEEDS_MORE_INFORMATION",
+            captured_items=[
+                {"itemId": "when", "value": "昨日"},
+                {"itemId": "symptom", "value": "異音"},
+            ],
+            answer_disposition="ANSWERED",
+        )
+    )
+
+    result = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-1",
+        field_id="field-1",
+        transcript="昨日から異音がします",
+        current_state=state,
+        question=_planned_question(),
+        field={"id": "field-1", "name": "状況"},
+        evidence_transcript_id="message-1",
+        retrieval_policy="never",
+    )
+
+    assert result.decision == "COMPLETE"
+    assert result.action == "ask_confirmation"
+    assert result.completion_status == "COMPLETE"
+    assert result.missing_required_item_ids == []
+    assert {item["itemId"] for item in state["fieldStates"]["field-1"]["candidateItems"]} == {
+        "when",
+        "symptom",
+    }
+
+
+def test_question_plan_accumulates_required_items_across_turns() -> None:
+    state = _state()
+    evaluations = iter(
+        [
+            AnswerEvaluation(
+                decision="NEEDS_MORE_INFORMATION",
+                captured_items=[{"itemId": "when", "value": "昨日"}],
+                answer_disposition="ANSWERED",
+            ),
+            AnswerEvaluation(
+                decision="CONFIRMABLE",
+                captured_items=[{"itemId": "symptom", "value": "異音"}],
+                answer_disposition="ANSWERED",
+            ),
+        ]
+    )
+    processor = InterviewAnswerProcessor(evaluator=lambda **_: next(evaluations))
+
+    first = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-1",
+        field_id="field-1",
+        transcript="昨日です",
+        current_state=state,
+        question=_planned_question(),
+        field={"id": "field-1", "name": "状況"},
+        evidence_transcript_id="message-1",
+        retrieval_policy="never",
+    )
+    second = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-2",
+        field_id="field-1",
+        transcript="異音がします",
+        current_state=state,
+        question={**_planned_question(), "questionId": "question-2"},
+        field={"id": "field-1", "name": "状況"},
+        evidence_transcript_id="message-2",
+        retrieval_policy="never",
+    )
+
+    assert first.decision == "NEEDS_FOLLOWUP"
+    assert first.missing_required_item_ids == ["symptom"]
+    assert "症状" in first.reply_text
+    assert second.decision == "COMPLETE"
+    assert state["fieldStates"]["field-1"]["missingRequiredItemIds"] == []
+
+    confirmation = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-3",
+        field_id="field-1",
+        transcript="はい",
+        current_state=state,
+        question={**_planned_question(), "questionId": "question-3"},
+        field={"id": "field-1", "name": "状況"},
+        evidence_transcript_id="message-3",
+        retrieval_policy="never",
+    )
+
+    assert confirmation.action == "confirmed"
+    assert state["fieldStates"]["field-1"]["recordAnswer"] == "昨日です\n異音がします"
+    assert state["fieldStates"]["field-1"]["answerSummary"] is None
+
+
+def test_required_items_block_confirmation_until_all_items_are_captured() -> None:
+    state = _state()
+    evaluations = iter(
+        [
+            AnswerEvaluation(
+                decision="CONFIRMABLE",
+                normalized_answer="自己紹介として、氏名が回答されました。",
+                confirmation_question="自己紹介として、氏名が回答されました。という理解でよろしいですか？",
+                captured_items=[{"itemId": "name", "value": "宮崎"}],
+                answer_disposition="ANSWERED",
+            ),
+            AnswerEvaluation(
+                decision="CONFIRMABLE",
+                normalized_answer="自己紹介として、氏名と担当業務が回答されました。",
+                captured_items=[{"itemId": "role", "value": "設備保全"}],
+                answer_disposition="ANSWERED",
+            ),
+        ]
+    )
+    question = {
+        "questionId": "question-1",
+        "text": "自己紹介をお願いします。",
+        "questionPlan": {
+            "purpose": "自己紹介を記録する",
+            "requiredItems": [
+                {"itemId": "name", "label": "氏名"},
+                {"itemId": "role", "label": "担当業務"},
+            ],
+        },
+    }
+    processor = InterviewAnswerProcessor(evaluator=lambda **_: next(evaluations))
+
+    first = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-1",
+        field_id="field-1",
+        transcript="宮崎です",
+        current_state=state,
+        question=question,
+        field={"id": "field-1", "name": "自己紹介"},
+        evidence_transcript_id="message-1",
+        retrieval_policy="never",
+    )
+
+    assert first.decision == "NEEDS_FOLLOWUP"
+    assert first.action == "ask_follow_up"
+    assert first.missing_required_item_ids == ["role"]
+    assert first.reply_text == "担当業務について、具体的に教えてください。"
+    assert state["fieldStates"]["field-1"]["answerState"] == ANSWER_STATE_CANDIDATE_PENDING
+
+    second = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-2",
+        field_id="field-1",
+        transcript="設備保全です",
+        current_state=state,
+        question={**question, "questionId": "question-2"},
+        field={"id": "field-1", "name": "自己紹介"},
+        evidence_transcript_id="message-2",
+        retrieval_policy="never",
+    )
+
+    assert second.decision == "COMPLETE"
+    assert second.action == "ask_confirmation"
+    assert second.missing_required_item_ids == []
+    assert second.reply_text == "自己紹介は「宮崎です\n設備保全です」という理解でよろしいですか？"
+
+
+def test_confirmation_state_with_missing_required_items_is_reopened_as_follow_up() -> None:
+    state = _state()
+    state["fieldStates"] = {
+        "field-1": {
+            "fieldId": "field-1",
+            "answerState": ANSWER_STATE_AWAITING_CONFIRMATION,
+            "candidateAnswer": "宮崎です",
+            "missingRequiredItemIds": ["role"],
+            "capturedItems": [{"itemId": "name", "value": "宮崎"}],
+        },
+    }
+    processor = InterviewAnswerProcessor(
+        evaluator=lambda **_: pytest.fail("missing required items must not evaluate confirmation")
+    )
+
+    result = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-2",
+        field_id="field-1",
+        transcript="はい",
+        current_state=state,
+        question={
+            "questionId": "question-2",
+            "text": "自己紹介をお願いします。",
+            "questionPlan": {
+                "requiredItems": [
+                    {"itemId": "name", "label": "氏名"},
+                    {"itemId": "role", "label": "担当業務"},
+                ],
+            },
+        },
+        field={"id": "field-1", "name": "自己紹介"},
+        evidence_transcript_id="message-2",
+        retrieval_policy="never",
+    )
+
+    assert result.decision == "NEEDS_FOLLOWUP"
+    assert result.action == "ask_follow_up"
+    assert result.reply_text == "担当業務について、具体的に教えてください。"
+
+
+def test_evaluation_error_does_not_become_user_answer_failure() -> None:
+    state = _state()
+    state["fieldStates"] = {
+        "field-1": {
+            "fieldId": "field-1",
+            "status": "asking",
+            "answerState": ANSWER_STATE_CANDIDATE_PENDING,
+            "candidateAnswer": "既存候補",
+            "candidateItems": [{"itemId": "when", "value": "昨日"}],
+        }
+    }
+    processor = InterviewAnswerProcessor(
+        evaluator=lambda **_: AnswerEvaluation(
+            decision="UNCLEAR",
+            evaluation_status="EVALUATION_ERROR",
+        )
+    )
+
+    result = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-1",
+        field_id="field-1",
+        transcript="回答",
+        current_state=state,
+        question=_planned_question(),
+        field={"id": "field-1", "name": "状況"},
+        evidence_transcript_id="message-1",
+        retrieval_policy="never",
+    )
+
+    assert result.decision == "EVALUATION_ERROR"
+    assert "判断できませんでした" not in result.reply_text
+    assert state["fieldStates"]["field-1"]["candidateAnswer"] == "既存候補"

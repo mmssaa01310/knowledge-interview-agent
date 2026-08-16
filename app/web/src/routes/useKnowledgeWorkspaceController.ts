@@ -102,6 +102,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [settingsTargetEquipment, setSettingsTargetEquipment] = useState("");
   const [settingsLanguage, setSettingsLanguage] = useState<KnowledgeDb["language"]>("ja");
   const [settingsDefaultModelId, setSettingsDefaultModelId] = useState("");
+  const [settingsInterviewPlan, setSettingsInterviewPlan] = useState<Knowledge["interviewPlan"]>(undefined);
   const [draftFields, setDraftFields] = useState<KnowledgeField[]>([]);
   const [settingsNotice, setSettingsNotice] = useState("");
   const [isCreateKnowledgeDbDialogOpen, setIsCreateKnowledgeDbDialogOpen] = useState(false);
@@ -160,11 +161,12 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         fieldId: message.fieldId,
         answerToQuestionId: message.answerToQuestionId,
         answerToFieldId: message.answerToFieldId,
+        turnType: message.turnType,
         voiceSessionId: message.voiceSessionId,
         voiceTurnId: message.voiceTurnId,
         voiceResponseId: message.voiceResponseId,
         isActualUtterance: message.isActualUtterance,
-        isLegacy: !message.questionId && !message.answerToQuestionId,
+        isLegacy: !message.questionId && !message.answerToQuestionId && !message.turnType,
       }));
     setInterviewMessages((messages) => mergeVoiceMessages(messages, snapshotMessages));
     setStructuredDraft(snapshot.structuredDraft ?? {});
@@ -424,7 +426,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       targetBusiness: settingsTargetBusiness,
       targetEquipment: settingsTargetEquipment,
       language: settingsLanguage,
-      defaultModelId: settingsDefaultModelId
+      defaultModelId: settingsDefaultModelId,
+      interviewPlan: settingsInterviewPlan ?? null
     });
 
     const existingIds = fields.map((field) => field.id).filter(Boolean);
@@ -502,10 +505,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setRecordNotice("インタビュー状態は自動保存されています");
   }
 
-  async function handleSaveInterviewAnswer(fieldId: string, answerSummary: string) {
+  async function handleSaveInterviewAnswer(fieldId: string, recordAnswer: string) {
     if (!selectedRecord?.id) return;
     try {
-      await updateInterviewAnswer(selectedRecord.id, fieldId, answerSummary);
+      await updateInterviewAnswer(selectedRecord.id, fieldId, recordAnswer);
       await loadInterviewSnapshot(selectedRecord.id);
       setRecordNotice("回答を保存しました");
     } catch (error) {
@@ -560,6 +563,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     try {
       const response = await createRecordMessage(selectedRecord.id, {
         content,
+        turnType: target ? "ANSWER" : "CONTROL",
         answerToQuestionId: target?.questionId ?? null,
       });
       const userMessage = response.recordMessage;
@@ -573,6 +577,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         fieldId: userMessage.fieldId,
         answerToQuestionId: userMessage.answerToQuestionId,
         answerToFieldId: userMessage.answerToFieldId,
+        turnType: userMessage.turnType,
       }]);
       interviewStream.start(selectedRecord.id);
     } catch (error) {
@@ -696,6 +701,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsTargetEquipment(selectedKnowledge.targetEquipment ?? "");
     setSettingsLanguage(selectedKnowledge.language);
     setSettingsDefaultModelId(selectedKnowledge.defaultModelId ?? "");
+    setSettingsInterviewPlan(selectedKnowledge.interviewPlan ?? undefined);
     setSettingsNotice("");
   }, [selectedKnowledge?.id]);
 
@@ -778,6 +784,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsLanguage,
     settingsDefaultModelId,
     setSettingsDefaultModelId,
+    settingsInterviewPlan,
+    setSettingsInterviewPlan,
     settingsNotice,
     newDbName,
     setNewDbName,

@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from threading import Event
 
 import pytest
@@ -6,26 +7,40 @@ from fastapi import HTTPException
 
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
 from ai_interviewer_api.repositories.store import store
-from ai_interviewer_api.routers.knowledge_dbs import create_knowledge_db
-from ai_interviewer_api.routers.knowledge_fields import create_field
-from ai_interviewer_api.routers.knowledges import create_knowledge
-from ai_interviewer_api.routers.voice_sessions import (
-    create_record_voice_session,
-    get_record_voice_session,
-    stop_record_voice_session,
-)
 from ai_interviewer_api.routers.internal_voice import (
+    cancel_internal_voice_turn,
     claim_internal_initial_reply,
     create_internal_assistant_event,
     create_internal_voice_turn,
     mark_internal_initial_reply_sent,
     process_internal_voice_turn,
 )
+from ai_interviewer_api.routers.knowledge_dbs import create_knowledge_db
+from ai_interviewer_api.routers.knowledge_fields import create_field
+from ai_interviewer_api.routers.knowledges import create_knowledge
 from ai_interviewer_api.routers.records import create_record
-from ai_interviewer_api.schemas.requests import KnowledgeDbCreate, KnowledgeCreate, KnowledgeFieldCreate, RecordCreate
-from ai_interviewer_api.schemas.voice import AssistantEventCreate, VoiceSessionCreate, VoiceTurnCreate
-from ai_interviewer_api.services.ai_interview import InterviewStreamResult, generate_interview_reply
+from ai_interviewer_api.routers.voice_sessions import (
+    create_record_voice_session,
+    get_record_voice_session,
+    stop_record_voice_session,
+)
+from ai_interviewer_api.schemas.requests import (
+    KnowledgeCreate,
+    KnowledgeDbCreate,
+    KnowledgeFieldCreate,
+    RecordCreate,
+)
+from ai_interviewer_api.schemas.voice import (
+    AssistantEventCreate,
+    VoiceSessionCreate,
+    VoiceTurnCancel,
+    VoiceTurnCreate,
+)
 from ai_interviewer_api.services import voice_interview as voice_interview_service
+from ai_interviewer_api.services.ai_interview import (
+    InterviewStreamResult,
+    generate_interview_reply,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -335,6 +350,19 @@ def test_create_get_and_stop_voice_session() -> None:
     assert stopped["connectionStatus"] == "closed"
 
 
+def test_voice_session_preserves_transcribe_polly_provider() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+
+    session = create_record_voice_session(
+        record["id"],
+        VoiceSessionCreate(provider="transcribe_polly"),
+        user,
+    )
+
+    assert session["provider"] == "transcribe_polly"
+
+
 def test_initial_question_is_not_saved_as_chat_message_before_spoken() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_name_and_role_fields(user)
@@ -396,14 +424,14 @@ def test_voice_turn_requires_confirmation_before_answer_is_committed(
 
     assert result["retrievalPolicy"] == "never"
     assert result["retrievalExecuted"] is False
-    assert result["text"] == "氏名は「宮崎」という理解でよろしいですか？"
+    assert result["text"] == "氏名は「宮崎です」という理解でよろしいですか？"
     assert result["questionId"] == "q-001"
     assert snapshot["currentQuestionId"] == "q-001"
     assert state["completedFieldIds"] == []
     assert state["fieldStates"][field_id]["answerSummary"] is None
     assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
     assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎"
-    assert [message["role"] for message in messages] == ["user"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[0]["content"] == "宮崎です"
     assert messages[0]["voiceTurnId"] == turn["id"]
 
@@ -443,9 +471,10 @@ def test_voice_turn_commits_only_after_explicit_confirmation(
     assert second_result["text"] == "あなたの担当は？"
     assert second_result["questionId"] == "q-002"
     assert state["completedFieldIds"] == [first_field_id]
-    assert state["fieldStates"][first_field_id]["answerSummary"] == "宮崎"
+    assert state["fieldStates"][first_field_id]["answerSummary"] is None
+    assert state["fieldStates"][first_field_id]["recordAnswer"] == "はい、宮崎です"
     assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
-    assert [message["content"] for message in messages if message.get("isActualUtterance") is False] == ["宮崎"]
+    assert [message["content"] for message in messages if message.get("isActualUtterance") is False] == ["はい、宮崎です"]
 
 
 def test_voice_confirmation_is_natural_and_reads_next_question(
@@ -489,7 +518,7 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
         VoiceTurnCreate(transcript="田中です"),
     )
     self_intro_result = process_internal_voice_turn(session["id"], self_intro_turn["id"])
-    assert self_intro_result["text"] == "お名前が田中さんでよろしかったですか？"
+    assert self_intro_result["text"] == "自己紹介は「田中です」という理解でよろしいですか？"
 
     confirmation_turn = create_internal_voice_turn(
         session["id"],
@@ -498,19 +527,25 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
     confirmation_result = process_internal_voice_turn(session["id"], confirmation_turn["id"])
     assert confirmation_result["text"] == "具体的な趣味を教えてください。"
     assert confirmation_result["questionId"] == "q-002"
+    assert store.get("voice_turns", self_intro_turn["id"])["lifecycleStatus"] == "COMMITTED"
+    assert (
+        store.get("voice_turns", confirmation_turn["id"])["lifecycleStatus"]
+        == "COMMITTED"
+    )
 
     hobby_turn = create_internal_voice_turn(
         session["id"],
         VoiceTurnCreate(transcript="バスケです"),
     )
     hobby_result = process_internal_voice_turn(session["id"], hobby_turn["id"])
-    assert hobby_result["text"] == "バスケでいいですか？"
+    assert hobby_result["text"] == "趣味は「バスケです」という理解でよろしいですか？"
 
     state = store.get("interview_states", f"interview-state-{record['id']}")
     first_field_id = state["askedQuestions"][0]["fieldId"]
     second_field_id = state["askedQuestions"][1]["fieldId"]
     assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
-    assert state["fieldStates"][first_field_id]["answerSummary"] == "田中です"
+    assert state["fieldStates"][first_field_id]["answerSummary"] is None
+    assert state["fieldStates"][first_field_id]["recordAnswer"] == "田中です"
     assert state["fieldStates"][second_field_id]["answerState"] == "AWAITING_CONFIRMATION"
     assert state["fieldStates"][second_field_id]["answerSummary"] is None
 
@@ -538,6 +573,13 @@ def test_voice_turn_updates_candidate_on_correction_and_reconfirms() -> None:
     assert state["fieldStates"][field_id]["answerSummary"] is None
     assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎健一"
     assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
+    superseded_turn = store.get("voice_turns", first_turn["id"])
+    assert superseded_turn["lifecycleStatus"] == "SUPERSEDED"
+    assert superseded_turn["supersededByTurnId"] == correction_turn["id"]
+    assert (
+        store.get("voice_turns", correction_turn["id"])["lifecycleStatus"]
+        == "COMMITTED"
+    )
 
 
 def test_voice_turn_keeps_waiting_on_ambiguous_confirmation_reply() -> None:
@@ -582,7 +624,7 @@ def test_voice_turn_falls_back_to_clarification_when_ai_evaluation_fails(
     state = store.get("interview_states", f"interview-state-{record['id']}")
     field_id = state["currentFieldId"]
 
-    assert result["text"] == "回答内容を判断できませんでした。もう一度、あなたの名前は？"
+    assert result["text"] == "回答処理で一時的な問題が発生しました。もう一度お答えください。"
     assert result["questionId"] == "q-001"
     assert state["fieldStates"][field_id]["answerSummary"] is None
     assert state["fieldStates"][field_id]["answerState"] == "CANDIDATE_PENDING"
@@ -618,7 +660,7 @@ def test_voice_answer_evaluation_deadline_returns_fallback_and_discards_late_res
     elapsed = time.monotonic() - started_at
 
     assert elapsed < 2.0
-    assert result["text"] == "回答内容を判断できませんでした。もう一度、自己紹介をお願いします。"
+    assert result["text"] == "回答処理で一時的な問題が発生しました。もう一度お答えください。"
     state = store.get("interview_states", f"interview-state-{record['id']}")
     field_id = state["currentFieldId"]
     field_state = state["fieldStates"][field_id]
@@ -803,6 +845,35 @@ def test_create_voice_turn_defaults_answer_to_current_question() -> None:
     assert turn["sequence"] == 1
     assert turn["answerToQuestionId"] == session["currentQuestionId"]
     assert turn["processingStatus"] == "pending"
+    assert turn["lifecycleStatus"] == "RECEIVED"
+
+
+def test_control_voice_turn_has_no_answer_scope_or_candidate() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="インタビュー開始して", turnType="CONTROL"),
+    )
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    messages = [
+        row
+        for row in store.list("messages", user.tenant_id)
+        if row.get("recordId") == record["id"] and row.get("voiceTurnId") == turn["id"]
+    ]
+
+    assert turn["turnType"] == "CONTROL"
+    assert turn["answerToQuestionId"] is None
+    assert turn["processingMode"] == "control"
+    assert result["text"] == "承知しました。"
+    field_state = state["fieldStates"][state["currentFieldId"]]
+    assert field_state["rawAnswerHistory"] == []
+    assert field_state["capturedItems"] == []
+    assert messages[0]["turnType"] == "CONTROL"
+    assert messages[0]["answerToQuestionId"] is None
 
 
 def test_process_voice_turn_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -850,6 +921,7 @@ def test_process_voice_turn_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> No
     assert first["stateVersion"] == 2
     assert first["responseId"] == second["responseId"]
     assert second["voiceTurn"]["processingStatus"] == "completed"
+    assert second["voiceTurn"]["lifecycleStatus"] == "COMMITTED"
     assert second["voiceSession"]["currentQuestionId"] == "q-001"
 
 
@@ -877,7 +949,7 @@ def test_awaiting_confirmation_turn_is_idempotent() -> None:
     assert second["responseId"] == first["responseId"]
     assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
     assert state["fieldStates"][field_id]["answerSummary"] is None
-    assert len(messages) == 1
+    assert len(messages) == 2
 
 
 def test_finish_assistant_transcript_is_not_saved_as_chat_message() -> None:
@@ -947,3 +1019,182 @@ def test_stopped_voice_session_rejects_turns() -> None:
         create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="回答です"))
 
     assert exc_info.value.status_code == 409
+
+
+def test_client_turn_id_is_idempotent_and_rejects_different_payload() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    payload = VoiceTurnCreate(
+        transcript="回答です",
+        clientTurnId="client-turn-1",
+        expectedStateVersion=session["stateVersion"],
+    )
+
+    first = create_internal_voice_turn(session["id"], payload)
+    second = create_internal_voice_turn(session["id"], payload)
+
+    assert second["id"] == first["id"]
+    with pytest.raises(HTTPException) as exc_info:
+        create_internal_voice_turn(
+            session["id"],
+            VoiceTurnCreate(
+                transcript="異なる回答です",
+                clientTurnId="client-turn-1",
+                expectedStateVersion=session["stateVersion"],
+            ),
+        )
+    assert exc_info.value.detail == "turn_duplicate_conflict"
+
+
+def test_stale_state_version_rejects_turn_before_candidate_is_saved() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_internal_voice_turn(
+            session["id"],
+            VoiceTurnCreate(
+                transcript="古い回答です",
+                clientTurnId="client-turn-stale",
+                expectedStateVersion=session["stateVersion"] - 1,
+            ),
+        )
+
+    assert exc_info.value.detail == "turn_state_conflict"
+    assert store.list("voice_turns", user.tenant_id) == []
+
+
+def test_cancel_before_late_turn_save_creates_client_turn_tombstone() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    expected_version = session["stateVersion"]
+
+    result = cancel_internal_voice_turn(
+        session["id"],
+        VoiceTurnCancel(
+            clientTurnId="client-turn-late",
+            expectedStateVersion=expected_version,
+        ),
+    )
+
+    assert result["cancelled"] is True
+    with pytest.raises(HTTPException) as exc_info:
+        create_internal_voice_turn(
+            session["id"],
+            VoiceTurnCreate(
+                transcript="遅れて到着した回答です",
+                clientTurnId="client-turn-late",
+                expectedStateVersion=expected_version,
+            ),
+        )
+    assert exc_info.value.detail == "turn_cancelled"
+
+
+def test_cancel_committed_turn_is_rejected_without_rollback() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    expected_version = session["stateVersion"]
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="宮崎です",
+            clientTurnId="client-turn-cancel",
+            expectedStateVersion=expected_version,
+        ),
+    )
+    process_internal_voice_turn(session["id"], turn["id"])
+    committed_state = deepcopy(
+        store.get("interview_states", f"interview-state-{record['id']}")
+    )
+    committed_session = deepcopy(store.get("voice_sessions", session["id"]))
+    committed_field_id = committed_state["currentFieldId"]
+    committed_candidate = committed_state["fieldStates"][committed_field_id][
+        "candidateAnswer"
+    ]
+    committed_state_version = committed_session["stateVersion"]
+    committed_messages = [
+        deepcopy(row)
+        for row in store.list("messages", user.tenant_id)
+        if row.get("voiceTurnId") == turn["id"]
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        cancel_internal_voice_turn(
+            session["id"],
+            VoiceTurnCancel(
+                clientTurnId="client-turn-cancel",
+                expectedStateVersion=expected_version,
+            ),
+        )
+
+    assert exc_info.value.detail == "turn_already_committed"
+    assert (
+        store.get("interview_states", f"interview-state-{record['id']}")
+        == committed_state
+    )
+    assert store.get("voice_sessions", session["id"]) == committed_session
+    current_state = store.get("interview_states", f"interview-state-{record['id']}")
+    current_session = store.get("voice_sessions", session["id"])
+    assert (
+        current_state["fieldStates"][committed_field_id]["candidateAnswer"]
+        == committed_candidate
+    )
+    assert current_session["stateVersion"] == committed_state_version
+    assert [
+        row
+        for row in store.list("messages", user.tenant_id)
+        if row.get("voiceTurnId") == turn["id"]
+    ] == committed_messages
+    committed_turn = store.get("voice_turns", turn["id"])
+    assert committed_turn["processingStatus"] == "completed"
+    assert committed_turn["lifecycleStatus"] == "COMMITTED"
+
+
+def test_cancel_evaluating_turn_restores_pending_state_and_rejects_commit() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    expected_version = session["stateVersion"]
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="評価中の回答です",
+            clientTurnId="client-turn-evaluating",
+            expectedStateVersion=expected_version,
+        ),
+    )
+    base_state = deepcopy(
+        store.get("interview_states", f"interview-state-{record['id']}")
+    )
+    stored_turn = store.get("voice_turns", turn["id"])
+    stored_turn["processingStatus"] = "processing"
+    stored_turn["lifecycleStatus"] = "EVALUATING"
+    stored_turn["baseInterviewState"] = deepcopy(base_state)
+    current_field_id = base_state["currentFieldId"]
+    dirty_state = deepcopy(base_state)
+    dirty_state["fieldStates"][current_field_id]["candidateAnswer"] = "残してはいけない候補"
+    dirty_state["fieldStates"][current_field_id]["answerState"] = "AWAITING_CONFIRMATION"
+    store.upsert("interview_states", dirty_state)
+
+    result = cancel_internal_voice_turn(
+        session["id"],
+        VoiceTurnCancel(
+            clientTurnId="client-turn-evaluating",
+            expectedStateVersion=expected_version,
+        ),
+    )
+
+    assert result["cancelled"] is True
+    assert (
+        store.get("interview_states", f"interview-state-{record['id']}")
+        == base_state
+    )
+    cancelled_turn = store.get("voice_turns", turn["id"])
+    assert cancelled_turn["lifecycleStatus"] == "CANCELLED"
+    with pytest.raises(HTTPException) as exc_info:
+        process_internal_voice_turn(session["id"], turn["id"])
+    assert exc_info.value.detail == "turn_cancelled"

@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
+from ai_interviewer_api.models.interview_plan import InterviewPlan
+
 
 class ExistingQuestionField(BaseModel):
     name: str
@@ -43,6 +46,7 @@ class QuestionFieldSuggestion(BaseModel):
     ask_by_ai: bool = True
     options: list[str] = Field(default_factory=list)
     priority: int | None = None
+    question_plan: InterviewQuestionPlan | None = None
 
 
 class QuestionDesignOutput(BaseModel):
@@ -51,6 +55,7 @@ class QuestionDesignOutput(BaseModel):
     clarification_question: str | None = None
     reason: str | None = None
     suggestions: list[QuestionFieldSuggestion] = Field(default_factory=list)
+    interview_plan: InterviewPlan | None = None
     used_tools: list[str] = Field(default_factory=list)
 
 

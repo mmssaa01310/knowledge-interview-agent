@@ -50,6 +50,7 @@ def build_interview_turn_input(
         target_equipment=_normalize_text(record.get("targetEquipment") or knowledge.get("targetEquipment")),
         record_title=_normalize_text(record.get("title")),
         custom_prompt=_normalize_text(knowledge.get("systemPrompt")),
+        interview_plan=knowledge.get("interviewPlan"),
         user_message=_resolve_latest_user_message(conversation_history),
         conversation_history=conversation_history,
         approved_fields=approved_fields,
@@ -95,6 +96,8 @@ def run_adapted_interview_turn(
 def _build_conversation_history(messages: Sequence[Mapping[str, Any]]) -> list[InterviewMessage]:
     history: list[InterviewMessage] = []
     for message in messages:
+        if message.get("turnType") == "CONTROL":
+            continue
         content = _normalize_text(message.get("content"))
         if not content:
             continue
@@ -108,6 +111,7 @@ def _build_conversation_history(messages: Sequence[Mapping[str, Any]]) -> list[I
                 fieldId=_normalize_text(message.get("fieldId")),
                 answerToQuestionId=_normalize_text(message.get("answerToQuestionId")),
                 answerToFieldId=_normalize_text(message.get("answerToFieldId")),
+                turnType=message.get("turnType"),
                 isLegacy=not bool(message.get("questionId") or message.get("answerToQuestionId")),
             )
         )
@@ -136,6 +140,7 @@ def _build_approved_fields(knowledge_fields: Sequence[Mapping[str, Any]]) -> lis
                 inputType=_normalize_text(field.get("inputType")),
                 required=bool(field.get("required", False)),
                 retrievalPolicy=_normalize_retrieval_policy(field.get("retrievalPolicy")),
+                questionPlan=field.get("questionPlan"),
             )
         )
     return items

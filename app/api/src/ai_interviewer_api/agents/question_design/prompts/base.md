@@ -28,7 +28,14 @@ FAQ回答エージェントでもありません。
 - `needs_info` の場合は `suggestions` を空配列にする
 - `needs_info` の場合は、追加情報が必要だと判断する
 - `suggestions` は質問項目候補の配列
+- `interview_plan` にはインタビュー全体の目的だけを入れ、個別質問の必須情報は各候補の `question_plan` に入れる
+- `interview_plan.purpose` はナレッジ全体で何を記録するかを表し、質問ごとの目的や完了条件を重複して書かない
 - 各候補には `label` と `question` を必ず含める
+- 各候補には、その質問が取得したい目的と、質問完了に必須の情報を `question_plan` として定義する
+- `question_plan.requiredItems` は、回答から取得できたかを判定できる粒度の項目にする
+- `question_plan.optionalItems` は、取得できれば有用だが未取得でも質問完了とする項目にする
+- `question_plan.completionCriteria.mode` は `all_required_items` とする
+- `requiredItems` がない質問は作らず、質問文だけから実行時に完了条件を推測させない
 - `reply` は提案の導入文または補足文にする
 - 提案数は必要最小限に絞り、本当に必要な観点だけを返す
 - 候補数は原則 3 件から 5 件までに抑える

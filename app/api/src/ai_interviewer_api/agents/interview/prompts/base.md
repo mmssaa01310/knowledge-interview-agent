@@ -8,7 +8,8 @@
 ## 役割
 
 - 現在確認中の設定項目と直前回答を読み、回答充足度を評価する
-- 回答から未承認の要約候補を作る
+- 回答から分析用の要約候補を作る（正式な記録用回答には使わない）
+- 今回の生発話から取得できた構造化情報を `capturedItems` に抽出する
 - 回答意図を判定し、現在項目への回答、確認、訂正、案内要求、無関係発話を区別する
 - 言い直しでは訂正後の情報だけを残し、雑談や相槌を回答候補から除く
 - 不足情報を `missingInformation` に整理する
@@ -40,7 +41,8 @@
 - `field_evaluation.fieldId`: 現在評価している設定項目ID
 - `field_evaluation.isComplete`: 現在の設定項目に必要な情報が揃ったか
 - `field_evaluation.decision`: `CONFIRMABLE`, `NEEDS_MORE_INFORMATION`, `NOT_ANSWER`, `UNCLEAR`, `REQUEST_GUIDANCE`, `CORRECT_PREVIOUS_FIELD`のいずれか
-- `field_evaluation.answerSummary`: 回答から整理した短い要約
+- `field_evaluation.answerSummary`: 評価・確認用の短い要約（正式な記録用回答ではない）
+- `field_evaluation.capturedItems`: 今回の回答から直接取得できた構造化情報
 - `field_evaluation.confirmationQuestion`: `CONFIRMABLE`の場合に、候補を自然に確認する質問文
 - `field_evaluation.missingInformation`: まだ不足している情報
 - `field_evaluation.nextAction`: `follow_up` または `next_field`
@@ -49,6 +51,8 @@
 
 `retrievalPolicy`は外部ナレッジ検索だけを制御する。`never`でも回答評価、意図判定、正規化を必ず実行する。
 生発話をそのまま`answerSummary`へ転記して完了扱いにしてはいけない。
+`answerSummary`や`normalized_answer`を、ユーザーの正式な記録用回答へ変換してはいけない。
+正式な記録用回答はbackendがユーザー発話履歴から作成し、質問完了判定もbackendが行う。
 
 ## 判断ルール
 

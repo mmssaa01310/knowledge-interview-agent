@@ -78,12 +78,15 @@ def suggest_fields_with_bedrock(payload: FieldSuggestionRequest, user: UserConte
     if not suggested_fields and not reply:
         reply = "既存項目は維持しつつ、追加で深掘りしたい観点があれば教えてください。"
 
-    return {
+    response = {
         "reply": reply,
         "fields": suggested_fields,
         "modelId": model_id,
         "bedrockInvoked": True,
     }
+    if adapted.interview_plan is not None:
+        response["interviewPlan"] = adapted.interview_plan.model_dump()
+    return response
 
 
 def _map_bedrock_client_error(exc: ClientError) -> HTTPException:

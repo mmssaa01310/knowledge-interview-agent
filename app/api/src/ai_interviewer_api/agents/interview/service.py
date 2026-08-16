@@ -60,7 +60,7 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         for message in interview_input.conversation_history
     ]
     field_lines = [
-        f"- {field.name} | field_id: {field.fieldId or 'none'} | question_examples: {', '.join(field.aiQuestionExamples) if field.aiQuestionExamples else 'none'}"
+        f"- {field.name} | field_id: {field.fieldId or 'none'} | question_examples: {', '.join(field.aiQuestionExamples) if field.aiQuestionExamples else 'none'} | question_plan: {_format_question_plan(field.questionPlan)}"
         for field in interview_input.approved_fields
     ]
     field_state_lines = []
@@ -92,12 +92,15 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         *(knowledge_context_lines or ["- none"]),
         "runtime_custom_prompt:",
         interview_input.custom_prompt or "none",
+        "interview_plan:",
+        _format_interview_plan(interview_input.interview_plan),
         "current_field:",
         f"- id: {interview_input.current_field.fieldId if interview_input.current_field else 'none'}",
         f"- name: {interview_input.current_field.name if interview_input.current_field else 'none'}",
         f"- description: {interview_input.current_field.description if interview_input.current_field and interview_input.current_field.description else 'none'}",
         f"- retrieval_policy: {interview_input.current_field.retrievalPolicy if interview_input.current_field else 'auto'}",
         f"- question_examples: {', '.join(interview_input.current_field.aiQuestionExamples) if interview_input.current_field and interview_input.current_field.aiQuestionExamples else 'none'}",
+        f"- question_plan: {_format_question_plan(interview_input.current_field.questionPlan if interview_input.current_field else None)}",
         "current_question:",
         f"- id: {interview_input.current_question.questionId if interview_input.current_question else 'none'}",
         f"- type: {interview_input.current_question.questionType if interview_input.current_question else 'none'}",
@@ -116,6 +119,11 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         *(history_lines or ["- none"]),
         "latest_expert_message:",
         interview_input.user_message or "none",
+        "evaluation_contract:",
+        "- Extract only capturedItems from the latest expert message and classify its meaning as ANSWERED, UNCLEAR, or IRRELEVANT.",
+        "- Do not merge with prior field state, calculate missing required items, or decide COMPLETE/NEEDS_FOLLOWUP. The backend does those deterministically from question_plan.",
+        "- If a question_plan exists, capturedItems.itemId must be one of its requiredItems or optionalItems. Preserve the value exactly enough for the interview record.",
+        "- Keep follow_up_question as a compatibility field; the backend decides whether it is needed and which required items are missing.",
         "Return the interview field evaluation response using the structured output contract.",
     ]
     return "\n".join(sections)
@@ -153,8 +161,9 @@ def _coerce_output(result: Any, interview_input: InterviewTurnInput) -> Intervie
             answerSummary="",
             missingInformation=[],
             nextAction="follow_up",
+            evaluationStatus="EVALUATION_ERROR",
         ),
-        follow_up_question=DEFAULT_FOLLOW_UP_QUESTION,
+        follow_up_question=None,
         used_tools=[],
     )
 
@@ -190,7 +199,11 @@ def _normalize_output(
     field_id = evaluation.fieldId or (
         interview_input.current_field.fieldId if interview_input.current_field else "unknown"
     )
-    next_action = "next_field" if evaluation.isComplete else evaluation.nextAction
+    has_question_plan = bool(
+        (interview_input.current_question and interview_input.current_question.questionPlan)
+        or (interview_input.current_field and interview_input.current_field.questionPlan)
+    )
+    next_action = evaluation.nextAction if has_question_plan else ("next_field" if evaluation.isComplete else evaluation.nextAction)
     decision = evaluation.decision
     if decision is None:
         if evaluation.isComplete and answer_summary:
@@ -221,3 +234,33 @@ def _normalize_output(
             "used_tools": merged_used_tools,
         }
     )
+
+
+def _format_question_plan(plan: Any) -> str:
+    if plan is None:
+        return "none"
+    if hasattr(plan, "model_dump"):
+        plan = plan.model_dump()
+    if not isinstance(plan, dict):
+        return "none"
+    required = ", ".join(
+        f"{item.get('itemId')}: {item.get('label')}"
+        for item in plan.get("requiredItems", [])
+        if isinstance(item, dict)
+    ) or "none"
+    optional = ", ".join(
+        f"{item.get('itemId')}: {item.get('label')}"
+        for item in plan.get("optionalItems", [])
+        if isinstance(item, dict)
+    ) or "none"
+    return f"purpose={plan.get('purpose') or 'none'}; required=[{required}]; optional=[{optional}]"
+
+
+def _format_interview_plan(plan: Any) -> str:
+    if plan is None:
+        return "none"
+    if hasattr(plan, "model_dump"):
+        plan = plan.model_dump()
+    if not isinstance(plan, dict):
+        return "none"
+    return f"version={plan.get('version', 1)}; purpose={plan.get('purpose') or 'none'}"

@@ -1,15 +1,25 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class VoiceSessionCreate(BaseModel):
-    provider: str = "nova_sonic"
+    provider: Literal["nova_sonic", "transcribe_polly"] = "nova_sonic"
 
 
 class VoiceTurnCreate(BaseModel):
     transcript: str
+    turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None
+    clientTurnId: str | None = None
+    expectedStateVersion: int | None = None
     startedAtMs: int | None = None
     endedAtMs: int | None = None
+
+
+class VoiceTurnCancel(BaseModel):
+    clientTurnId: str
+    expectedStateVersion: int
 
 
 class AssistantEventCreate(BaseModel):

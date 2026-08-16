@@ -21,12 +21,13 @@ test("raw voice transcript is hidden from answer area before confirmation", () =
   );
 });
 
-test("confirmed answer summary is visible in answer area", () => {
+test("confirmed record answer is visible in answer area", () => {
   assert.equal(
     shouldUseVoiceAnswerSummary({
       fieldId: "field-1",
       status: "asking",
-      answerSummary: "宮崎健一",
+      answerSummary: "自己紹介として、宮崎健一という名前が回答されました。",
+      recordAnswer: "宮崎です",
       missingInformation: [],
       answerState: "CONFIRMED",
     }),
@@ -47,24 +48,45 @@ test("awaiting confirmation answer summary is not visible in answer area", () =>
   );
 });
 
-test("only confirmed answer summary is returned for answer area", () => {
+test("only confirmed record answer is returned for answer area", () => {
   assert.equal(
     getInterviewAnswerValue({
       fieldId: "field-1",
       status: "asking",
-      answerSummary: "宮崎正之",
+      answerSummary: "自己紹介として、宮崎正之という名前が回答されました。",
+      recordAnswer: "宮崎正之です",
       answerState: "CONFIRMED",
     }),
-    "宮崎正之",
+    "宮崎正之です",
   );
   assert.equal(
     getInterviewAnswerValue({
       fieldId: "field-1",
       status: "asking",
       answerSummary: "候補",
+      recordAnswer: null,
       answerState: "AWAITING_CONFIRMATION",
     }),
     "",
+  );
+});
+
+test("answer summary alone is never displayed as a formal answer", () => {
+  assert.equal(
+    getInterviewAnswerValue({
+      answerState: "CONFIRMED",
+      answerSummary: "自己紹介として、宮崎という名前が回答されました。",
+      recordAnswer: null,
+    }),
+    "",
+  );
+  assert.equal(
+    shouldUseVoiceAnswerSummary({
+      answerState: "CONFIRMED",
+      answerSummary: "自己紹介として、宮崎という名前が回答されました。",
+      recordAnswer: null,
+    }),
+    false,
   );
 });
 
@@ -85,7 +107,11 @@ test("draft fallback is hidden until the field is confirmed", () => {
   );
   assert.equal(
     getInterviewDisplayAnswer(
-      { answerState: "CONFIRMED", answerSummary: "確定済み" },
+      {
+        answerState: "CONFIRMED",
+        answerSummary: "メタ要約",
+        recordAnswer: "ユーザー発話",
+      },
       "編集中",
     ),
     "編集中",

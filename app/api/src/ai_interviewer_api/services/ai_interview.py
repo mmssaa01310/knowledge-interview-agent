@@ -15,6 +15,7 @@ from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
     InterviewAnswerProcessor,
+    compose_record_answer,
 )
 
 
@@ -276,15 +277,37 @@ def _generate_interview_stream_result_with_strands(
     messages = _list_record_messages(record, user)
     knowledge_fields = _list_interview_fields(knowledge, user)
     interview_state = _load_or_initialize_interview_state(record, knowledge_fields, user)
+    _migrate_formal_record_answers(interview_state, messages, user)
     field_lookup = _build_field_lookup(knowledge_fields)
 
     if interview_state["status"] == "completed":
         result = _build_finish_result(record, interview_state, messages, field_lookup)
         return InterviewStreamResult(reply_chunks=_split_reply_chunks(result["reply"]), metadata=result)
 
-    latest_user_message = _latest_user_message(messages)
     last_processed_user_message_id = interview_state.get("lastProcessedUserMessageId")
     current_question = _get_current_question(interview_state)
+    latest_user_turn = _latest_user_turn(messages)
+    latest_user_message = _latest_user_message(
+        messages,
+        current_question.get("questionId") if current_question else None,
+    )
+
+    if (
+        current_question is not None
+        and latest_user_turn is not None
+        and latest_user_turn.get("turnType") == "CONTROL"
+        and latest_user_turn.get("id") != last_processed_user_message_id
+    ):
+        result = _acknowledge_control_turn(
+            record,
+            interview_state,
+            current_question,
+            messages,
+            latest_user_turn,
+            user,
+            persist_assistant_message=persist_assistant_messages,
+        )
+        return InterviewStreamResult(reply_chunks=_split_reply_chunks(result["reply"]), metadata=result)
 
     if current_question is None or latest_user_message is None or latest_user_message.get("id") == last_processed_user_message_id:
         result = _ask_next_configured_field(
@@ -355,6 +378,10 @@ def _load_or_initialize_interview_state(record: dict, knowledge_fields: list[dic
             "fieldId": field_id,
             "status": "pending",
             "answerSummary": None,
+            "rawAnswer": None,
+            "rawAnswerHistory": [],
+            "recordAnswer": None,
+            "capturedItems": [],
             "missingInformation": [],
             "answerState": "UNANSWERED",
             "candidateAnswer": None,
@@ -416,6 +443,10 @@ def _sync_interview_state_fields(
             "fieldId": field_id,
             "status": "pending",
             "answerSummary": None,
+            "rawAnswer": None,
+            "rawAnswerHistory": [],
+            "recordAnswer": None,
+            "capturedItems": [],
             "missingInformation": [],
             "answerState": "UNANSWERED",
             "candidateAnswer": None,
@@ -455,15 +486,172 @@ def _migrate_legacy_answer_states(interview_state: dict[str, Any]) -> bool:
     return changed
 
 
+def _migrate_formal_record_answers(
+    interview_state: dict[str, Any],
+    messages: list[dict],
+    user: UserContext,
+) -> bool:
+    """Backfill formal answers from actual user utterances, never from LLM summaries."""
+    changed = False
+    for field_id, field_state in interview_state.setdefault("fieldStates", {}).items():
+        raw_history = [
+            str(answer).strip()
+            for answer in field_state.get("rawAnswerHistory") or []
+            if str(answer).strip()
+        ]
+        if not raw_history:
+            field_questions = [
+                question
+                for question in interview_state.get("askedQuestions", [])
+                if question.get("fieldId") == field_id
+            ]
+            raw_history = [
+                str(message.get("content") or "").strip()
+                for message in messages
+                if message.get("role") == "user"
+                and message.get("isActualUtterance") is True
+                and message.get("answerToFieldId") == field_id
+                and _is_legacy_or_answer_turn(
+                    message,
+                    {
+                        question.get("questionId") for question in field_questions
+                    },
+                    allow_unscoped_legacy=not field_questions,
+                )
+                and str(message.get("content") or "").strip()
+            ]
+            if raw_history:
+                field_state["rawAnswerHistory"] = raw_history
+                field_state["rawAnswer"] = raw_history[-1]
+                changed = True
+
+        if field_state.get("answerState") != "CONFIRMED":
+            continue
+        record_answer = str(field_state.get("recordAnswer") or "").strip()
+        if not record_answer and raw_history:
+            record_answer = compose_record_answer(raw_history)
+            field_state["recordAnswer"] = record_answer
+            changed = True
+        if not record_answer:
+            continue
+
+        if field_state.get("answerSummary") is not None:
+            field_state["answerSummary"] = None
+            changed = True
+        for message in messages:
+            if (
+                message.get("messageType") == "confirmed_answer"
+                and message.get("answerToFieldId") == field_id
+                and message.get("content") != record_answer
+            ):
+                message["content"] = record_answer
+                message["updatedByUserId"] = user.user_id
+                message["updatedAt"] = utc_now()
+                store.upsert("messages", message)
+                changed = True
+
+    if changed:
+        _persist_interview_state(interview_state, user)
+    return changed
+
+
 def _build_interview_state_id(record_id: str) -> str:
     return f"interview-state-{record_id}"
 
 
-def _latest_user_message(messages: list[dict]) -> dict[str, Any] | None:
+def _latest_user_message(
+    messages: list[dict],
+    current_question_id: str | None,
+) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if (
+            message.get("role") == "user"
+            and _is_legacy_or_answer_turn(message, {current_question_id})
+        ):
+            return message
+    return None
+
+
+def _latest_user_turn(messages: list[dict]) -> dict[str, Any] | None:
     for message in reversed(messages):
         if message.get("role") == "user":
             return message
     return None
+
+
+def _acknowledge_control_turn(
+    record: dict,
+    interview_state: dict[str, Any],
+    current_question: dict[str, Any],
+    messages: list[dict],
+    control_turn: dict[str, Any],
+    user: UserContext,
+    *,
+    persist_assistant_message: bool,
+) -> dict[str, Any]:
+    """Keep control turns outside answer processing while preserving the UI flow."""
+    interview_state["lastProcessedUserMessageId"] = control_turn.get("id")
+    assistant_message = (
+        _save_assistant_message(
+            user,
+            record["id"],
+            str(current_question.get("text") or "").strip(),
+            question=current_question,
+        )
+        if persist_assistant_message
+        else None
+    )
+    _persist_interview_state(interview_state, user)
+    all_messages = [*messages, assistant_message] if assistant_message else messages
+    return _build_agent_result_payload(
+        action="ask_configured_field",
+        reply=str(current_question.get("text") or "").strip(),
+        question=current_question,
+        completed_field_id=None,
+        current_field_id=current_question.get("fieldId"),
+        answer_summary=None,
+        missing_information=[],
+        used_tools=[],
+        interview_state=interview_state,
+        assistant_message=assistant_message,
+        structured_draft=_build_structured_draft(
+            interview_state,
+            _build_field_lookup(
+                _list_interview_fields(
+                    store.get("knowledges", record["knowledgeId"]) or {},
+                    user,
+                )
+            ),
+        ),
+        messages=all_messages,
+        retrieval_policy=str(current_question.get("retrievalPolicy") or RetrievalPolicy.AUTO.value),
+        retrieval_executed=False,
+    )
+
+
+def _is_legacy_or_answer_turn(
+    message: dict[str, Any],
+    question_ids: set[Any],
+    *,
+    allow_unscoped_legacy: bool = False,
+) -> bool:
+    """Accept pre-turnType rows only at the scoped legacy boundary.
+
+    Newly created interview turns always carry ANSWER/CONTROL. Existing rows
+    predate that field, so an explicitly question-linked legacy row remains
+    readable without reintroducing content-based filtering.
+    """
+    if message.get("turnType") == "CONTROL":
+        return False
+    if message.get("turnType") == "ANSWER":
+        return message.get("answerToQuestionId") in question_ids
+    return (
+        message.get("turnType") is None
+        and (
+            message.get("answerToQuestionId") in question_ids
+            or (allow_unscoped_legacy and not question_ids)
+        )
+    )
 
 
 def _get_current_question(interview_state: dict[str, Any]) -> dict[str, Any] | None:
@@ -516,6 +704,10 @@ def _ask_next_configured_field(
             "fieldId": next_field["id"],
             "status": "pending",
             "answerSummary": None,
+            "rawAnswer": None,
+            "rawAnswerHistory": [],
+            "recordAnswer": None,
+            "capturedItems": [],
             "missingInformation": [],
             "answerState": "UNANSWERED",
             "candidateAnswer": None,
@@ -595,6 +787,9 @@ def _process_text_answer_turn(
             retrieval_needed=bool(evaluation.get("retrievalNeeded", False)),
             evaluation_reason=evaluation.get("evaluationReason"),
             evidence_transcript_ids=[latest_user_message["id"]],
+            captured_items=list(evaluation.get("capturedItems") or []),
+            answer_disposition=evaluation.get("answerDisposition"),
+            evaluation_status=evaluation.get("evaluationStatus", "OK"),
         )
 
     turn_result = InterviewAnswerProcessor(evaluator=evaluate_text_answer).process_turn_sync(
@@ -616,7 +811,13 @@ def _process_text_answer_turn(
             record_id=record["id"],
             question_id=turn_result.question_id,
             field_id=confirmed_field_id,
-            content=str(interview_state["fieldStates"][confirmed_field_id].get("answerSummary") or ""),
+            content=str(
+                interview_state["fieldStates"][confirmed_field_id].get("recordAnswer")
+                or compose_record_answer(
+                    list(interview_state["fieldStates"][confirmed_field_id].get("rawAnswerHistory") or [])
+                )
+                or ""
+            ),
             user=user,
         )
         interview_state["currentFieldId"] = None
@@ -634,6 +835,7 @@ def _process_text_answer_turn(
     follow_up_question = _build_follow_up_question(
         turn_result.field_id,
         turn_result.reply_text,
+        question_plan=current_field.get("questionPlan"),
         retrieval_policy=turn_result.retrieval_policy,
     )
     assistant_message = (
@@ -648,7 +850,7 @@ def _process_text_answer_turn(
     if field_state.get("answerState") == "AWAITING_CONFIRMATION":
         field_state["pendingQuestionId"] = follow_up_question["questionId"]
         field_state["pendingFieldId"] = turn_result.field_id
-    elif turn_result.decision == "NEEDS_MORE_INFORMATION":
+    elif turn_result.decision in {"NEEDS_MORE_INFORMATION", "NEEDS_FOLLOWUP"}:
         counts = interview_state.setdefault("followUpCounts", {})
         counts[turn_result.field_id] = int(counts.get(turn_result.field_id, 0)) + 1
     _persist_interview_state(interview_state, user)
@@ -670,6 +872,9 @@ def _process_text_answer_turn(
         messages=all_messages,
     )
     payload["decision"] = turn_result.decision
+    payload["completionStatus"] = turn_result.completion_status
+    payload["missingRequiredItemIds"] = list(turn_result.missing_required_item_ids)
+    payload["answerDisposition"] = turn_result.answer_disposition
     return payload
 
 
@@ -720,6 +925,17 @@ def _build_agent_result_payload(
     status: str | None = None,
 ) -> dict[str, Any]:
     effective_status = status or interview_state.get("status") or "in_progress"
+    result_field_id = completed_field_id or current_field_id
+    result_record_answer = (
+        str(
+            interview_state.get("fieldStates", {})
+            .get(result_field_id, {})
+            .get("recordAnswer")
+            or ""
+        ).strip()
+        if result_field_id
+        else None
+    ) or None
     agent_result = InterviewAgentResult(
         status="completed" if effective_status == "completed" else "in_progress",
         action=action,
@@ -728,6 +944,7 @@ def _build_agent_result_payload(
         completedFieldId=completed_field_id,
         currentFieldId=current_field_id,
         answerSummary=answer_summary,
+        recordAnswer=result_record_answer,
         missingInformation=missing_information,
         used_tools=used_tools,
     )
@@ -771,6 +988,7 @@ def _build_configured_question(field: dict[str, Any], interview_state: dict[str,
         "fieldId": field.get("id"),
         "text": text,
         "retrievalPolicy": _field_retrieval_policy(field).value,
+        "questionPlan": field.get("questionPlan"),
     }
 
 
@@ -778,6 +996,7 @@ def _build_follow_up_question(
     field_id: str | None,
     text: str,
     *,
+    question_plan: dict[str, Any] | None = None,
     retrieval_policy: str = RetrievalPolicy.AUTO.value,
 ) -> dict[str, Any]:
     return {
@@ -786,6 +1005,7 @@ def _build_follow_up_question(
         "fieldId": field_id,
         "text": text.strip(),
         "retrievalPolicy": retrieval_policy,
+        "questionPlan": question_plan,
     }
 
 
@@ -893,6 +1113,7 @@ def _save_confirmed_answer_message(
         "role": "user",
         "isActualUtterance": False,
         "messageType": "confirmed_answer",
+        "turnType": "ANSWER",
         "createdAt": utc_now(),
         "updatedAt": utc_now(),
         "answerToQuestionId": question_id,
@@ -911,12 +1132,12 @@ def _persist_interview_state(interview_state: dict[str, Any], user: UserContext)
 def _build_structured_draft(interview_state: dict[str, Any], field_lookup: dict[str, dict[str, Any]]) -> dict[str, str]:
     draft: dict[str, str] = {}
     for field_id, field_state in interview_state.get("fieldStates", {}).items():
-        answer_summary = str(field_state.get("answerSummary") or "").strip()
-        if not answer_summary:
+        record_answer = str(field_state.get("recordAnswer") or "").strip()
+        if not record_answer:
             continue
         field_name = str(field_lookup.get(field_id, {}).get("name") or field_id).strip()
         if field_name:
-            draft[field_name] = answer_summary
+            draft[field_name] = record_answer
     return draft
 
 
@@ -940,6 +1161,7 @@ def get_interview_state_snapshot(record: dict, user: UserContext) -> dict[str, A
     knowledge_fields = _list_interview_fields(knowledge, user)
     interview_state = _load_or_initialize_interview_state(record, knowledge_fields, user)
     messages = _list_record_messages(record, user)
+    _migrate_formal_record_answers(interview_state, messages, user)
     return {
         "status": interview_state.get("status", "in_progress"),
         "interviewState": interview_state,

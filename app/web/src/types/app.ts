@@ -45,6 +45,10 @@ export type InterviewFieldState = {
   missingInformation: string[];
   answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
   candidateAnswer?: string | null;
+  rawAnswer?: string | null;
+  rawAnswerHistory?: string[];
+  recordAnswer?: string | null;
+  capturedItems?: Array<{ itemId: string; value: string; evidenceTranscriptIds?: string[] }>;
   candidateEvidenceTranscriptIds?: string[];
   needsClarification?: boolean;
   clarificationQuestion?: string | null;
@@ -73,6 +77,7 @@ export type ChatMessage = {
   fieldId?: string | null;
   answerToQuestionId?: string;
   answerToFieldId?: string | null;
+  turnType?: "ANSWER" | "CONTROL";
   voiceSessionId?: string | null;
   voiceTurnId?: string | null;
   voiceResponseId?: string | null;
@@ -94,6 +99,7 @@ export type InterviewStreamMetadata = {
   completedFieldId: string | null;
   currentFieldId: string | null;
   answerSummary: string | null;
+  recordAnswer?: string | null;
   missingInformation: string[];
   used_tools: string[];
   assistantMessage?: ChatMessage | null;

@@ -13,32 +13,39 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, Literal
 from uuid import uuid4
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from ai_interviewer_api.agents.common.strands_runtime import create_agent, create_voice_evaluation_bedrock_model
-from ai_interviewer_api.core.config import settings
-from fastapi import HTTPException
-
+from ai_interviewer_api.agents.common.strands_runtime import (
+    create_agent,
+    create_voice_evaluation_bedrock_model,
+)
 from ai_interviewer_api.auth.deps import UserContext
+from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import VoiceSession, VoiceTurn
-from ai_interviewer_api.repositories import voice_session_repository, voice_turn_repository
+from ai_interviewer_api.models.interview_plan import CapturedInterviewItem
+from ai_interviewer_api.repositories import (
+    voice_session_repository,
+    voice_turn_repository,
+)
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
 from ai_interviewer_api.schemas.voice import (
     AssistantEventCreate,
     ConnectionEventCreate,
     VoiceSessionCreate,
+    VoiceTurnCancel,
     VoiceTurnCreate,
 )
 from ai_interviewer_api.services.ai_interview import (
     _field_retrieval_policy,
-    _get_current_question,
     _persist_interview_state,
     generate_interview_reply,
     get_interview_state_snapshot,
@@ -47,13 +54,13 @@ from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
     ConfirmationEvaluation,
     InterviewAnswerProcessor,
+    compose_record_answer,
 )
 from ai_interviewer_api.services.voice_evaluation_deadline import (
     VoiceEvaluationDeadlineExceeded,
     VoiceEvaluationRequest,
     run_with_evaluation_deadline,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +90,9 @@ class VoiceAnswerEvaluation:
     evaluation_reason: str | None = None
     evaluation_degraded: bool = False
     degraded_reason: str | None = None
+    captured_items: list[dict[str, Any]] = field(default_factory=list)
+    answer_disposition: Literal["ANSWERED", "UNCLEAR", "IRRELEVANT"] | None = None
+    evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
 
 
 @dataclass(frozen=True)
@@ -103,6 +113,9 @@ class VoiceAnswerEvaluationOutput(BaseModel):
     evidence_transcript_ids: list[str] = Field(default_factory=list)
     retrieval_needed: bool = False
     evaluation_reason: str | None = None
+    captured_items: list[CapturedInterviewItem] = Field(default_factory=list)
+    answer_disposition: Literal["ANSWERED", "UNCLEAR", "IRRELEVANT"] | None = None
+    evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
 
 
 class VoiceConfirmationEvaluationOutput(BaseModel):
@@ -186,20 +199,59 @@ def stop_voice_session(voice_session_id: str, user: UserContext) -> dict:
 def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
     _ensure_session_accepts_turns(session)
+    if (
+        payload.clientTurnId
+        and payload.clientTurnId in session.get("cancelledClientTurnIds", [])
+    ):
+        raise HTTPException(status_code=409, detail="turn_cancelled")
+    if payload.clientTurnId:
+        existing = next(
+            (
+                item
+                for item in voice_turn_repository.list_for_session(
+                    session["tenantId"],
+                    voice_session_id,
+                )
+                if item.get("clientTurnId") == payload.clientTurnId
+            ),
+            None,
+        )
+        if existing is not None:
+            if (
+                existing.get("transcript") == payload.transcript.strip()
+                and existing.get("expectedStateVersion") == payload.expectedStateVersion
+            ):
+                return existing
+            raise HTTPException(status_code=409, detail="turn_duplicate_conflict")
+    if (
+        payload.expectedStateVersion is not None
+        and int(session.get("stateVersion") or 0) != payload.expectedStateVersion
+    ):
+        raise HTTPException(status_code=409, detail="turn_state_conflict")
     interview_state = store.get("interview_states", f"interview-state-{session['recordId']}") or {}
-    question_id = payload.answerToQuestionId or session.get("currentQuestionId")
-    question = _find_question_by_id(interview_state, question_id)
-    field_id = question.get("fieldId") if question else None
-    if not question_id or not field_id:
-        raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
-    field_state = _ensure_voice_field_state(interview_state, field_id)
-    processing_mode = (
-        "confirmation_reply"
-        if field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION
-        and field_state.get("pendingQuestionId") == question_id
-        and field_state.get("pendingFieldId") == field_id
-        else "answer_evaluation"
-    )
+    turn_type = payload.turnType
+    question_id = payload.answerToQuestionId
+    question = None
+    field_id = None
+    processing_mode = "control"
+    if turn_type == "ANSWER":
+        # Keep the legacy voice client default, but persist the resolved target
+        # so every stored answer turn has an explicit question scope.
+        question_id = question_id or session.get("currentQuestionId")
+        if question_id != session.get("currentQuestionId"):
+            raise HTTPException(status_code=409, detail="turn_question_conflict")
+        question = _find_question_by_id(interview_state, question_id)
+        field_id = question.get("fieldId") if question else None
+        if not question_id or not field_id:
+            raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
+        field_state = _ensure_voice_field_state(interview_state, field_id)
+        processing_mode = (
+            "confirmation_reply"
+            if field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION
+            and field_state.get("pendingQuestionId") == question_id
+            and field_state.get("pendingFieldId") == field_id
+            else "answer_evaluation"
+        )
     turn = VoiceTurn(
         tenantId=session["tenantId"],
         createdByUserId=session["ownerUserId"] or session["createdByUserId"],
@@ -209,6 +261,9 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         recordId=session["recordId"],
         sequence=int(session.get("lastTurnSequence") or 0) + 1,
         transcript=payload.transcript.strip(),
+        turnType=turn_type,
+        clientTurnId=payload.clientTurnId,
+        expectedStateVersion=payload.expectedStateVersion,
         answerToQuestionId=question_id,
         answerToFieldId=field_id,
         processingMode=processing_mode,
@@ -220,6 +275,70 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     session["updatedAt"] = utc_now()
     voice_session_repository.save(session)
     return turn
+
+
+def cancel_voice_turn(voice_session_id: str, payload: VoiceTurnCancel) -> dict:
+    session = _get_voice_session_for_internal_use(voice_session_id)
+    turn = next(
+        (
+            item
+            for item in voice_turn_repository.list_for_session(
+                session["tenantId"],
+                voice_session_id,
+            )
+            if item.get("clientTurnId") == payload.clientTurnId
+        ),
+        None,
+    )
+    if turn is None:
+        current_version = int(session.get("stateVersion") or 0)
+        if current_version != payload.expectedStateVersion:
+            raise HTTPException(status_code=409, detail="turn_state_conflict")
+        cancelled_ids = session.setdefault("cancelledClientTurnIds", [])
+        if payload.clientTurnId not in cancelled_ids:
+            cancelled_ids.append(payload.clientTurnId)
+        session["stateVersion"] = current_version + 1
+        session["updatedAt"] = utc_now()
+        voice_session_repository.save(session)
+        return {
+            "cancelled": True,
+            "stateVersion": session["stateVersion"],
+            "turnId": None,
+        }
+    lifecycle_status = _voice_turn_lifecycle_status(turn)
+    if lifecycle_status == "COMMITTED":
+        raise HTTPException(status_code=409, detail="turn_already_committed")
+    if lifecycle_status not in {"RECEIVED", "EVALUATING"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"turn_not_cancellable_{lifecycle_status.lower()}",
+        )
+    current_version = int(session.get("stateVersion") or 0)
+    if current_version != payload.expectedStateVersion:
+        raise HTTPException(status_code=409, detail="turn_state_conflict")
+    base_state = turn.get("baseInterviewState")
+    _restore_cancelled_turn_artifacts(turn, session)
+    turn["processingStatus"] = "cancelled"
+    turn["lifecycleStatus"] = "CANCELLED"
+    turn["updatedAt"] = utc_now()
+    voice_turn_repository.save(turn)
+    restored_state = base_state if isinstance(base_state, dict) else {}
+    session["currentQuestionId"] = restored_state.get(
+        "currentQuestionId",
+        turn.get("answerToQuestionId"),
+    )
+    session["status"] = "active"
+    cancelled_ids = session.setdefault("cancelledClientTurnIds", [])
+    if payload.clientTurnId not in cancelled_ids:
+        cancelled_ids.append(payload.clientTurnId)
+    session["stateVersion"] = current_version + 1
+    session["updatedAt"] = utc_now()
+    voice_session_repository.save(session)
+    return {
+        "cancelled": True,
+        "stateVersion": session["stateVersion"],
+        "turnId": turn["id"],
+    }
 
 
 def get_internal_voice_session(voice_session_id: str) -> dict:
@@ -276,10 +395,20 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
     _ensure_session_accepts_turns(session)
     turn = _get_voice_turn_for_session(turn_id, session)
-    if turn["processingStatus"] == "completed":
+    lifecycle_status = _voice_turn_lifecycle_status(turn)
+    if lifecycle_status == "CANCELLED":
+        raise HTTPException(status_code=409, detail="turn_cancelled")
+    if lifecycle_status == "COMMITTED":
         return _build_process_result(session, turn).model_dump()
+    expected_state_version = turn.get("expectedStateVersion")
+    if (
+        expected_state_version is not None
+        and int(session.get("stateVersion") or 0) != int(expected_state_version)
+    ):
+        raise HTTPException(status_code=409, detail="turn_state_conflict")
 
     turn["processingStatus"] = "processing"
+    turn["lifecycleStatus"] = "EVALUATING"
     turn["updatedAt"] = utc_now()
     voice_turn_repository.save(turn)
 
@@ -288,6 +417,66 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
     user_message = _save_voice_user_message(record, turn, user)
     snapshot = get_interview_state_snapshot(record, user)
     interview_state = snapshot.get("interviewState", {})
+    turn["baseInterviewState"] = deepcopy(interview_state)
+    voice_turn_repository.save(turn)
+    if turn.get("turnType") == "CONTROL":
+        try:
+            current_question_id = interview_state.get("currentQuestionId")
+            result_payload = {
+                "replyText": "承知しました。",
+                "action": "ask_configured_field",
+                "questionId": current_question_id,
+                "retrievalPolicy": None,
+                "retrievalExecuted": False,
+            }
+            reply_text = result_payload["replyText"]
+            action = result_payload["action"]
+            current_question_id = result_payload["questionId"]
+            response_id = f"voice-response-{uuid4().hex[:12]}"
+            latest_session = _get_voice_session_for_internal_use(voice_session_id)
+            latest_turn = _get_voice_turn_for_session(turn_id, latest_session)
+            if latest_turn.get("processingStatus") == "cancelled":
+                raise HTTPException(status_code=409, detail="turn_cancelled")
+            next_state_version = int(session.get("stateVersion") or 0) + 1
+            turn["processingStatus"] = "completed"
+            turn["lifecycleStatus"] = "COMMITTED"
+            turn["responseText"] = reply_text
+            turn["action"] = action
+            turn["stateVersion"] = next_state_version
+            turn["responseId"] = response_id
+            turn["questionId"] = current_question_id
+            turn["retrievalPolicy"] = None
+            turn["retrievalExecuted"] = False
+            turn["updatedAt"] = utc_now()
+            voice_turn_repository.save(turn)
+            session["stateVersion"] = next_state_version
+            session["updatedAt"] = utc_now()
+            voice_session_repository.save(session)
+            _save_voice_assistant_message(
+                session,
+                AssistantEventCreate(
+                    eventType="assistant_transcript_final",
+                    responseId=response_id,
+                    transcript=reply_text,
+                    detail={
+                        "turnId": turn_id,
+                        "action": action,
+                        "questionId": current_question_id,
+                        "source": "control_turn_commit",
+                    },
+                ),
+            )
+            return _build_process_result(session, turn).model_dump()
+        except Exception:
+            latest_turn = voice_turn_repository.get(turn_id)
+            if latest_turn is not None and latest_turn.get("processingStatus") == "cancelled":
+                _restore_cancelled_turn_artifacts(latest_turn, session)
+            elif latest_turn is not None:
+                latest_turn["processingStatus"] = "failed"
+                latest_turn["lifecycleStatus"] = "RECEIVED"
+                latest_turn["updatedAt"] = utc_now()
+                voice_turn_repository.save(latest_turn)
+            raise
     current_question = _find_question_by_id(interview_state, turn.get("answerToQuestionId"))
     current_field_id = turn.get("answerToFieldId")
     if not current_question or not current_field_id:
@@ -338,9 +527,20 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
         retrieval_policy = result_payload["retrievalPolicy"]
         retrieval_executed = result_payload["retrievalExecuted"]
         response_id = f"voice-response-{uuid4().hex[:12]}"
+        latest_session = _get_voice_session_for_internal_use(voice_session_id)
+        latest_turn = _get_voice_turn_for_session(turn_id, latest_session)
+        if latest_turn.get("processingStatus") == "cancelled":
+            raise HTTPException(status_code=409, detail="turn_cancelled")
+        if (
+            expected_state_version is not None
+            and int(latest_session.get("stateVersion") or 0)
+            != int(expected_state_version)
+        ):
+            raise HTTPException(status_code=409, detail="turn_state_conflict")
         next_state_version = int(session.get("stateVersion") or 0) + 1
 
         turn["processingStatus"] = "completed"
+        turn["lifecycleStatus"] = "COMMITTED"
         turn["responseText"] = reply_text
         turn["action"] = action
         turn["stateVersion"] = next_state_version
@@ -350,12 +550,31 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
         turn["retrievalExecuted"] = retrieval_executed
         turn["updatedAt"] = utc_now()
         voice_turn_repository.save(turn)
+        if (
+            turn.get("processingMode") == "confirmation_reply"
+            and action == "ask_confirmation"
+        ):
+            _mark_previous_turn_superseded(session, turn)
 
         session["currentQuestionId"] = current_question_id
         session["stateVersion"] = next_state_version
         session["status"] = "completed" if action == "finish" else session.get("status", "active")
         session["updatedAt"] = utc_now()
         voice_session_repository.save(session)
+        _save_voice_assistant_message(
+            session,
+            AssistantEventCreate(
+                eventType="assistant_transcript_final",
+                responseId=response_id,
+                transcript=reply_text,
+                detail={
+                    "turnId": turn_id,
+                    "action": action,
+                    "questionId": current_question_id,
+                    "source": "interview_turn_commit",
+                },
+            ),
+        )
         logger.info(
             "voice_interview_process_completed voice_session_id=%s turn_id=%s question_id=%s state_version=%s retrieval_policy=%s retrieval_executed=%s response_id=%s",
             voice_session_id,
@@ -368,9 +587,14 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
         )
         return _build_process_result(session, turn).model_dump()
     except Exception:
-        turn["processingStatus"] = "failed"
-        turn["updatedAt"] = utc_now()
-        voice_turn_repository.save(turn)
+        latest_turn = voice_turn_repository.get(turn_id)
+        if latest_turn is not None and latest_turn.get("processingStatus") == "cancelled":
+            _restore_cancelled_turn_artifacts(latest_turn, session)
+        elif latest_turn is not None:
+            latest_turn["processingStatus"] = "failed"
+            latest_turn["lifecycleStatus"] = "RECEIVED"
+            latest_turn["updatedAt"] = utc_now()
+            voice_turn_repository.save(latest_turn)
         raise
 
 
@@ -483,8 +707,67 @@ def _get_voice_turn_for_session(turn_id: str, session: dict) -> dict:
 
 
 def _ensure_session_accepts_turns(session: dict) -> None:
-    if session.get("status") == "stopped":
-        raise HTTPException(status_code=409, detail="voice_session_stopped")
+    if session.get("status") in {"stopped", "completed"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"voice_session_{session.get('status')}",
+        )
+
+
+def _delete_voice_turn_messages(turn_id: str, tenant_id: str) -> None:
+    for message in tuple(store.list("messages", tenant_id)):
+        if message.get("voiceTurnId") == turn_id:
+            store.delete("messages", message["id"])
+
+
+def _restore_cancelled_turn_artifacts(turn: dict, session: dict) -> None:
+    base_state = turn.get("baseInterviewState")
+    if isinstance(base_state, dict):
+        store.upsert("interview_states", deepcopy(base_state))
+    _delete_voice_turn_messages(turn["id"], session["tenantId"])
+
+
+def _voice_turn_lifecycle_status(
+    turn: dict,
+) -> Literal["RECEIVED", "EVALUATING", "COMMITTED", "CANCELLED", "SUPERSEDED"]:
+    explicit = turn.get("lifecycleStatus")
+    if explicit in {
+        "RECEIVED",
+        "EVALUATING",
+        "COMMITTED",
+        "CANCELLED",
+        "SUPERSEDED",
+    }:
+        return explicit
+    legacy = turn.get("processingStatus")
+    if legacy == "processing":
+        return "EVALUATING"
+    if legacy == "completed":
+        return "COMMITTED"
+    if legacy == "cancelled":
+        return "CANCELLED"
+    return "RECEIVED"
+
+
+def _mark_previous_turn_superseded(session: dict, correction_turn: dict) -> None:
+    candidates = [
+        item
+        for item in voice_turn_repository.list_for_session(
+            session["tenantId"],
+            session["id"],
+        )
+        if item["id"] != correction_turn["id"]
+        and item.get("answerToQuestionId")
+        == correction_turn.get("answerToQuestionId")
+        and _voice_turn_lifecycle_status(item) == "COMMITTED"
+    ]
+    if not candidates:
+        return
+    previous = max(candidates, key=lambda item: int(item.get("sequence") or 0))
+    previous["lifecycleStatus"] = "SUPERSEDED"
+    previous["supersededByTurnId"] = correction_turn["id"]
+    previous["updatedAt"] = utc_now()
+    voice_turn_repository.save(previous)
 
 
 def _build_user_context_from_session(session: dict) -> UserContext:
@@ -501,6 +784,23 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
     interview_state = store.get("interview_states", f"interview-state-{record['id']}") or {}
     current_question_id = turn.get("answerToQuestionId")
     current_field_id = turn.get("answerToFieldId")
+    if turn.get("turnType") == "CONTROL":
+        message = {
+            "id": f"voice-msg-{turn['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "content": turn["transcript"],
+            "role": "user",
+            "isActualUtterance": True,
+            "turnType": "CONTROL",
+            "createdAt": turn.get("createdAt") or utc_now(),
+            "updatedAt": utc_now(),
+            "answerToQuestionId": None,
+            "answerToFieldId": None,
+            "voiceSessionId": turn["voiceSessionId"],
+            "voiceTurnId": turn["id"],
+        }
+        return store.upsert("messages", message)
     if not current_question_id or not current_field_id:
         raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
     question = _find_question_by_id(interview_state, current_question_id)
@@ -513,6 +813,7 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
         "content": turn["transcript"],
         "role": "user",
         "isActualUtterance": True,
+        "turnType": "ANSWER",
         "createdAt": turn.get("createdAt") or utc_now(),
         "updatedAt": utc_now(),
         "answerToQuestionId": current_question_id,
@@ -545,6 +846,7 @@ def _save_confirmed_voice_answer_message(
         "role": "user",
         "isActualUtterance": False,
         "messageType": "confirmed_answer",
+        "turnType": "ANSWER",
         "createdAt": utc_now(),
         "updatedAt": utc_now(),
         "answerToQuestionId": question_id,
@@ -586,10 +888,7 @@ def _should_persist_voice_assistant_message(payload: AssistantEventCreate) -> bo
         return False
 
     detail = payload.detail or {}
-    if detail.get("action") == "finish":
-        return False
-
-    return True
+    return detail.get("action") != "finish"
 
 
 def _build_process_result(session: dict, turn: dict) -> VoiceTurnProcessResult:
@@ -712,6 +1011,7 @@ def _process_candidate_turn(
             evidence_transcript_ids=[user_message["id"]],
             evaluation_degraded=True,
             degraded_reason=degraded_reason,
+            evaluation_status="EVALUATION_ERROR",
         )
         logger.info(
             "evaluation_fallback_completed voice_session_id=%s turn_id=%s evaluation_request_id=%s evaluation_fallback_ms=%s degraded_reason=%s",
@@ -765,6 +1065,9 @@ def _process_candidate_turn(
             retrieval_needed=evaluation.retrieval_needed,
             evaluation_reason=evaluation.evaluation_reason,
             evidence_transcript_ids=list(evaluation.evidence_transcript_ids),
+            captured_items=list(evaluation.captured_items),
+            answer_disposition=evaluation.answer_disposition,
+            evaluation_status=evaluation.evaluation_status,
         )
 
     turn_result = InterviewAnswerProcessor(evaluator=use_completed_evaluation).process_turn_sync(
@@ -778,12 +1081,15 @@ def _process_candidate_turn(
         evidence_transcript_id=user_message["id"],
         retrieval_policy=retrieval_policy,
     )
-    field_state["needsClarification"] = turn_result.decision in {"NOT_ANSWER", "UNCLEAR"}
+    field_state["needsClarification"] = (
+        evaluation.evaluation_status == "OK"
+        and turn_result.decision in {"NOT_ANSWER", "UNCLEAR"}
+    )
     field_state["clarificationQuestion"] = (
         turn_result.reply_text if turn_result.action == "ask_follow_up" else None
     )
     field_state["followUpQuestion"] = (
-        turn_result.reply_text if turn_result.decision == "NEEDS_MORE_INFORMATION" else None
+        turn_result.reply_text if turn_result.decision in {"NEEDS_MORE_INFORMATION", "NEEDS_FOLLOWUP"} else None
     )
     state_persist_started_at = monotonic()
     _persist_interview_state(interview_state, user)
@@ -879,7 +1185,11 @@ def _process_confirmation_turn(
     )
 
     if turn_result.action == "confirmed":
-        confirmed_answer = str(field_state.get("answerSummary") or "").strip()
+        confirmed_answer = str(
+            field_state.get("recordAnswer")
+            or compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
+            or ""
+        ).strip()
         _save_confirmed_voice_answer_message(
             record=record,
             session=session,
@@ -987,11 +1297,29 @@ def _ensure_voice_field_state(interview_state: dict[str, Any], field_id: str | N
             "fieldId": resolved_field_id,
             "status": "asking",
             "answerSummary": None,
+            "rawAnswer": None,
+            "rawAnswerHistory": [],
+            "recordAnswer": None,
+            "capturedItems": [],
             "missingInformation": [],
         },
     )
     field_state.setdefault("answerState", ANSWER_STATE_UNANSWERED)
     field_state.setdefault("candidateAnswer", None)
+    field_state.setdefault("rawAnswer", None)
+    raw_answer_history = field_state.setdefault("rawAnswerHistory", [])
+    if not raw_answer_history and field_state.get("rawAnswer"):
+        raw_answer_history.append(str(field_state["rawAnswer"]))
+    field_state.setdefault("recordAnswer", None)
+    field_state.setdefault("capturedItems", [])
+    if not field_state["capturedItems"]:
+        field_state["capturedItems"] = list(
+            field_state.get("candidateItems") or field_state.get("confirmedItems") or []
+        )
+    field_state.setdefault("candidateItems", [])
+    field_state.setdefault("confirmedItems", [])
+    field_state.setdefault("missingRequiredItemIds", [])
+    field_state.setdefault("answerDisposition", None)
     field_state.setdefault("candidateEvidenceTranscriptIds", [])
     field_state.setdefault("needsClarification", False)
     field_state.setdefault("clarificationQuestion", None)
@@ -1039,6 +1367,9 @@ def _evaluate_voice_answer_candidate(
         ),
         retrieval_needed=result.retrieval_needed,
         evaluation_reason=result.evaluation_reason,
+        captured_items=[item.model_dump() for item in result.captured_items],
+        answer_disposition=result.answer_disposition,
+        evaluation_status=result.evaluation_status,
     )
     return _stabilize_voice_answer_evaluation(evaluation)
 
@@ -1052,8 +1383,9 @@ def _stabilize_voice_answer_evaluation(
     is_sufficient = evaluation.is_sufficient
     missing_information = evaluation.missing_information
     follow_up_question = evaluation.follow_up_question
+    captured_items = evaluation.captured_items
 
-    if decision == "CONFIRMABLE" and normalized_answer:
+    if decision == "CONFIRMABLE" and (normalized_answer or captured_items):
         is_relevant = True
         is_sufficient = True
         missing_information = []
@@ -1086,6 +1418,9 @@ def _stabilize_voice_answer_evaluation(
         evaluation_reason=evaluation.evaluation_reason,
         evaluation_degraded=evaluation.evaluation_degraded,
         degraded_reason=evaluation.degraded_reason,
+        captured_items=captured_items,
+        answer_disposition=evaluation.answer_disposition,
+        evaluation_status=evaluation.evaluation_status,
     )
 
 
@@ -1135,18 +1470,11 @@ def _classify_explicit_voice_confirmation(
     return None
 
 
-def _build_clarification_prompt(current_question: dict[str, Any] | None) -> str:
-    question_text = str(current_question.get("text") or "").strip() if isinstance(current_question, dict) else ""
-    if question_text:
-        return f"すみません。{question_text}"
-    return "すみません。回答内容をもう一度教えてください。"
-
-
 def _build_evaluation_fallback_prompt(current_question: dict[str, Any] | None) -> str:
     question_text = str(current_question.get("text") or "").strip() if isinstance(current_question, dict) else ""
     if question_text:
-        return f"回答内容を判断できませんでした。もう一度、{question_text}"
-    return "回答内容を判断できませんでした。もう一度教えてください。"
+        return f"回答処理に一時的な問題がありました。もう一度、{question_text}"
+    return "回答処理に一時的な問題がありました。もう一度お答えください。"
 
 
 def _voice_evaluation_degraded_reason(exc: Exception) -> str:
@@ -1227,7 +1555,7 @@ def _run_voice_structured_output(*, system_prompt: str, prompt: str, output_mode
     if text:
         try:
             parsed = output_model.model_validate_json(text)
-        except Exception:
+        except Exception:  # noqa: BLE001 - SDK output may fail with multiple parse errors
             parsed = output_model.model_validate(json.loads(text))
         logger.info(
             "voice_response_parse_completed response_parse_ms=%s",
@@ -1243,6 +1571,11 @@ def _voice_answer_evaluation_system_prompt() -> str:
         "ユーザーの生発話をそのまま回答確定してはいけません。\n"
         "質問との適合性、回答の十分性、既存候補との統合要否を判断し、"
         "構造化出力だけを返してください。\n"
+        "questionPlanがある場合、今回の発話から取得できたcaptured_itemsだけを抽出し、"
+        "過去の候補とのmerge、不足項目、COMPLETE/NEEDS_FOLLOWUPは判断しないでください。"
+        "それらはbackendがquestionPlanを正本として決定します。\n"
+        "normalized_answerは評価・確認用の分析値であり、正式な記録用回答ではありません。"
+        "ユーザー発話をメタ説明文へ変換して正式回答として保存しないでください。\n"
         "推測で補完せず、不要語や訂正前の誤情報を本文へ残さないこと。\n"
         "回答の必須要素は、questionとfieldに明示された説明、回答要件、"
         "aiAssistPromptだけを根拠にしてください。一般的な期待を勝手に必須要素へ追加してはいけません。\n"
@@ -1287,6 +1620,7 @@ def _build_voice_answer_evaluation_prompt(
         "name": (current_field or {}).get("name"),
         "description": (current_field or {}).get("description"),
         "aiAssistPrompt": (current_field or {}).get("aiAssistPrompt"),
+        "questionPlan": (current_field or {}).get("questionPlan"),
     }
     has_explicit_requirements = any(
         isinstance(field_context.get(key), str) and field_context[key].strip()
@@ -1306,6 +1640,9 @@ def _build_voice_answer_evaluation_prompt(
             "evidenceTranscriptId": evidence_message_id,
             "instructions": {
                 "allowedDecisions": ["CONFIRMABLE", "NEEDS_MORE_INFORMATION", "NOT_ANSWER", "UNCLEAR"],
+                "allowedAnswerDispositions": ["ANSWERED", "UNCLEAR", "IRRELEVANT"],
+                "extractCurrentTurnItemsOnly": True,
+                "backendOwnsCompletion": True,
                 "mustNotInfer": True,
                 "explicitRequirementsOnly": True,
                 "requireSpecificFollowUpWhenNotConfirmable": True,

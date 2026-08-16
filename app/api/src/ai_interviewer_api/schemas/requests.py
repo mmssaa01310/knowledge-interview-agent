@@ -1,4 +1,8 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+from ai_interviewer_api.models.interview_plan import InterviewPlan, InterviewQuestionPlan
 
 
 class KnowledgeDbCreate(BaseModel):
@@ -20,6 +24,7 @@ class KnowledgeCreate(BaseModel):
     summary: str | None = None
     systemPrompt: str | None = None
     purpose: str | None = None
+    interviewPlan: InterviewPlan | None = None
     category: str | None = None
     targetBusiness: str | None = None
     targetEquipment: str | None = None
@@ -33,6 +38,7 @@ class KnowledgeUpdate(BaseModel):
     summary: str | None = None
     systemPrompt: str | None = None
     purpose: str | None = None
+    interviewPlan: InterviewPlan | None = None
     category: str | None = None
     targetBusiness: str | None = None
     targetEquipment: str | None = None
@@ -64,6 +70,7 @@ class KnowledgeFieldCreate(BaseModel):
     aiQuestionExamples: list[str] = Field(default_factory=list)
     options: list[str] = Field(default_factory=list)
     displayOrder: int = 0
+    questionPlan: InterviewQuestionPlan | None = None
 
 
 class KnowledgeFieldUpdate(BaseModel):
@@ -76,6 +83,7 @@ class KnowledgeFieldUpdate(BaseModel):
     aiQuestionExamples: list[str] | None = None
     options: list[str] | None = None
     displayOrder: int | None = None
+    questionPlan: InterviewQuestionPlan | None = None
 
 
 class FieldSuggestionContext(BaseModel):
@@ -117,7 +125,8 @@ class RecordUpdate(BaseModel):
 
 
 class InterviewAnswerUpdate(BaseModel):
-    answerSummary: str = Field(min_length=1, max_length=10000)
+    recordAnswer: str | None = Field(default=None, min_length=1, max_length=10000)
+    answerSummary: str | None = Field(default=None, min_length=1, max_length=10000)
 
 
 class BulkApproveRequest(BaseModel):
@@ -127,6 +136,7 @@ class BulkApproveRequest(BaseModel):
 class ChatMessageCreate(BaseModel):
     content: str
     answerToQuestionId: str | None = None
+    turnType: Literal["ANSWER", "CONTROL"] | None = None
     modelId: str | None = None
     referenceKnowledgeDbIds: list[str] = Field(default_factory=list)
     referenceKnowledgeIds: list[str] = Field(default_factory=list)

@@ -68,8 +68,10 @@ def test_update_confirmed_interview_answer() -> None:
 
     state = store.get("interview_states", "interview-state-record-1")
     message = store.get("messages", "confirmed-answer-1")
-    assert result["answerSummary"] == "キーボードで修正した回答"
-    assert state["fieldStates"]["field-1"]["answerSummary"] == "キーボードで修正した回答"
+    assert result["recordAnswer"] == "キーボードで修正した回答"
+    assert result["answerSummary"] is None
+    assert state["fieldStates"]["field-1"]["recordAnswer"] == "キーボードで修正した回答"
+    assert state["fieldStates"]["field-1"]["answerSummary"] is None
     assert state["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
     assert message["content"] == "キーボードで修正した回答"
 

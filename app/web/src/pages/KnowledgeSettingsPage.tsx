@@ -169,6 +169,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         required: suggestion.required,
         askByAi: suggestion.askByAi,
         aiQuestionExamples: suggestion.aiQuestionExamples,
+        questionPlan: suggestion.questionPlan,
         displayOrder: props.draftFields.length + 1
       }
     ]);
@@ -197,6 +198,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         required: item.required,
         askByAi: item.askByAi,
         aiQuestionExamples: item.aiQuestionExamples,
+        questionPlan: item.questionPlan,
         displayOrder: props.draftFields.length + index + 1
       }))
     ]);
@@ -273,6 +275,9 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
 
       if (newlyProposed.length > 0) {
         setPendingSuggestions((items) => [...items, ...newlyProposed]);
+      }
+      if (result.interviewPlan) {
+        props.setSettingsInterviewPlan(result.interviewPlan);
       }
 
       setAssistMessages((messages) => [...messages, { role: "ai", text: result.reply }]);

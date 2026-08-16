@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ai_interviewer_api.models.base import BaseEntity
+from ai_interviewer_api.models.interview_plan import InterviewPlan, InterviewQuestionPlan
 
 
 class KnowledgeDb(BaseEntity):
@@ -21,6 +22,7 @@ class Knowledge(BaseEntity):
     summary: str | None = None
     systemPrompt: str | None = None
     purpose: str | None = None
+    interviewPlan: InterviewPlan | None = None
     category: str | None = None
     targetBusiness: str | None = None
     targetEquipment: str | None = None
@@ -49,6 +51,7 @@ class KnowledgeField(BaseEntity):
     retrievalPolicy: Literal["never", "auto", "required"] = "auto"
     aiQuestionExamples: list[str] = Field(default_factory=list)
     aiAssistPrompt: str | None = None
+    questionPlan: InterviewQuestionPlan | None = None
     options: list[str] = Field(default_factory=list)
     displayOrder: int
 
@@ -88,10 +91,20 @@ class VoiceTurn(BaseEntity):
     sequence: int
     speaker: Literal["user", "assistant"] = "user"
     transcript: str
+    turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None
     answerToFieldId: str | None = None
-    processingMode: Literal["answer_evaluation", "confirmation_reply"] = "answer_evaluation"
-    processingStatus: Literal["pending", "processing", "completed", "failed"] = "pending"
+    processingMode: Literal["answer_evaluation", "confirmation_reply", "control"] = "answer_evaluation"
+    processingStatus: Literal["pending", "processing", "completed", "failed", "cancelled"] = "pending"
+    lifecycleStatus: Literal[
+        "RECEIVED",
+        "EVALUATING",
+        "COMMITTED",
+        "CANCELLED",
+        "SUPERSEDED",
+    ] = "RECEIVED"
+    clientTurnId: str | None = None
+    expectedStateVersion: int | None = None
     responseText: str | None = None
     action: str | None = None
     stateVersion: int | None = None

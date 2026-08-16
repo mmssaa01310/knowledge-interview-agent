@@ -4,19 +4,22 @@ from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.schemas.voice import (
     AssistantEventCreate,
     ConnectionEventCreate,
+    VoiceTurnCancel,
     VoiceTurnCreate,
 )
 from ai_interviewer_api.services.voice_interview import (
+    cancel_voice_turn,
+    claim_initial_reply,
     create_assistant_event,
     create_connection_event,
     create_voice_turn,
-    claim_initial_reply,
-    get_internal_voice_session as get_internal_voice_session_service,
     mark_initial_reply_failed,
     mark_initial_reply_sent,
     process_voice_turn,
 )
-
+from ai_interviewer_api.services.voice_interview import (
+    get_internal_voice_session as get_internal_voice_session_service,
+)
 
 router = APIRouter()
 
@@ -33,6 +36,15 @@ def create_internal_voice_turn(
     _: None = Depends(require_internal_api_token),
 ) -> dict:
     return create_voice_turn(voice_session_id, payload)
+
+
+@router.post("/internal/voice-sessions/{voice_session_id}/turns/cancel")
+def cancel_internal_voice_turn(
+    voice_session_id: str,
+    payload: VoiceTurnCancel,
+    _: None = Depends(require_internal_api_token),
+) -> dict:
+    return cancel_voice_turn(voice_session_id, payload)
 
 
 @router.get("/internal/voice-sessions/{voice_session_id}")

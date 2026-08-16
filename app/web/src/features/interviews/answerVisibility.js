@@ -2,7 +2,7 @@ export function shouldUseVoiceAnswerSummary(fieldState) {
   if (!fieldState) {
     return false;
   }
-  return fieldState.answerState === "CONFIRMED" && Boolean(fieldState.answerSummary?.trim());
+  return fieldState.answerState === "CONFIRMED" && Boolean(fieldState.recordAnswer?.trim());
 }
 
 export function isRawVoiceUserMessageHiddenFromAnswer(message) {
@@ -13,8 +13,8 @@ export function getInterviewAnswerValue(fieldState) {
   if (!fieldState) {
     return "";
   }
-  return fieldState.answerState === "CONFIRMED" && fieldState.answerSummary
-    ? fieldState.answerSummary
+  return fieldState.answerState === "CONFIRMED" && fieldState.recordAnswer
+    ? fieldState.recordAnswer
     : "";
 }
 

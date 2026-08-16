@@ -1,4 +1,4 @@
-import type { InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
 import type { ChatMessage, InterviewState } from "../types/app";
 
 export const API_BASE_URL = "";
@@ -85,7 +85,22 @@ export type KnowledgeField = {
   askByAi: boolean;
   retrievalPolicy?: "never" | "auto" | "required";
   aiQuestionExamples?: string[];
+  questionPlan?: InterviewQuestionPlan;
   displayOrder: number;
+};
+
+export type InterviewPlanItem = {
+  itemId: string;
+  label: string;
+  description?: string | null;
+};
+
+export type InterviewQuestionPlan = {
+  version?: number;
+  purpose?: string | null;
+  requiredItems: InterviewPlanItem[];
+  optionalItems?: InterviewPlanItem[];
+  completionCriteria?: { mode: "all_required_items" };
 };
 
 export type AiProposal = {
@@ -107,6 +122,7 @@ export type ChatAnswerResponse = {
 export type FieldSuggestionResponse = {
   reply: string;
   fields: KnowledgeField[];
+  interviewPlan?: InterviewPlan;
   modelId: string;
   bedrockInvoked?: boolean;
 };
@@ -128,6 +144,7 @@ export type InterviewStateResponse = {
     fieldId?: string | null;
     answerToQuestionId?: string;
     answerToFieldId?: string | null;
+    turnType?: "ANSWER" | "CONTROL";
     voiceSessionId?: string | null;
     voiceTurnId?: string | null;
     voiceResponseId?: string | null;
@@ -275,11 +292,11 @@ export async function fetchProposals(recordId: string) {
 
 export async function createRecordMessage(
   recordId: string,
-  payload: { content: string; answerToQuestionId?: string | null }
+  payload: { content: string; answerToQuestionId?: string | null; turnType?: "ANSWER" | "CONTROL" }
 ) {
   return apiRequest<{
     message: string;
-    proposalId: string;
+    proposalId: string | null;
     recordMessage: {
       id: string;
       role: "user" | "assistant";
@@ -289,6 +306,7 @@ export async function createRecordMessage(
       fieldId?: string | null;
       answerToQuestionId?: string;
       answerToFieldId?: string | null;
+      turnType?: "ANSWER" | "CONTROL";
     };
   }>(`/api/records/${recordId}/messages`, {
     method: "POST",
@@ -359,15 +377,15 @@ export async function updateRecord(recordId: string, payload: Partial<InterviewR
   });
 }
 
-export async function updateInterviewAnswer(recordId: string, fieldId: string, answerSummary: string) {
+export async function updateInterviewAnswer(recordId: string, fieldId: string, recordAnswer: string) {
   return apiRequest<{
     recordId: string;
     fieldId: string;
     answerState: "CONFIRMED";
-    answerSummary: string;
+    recordAnswer: string;
   }>(`/api/records/${recordId}/interview-answers/${fieldId}`, {
     method: "PATCH",
-    body: { answerSummary }
+    body: { recordAnswer }
   });
 }
 

@@ -79,11 +79,34 @@ def create_record_message(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
-    proposal = build_mock_proposal(user, record_id, record["knowledgeId"], payload.content)
-    store.upsert("proposals", proposal.model_dump())
     interview_state = store.get("interview_states", f"interview-state-{record_id}") or {}
-    current_question_id = payload.answerToQuestionId or interview_state.get("currentQuestionId")
-    current_field_id = interview_state.get("currentFieldId")
+    current_question_id = payload.answerToQuestionId
+    interview_is_active = bool(
+        interview_state.get("currentQuestionId")
+        or interview_state.get("currentFieldId")
+        or interview_state.get("askedQuestions")
+        or interview_state.get("fieldStates")
+    )
+    turn_type = payload.turnType
+    if turn_type is None:
+        if current_question_id:
+            turn_type = "ANSWER"
+        elif interview_is_active:
+            turn_type = "CONTROL"
+        else:
+            # Preserve the existing non-interview record-message behavior.
+            turn_type = "ANSWER"
+    if turn_type == "ANSWER" and interview_is_active and not current_question_id:
+        raise HTTPException(status_code=422, detail="answer_turn_missing_question_id")
+    if turn_type == "CONTROL":
+        current_question_id = None
+
+    proposal = None
+    if turn_type == "ANSWER" and not interview_is_active:
+        proposal = build_mock_proposal(user, record_id, record["knowledgeId"], payload.content)
+        store.upsert("proposals", proposal.model_dump())
+
+    current_field_id = None
     question_type = None
     if current_question_id:
         for question in interview_state.get("askedQuestions", []):
@@ -100,6 +123,7 @@ def create_record_message(
         "isActualUtterance": True,
         "createdAt": utc_now(),
         "updatedAt": utc_now(),
+        "turnType": turn_type,
         "answerToQuestionId": current_question_id,
         "answerToFieldId": current_field_id,
         "questionType": question_type,
@@ -108,7 +132,11 @@ def create_record_message(
         "messages",
         message,
     )
-    return {"message": "accepted", "proposalId": proposal.id, "recordMessage": message}
+    return {
+        "message": "accepted",
+        "proposalId": proposal.id if proposal else None,
+        "recordMessage": message,
+    }
 
 
 @router.get("/records/{record_id}/interview-state")
@@ -138,11 +166,12 @@ def update_record_interview_answer(
     if field_state.get("answerState") != "CONFIRMED":
         raise HTTPException(status_code=409, detail="interview_answer_not_confirmed")
 
-    answer_summary = payload.answerSummary.strip()
-    if not answer_summary:
+    record_answer = (payload.recordAnswer or payload.answerSummary or "").strip()
+    if not record_answer:
         raise HTTPException(status_code=422, detail="interview_answer_required")
 
-    field_state["answerSummary"] = answer_summary
+    field_state["recordAnswer"] = record_answer
+    field_state["answerSummary"] = None
     interview_state["updatedByUserId"] = user.user_id
     interview_state["updatedAt"] = utc_now()
     store.upsert("interview_states", interview_state)
@@ -156,7 +185,7 @@ def update_record_interview_answer(
     ]
     if confirmed_messages:
         confirmed_message = confirmed_messages[-1]
-        confirmed_message["content"] = answer_summary
+        confirmed_message["content"] = record_answer
         confirmed_message["updatedByUserId"] = user.user_id
         confirmed_message["updatedAt"] = utc_now()
         store.upsert("messages", confirmed_message)
@@ -165,7 +194,8 @@ def update_record_interview_answer(
         "recordId": record["id"],
         "fieldId": field_id,
         "answerState": field_state["answerState"],
-        "answerSummary": answer_summary,
+        "recordAnswer": record_answer,
+        "answerSummary": None,
     }
 
 

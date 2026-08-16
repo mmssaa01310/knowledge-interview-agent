@@ -4,6 +4,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ai_interviewer_api.models.interview_plan import (
+    CapturedInterviewItem,
+    InterviewPlan,
+    InterviewQuestionPlan,
+)
+
 
 class InterviewMessage(BaseModel):
     id: str | None = None
@@ -14,6 +20,7 @@ class InterviewMessage(BaseModel):
     fieldId: str | None = None
     answerToQuestionId: str | None = None
     answerToFieldId: str | None = None
+    turnType: Literal["ANSWER", "CONTROL"] | None = None
     isLegacy: bool = False
 
 
@@ -23,6 +30,7 @@ class InterviewQuestion(BaseModel):
     fieldId: str | None = None
     text: str
     retrievalPolicy: Literal["never", "auto", "required"] = "auto"
+    questionPlan: InterviewQuestionPlan | None = None
 
 
 class InterviewField(BaseModel):
@@ -33,6 +41,7 @@ class InterviewField(BaseModel):
     inputType: str | None = None
     required: bool = False
     retrievalPolicy: Literal["never", "auto", "required"] = "auto"
+    questionPlan: InterviewQuestionPlan | None = None
 
 
 class InterviewFieldState(BaseModel):
@@ -42,6 +51,14 @@ class InterviewFieldState(BaseModel):
     missingInformation: list[str] = Field(default_factory=list)
     answerState: Literal["UNANSWERED", "CANDIDATE_PENDING", "AWAITING_CONFIRMATION", "CONFIRMED"] = "UNANSWERED"
     candidateAnswer: str | None = None
+    rawAnswer: str | None = None
+    rawAnswerHistory: list[str] = Field(default_factory=list)
+    recordAnswer: str | None = None
+    capturedItems: list[CapturedInterviewItem] = Field(default_factory=list)
+    candidateItems: list[CapturedInterviewItem] = Field(default_factory=list)
+    confirmedItems: list[CapturedInterviewItem] = Field(default_factory=list)
+    missingRequiredItemIds: list[str] = Field(default_factory=list)
+    answerDisposition: Literal["ANSWERED", "UNCLEAR", "IRRELEVANT"] | None = None
 
 
 class InterviewState(BaseModel):
@@ -58,10 +75,10 @@ class InterviewState(BaseModel):
 
 class InterviewFieldEvaluation(BaseModel):
     fieldId: str
-    isComplete: bool
-    answerSummary: str
+    isComplete: bool = False
+    answerSummary: str = ""
     missingInformation: list[str] = Field(default_factory=list)
-    nextAction: Literal["follow_up", "next_field"]
+    nextAction: Literal["follow_up", "next_field"] = "follow_up"
     decision: Literal[
         "CONFIRMABLE",
         "NEEDS_MORE_INFORMATION",
@@ -76,6 +93,9 @@ class InterviewFieldEvaluation(BaseModel):
     retrievalNeeded: bool = False
     evaluationReason: str | None = None
     confirmationQuestion: str | None = None
+    capturedItems: list[CapturedInterviewItem] = Field(default_factory=list)
+    answerDisposition: Literal["ANSWERED", "UNCLEAR", "IRRELEVANT"] | None = None
+    evaluationStatus: Literal["OK", "EVALUATION_ERROR"] = "OK"
 
 
 class InterviewTurnInput(BaseModel):
@@ -86,6 +106,7 @@ class InterviewTurnInput(BaseModel):
     target_equipment: str | None = None
     record_title: str | None = None
     custom_prompt: str | None = None
+    interview_plan: InterviewPlan | None = None
     user_message: str
     conversation_history: list[InterviewMessage] = Field(default_factory=list)
     approved_fields: list[InterviewField] = Field(default_factory=list)
@@ -111,5 +132,6 @@ class InterviewAgentResult(BaseModel):
     completedFieldId: str | None = None
     currentFieldId: str | None = None
     answerSummary: str | None = None
+    recordAnswer: str | None = None
     missingInformation: list[str] = Field(default_factory=list)
     used_tools: list[str] = Field(default_factory=list)
