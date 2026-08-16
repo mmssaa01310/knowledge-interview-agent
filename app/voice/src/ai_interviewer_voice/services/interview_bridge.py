@@ -7,6 +7,7 @@ from ai_interviewer_voice.clients.interview_api import (
     InterviewApiClient,
     InterviewApiError,
     VoiceSessionSnapshot,
+    VoiceTurnIntentResult,
     VoiceTurnProcessResult,
     VoiceTurnSaveResult,
 )
@@ -77,18 +78,43 @@ class InterviewBridge:
             timeout_seconds=self._turn_save_timeout_seconds,
         )
 
+    async def classify_turn_intent(
+        self,
+        *,
+        voice_session_id: str,
+        transcript: str,
+        answer_to_question_id: str | None,
+        expected_state_version: int | None = None,
+    ) -> VoiceTurnIntentResult:
+        return await self._client.classify_voice_turn_intent(
+            voice_session_id,
+            transcript=transcript,
+            answer_to_question_id=answer_to_question_id,
+            expected_state_version=expected_state_version,
+            timeout_seconds=self._turn_save_timeout_seconds,
+        )
+
     async def process_turn(
         self,
         *,
         voice_session_id: str,
         transcript: str,
         answer_to_question_id: str | None,
-        turn_type: str = "ANSWER",
+        turn_type: str | None = "ANSWER",
         expected_state_version: int | None = None,
         client_turn_id: str | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
     ) -> InterviewBridgeResult:
+        if turn_type is None:
+            intent = await self._client.classify_voice_turn_intent(
+                voice_session_id,
+                transcript=transcript,
+                answer_to_question_id=answer_to_question_id,
+                expected_state_version=expected_state_version,
+                timeout_seconds=self._turn_save_timeout_seconds,
+            )
+            turn_type = intent.turn_type
         save_result = await self.save_turn(
             voice_session_id,
             transcript=transcript,

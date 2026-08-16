@@ -28,6 +28,8 @@ def test_interview_api_client_gets_session_and_processes_turn() -> None:
                 )
             if request.url.path == "/internal/voice-sessions/session-1/turns":
                 return httpx.Response(200, json={"id": "turn-1", "processingStatus": "pending"})
+            if request.url.path == "/internal/voice-sessions/session-1/turn-intent":
+                return httpx.Response(200, json={"turnType": "ANSWER"})
             if request.url.path == "/internal/voice-sessions/session-1/turns/turn-1/process":
                 return httpx.Response(
                     200,
@@ -60,6 +62,37 @@ def test_interview_api_client_gets_session_and_processes_turn() -> None:
     assert processed.reply_text == "確認します。"
     assert processed.question_id == "q-2"
     assert calls[1][2]["answerToQuestionId"] == "q-1"
+
+
+def test_interview_api_client_classifies_turn_intent() -> None:
+    async def run() -> tuple[str, dict]:
+        calls: list[tuple[str, str, dict | None]] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode("utf-8")) if request.content else None
+            calls.append((request.method, request.url.path, body))
+            return httpx.Response(200, json={"turnType": "CONTROL"})
+
+        client = InterviewApiClient(
+            "http://test",
+            "internal-token",
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="http://test",
+            ),
+        )
+        result = await client.classify_voice_turn_intent(
+            "session-1",
+            transcript="会話を終了してください",
+            answer_to_question_id="q-1",
+            expected_state_version=2,
+        )
+        return result.turn_type, calls[0][2] or {}
+
+    turn_type, body = asyncio.run(run())
+    assert turn_type == "CONTROL"
+    assert body["answerToQuestionId"] == "q-1"
+    assert body["expectedStateVersion"] == 2
 
 
 def test_interview_api_client_maps_unauthorized() -> None:

@@ -41,6 +41,7 @@ from ai_interviewer_api.schemas.voice import (
     AssistantEventCreate,
     ConnectionEventCreate,
     VoiceSessionCreate,
+    VoiceTurnIntentCreate,
     VoiceTurnCancel,
     VoiceTurnCreate,
 )
@@ -159,6 +160,22 @@ class VoiceTurnProcessResult:
         }
 
 
+class VoiceTurnIntentOutput(BaseModel):
+    turnType: Literal["ANSWER", "CONTROL"]
+
+
+_VOICE_TURN_INTENT_SYSTEM_PROMPT = """
+あなたは音声インタビューの発話意図分類器です。
+確定したユーザー発話を、現在の質問への回答と、インタビューの進行を制御する発話のどちらかに分類してください。
+
+ANSWERは、現在の質問への回答、確認への肯定・否定、訂正、追加情報、または質問内容に関する返答です。
+CONTROLは、現在の質問への回答をせず、インタビューの開始・終了・一時停止・再開・音声操作など、会話の進行自体を操作する主意図です。
+発話の単語や固定フレーズの一致ではなく、現在の質問と会話状態を踏まえた意味で判断してください。
+確認待ちの「はい」「違います」などは、確認に対する回答なのでANSWERです。
+結果は指定された構造化スキーマだけで返してください。
+""".strip()
+
+
 def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: UserContext) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
     if not _has_voice_interview_fields(record, user):
@@ -190,6 +207,61 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
 def get_voice_session(voice_session_id: str, user: UserContext) -> dict:
     session = _get_voice_session_for_user(voice_session_id, user)
     return session
+
+
+def classify_voice_turn_intent(
+    voice_session_id: str,
+    payload: VoiceTurnIntentCreate,
+) -> dict:
+    session = _get_voice_session_for_internal_use(voice_session_id)
+    _ensure_session_accepts_turns(session)
+    if (
+        payload.expectedStateVersion is not None
+        and int(session.get("stateVersion") or 0) != payload.expectedStateVersion
+    ):
+        raise HTTPException(status_code=409, detail="turn_state_conflict")
+    transcript = payload.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=422, detail="turn_transcript_required")
+    interview_state = store.get("interview_states", f"interview-state-{session['recordId']}") or {}
+    question_id = payload.answerToQuestionId or session.get("currentQuestionId")
+    current_question = _find_question_by_id(interview_state, question_id) if question_id else None
+    field_id = current_question.get("fieldId") if current_question else None
+    field_state = (
+        _ensure_voice_field_state(interview_state, field_id)
+        if field_id
+        else {}
+    )
+    prompt = "\n".join(
+        [
+            "current_question:",
+            f"- id: {question_id or 'none'}",
+            f"- text: {str((current_question or {}).get('text') or '').strip() or 'none'}",
+            "current_answer_state:",
+            f"- answer_state: {field_state.get('answerState') or 'UNANSWERED'}",
+            f"- candidate_answer: {str(field_state.get('candidateAnswer') or '').strip() or 'none'}",
+            "user_transcript:",
+            transcript,
+        ]
+    )
+    try:
+        result = _run_voice_structured_output(
+            system_prompt=_VOICE_TURN_INTENT_SYSTEM_PROMPT,
+            prompt=prompt,
+            output_model=VoiceTurnIntentOutput,
+        )
+    except Exception as exc:
+        logger.exception(
+            "voice_turn_intent_classification_failed voice_session_id=%s question_id=%s error_type=%s",
+            voice_session_id,
+            question_id,
+            exc.__class__.__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="voice_turn_intent_classification_failed",
+        ) from exc
+    return {"turnType": result.turnType}
 
 
 def stop_voice_session(voice_session_id: str, user: UserContext) -> dict:

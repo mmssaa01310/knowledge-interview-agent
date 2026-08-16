@@ -4,6 +4,7 @@ from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.schemas.voice import (
     AssistantEventCreate,
     ConnectionEventCreate,
+    VoiceTurnIntentCreate,
     VoiceTurnCancel,
     VoiceTurnCreate,
 )
@@ -13,6 +14,7 @@ from ai_interviewer_api.services.voice_interview import (
     create_assistant_event,
     create_connection_event,
     create_voice_turn,
+    classify_voice_turn_intent,
     mark_initial_reply_failed,
     mark_initial_reply_sent,
     process_voice_turn,
@@ -36,6 +38,15 @@ def create_internal_voice_turn(
     _: None = Depends(require_internal_api_token),
 ) -> dict:
     return create_voice_turn(voice_session_id, payload)
+
+
+@router.post("/internal/voice-sessions/{voice_session_id}/turn-intent")
+def classify_internal_voice_turn_intent(
+    voice_session_id: str,
+    payload: VoiceTurnIntentCreate,
+    _: None = Depends(require_internal_api_token),
+) -> dict:
+    return classify_voice_turn_intent(voice_session_id, payload)
 
 
 @router.post("/internal/voice-sessions/{voice_session_id}/turns/cancel")

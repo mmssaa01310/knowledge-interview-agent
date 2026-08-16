@@ -155,6 +155,7 @@ class FakeBridge:
         self.process_calls: list[dict] = []
         self.cancel_calls: list[dict] = []
         self.assistant_events: list[dict] = []
+        self.intent_calls: list[dict] = []
         self.state_version = 1
 
     async def load_voice_session(self, voice_session_id: str):
@@ -176,6 +177,10 @@ class FakeBridge:
             interview_status="active",
         )
 
+    async def classify_turn_intent(self, **kwargs):
+        self.intent_calls.append(kwargs)
+        return SimpleNamespace(turn_type="ANSWER")
+
     async def create_assistant_event(self, **kwargs) -> None:
         self.assistant_events.append(kwargs)
 
@@ -195,6 +200,12 @@ class BlockingBridge(FakeBridge):
         self.process_started.set()
         await self.release_process.wait()
         return await super().process_turn(**kwargs)
+
+
+class ControlBridge(FakeBridge):
+    async def classify_turn_intent(self, **kwargs):
+        self.intent_calls.append(kwargs)
+        return SimpleNamespace(turn_type="CONTROL")
 
 
 def _config() -> TranscribePollyRuntimeConfig:
@@ -312,6 +323,42 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge() -> N
 
     assert len(bridge.process_calls) == 1
     assert bridge.process_calls[0]["transcript"] == "最終回答です"
+    assert bridge.process_calls[0]["turn_type"] == "ANSWER"
+    assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
+    assert bridge.intent_calls[0]["transcript"] == "最終回答です"
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_control_transcript_is_scoped_out_before_turn_save() -> None:
+    transcribe = FakeTranscribe()
+    bridge = ControlBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("会話を終了してください", is_partial=False)
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.11)
+
+    assert bridge.process_calls[0]["turn_type"] == "CONTROL"
+    assert bridge.process_calls[0]["answer_to_question_id"] is None
+    events = []
+    while not runtime._events.empty():
+        events.append(runtime._events.get_nowait())
+    final = next(event for event in events if isinstance(event, UserTranscriptFinal))
+    assert final.turn_type == "CONTROL"
+    assert final.question_id is None
     await runtime.close()
 
 

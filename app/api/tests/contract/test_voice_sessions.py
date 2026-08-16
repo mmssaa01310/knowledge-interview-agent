@@ -10,6 +10,7 @@ from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.internal_voice import (
     cancel_internal_voice_turn,
     claim_internal_initial_reply,
+    classify_internal_voice_turn_intent,
     create_internal_assistant_event,
     create_internal_voice_turn,
     mark_internal_initial_reply_sent,
@@ -35,6 +36,7 @@ from ai_interviewer_api.schemas.voice import (
     VoiceSessionCreate,
     VoiceTurnCancel,
     VoiceTurnCreate,
+    VoiceTurnIntentCreate,
 )
 from ai_interviewer_api.services import voice_interview as voice_interview_service
 from ai_interviewer_api.services.ai_interview import (
@@ -876,6 +878,30 @@ def test_control_voice_turn_has_no_answer_scope_or_candidate() -> None:
     assert field_state["capturedItems"] == []
     assert messages[0]["turnType"] == "CONTROL"
     assert messages[0]["answerToQuestionId"] is None
+
+
+def test_voice_turn_intent_classification_is_semantic_and_pre_save(monkeypatch: pytest.MonkeyPatch) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    def classify(*, system_prompt, prompt, output_model):
+        assert "固定フレーズ" in system_prompt
+        assert "current_question:" in prompt
+        return output_model(turnType="CONTROL")
+
+    monkeypatch.setattr(voice_interview_service, "_run_voice_structured_output", classify)
+    result = classify_internal_voice_turn_intent(
+        session["id"],
+        VoiceTurnIntentCreate(
+            transcript="会話を終了してください",
+            answerToQuestionId=session["currentQuestionId"],
+            expectedStateVersion=session["stateVersion"],
+        ),
+    )
+
+    assert result == {"turnType": "CONTROL"}
+    assert store.list("voice_turns", user.tenant_id) == []
 
 
 def test_process_voice_turn_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:

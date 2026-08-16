@@ -17,6 +17,12 @@ class VoiceTurnCreate(BaseModel):
     endedAtMs: int | None = None
 
 
+class VoiceTurnIntentCreate(BaseModel):
+    transcript: str
+    answerToQuestionId: str | None = None
+    expectedStateVersion: int | None = None
+
+
 class VoiceTurnCancel(BaseModel):
     clientTurnId: str
     expectedStateVersion: int

@@ -46,6 +46,11 @@ class VoiceTurnSaveResult:
 
 
 @dataclass(frozen=True)
+class VoiceTurnIntentResult:
+    turn_type: str
+
+
+@dataclass(frozen=True)
 class VoiceTurnProcessResult:
     turn_id: str
     response_id: str
@@ -198,6 +203,37 @@ class InterviewApiClient:
             processing_status=str(payload.get("processingStatus") or "pending"),
             processing_mode=str(payload.get("processingMode") or "answer_evaluation"),
         )
+
+    async def classify_voice_turn_intent(
+        self,
+        voice_session_id: str,
+        *,
+        transcript: str,
+        answer_to_question_id: str | None,
+        expected_state_version: int | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> VoiceTurnIntentResult:
+        async with self._client() as client:
+            response = await self._request(
+                client,
+                "POST",
+                f"/internal/voice-sessions/{voice_session_id}/turn-intent",
+                json={
+                    "transcript": transcript,
+                    "answerToQuestionId": answer_to_question_id,
+                    "expectedStateVersion": expected_state_version,
+                },
+                timeout_seconds=timeout_seconds,
+                failure_code="turn_intent_classification_failed",
+            )
+        payload = response.json()
+        turn_type = str(payload.get("turnType") or "").strip()
+        if turn_type not in {"ANSWER", "CONTROL"}:
+            raise InterviewApiError(
+                "turn_intent_classification_failed",
+                "invalid turn intent response",
+            )
+        return VoiceTurnIntentResult(turn_type=turn_type)
 
     async def cancel_turn(
         self,

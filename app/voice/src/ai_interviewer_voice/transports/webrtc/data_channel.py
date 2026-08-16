@@ -148,8 +148,12 @@ def _serialize_runtime_event(event: VoiceRuntimeEvent, *, context: VoiceEventCon
             "type": "user_transcript_final",
             "voiceSessionId": context.voice_session_id,
             "text": event.text,
-            "turnType": "ANSWER",
-            "questionId": context.question_id,
+            "turnType": event.turn_type,
+            "questionId": (
+                event.question_id if event.turn_type == "ANSWER" and event.question_id is not None
+                else context.question_id if event.turn_type == "ANSWER"
+                else None
+            ),
             "stateVersion": context.state_version,
         }
     if isinstance(event, InputStateChanged):

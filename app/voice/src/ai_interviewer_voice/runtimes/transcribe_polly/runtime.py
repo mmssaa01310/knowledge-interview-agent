@@ -541,7 +541,6 @@ class TranscribePollyRuntime:
         self._silence_started_at = None
         self._hard_endpoint_started_at = None
         await self._emit(UserSpeechEnded())
-        await self._emit(UserTranscriptFinal(text=normalized))
         await self._emit_input_state("ANSWER_PROCESSING")
         self._processing_task = asyncio.create_task(
             self._process_interview_turn(
@@ -582,10 +581,25 @@ class TranscribePollyRuntime:
         )
         result_received = False
         try:
-            result = await self._interview_bridge.process_turn(
+            intent = await self._interview_bridge.classify_turn_intent(
                 voice_session_id=self._context.voice_session_id,
                 transcript=transcript,
                 answer_to_question_id=self._current_question_id,
+                expected_state_version=expected_state_version,
+            )
+            is_answer = intent.turn_type == "ANSWER"
+            await self._emit(
+                UserTranscriptFinal(
+                    text=transcript,
+                    turn_type=intent.turn_type,
+                    question_id=self._current_question_id if is_answer else None,
+                )
+            )
+            result = await self._interview_bridge.process_turn(
+                voice_session_id=self._context.voice_session_id,
+                transcript=transcript,
+                answer_to_question_id=self._current_question_id if is_answer else None,
+                turn_type=intent.turn_type,
                 expected_state_version=expected_state_version,
                 client_turn_id=client_turn_id,
             )
