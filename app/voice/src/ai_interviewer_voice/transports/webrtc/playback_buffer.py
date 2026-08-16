@@ -21,16 +21,19 @@ class PlaybackBufferCapacityExceeded(Exception):
 
 class PlaybackBuffer:
     BYTES_PER_SAMPLE = 2
-    SAMPLE_RATE_HZ = 24000
 
     def __init__(
         self,
         *,
+        sample_rate_hz: int = 24000,
         target_depth_ms: float = 100.0,
         retention_max_ms: float = 60000.0,
     ) -> None:
+        if sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be positive")
         self._buffer = bytearray()
         self._lock = asyncio.Lock()
+        self._sample_rate_hz = sample_rate_hz
         self._target_depth_ms = target_depth_ms
         self._retention_max_ms = retention_max_ms
         self.drop_count = 0
@@ -51,7 +54,7 @@ class PlaybackBuffer:
     async def enqueue(self, chunk: AssistantAudioChunk, *, current_generation: int) -> bool:
         if not chunk.authorized or chunk.generation != current_generation:
             return False
-        if chunk.sample_rate_hz != self.SAMPLE_RATE_HZ:
+        if chunk.sample_rate_hz != self._sample_rate_hz:
             return False
         if not self._is_valid_pcm(chunk.pcm):
             return False
@@ -131,14 +134,12 @@ class PlaybackBuffer:
                 playback_silence_inserted_ms=self.silence_inserted_ms,
             )
 
-    @classmethod
-    def _buffer_depth_ms(cls, size_bytes: int) -> float:
-        return (size_bytes / cls.BYTES_PER_SAMPLE / cls.SAMPLE_RATE_HZ) * 1000.0
+    def _buffer_depth_ms(self, size_bytes: int) -> float:
+        return (size_bytes / self.BYTES_PER_SAMPLE / self._sample_rate_hz) * 1000.0
 
-    @classmethod
-    def _depth_bytes_for_ms(cls, depth_ms: float) -> int:
-        samples = int((depth_ms / 1000.0) * cls.SAMPLE_RATE_HZ)
-        return samples * cls.BYTES_PER_SAMPLE
+    def _depth_bytes_for_ms(self, depth_ms: float) -> int:
+        samples = int((depth_ms / 1000.0) * self._sample_rate_hz)
+        return samples * self.BYTES_PER_SAMPLE
 
     @classmethod
     def _is_valid_pcm(cls, pcm: bytes) -> bool:

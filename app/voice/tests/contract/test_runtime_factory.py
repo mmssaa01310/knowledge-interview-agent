@@ -1,6 +1,9 @@
 import pytest
 
 from ai_interviewer_voice.runtimes.nova_sonic.runtime import NovaSonicRuntime
+from ai_interviewer_voice.runtimes.transcribe_polly.runtime import (
+    TranscribePollyRuntime,
+)
 from ai_interviewer_voice.services.runtime_factory import create_runtime
 
 
@@ -11,9 +14,12 @@ def test_create_runtime_returns_nova_runtime() -> None:
     assert runtime.provider_name == "nova_sonic"
 
 
-def test_create_runtime_rejects_unimplemented_provider() -> None:
-    with pytest.raises(NotImplementedError):
-        create_runtime("transcribe_polly")
+def test_create_runtime_returns_transcribe_polly_runtime() -> None:
+    runtime = create_runtime("transcribe_polly")
+
+    assert isinstance(runtime, TranscribePollyRuntime)
+    assert runtime.provider_name == "transcribe_polly"
+    assert runtime.output_sample_rate_hz == 16000
 
 
 def test_create_runtime_rejects_unknown_provider() -> None:

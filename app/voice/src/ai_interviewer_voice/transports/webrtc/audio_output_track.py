@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import monotonic
-from typing import Callable
 
 from aiortc import MediaStreamTrack
 
@@ -16,10 +16,6 @@ logger = logging.getLogger(__name__)
 OUTPUT_RATE_HZ = 48000
 OUTPUT_SAMPLES_PER_FRAME = 960
 OUTPUT_FRAME_DURATION_SECONDS = 0.02
-INPUT_SAMPLES_PER_FRAME = 480
-INPUT_BYTES_PER_FRAME = INPUT_SAMPLES_PER_FRAME * 2
-
-
 @dataclass(frozen=True)
 class OutputFrameMetrics:
     pts: int
@@ -37,6 +33,7 @@ class AudioOutputTrack(MediaStreamTrack):
         playback_buffer: PlaybackBuffer,
         *,
         voice_session_id: str | None = None,
+        input_rate_hz: int = 24000,
         preroll_ms: float = 80.0,
         short_underrun_ms: float = 40.0,
         on_frame_emitted: Callable[[OutputFrameMetrics], None] | None = None,
@@ -47,10 +44,13 @@ class AudioOutputTrack(MediaStreamTrack):
         self._preroll_ms = preroll_ms
         self._next_pts = 0
         self._short_underrun_ms = short_underrun_ms
+        self._input_rate_hz = input_rate_hz
+        self._input_samples_per_frame = int(input_rate_hz * OUTPUT_FRAME_DURATION_SECONDS)
+        self._input_bytes_per_frame = self._input_samples_per_frame * 2
         self._frames_created = 0
         self._non_silence_frames = 0
         self._output_resampler = OutputAudioResampler(
-            input_rate_hz=24000,
+            input_rate_hz=input_rate_hz,
             output_rate_hz=OUTPUT_RATE_HZ,
             output_samples_per_frame=OUTPUT_SAMPLES_PER_FRAME,
         )
@@ -76,17 +76,19 @@ class AudioOutputTrack(MediaStreamTrack):
             silence_frame_returned = True
             await self._playback_buffer.record_silence_inserted(OUTPUT_FRAME_DURATION_SECONDS * 1000.0)
         else:
-            pcm = await self._playback_buffer.pop_bytes(expected_bytes=INPUT_BYTES_PER_FRAME)
+            pcm = await self._playback_buffer.pop_bytes(expected_bytes=self._input_bytes_per_frame)
             consumed_bytes = len(pcm)
             silence_frame_returned = consumed_bytes == 0
 
             if consumed_bytes == 0:
                 pcm = self._silence_pcm()
                 await self._playback_buffer.record_silence_inserted(OUTPUT_FRAME_DURATION_SECONDS * 1000.0)
-            elif consumed_bytes < INPUT_BYTES_PER_FRAME:
-                missing_bytes = INPUT_BYTES_PER_FRAME - consumed_bytes
+            elif consumed_bytes < self._input_bytes_per_frame:
+                missing_bytes = self._input_bytes_per_frame - consumed_bytes
                 pcm = pcm + bytes(missing_bytes)
-                await self._playback_buffer.record_silence_inserted((missing_bytes / 2 / 24000.0) * 1000.0)
+                await self._playback_buffer.record_silence_inserted(
+                    (missing_bytes / 2 / self._input_rate_hz) * 1000.0
+                )
 
         frame, stats = self._output_resampler.resample(
             pcm,
@@ -119,7 +121,7 @@ class AudioOutputTrack(MediaStreamTrack):
         return None
 
     def _silence_pcm(self) -> bytes:
-        return bytes(INPUT_BYTES_PER_FRAME)
+        return bytes(self._input_bytes_per_frame)
 
     def _record_frame(
         self,
@@ -134,7 +136,7 @@ class AudioOutputTrack(MediaStreamTrack):
         if not silence_frame_returned:
             self._non_silence_frames += 1
         log_now = (
-            consumed_bytes not in {0, INPUT_BYTES_PER_FRAME}
+            consumed_bytes not in {0, self._input_bytes_per_frame}
             or silence_frame_returned
             or (monotonic() - self._last_log_at) >= 1.0
         )

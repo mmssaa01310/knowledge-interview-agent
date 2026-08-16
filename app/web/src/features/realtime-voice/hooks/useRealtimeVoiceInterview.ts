@@ -109,6 +109,10 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       case "runtime_ready":
         setStatus(hasPendingInitialReply(voiceSessionRef.current) ? "preparing_initial_reply" : "listening");
         return;
+      case "runtime_reconnecting":
+        setStatus("connecting");
+        setMessage("音声認識へ再接続しています。");
+        return;
       case "input_state_changed":
         switch (event.inputState) {
           case "ANSWER_LISTENING":
@@ -120,6 +124,18 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             break;
           case "ASSISTANT_SPEAKING":
             setStatus("speaking");
+            break;
+          case "INTERVIEW_COMPLETED":
+            microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+            microphoneStreamRef.current = null;
+            setStatus("completed");
+            onCompletedRef.current();
+            break;
+          case "INPUT_UNAVAILABLE":
+            microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+            microphoneStreamRef.current = null;
+            setMessage("音声認識を継続できません。テキスト入力をご利用ください。");
+            setStatus("error");
             break;
           default:
             break;
@@ -144,6 +160,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             id: key,
             role: "user",
             text: event.text,
+            turnType: event.turnType ?? "ANSWER",
             answerToQuestionId: event.questionId ?? undefined,
             voiceSessionId: event.voiceSessionId,
             voiceTurnId: event.turnId ?? undefined,
@@ -199,6 +216,8 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       case "assistant_interrupted":
         setStatus("processing");
         return;
+      case "assistant_backchannel":
+        return;
       case "interview_state":
         onInterviewStateChangedRef.current();
         return;
@@ -212,6 +231,10 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       case "error":
         if (event.message === "audio_playback_failed") {
           setRequiresManualPlayback(true);
+          setMessage(toUserFacingError(event.message));
+          return;
+        }
+        if (event.fatal === false) {
           setMessage(toUserFacingError(event.message));
           return;
         }
@@ -418,6 +441,12 @@ function toStartErrorMessage(error: unknown, stage: string): string {
 function toUserFacingError(message?: string): string {
   if (message === "audio_playback_failed") {
     return "音声を自動再生できませんでした。ブラウザの再生ボタンを押してください。";
+  }
+  if (message === "transcribe_stream_failed") {
+    return "音声認識へ接続できませんでした。テキスト入力で会話を続けてください。";
+  }
+  if (message === "polly_synthesis_failed") {
+    return "音声を生成できなかったため、回答をテキストで表示しています。";
   }
   if (message) {
     return `音声インタビューでエラーが発生しました: ${message}`;

@@ -32,13 +32,13 @@ from aiortc import (
 
 from ai_interviewer_voice.runtimes.base import RealtimeVoiceRuntime
 from ai_interviewer_voice.runtimes.nova_sonic.protocol.payloads import AUDIO_OUTPUT_CHANNELS
-from ai_interviewer_voice.runtimes.nova_sonic.protocol.payloads import AUDIO_OUTPUT_SAMPLE_RATE_HZ
 from ai_interviewer_voice.runtimes.nova_sonic.protocol.payloads import AUDIO_OUTPUT_SAMPLE_SIZE_BITS
 from ai_interviewer_voice.schemas.events import (
     AssistantAudioChunk,
     AssistantInterrupted,
     AssistantSpeechEnded,
     AssistantSpeechStarted,
+    InputStateChanged,
     RuntimeClosed,
     RuntimeError,
     RuntimeReady,
@@ -105,13 +105,16 @@ class VoicePeerConnection:
         self._playback_drain_timeout_seconds = playback_drain_timeout_seconds
         self._session_state = session
         self._runtime = runtime_factory(session.provider)
+        runtime_output_rate_hz = int(getattr(self._runtime, "output_sample_rate_hz", 24000))
         self._playback_buffer = PlaybackBuffer(
+            sample_rate_hz=runtime_output_rate_hz,
             target_depth_ms=playback_buffer_target_ms,
             retention_max_ms=playback_buffer_retention_max_ms,
         )
         self._output_track = AudioOutputTrack(
             self._playback_buffer,
             voice_session_id=self.voice_session_id,
+            input_rate_hz=runtime_output_rate_hz,
             preroll_ms=playback_preroll_ms,
             short_underrun_ms=playback_short_underrun_ms,
             on_frame_emitted=self._handle_output_frame_emitted,
@@ -136,7 +139,7 @@ class VoicePeerConnection:
         self._generation_finalize_tasks: dict[int, asyncio.Task[None]] = {}
         self._first_enqueued_responses: set[str] = set()
         self._last_playback_log_at = monotonic()
-        self._assistant_output_sample_rate_hz = AUDIO_OUTPUT_SAMPLE_RATE_HZ
+        self._assistant_output_sample_rate_hz = runtime_output_rate_hz
         self._assistant_output_channels = AUDIO_OUTPUT_CHANNELS
         self._assistant_output_bytes_per_sample = AUDIO_OUTPUT_SAMPLE_SIZE_BITS // 8
         configuration = RTCConfiguration(
@@ -640,6 +643,13 @@ class VoicePeerConnection:
             self._data_channel.send_interview_state(context=self._event_context())
             if self._session_state.interview_status == "completed":
                 await self._wait_for_playback_drain()
+                self._data_channel.send_event(
+                    InputStateChanged(
+                        input_state="INTERVIEW_COMPLETED",
+                        generation=event_to_send.generation,
+                    ),
+                    context=self._event_context(),
+                )
                 self._data_channel.send_interview_completed(context=self._event_context())
                 await self._close(reason="interview_completed", source="assistant_speech_ended")
             else:
@@ -653,7 +663,7 @@ class VoicePeerConnection:
                     self._audio_input_started and self._input_consumer.is_running,
                     self._input_consumer.source_track_state,
                 )
-        elif isinstance(event, RuntimeError):
+        elif isinstance(event, RuntimeError) and event.fatal:
             await self._close(reason="runtime_error", source="runtime_event_handler")
 
     async def _refresh_session_state(self) -> None:

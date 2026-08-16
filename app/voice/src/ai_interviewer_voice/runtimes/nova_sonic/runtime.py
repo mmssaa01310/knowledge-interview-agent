@@ -224,6 +224,10 @@ class NovaSonicRuntime:
         return self._config.provider_name
 
     @property
+    def output_sample_rate_hz(self) -> int:
+        return 24000
+
+    @property
     def _stream(self) -> Any | None:
         return self._stream_writer.stream
 

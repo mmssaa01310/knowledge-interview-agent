@@ -10,6 +10,7 @@ dependencies = [
     { name = "aiortc" },
     { name = "av" },
     { name = "aws-sdk-bedrock-runtime" },
+    { name = "aws-sdk-transcribe-streaming" },
     { name = "boto3" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -23,6 +24,7 @@ requires-dist = [
     { name = "aiortc", specifier = ">=1.9.0,<2.0.0" },
     { name = "av", specifier = ">=12.3.0,<13.0.0" },
     { name = "aws-sdk-bedrock-runtime", specifier = ">=0.7.0" },
+    { name = "aws-sdk-transcribe-streaming", specifier = ">=0.7.0,<0.8.0" },
     { name = "boto3", specifier = ">=1.34.0,<2.0.0" },
     { name = "fastapi", specifier = ">=0.115.0,<0.116.0" },
     { name = "httpx", specifier = ">=0.27.0,<0.28.0" },
@@ -126,6 +128,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/48/62/30685f9a096ad834409771a567065cd25094d3a5124874e1d7e373f17dd7/aws_sdk_signers-0.3.0.tar.gz", hash = "sha256:6fd654ea3dafe3ae3cf172fb3bd1e81877fe6e18156e0b638ccefb045ffb420c", size = 18590, upload-time = "2026-05-05T18:04:09.914Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/30/91/25405e647de8dea8419812e85bcb341323500905f4f55fc23cf488b7a2a4/aws_sdk_signers-0.3.0-py3-none-any.whl", hash = "sha256:098c7784064931d2da968400fc0466e092a7c271a79fac9d55daa4a7c35fd6f1", size = 21999, upload-time = "2026-05-05T18:04:08.971Z" },
+]
+
+[[package]]
+name = "aws-sdk-transcribe-streaming"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "smithy-aws-core", extra = ["eventstream", "json"] },
+    { name = "smithy-core" },
+    { name = "smithy-http", extra = ["awscrt"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/de/0c/f37b2acea16dd4ddce3da27302b2ff72cf774bc4593cacf87821fd01129f/aws_sdk_transcribe_streaming-0.7.0.tar.gz", hash = "sha256:63f55209af4c48339c1dec076dff77f7d5780cf50eb7a0851b1411cffeaad7f2", size = 459974, upload-time = "2026-06-23T04:05:04.48Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/83/be/6cfbc24c8b9264c8201e38868b335c95b24070092100fd2505b53254bc26/aws_sdk_transcribe_streaming-0.7.0-py3-none-any.whl", hash = "sha256:0d39759d1bf3c4acad60dd39ae613f3795a7fdd25d51aaa5227de736225f5f34", size = 62674, upload-time = "2026-06-23T04:05:03.311Z" },
 ]
 
 [[package]]

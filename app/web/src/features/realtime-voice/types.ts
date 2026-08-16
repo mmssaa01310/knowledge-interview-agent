@@ -56,7 +56,11 @@ export type VoiceDataChannelEvent =
       state: string;
     }
   | {
-      type: "runtime_ready" | "user_speech_started" | "user_speech_ended";
+      type:
+        | "runtime_ready"
+        | "runtime_reconnecting"
+        | "user_speech_started"
+        | "user_speech_ended";
       voiceSessionId: string;
     }
   | {
@@ -64,6 +68,7 @@ export type VoiceDataChannelEvent =
       voiceSessionId: string;
       text: string;
       turnId?: string;
+      turnType?: "ANSWER" | "CONTROL";
       questionId?: string | null;
       stateVersion?: number | null;
     }
@@ -74,7 +79,9 @@ export type VoiceDataChannelEvent =
         | "ASSISTANT_SPEAKING"
         | "ANSWER_LISTENING"
         | "ANSWER_PROCESSING"
-        | "CONFIRMATION_LISTENING";
+        | "CONFIRMATION_LISTENING"
+        | "INTERVIEW_COMPLETED"
+        | "INPUT_UNAVAILABLE";
       generation?: number | null;
     }
   | {
@@ -82,6 +89,13 @@ export type VoiceDataChannelEvent =
       voiceSessionId: string;
       responseId?: string | null;
       generation?: number | null;
+    }
+  | {
+      type: "assistant_backchannel";
+      voiceSessionId: string;
+      kind: "listen_ack" | "processing_ack" | "long_processing_notice";
+      responseId: string;
+      generation: number;
     }
   | {
       type: "assistant_speech_ended";
@@ -123,6 +137,7 @@ export type VoiceDataChannelEvent =
       type: "error";
       voiceSessionId?: string;
       message?: string;
+      fatal?: boolean;
     };
 
 export type VoiceConnectionStats = {

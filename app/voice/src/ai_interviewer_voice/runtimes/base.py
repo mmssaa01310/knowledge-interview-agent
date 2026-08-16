@@ -13,6 +13,10 @@ class RealtimeVoiceRuntime(Protocol):
     def provider_name(self) -> str:
         ...
 
+    @property
+    def output_sample_rate_hz(self) -> int:
+        ...
+
     async def start(self, context: VoiceRuntimeContext) -> None:
         ...
 

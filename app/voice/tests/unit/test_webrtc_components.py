@@ -196,6 +196,23 @@ async def test_playback_buffer_rejects_unauthorized_and_old_generation() -> None
 
 
 @pytest.mark.anyio
+async def test_playback_buffer_accepts_transcribe_polly_16khz_pcm() -> None:
+    buffer = PlaybackBuffer(sample_rate_hz=16000)
+    chunk = AssistantAudioChunk(
+        response_id="polly-response",
+        completion_id="polly-completion",
+        generation=1,
+        sequence=1,
+        pcm=bytes(640),
+        authorized=True,
+        sample_rate_hz=16000,
+    )
+
+    assert await buffer.enqueue(chunk, current_generation=1) is True
+    assert await buffer.depth_ms() == pytest.approx(20.0)
+
+
+@pytest.mark.anyio
 async def test_playback_buffer_clears_on_interrupt() -> None:
     buffer = PlaybackBuffer()
     chunk = AssistantAudioChunk(
@@ -433,6 +450,7 @@ def test_runtime_event_serialization_emits_common_events_only() -> None:
         "type": "user_transcript_final",
         "voiceSessionId": "vs-1",
         "text": "hello",
+        "turnType": "ANSWER",
         "questionId": "q-001",
         "stateVersion": 2,
     }
@@ -444,6 +462,7 @@ def test_runtime_event_serialization_emits_common_events_only() -> None:
         "type": "error",
         "voiceSessionId": "vs-1",
         "message": "boom",
+        "fatal": True,
     }
     gate_payload = _serialize_runtime_event(
         InputStateChanged(input_state="CONFIRMATION_LISTENING", generation=3),

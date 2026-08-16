@@ -3,6 +3,7 @@ import type { VoiceIceConfigResponse, VoiceSessionResponse } from "../types";
 
 const VOICE_API_BASE_URL = "";
 const DEV_AUTH_TOKEN = import.meta.env.VITE_DEV_TOKEN ?? "dev-manager";
+const VOICE_RUNTIME_PROVIDER = import.meta.env.VITE_VOICE_RUNTIME_PROVIDER ?? "nova_sonic";
 
 type RequestOptions = {
   method?: "GET" | "POST" | "DELETE";
@@ -56,7 +57,7 @@ export async function createVoiceSession(recordId: string, signal?: AbortSignal)
   return requestJson<VoiceSessionResponse>(
     API_BASE_URL,
     `/api/records/${recordId}/voice-sessions`,
-    { method: "POST", body: {}, signal },
+    { method: "POST", body: { provider: VOICE_RUNTIME_PROVIDER }, signal },
   );
 }
 

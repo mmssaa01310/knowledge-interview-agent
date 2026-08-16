@@ -12,6 +12,7 @@ dependencies = [
   "aws-sdk-bedrock-runtime>=0.7.0",
   "aiortc>=1.9.0,<2.0.0",
   "av>=12.3.0,<13.0.0",
+  "aws-sdk-transcribe-streaming>=0.7.0,<0.8.0",
 ]
 
 [build-system]

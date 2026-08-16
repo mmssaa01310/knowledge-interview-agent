@@ -7,8 +7,8 @@ from ai_interviewer_voice.clients.interview_api import (
     InterviewApiClient,
     InterviewApiError,
     VoiceSessionSnapshot,
-    VoiceTurnSaveResult,
     VoiceTurnProcessResult,
+    VoiceTurnSaveResult,
 )
 
 
@@ -83,6 +83,9 @@ class InterviewBridge:
         voice_session_id: str,
         transcript: str,
         answer_to_question_id: str | None,
+        turn_type: str = "ANSWER",
+        expected_state_version: int | None = None,
+        client_turn_id: str | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
     ) -> InterviewBridgeResult:
@@ -90,6 +93,9 @@ class InterviewBridge:
             voice_session_id,
             transcript=transcript,
             answer_to_question_id=answer_to_question_id,
+            turn_type=turn_type,
+            expected_state_version=expected_state_version,
+            client_turn_id=client_turn_id,
             started_at_ms=started_at_ms,
             ended_at_ms=ended_at_ms,
         )
@@ -104,6 +110,9 @@ class InterviewBridge:
         *,
         transcript: str,
         answer_to_question_id: str | None,
+        turn_type: str = "ANSWER",
+        expected_state_version: int | None = None,
+        client_turn_id: str | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
     ) -> VoiceTurnSaveResult:
@@ -111,8 +120,25 @@ class InterviewBridge:
             voice_session_id,
             transcript=transcript,
             answer_to_question_id=answer_to_question_id,
+            turn_type=turn_type,
+            expected_state_version=expected_state_version,
+            client_turn_id=client_turn_id,
             started_at_ms=started_at_ms,
             ended_at_ms=ended_at_ms,
+            timeout_seconds=self._turn_save_timeout_seconds,
+        )
+
+    async def cancel_turn(
+        self,
+        *,
+        voice_session_id: str,
+        client_turn_id: str,
+        expected_state_version: int,
+    ) -> None:
+        await self._client.cancel_turn(
+            voice_session_id,
+            client_turn_id=client_turn_id,
+            expected_state_version=expected_state_version,
             timeout_seconds=self._turn_save_timeout_seconds,
         )
 
@@ -169,8 +195,8 @@ class InterviewBridge:
 
 
 __all__ = [
+    "InterviewApiError",
     "InterviewBridge",
     "InterviewBridgeResult",
-    "InterviewApiError",
     "InvalidInterviewResponseError",
 ]

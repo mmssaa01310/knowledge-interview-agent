@@ -48,6 +48,8 @@ class InputStateChanged:
         "ANSWER_LISTENING",
         "ANSWER_PROCESSING",
         "CONFIRMATION_LISTENING",
+        "INTERVIEW_COMPLETED",
+        "INPUT_UNAVAILABLE",
     ]
     generation: int | None = None
     event_type: Literal["input_state_changed"] = "input_state_changed"
@@ -103,6 +105,15 @@ class AssistantInterrupted:
 
 
 @dataclass(frozen=True)
+class AssistantBackchannel:
+    kind: Literal["listen_ack", "processing_ack", "long_processing_notice"]
+    response_id: str
+    generation: int
+    text: str
+    event_type: Literal["assistant_backchannel"] = "assistant_backchannel"
+
+
+@dataclass(frozen=True)
 class RuntimeReconnecting:
     event_type: Literal["runtime_reconnecting"] = "runtime_reconnecting"
 
@@ -111,6 +122,7 @@ class RuntimeReconnecting:
 class RuntimeError:
     message: str
     detail: dict = field(default_factory=dict)
+    fatal: bool = True
     event_type: Literal["runtime_error"] = "runtime_error"
 
 
@@ -132,6 +144,7 @@ VoiceRuntimeEvent = (
     | AssistantResponsePreparing
     | AssistantSpeechEnded
     | AssistantInterrupted
+    | AssistantBackchannel
     | RuntimeReconnecting
     | RuntimeError
     | RuntimeClosed

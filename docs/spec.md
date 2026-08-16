@@ -186,6 +186,13 @@ WebRTC接続の確立や制御に必要なシグナリング通信には、WebSo
 
 音声経路で取得した確定文字起こしは、テキスト経路と同じインタビュー処理へ渡す。
 
+音声RuntimeはNova Sonic方式とAmazon Transcribe Streaming + Amazon Polly方式を
+共通契約の下で分離し、Voice Session作成時に選択できるものとする。接続中Sessionの
+Provider自動fallbackは行わない。
+
+Assistant音声への割り込みは音声出力の停止であり、コミット済みUser Turnの取消しを意味しない。
+未コミットTurnだけを取消可能とし、明示的な訂正は新しいTurnとして状態更新する。
+
 以下の処理の正本は、音声処理サービスではなく既存のバックエンドに置く。
 
 * 質問進行
@@ -301,5 +308,5 @@ WebRTC接続の確立や制御に必要なシグナリング通信には、WebSo
 * RAG評価
 * Agentic RAG
 * リアルタイム音声インタビューの複数話者対応
-* 音声認識・音声生成Providerの追加
+* Nova SonicおよびTranscribe + Polly以外の音声Provider追加
 * 音声セッションの複数インスタンス間引き継ぎ

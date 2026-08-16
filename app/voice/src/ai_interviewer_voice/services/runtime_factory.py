@@ -4,7 +4,12 @@ from ai_interviewer_voice.runtimes.base import RealtimeVoiceRuntime
 from ai_interviewer_voice.runtimes.fake_runtime import FakeRuntime
 from ai_interviewer_voice.runtimes.nova_sonic.config import NovaSonicRuntimeConfig
 from ai_interviewer_voice.runtimes.nova_sonic.runtime import NovaSonicRuntime
-from ai_interviewer_voice.runtimes.transcribe_polly.runtime import TranscribePollyRuntime
+from ai_interviewer_voice.runtimes.transcribe_polly.config import (
+    TranscribePollyRuntimeConfig,
+)
+from ai_interviewer_voice.runtimes.transcribe_polly.runtime import (
+    TranscribePollyRuntime,
+)
 from ai_interviewer_voice.services.interview_bridge import InterviewBridge
 
 
@@ -43,5 +48,27 @@ def create_runtime(provider: str) -> RealtimeVoiceRuntime:
             interview_bridge=bridge,
         )
     if normalized == "transcribe_polly":
-        raise NotImplementedError("transcribe_polly runtime is not implemented in v1")
+        bridge = InterviewBridge(
+            InterviewApiClient(
+                settings.api_base_url,
+                settings.internal_api_token,
+            ),
+            turn_save_timeout_seconds=settings.interview_turn_save_timeout_seconds,
+            turn_process_timeout_seconds=settings.interview_turn_process_timeout_seconds,
+        )
+        return TranscribePollyRuntime(
+            config=TranscribePollyRuntimeConfig(
+                aws_region=settings.aws_region,
+                language_code=settings.transcribe_language_code,
+                transcribe_chunk_ms=settings.transcribe_chunk_ms,
+                partial_results_stability=settings.transcribe_partial_results_stability,
+                transcribe_reconnect_attempts=settings.transcribe_reconnect_attempts,
+                reconnect_audio_buffer_ms=settings.transcribe_reconnect_audio_buffer_ms,
+                vad_rms_threshold=settings.transcribe_vad_rms_threshold,
+                polly_voice_id=settings.polly_voice_id,
+                polly_engine=settings.polly_engine,
+                polly_max_parallel_requests=settings.polly_max_parallel_requests,
+            ),
+            interview_bridge=bridge,
+        )
     raise ValueError(f"Unsupported voice runtime provider: {provider}")

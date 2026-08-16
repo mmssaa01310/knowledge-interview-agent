@@ -20,6 +20,7 @@ from typing import Any
 from aiortc import RTCDataChannel
 
 from ai_interviewer_voice.schemas.events import (
+    AssistantBackchannel,
     AssistantInterrupted,
     AssistantResponsePreparing,
     AssistantSpeechEnded,
@@ -27,6 +28,7 @@ from ai_interviewer_voice.schemas.events import (
     AssistantTranscriptFinal,
     InputStateChanged,
     RuntimeError,
+    RuntimeReconnecting,
     UserSpeechEnded,
     UserSpeechStarted,
     UserTranscriptFinal,
@@ -146,6 +148,7 @@ def _serialize_runtime_event(event: VoiceRuntimeEvent, *, context: VoiceEventCon
             "type": "user_transcript_final",
             "voiceSessionId": context.voice_session_id,
             "text": event.text,
+            "turnType": "ANSWER",
             "questionId": context.question_id,
             "stateVersion": context.state_version,
         }
@@ -195,10 +198,24 @@ def _serialize_runtime_event(event: VoiceRuntimeEvent, *, context: VoiceEventCon
             "responseId": event.response_id,
             "generation": event.generation,
         }
+    if isinstance(event, AssistantBackchannel):
+        return {
+            "type": "assistant_backchannel",
+            "voiceSessionId": context.voice_session_id,
+            "kind": event.kind,
+            "responseId": event.response_id,
+            "generation": event.generation,
+        }
+    if isinstance(event, RuntimeReconnecting):
+        return {
+            "type": "runtime_reconnecting",
+            "voiceSessionId": context.voice_session_id,
+        }
     if isinstance(event, RuntimeError):
         return {
             "type": "error",
             "voiceSessionId": context.voice_session_id,
             "message": event.message,
+            "fatal": event.fatal,
         }
     return None

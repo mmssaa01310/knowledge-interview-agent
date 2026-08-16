@@ -14,7 +14,7 @@ class Settings:
     aws_region: str = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1"))
     nova_sonic_model_id: str = os.getenv("NOVA_SONIC_MODEL_ID", "amazon.nova-2-sonic-v1:0")
     nova_sonic_voice_id: str = os.getenv("NOVA_SONIC_VOICE_ID", "matthew")
-    nova_sonic_endpointing_sensitivity: str = os.getenv("NOVA_SONIC_ENDPOINTING_SENSITIVITY", "HIGH")
+    nova_sonic_endpointing_sensitivity: str = os.getenv("NOVA_SONIC_ENDPOINTING_SENSITIVITY", "MEDIUM")
     nova_sonic_invoke_timeout_seconds: float = float(os.getenv("NOVA_SONIC_INVOKE_TIMEOUT_SECONDS", "10"))
     nova_sonic_await_output_timeout_seconds: float = float(
         os.getenv("NOVA_SONIC_AWAIT_OUTPUT_TIMEOUT_SECONDS", "10")
@@ -22,6 +22,25 @@ class Settings:
     nova_sonic_system_prompt: str = os.getenv(
         "NOVA_SONIC_SYSTEM_PROMPT",
         DEFAULT_SYSTEM_PROMPT,
+    )
+    transcribe_language_code: str = os.getenv("TRANSCRIBE_LANGUAGE_CODE", "ja-JP")
+    transcribe_partial_results_stability: str = os.getenv(
+        "TRANSCRIBE_PARTIAL_RESULTS_STABILITY", "medium"
+    )
+    transcribe_chunk_ms: int = int(os.getenv("TRANSCRIBE_AUDIO_CHUNK_MS", "100"))
+    transcribe_reconnect_attempts: int = int(
+        os.getenv("TRANSCRIBE_RECONNECT_ATTEMPTS", "2")
+    )
+    transcribe_reconnect_audio_buffer_ms: int = int(
+        os.getenv("TRANSCRIBE_RECONNECT_AUDIO_BUFFER_MS", "3000")
+    )
+    transcribe_vad_rms_threshold: int = int(
+        os.getenv("TRANSCRIBE_VAD_RMS_THRESHOLD", "600")
+    )
+    polly_voice_id: str = os.getenv("POLLY_VOICE_ID", "Kazuha")
+    polly_engine: str = os.getenv("POLLY_ENGINE", "neural")
+    polly_max_parallel_requests: int = int(
+        os.getenv("POLLY_MAX_PARALLEL_REQUESTS", "2")
     )
     interview_turn_save_timeout_seconds: float = float(os.getenv("VOICE_TURN_SAVE_TIMEOUT_SECONDS", "5"))
     interview_turn_process_timeout_seconds: float = float(os.getenv("VOICE_TURN_PROCESS_TIMEOUT_SECONDS", "5"))

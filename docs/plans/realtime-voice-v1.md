@@ -1,5 +1,30 @@
 # realtime-voice-v1.md
 
+## 2026-07-27 Transcribe + Polly Runtime実装
+
+共通`RealtimeVoiceRuntime`契約を維持したまま、`transcribe_polly`を実動作Providerとして追加した。
+Nova Sonicは既定Providerとして維持し、`VOICE_RUNTIME_PROVIDER` /
+`VITE_VOICE_RUNTIME_PROVIDER`で新規Voice Sessionの方式を切り替える。
+
+実装範囲:
+
+* Transcribe Streamingへの16kHz mono PCM 100ms送信と最大2回再接続
+* VAD、soft/normal/hard endpoint、安定部分・確定結果の分離
+* 優先度付き単一OutputCoordinatorと20ms deadline再生
+* Polly最大2件先行生成、先頭チャンクからの逐次再生、生成順序保証
+* LISTEN_ACK、PROCESSING_ACK、長時間通知の固定音声キャッシュ
+* 120ms連続音声によるbarge-inとgeneration単位の生成・再生キャンセル
+* `clientTurnId` / `expectedStateVersion`によるAPI冪等性・競合拒否
+* Barge-inの`OUTPUT_INTERRUPT`は音声出力だけを中断し、APIのUser Turnを変更しない
+* API評価中の新規発話では、独立した`PENDING_TURN_CANCEL`として
+  `RECEIVED/EVALUATING` Turnだけをcancel tombstoneで取消し
+* `COMMITTED` Turnを維持し、明示訂正は新しいTurnと`SUPERSEDED`関連で表現
+* `INTERVIEW_COMPLETED`、`INPUT_UNAVAILABLE`状態
+
+自動検証と未確認事項は、この変更の完了報告および正本
+`docs/architecture/voice/realtime-voice.md`を参照する。実AWS、実ブラウザ、負荷・クォータ試験は
+別途実施する。
+
 ## 2026-07-20 async tool flow確定
 
 最小実ストリーム試験の結果に基づき、通常回答のconfirmation prefaceを次へ変更した。

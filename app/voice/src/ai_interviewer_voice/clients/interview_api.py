@@ -168,6 +168,9 @@ class InterviewApiClient:
         *,
         transcript: str,
         answer_to_question_id: str | None,
+        turn_type: str = "ANSWER",
+        client_turn_id: str | None = None,
+        expected_state_version: int | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
         timeout_seconds: float = 5.0,
@@ -179,7 +182,10 @@ class InterviewApiClient:
                 f"/internal/voice-sessions/{voice_session_id}/turns",
                 json={
                     "transcript": transcript,
+                    "turnType": turn_type,
                     "answerToQuestionId": answer_to_question_id,
+                    "clientTurnId": client_turn_id,
+                    "expectedStateVersion": expected_state_version,
                     "startedAtMs": started_at_ms,
                     "endedAtMs": ended_at_ms,
                 },
@@ -192,6 +198,27 @@ class InterviewApiClient:
             processing_status=str(payload.get("processingStatus") or "pending"),
             processing_mode=str(payload.get("processingMode") or "answer_evaluation"),
         )
+
+    async def cancel_turn(
+        self,
+        voice_session_id: str,
+        *,
+        client_turn_id: str,
+        expected_state_version: int,
+        timeout_seconds: float = 5.0,
+    ) -> None:
+        async with self._client() as client:
+            await self._request(
+                client,
+                "POST",
+                f"/internal/voice-sessions/{voice_session_id}/turns/cancel",
+                json={
+                    "clientTurnId": client_turn_id,
+                    "expectedStateVersion": expected_state_version,
+                },
+                timeout_seconds=timeout_seconds,
+                failure_code="turn_cancel_failed",
+            )
 
     async def process_turn(
         self,
@@ -279,7 +306,9 @@ class InterviewApiClient:
         if response.status_code == 404:
             raise InterviewApiError("voice_session_closed", "voice session not found", status_code=404)
         if response.status_code == 409:
-            raise InterviewApiError("voice_session_closed", "voice session closed", status_code=409)
+            detail = response.json().get("detail")
+            code = str(detail or "turn_state_conflict")
+            raise InterviewApiError(code, code, status_code=409)
         if response.status_code >= 400:
             raise InterviewApiError(
                 failure_code,

@@ -33,6 +33,10 @@ class FakeRuntime(RealtimeVoiceRuntime):
     def provider_name(self) -> str:
         return "fake"
 
+    @property
+    def output_sample_rate_hz(self) -> int:
+        return 24000
+
     async def start(self, context: VoiceRuntimeContext) -> None:
         self._started = True
         await self._events.put(RuntimeReady())

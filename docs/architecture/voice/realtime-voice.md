@@ -95,9 +95,9 @@ app/voice
 
 `nova_sonic`と`transcribe_polly`は相互に依存してはいけない。
 
-v1ではNova Sonic Runtimeのみ実動作を実装する。Transcribe + Polly Runtimeは接続点だけを用意し、選択された場合は明示的にエラーとする。
-
-Provider fallback、自動切り替え、無停止切り替えはv1対象外とする。
+Nova SonicとTranscribe + Pollyはどちらも実動作Runtimeとして提供する。Voice Session作成時の
+`provider`で選択し、Webの既定値は`VITE_VOICE_RUNTIME_PROVIDER`で変更できる。接続中Sessionの
+Provider fallback、自動切り替え、無停止切り替えは対象外とする。
 
 ## 4. Runtime共通契約
 
@@ -112,6 +112,10 @@ from typing import Protocol
 class RealtimeVoiceRuntime(Protocol):
     @property
     def provider_name(self) -> str:
+        ...
+
+    @property
+    def output_sample_rate_hz(self) -> int:
         ...
 
     async def start(
@@ -181,6 +185,8 @@ RuntimeClosed
 ```
 
 Nova Sonic、Strands BidiAgent、Transcribe、Polly固有イベントはRuntime内部で扱い、`app/web`へそのまま出してはいけない。
+
+相槌は`AssistantBackchannel`として通知し、正式なAssistant TranscriptやInterview Agentの会話履歴へ追加しない。
 
 音声チャンクには、最低限以下を含める。
 
@@ -261,7 +267,7 @@ WebRTC TransportはBrowserと`app/voice`間の音声Transportだけを担当す�
 * BrowserのSDP offerからanswerを生成する
 * Browser audio trackを受信する
 * WebRTC音声を16kHz、16bit、mono PCMへ変換する
-* Runtimeの24kHz、16bit、mono PCMを48kHz WebRTC audio frameへ変換する
+* Runtimeが宣言するsample rateの16bit、mono PCMを48kHz WebRTC audio frameへ変換する
 * `voice-events` Data ChannelへProvider非依存イベントを送信する
 * authorized audioだけをPlayback Bufferへ投入する
 * interruption時にPlayback Bufferを破棄する
@@ -879,7 +885,61 @@ local preface playback drained AND evaluation_reply_ready
 
 固定PCMは24kHz、mono、s16、約1,056msであり、既存の出力resamplerを通して48kHz、mono、s16、20ms、960 samples/frameとしてWebRTCへ送る。16kHz PCMを24kHzとして解釈する経路は持たない。
 
-## 14. 実装しないもの
+## 18. Transcribe + Polly Runtime
+
+Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20msフレームとしてVADへ渡し、
+5フレームを100msにまとめてTranscribe Streamingへ送る。部分結果安定化は`medium`を既定とし、
+部分TranscriptはUI通知だけに使い、確定したTranscriptだけをInterview APIへ渡す。
+
+ターン確定、相槌、処理通知の既定タイミングは次のとおり。
+
+* 350ms: soft endpoint
+* 500ms: 条件を満たす場合だけLISTEN_ACK
+* 600ms: Transcribe確定結果または完結表現で通常確定
+* 1,000ms: hard endpoint。確定結果を最大300ms待って安定部分で確定
+* 1,300ms: ターン確定後のPROCESSING_ACK
+* 3,000ms: 1ターン1回の長時間処理通知
+
+正式応答はInterview APIの`AssistantReply`を正本とし、句読点と文字数で分割してPolly
+`SynthesizeSpeech`へ最大2件先行要求する。音声は16kHz PCMとして受け、`audio_sequence`順に
+WebRTCへ渡す。LISTEN_ACKとPROCESSING_ACKはメモリキャッシュ済み音声だけを使い、正式会話履歴には保存しない。
+
+正式回答、PROCESSING_ACK、LISTEN_ACK、長時間処理通知は単一の`AudioOutputCoordinator`へ渡す。
+優先度は順に100、50、40、30とし、高優先度出力は低優先度の生成・再生を即時キャンセルする。
+PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信する。
+`AssistantSpeechEnded`は全frame送信完了時に発行する一方、入力再開はBrowserからの
+`assistant_playback_drained`後とし、Queue投入完了とスピーカー再生完了を区別する。
+
+ユーザー音声を120ms連続検出した場合はbarge-inとし、`generation`を更新する。古いLLM応答、
+未再生Polly音声、遅延通知はgeneration照合で破棄する。Transcribeは最大2回再接続し、その間の
+音声を最大3秒保持する。Pollyは指数バックオフ付きで1回再試行し、失敗時も正式応答テキストを表示して会話を継続する。
+
+`generation`はVoice Runtime内の音声生成・再生を無効化する識別子であり、InterviewStateの
+排他制御には使用しない。確定turnには`clientTurnId`と`expectedStateVersion`を付与し、
+APIは重複ID、古いversion、非active Sessionを拒否する。
+
+割り込み関連の操作は、次の3種類を別の責務として扱う。
+
+* `OUTPUT_INTERRUPT`: Barge-in成立時にPolly生成、PCM再生、相槌、通知、未再生Assistant responseを
+  中断し、`generation`を更新して新しいUser Turnを開始する。APIのUser Turnは変更しない。
+* `PENDING_TURN_CANCEL`: API応答待ちのUser Turnが`RECEIVED`または`EVALUATING`の場合だけ、
+  新しいユーザー発話の開始に伴って明示的に実行する。cancel tombstoneを作成し、遅延commitを拒否する。
+* `COMMITTED_TURN_REVERT`: 通常のBarge-inでは実行しない。明示的な訂正を新しいUser Turnとして
+  評価し、置換対象を物理削除せず`SUPERSEDED`として関連付ける。
+
+`COMMITTED` Turnは通常のBarge-inやcancel APIで巻き戻さず、candidate、InterviewState、
+current question、state version、User messageを維持する。Assistant responseが`INTERRUPTED`でも
+元User Turnは`COMMITTED`のままとする。
+
+User Turn lifecycleは`RECEIVED -> EVALUATING -> COMMITTED`を通常系、
+`RECEIVED/EVALUATING -> CANCELLED`を未コミット取消しとする。明示的な訂正は新しいTurnとして
+評価し、置換対象のTurnを物理削除せず`SUPERSEDED`として関連付ける。
+
+`END_INTERVIEW`では終了音声のBrowser再生完了後に`INTERVIEW_COMPLETED`へ遷移し、
+音声入力を無効化する。Transcribeの再接続上限超過時は`INPUT_UNAVAILABLE`へ遷移して
+音声送信とendpoint loopを停止し、Webはマイクを停止してテキスト入力への切り替えを案内する。
+
+## 19. 実装しないもの
 
 v1では以下を実装しない。
 
@@ -893,7 +953,7 @@ v1では以下を実装しない。
 * 複数話者インタビュー
 * KVSシグナリングチャネル
 
-## 15. 関連ドキュメント
+## 20. 関連ドキュメント
 
 * `docs/spec.md`
 * `docs/architecture/agents/agent-architecture.md`
