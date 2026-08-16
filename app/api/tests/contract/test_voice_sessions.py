@@ -324,7 +324,7 @@ def test_create_get_and_stop_voice_session() -> None:
 
     assert session["recordId"] == record["id"]
     assert session["ownerUserId"] == user.user_id
-    assert session["provider"] == "nova_sonic"
+    assert session["provider"] == "transcribe_polly"
     assert session["currentQuestionId"] == "q-001"
     assert "どのような現象が起きていますか？" in (session.get("initialReplyText") or "")
     assert session["initialQuestionId"] == "q-001"

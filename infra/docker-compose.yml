@@ -70,7 +70,7 @@ services:
     environment:
       VITE_API_PROXY_TARGET: http://api:8000
       VITE_VOICE_PROXY_TARGET: http://host.docker.internal:8010
-      VITE_VOICE_RUNTIME_PROVIDER: ${VOICE_RUNTIME_PROVIDER:-nova_sonic}
+      VITE_VOICE_RUNTIME_PROVIDER: ${VOICE_RUNTIME_PROVIDER:-transcribe_polly}
       CHOKIDAR_USEPOLLING: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"

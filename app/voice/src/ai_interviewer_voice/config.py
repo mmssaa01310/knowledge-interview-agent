@@ -10,7 +10,7 @@ class Settings:
     app_env: str = os.getenv("APP_ENV", "local")
     api_base_url: str = os.getenv("VOICE_API_BASE_URL", "http://127.0.0.1:8000")
     internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")
-    runtime_provider: str = os.getenv("VOICE_RUNTIME_PROVIDER", "nova_sonic")
+    runtime_provider: str = os.getenv("VOICE_RUNTIME_PROVIDER", "transcribe_polly")
     aws_region: str = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1"))
     nova_sonic_model_id: str = os.getenv("NOVA_SONIC_MODEL_ID", "amazon.nova-2-sonic-v1:0")
     nova_sonic_voice_id: str = os.getenv("NOVA_SONIC_VOICE_ID", "matthew")
