@@ -17,6 +17,9 @@ class TranscribePollyRuntimeConfig:
     normal_endpoint_ms: int = 600
     hard_endpoint_ms: int = 1000
     final_result_wait_ms: int = 300
+    final_result_settle_ms: int = 150
+    long_form_speech_ms: int = 2500
+    long_form_endpoint_ms: int = 850
     listen_ack_min_speech_ms: int = 800
     listen_ack_min_stable_chars: int = 5
     backchannel_cooldown_ms: int = 3000

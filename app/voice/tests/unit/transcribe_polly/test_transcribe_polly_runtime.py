@@ -214,6 +214,7 @@ def _config() -> TranscribePollyRuntimeConfig:
         normal_endpoint_ms=80,
         hard_endpoint_ms=120,
         final_result_wait_ms=20,
+        final_result_settle_ms=0,
         listen_ack_min_speech_ms=40,
         listen_ack_min_stable_chars=5,
         backchannel_cooldown_ms=0,
@@ -919,6 +920,75 @@ async def test_normal_endpoint_normalizes_punctuation_and_suppresses_continuatio
     if not normal_should_finalize:
         await asyncio.sleep(0.14)
         assert len(bridge.process_calls) == 1
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_partial_stable_transcript_waits_for_final_or_hard_endpoint() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=50,
+            hard_endpoint_ms=180,
+            final_result_wait_ms=20,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("設備を担当して", stable_text="設備を担当して", is_partial=True)
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.08)
+
+    assert bridge.process_calls == []
+    await asyncio.sleep(0.25)
+    assert len(bridge.process_calls) == 1
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_long_speech_uses_longer_final_endpoint_settle_window() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=50,
+            hard_endpoint_ms=300,
+            final_result_settle_ms=0,
+            long_form_speech_ms=100,
+            long_form_endpoint_ms=180,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    for _ in range(6):
+        await runtime.push_audio(_frame(1200))
+    await transcribe.result("長い回答です。", is_partial=False)
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.08)
+
+    assert bridge.process_calls == []
+    await asyncio.sleep(0.14)
+    assert len(bridge.process_calls) == 1
     await runtime.close()
 
 

@@ -73,16 +73,6 @@ logger = logging.getLogger(__name__)
 LISTEN_ACK_TEXT = "はい。"
 PROCESSING_ACK_TEXT = "回答を確認しています。"
 LONG_PROCESSING_TEXT = "確認に少し時間がかかっています。"
-_COMPLETE_ENDINGS = (
-    "です",
-    "ます",
-    "でした",
-    "と思います",
-    "になります",
-    "ありません",
-    "はい",
-    "いいえ",
-)
 _CONTINUATION_ENDINGS = (
     "ですが",
     "なので",
@@ -162,6 +152,8 @@ class TranscribePollyRuntime:
         self._voiced_duration_ms = 0
         self._barge_in_voiced_ms = 0
         self._silence_started_at: float | None = None
+        self._last_transcribe_result_at: float | None = None
+        self._has_final_transcript = False
         self._stable_text = ""
         self._latest_partial_text = ""
         self._final_segments: dict[str, str] = {}
@@ -418,6 +410,8 @@ class TranscribePollyRuntime:
         await self._cancel_notice_tasks()
         self._turn_active = True
         self._speech_active = True
+        self._last_transcribe_result_at = None
+        self._has_final_transcript = False
         self._voiced_duration_ms = initial_voiced_ms
         self._stable_text = ""
         self._latest_partial_text = ""
@@ -431,11 +425,13 @@ class TranscribePollyRuntime:
     async def _on_transcribe_result(self, result: TranscribeResult) -> None:
         if self._closed or not self._turn_active or not self._input_available:
             return
+        self._last_transcribe_result_at = monotonic()
         if result.is_partial:
             self._latest_partial_text = result.text
             if result.stable_text:
                 self._stable_text = result.stable_text
         else:
+            self._has_final_transcript = True
             key = result.result_id
             if not key:
                 self._anonymous_final_index += 1
@@ -483,19 +479,13 @@ class TranscribePollyRuntime:
             if silence_ms >= self._config.listen_ack_silence_ms:
                 await self._maybe_play_listen_ack(normalized_stable)
             if (
-                silence_ms >= self._config.normal_endpoint_ms
+                self._has_final_transcript
+                and silence_ms >= self._endpoint_silence_ms()
+                and self._transcript_quiet_ms() >= self._config.final_result_settle_ms
                 and normalized_final
                 and not normalized_final.endswith(_CONTINUATION_ENDINGS)
             ):
                 await self._finalize_user_turn(final)
-                continue
-            if (
-                silence_ms >= self._config.normal_endpoint_ms
-                and normalized_stable
-                and normalized_stable.endswith(_COMPLETE_ENDINGS)
-                and not normalized_stable.endswith(_CONTINUATION_ENDINGS)
-            ):
-                await self._finalize_user_turn(stable)
                 continue
             if silence_ms >= self._config.hard_endpoint_ms and normalized_stable:
                 if final:
@@ -1117,6 +1107,25 @@ class TranscribePollyRuntime:
         if final and partial and partial != final:
             return f"{final}{partial}".strip()
         return final or partial or self._stable_text
+
+    def _endpoint_silence_ms(self) -> int:
+        if self._voiced_duration_ms < self._config.long_form_speech_ms:
+            return self._config.normal_endpoint_ms
+        return max(
+            self._config.normal_endpoint_ms,
+            min(
+                self._config.long_form_endpoint_ms,
+                max(
+                    self._config.normal_endpoint_ms,
+                    self._config.hard_endpoint_ms - self._config.final_result_wait_ms,
+                ),
+            ),
+        )
+
+    def _transcript_quiet_ms(self) -> int:
+        if self._last_transcribe_result_at is None:
+            return 0
+        return int((monotonic() - self._last_transcribe_result_at) * 1000)
 
     @staticmethod
     def _next_input_state(
