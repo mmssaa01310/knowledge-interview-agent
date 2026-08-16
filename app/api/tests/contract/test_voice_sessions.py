@@ -43,6 +43,7 @@ from ai_interviewer_api.services.ai_interview import (
     InterviewStreamResult,
     generate_interview_reply,
 )
+from ai_interviewer_api.services.dialogue_interpreter import DialogueInterpretation
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +53,12 @@ def clear_store() -> None:
 
 @pytest.fixture(autouse=True)
 def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        voice_interview_service,
+        "interpret_dialogue_act",
+        lambda **_: DialogueInterpretation(act="ANSWER"),
+    )
+
     def fake_evaluate(
         *,
         transcript: str,
@@ -485,6 +492,55 @@ def test_voice_turn_commits_only_after_explicit_confirmation(
     assert state["fieldStates"][first_field_id]["recordAnswer"] == "宮崎"
     assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
     assert [message["content"] for message in messages if message.get("isActualUtterance") is False] == ["宮崎"]
+
+
+def test_voice_dialogue_question_to_assistant_does_not_enter_confirmation_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_name_and_role_fields(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    question = state["askedQuestions"][0]
+    field_id = question["fieldId"]
+    field_state = state["fieldStates"][field_id]
+    field_state["answerState"] = "AWAITING_CONFIRMATION"
+    field_state["candidateAnswer"] = "清掃員"
+    field_state["pendingQuestionId"] = question["questionId"]
+    field_state["pendingFieldId"] = field_id
+    store.upsert("interview_states", state)
+
+    def fail_confirmation(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("dialogue questions must not enter confirmation evaluation")
+
+    monkeypatch.setattr(voice_interview_service, "_evaluate_confirmation_response", fail_confirmation)
+    monkeypatch.setattr(
+        voice_interview_service,
+        "interpret_dialogue_act",
+        lambda **_: DialogueInterpretation(
+            act="QUESTION_TO_ASSISTANT",
+            response_text="先ほどの「清掃員」という回答のことです。",
+        ),
+    )
+
+    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="この内容とは？"))
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    updated_state = store.get("interview_states", f"interview-state-{record['id']}")
+    updated_field_state = updated_state["fieldStates"][field_id]
+    saved_turn = store.get("voice_turns", turn["id"])
+    saved_message = store.get("messages", f"voice-msg-{turn['id']}")
+
+    assert result["text"] == "先ほどの「清掃員」という回答のことです。"
+    assert result["action"] == "ask_follow_up"
+    assert result["questionId"] == question["questionId"]
+    assert updated_field_state["answerState"] == "AWAITING_CONFIRMATION"
+    assert updated_field_state["candidateAnswer"] == "清掃員"
+    assert updated_field_state["rawAnswerHistory"] == []
+    assert updated_field_state["capturedItems"] == []
+    assert updated_state["lastProcessedUserMessageId"] == saved_message["id"]
+    assert saved_turn["dialogueAct"] == "QUESTION_TO_ASSISTANT"
+    assert saved_message["dialogueAct"] == "QUESTION_TO_ASSISTANT"
 
 
 def test_voice_confirmation_is_natural_and_reads_next_question(

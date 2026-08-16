@@ -46,10 +46,15 @@ from ai_interviewer_api.schemas.voice import (
     VoiceTurnCreate,
 )
 from ai_interviewer_api.services.ai_interview import (
+    _dialogue_response_text,
     _field_retrieval_policy,
     _persist_interview_state,
     generate_interview_reply,
     get_interview_state_snapshot,
+)
+from ai_interviewer_api.services.dialogue_interpreter import (
+    interpret_dialogue_act,
+    should_route_to_answer_processor,
 )
 from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
@@ -497,8 +502,10 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
     user = _build_user_context_from_session(session)
     record = get_scoped_item("records", session["recordId"], user, "record_not_found")
     user_message = _save_voice_user_message(record, turn, user)
-    snapshot = get_interview_state_snapshot(record, user)
-    interview_state = snapshot.get("interviewState", {})
+    interview_state = store.get("interview_states", f"interview-state-{record['id']}")
+    if interview_state is None:
+        snapshot = get_interview_state_snapshot(record, user)
+        interview_state = snapshot.get("interviewState", {})
     turn["baseInterviewState"] = deepcopy(interview_state)
     voice_turn_repository.save(turn)
     if turn.get("turnType") == "CONTROL":
@@ -571,6 +578,10 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
         turn.get("answerToQuestionId"),
         session.get("stateVersion"),
     )
+    current_field = _resolve_field(record, current_field_id, user) or {
+        "id": current_field_id,
+        "name": current_field_id,
+    }
 
     try:
         logger.info(
@@ -580,7 +591,36 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             turn.get("answerToQuestionId"),
             session.get("stateVersion"),
         )
-        if field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION:
+        interpretation = interpret_dialogue_act(
+            transcript=str(turn.get("transcript") or ""),
+            current_question=current_question,
+            current_field=current_field,
+            field_state=field_state,
+            recent_messages=_list_voice_record_messages(record, user),
+            last_assistant_message=_latest_voice_assistant_message(record, user),
+        )
+        user_message["dialogueAct"] = interpretation.act
+        store.upsert("messages", user_message)
+        turn["dialogueAct"] = interpretation.act
+        voice_turn_repository.save(turn)
+        if not should_route_to_answer_processor(
+            interpretation,
+            awaiting_confirmation=field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION,
+        ):
+            reply_text = _dialogue_response_text(interpretation, current_question)
+            field_state["lastDialogueAct"] = interpretation.act
+            field_state["lastDialogueResponse"] = reply_text
+            interview_state["lastProcessedUserMessageId"] = user_message["id"]
+            _persist_interview_state(interview_state, user)
+            result_payload = {
+                "replyText": reply_text,
+                "action": "ask_follow_up",
+                "questionId": turn.get("answerToQuestionId"),
+                "retrievalPolicy": _field_retrieval_policy(current_field).value,
+                "retrievalExecuted": False,
+                "currentFieldId": current_field_id,
+            }
+        elif field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION:
             result_payload = _process_confirmation_turn(
                 record=record,
                 session=session,
@@ -861,6 +901,24 @@ def _build_user_context_from_session(session: dict) -> UserContext:
         role="interviewer",
         display_name=user_id,
     )
+
+
+def _list_voice_record_messages(record: dict, user: UserContext) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            row
+            for row in store.list("messages", user.tenant_id)
+            if row.get("recordId") == record["id"]
+        ],
+        key=lambda row: (row.get("createdAt") or "", row.get("id") or ""),
+    )
+
+
+def _latest_voice_assistant_message(record: dict, user: UserContext) -> dict[str, Any] | None:
+    for message in reversed(_list_voice_record_messages(record, user)):
+        if message.get("role") == "assistant":
+            return message
+    return None
 
 
 def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dict:

@@ -17,6 +17,15 @@ def clear_store() -> None:
     store.tables.clear()
 
 
+@pytest.fixture(autouse=True)
+def stub_dialogue_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ai_interview,
+        "interpret_dialogue_act",
+        lambda **_: ai_interview.DialogueInterpretation(act="ANSWER"),
+    )
+
+
 def _seed_stream_context() -> tuple[dict, object]:
     user = DEV_TOKENS["dev-manager"]
     knowledge = {
@@ -86,6 +95,64 @@ def test_control_text_turn_is_not_scoped_to_the_current_answer() -> None:
     assert state["currentQuestionId"] == current_question_id
     assert field_state["rawAnswerHistory"] == []
     assert field_state["capturedItems"] == []
+
+
+def test_dialogue_question_to_assistant_does_not_enter_text_answer_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record, user = _seed_stream_context()
+    first = ai_interview.generate_interview_reply(record, user)
+    question = first.metadata["question"]
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    field_id = question["fieldId"]
+    field_state = state["fieldStates"][field_id]
+    field_state["answerState"] = "AWAITING_CONFIRMATION"
+    field_state["candidateAnswer"] = "清掃員"
+    field_state["pendingQuestionId"] = question["questionId"]
+    field_state["pendingFieldId"] = field_id
+    store.upsert("interview_states", state)
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-user-question",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "この内容とは？",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+            "answerToFieldId": field_id,
+            "createdAt": "2026-01-01T00:00:00+00:00",
+        },
+    )
+
+    def fail_evaluation(*args: Any, **kwargs: Any):
+        raise AssertionError("dialogue questions must not enter answer evaluation")
+
+    monkeypatch.setattr(ai_interview, "run_adapted_interview_turn", fail_evaluation)
+    monkeypatch.setattr(
+        ai_interview,
+        "interpret_dialogue_act",
+        lambda **_: ai_interview.DialogueInterpretation(
+            act="QUESTION_TO_ASSISTANT",
+            response_text="先ほどの「清掃員」という回答のことです。",
+        ),
+    )
+
+    result = ai_interview.generate_interview_reply(record, user)
+    updated_state = result.metadata["interviewState"]
+    updated_field_state = updated_state["fieldStates"][field_id]
+    saved_message = store.get("messages", "msg-user-question")
+
+    assert result.metadata["reply"] == "先ほどの「清掃員」という回答のことです。"
+    assert result.metadata["action"] == "ask_follow_up"
+    assert result.metadata["question"]["questionId"] == question["questionId"]
+    assert updated_field_state["candidateAnswer"] == "清掃員"
+    assert updated_field_state["rawAnswerHistory"] == []
+    assert updated_field_state["capturedItems"] == []
+    assert updated_state["lastProcessedUserMessageId"] == "msg-user-question"
+    assert saved_message["dialogueAct"] == "QUESTION_TO_ASSISTANT"
 
 
 async def _no_sleep(_: float) -> None:

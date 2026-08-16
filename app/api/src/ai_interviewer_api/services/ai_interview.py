@@ -12,6 +12,11 @@ from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
+from ai_interviewer_api.services.dialogue_interpreter import (
+    DialogueInterpretation,
+    interpret_dialogue_act,
+    should_route_to_answer_processor,
+)
 from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
     ConfirmationEvaluation,
@@ -278,10 +283,10 @@ def _generate_interview_stream_result_with_strands(
     messages = _list_record_messages(record, user)
     knowledge_fields = _list_interview_fields(knowledge, user)
     interview_state = _load_or_initialize_interview_state(record, knowledge_fields, user)
-    _migrate_formal_record_answers(interview_state, messages, user)
     field_lookup = _build_field_lookup(knowledge_fields)
 
     if interview_state["status"] == "completed":
+        _migrate_formal_record_answers(interview_state, messages, user)
         result = _build_finish_result(record, interview_state, messages, field_lookup)
         return InterviewStreamResult(reply_chunks=_split_reply_chunks(result["reply"]), metadata=result)
 
@@ -311,6 +316,7 @@ def _generate_interview_stream_result_with_strands(
         return InterviewStreamResult(reply_chunks=_split_reply_chunks(result["reply"]), metadata=result)
 
     if current_question is None or latest_user_message is None or latest_user_message.get("id") == last_processed_user_message_id:
+        _migrate_formal_record_answers(interview_state, messages, user)
         result = _ask_next_configured_field(
             record,
             knowledge_fields,
@@ -580,6 +586,13 @@ def _latest_user_turn(messages: list[dict]) -> dict[str, Any] | None:
     return None
 
 
+def _latest_assistant_message(messages: list[dict]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if message.get("role") == "assistant":
+            return message
+    return None
+
+
 def _acknowledge_control_turn(
     record: dict,
     interview_state: dict[str, Any],
@@ -642,6 +655,9 @@ def _is_legacy_or_answer_turn(
     predate that field, so an explicitly question-linked legacy row remains
     readable without reintroducing content-based filtering.
     """
+    dialogue_act = message.get("dialogueAct")
+    if dialogue_act and dialogue_act not in {"ANSWER", "CORRECTION", "REJECTION", "CONFIRMATION"}:
+        return False
     if message.get("turnType") == "CONTROL":
         return False
     if message.get("turnType") == "ANSWER":
@@ -753,6 +769,34 @@ def _process_text_answer_turn(
         raise ValueError("current interview field is missing")
     field_lookup = _build_field_lookup(knowledge_fields)
     current_field = field_lookup.get(current_field_id) or {"id": current_field_id, "name": current_field_id}
+    field_state = interview_state.setdefault("fieldStates", {}).setdefault(current_field_id, {})
+    interpretation = interpret_dialogue_act(
+        transcript=str(latest_user_message.get("content") or ""),
+        current_question=current_question,
+        current_field=current_field,
+        field_state=field_state,
+        recent_messages=messages,
+        last_assistant_message=_latest_assistant_message(messages),
+    )
+    latest_user_message["dialogueAct"] = interpretation.act
+    store.upsert("messages", latest_user_message)
+    if not should_route_to_answer_processor(
+        interpretation,
+        awaiting_confirmation=field_state.get("answerState") == "AWAITING_CONFIRMATION",
+    ):
+        return _build_dialogue_act_response_result(
+            record=record,
+            knowledge_fields=knowledge_fields,
+            messages=messages,
+            interview_state=interview_state,
+            current_question=current_question,
+            current_field_id=current_field_id,
+            user_message=latest_user_message,
+            interpretation=interpretation,
+            user=user,
+            persist_assistant_message=persist_assistant_message,
+            retrieval_policy=retrieval_policy,
+        )
     evaluation_retrieval_executed = False
 
     def evaluate_text_answer(**_: Any) -> AnswerEvaluation:
@@ -913,6 +957,54 @@ def _process_text_answer_turn(
     payload["completionStatus"] = turn_result.completion_status
     payload["missingRequiredItemIds"] = list(turn_result.missing_required_item_ids)
     payload["answerDisposition"] = turn_result.answer_disposition
+    return payload
+
+
+def _build_dialogue_act_response_result(
+    *,
+    record: dict,
+    knowledge_fields: list[dict],
+    messages: list[dict],
+    interview_state: dict[str, Any],
+    current_question: dict[str, Any],
+    current_field_id: str,
+    user_message: dict[str, Any],
+    interpretation: DialogueInterpretation,
+    user: UserContext,
+    persist_assistant_message: bool,
+    retrieval_policy: str,
+) -> dict[str, Any]:
+    field_lookup = _build_field_lookup(knowledge_fields)
+    reply_text = _dialogue_response_text(interpretation, current_question)
+    interview_state["lastProcessedUserMessageId"] = user_message["id"]
+    field_state = interview_state.setdefault("fieldStates", {}).setdefault(current_field_id, {})
+    field_state["lastDialogueAct"] = interpretation.act
+    field_state["lastDialogueResponse"] = reply_text
+    _persist_interview_state(interview_state, user)
+    assistant_message = (
+        _save_assistant_message(user, record["id"], reply_text, question=current_question)
+        if persist_assistant_message
+        else None
+    )
+    all_messages = [*messages, assistant_message] if assistant_message else messages
+    payload = _build_agent_result_payload(
+        action="ask_follow_up",
+        reply=reply_text,
+        question=current_question,
+        completed_field_id=None,
+        current_field_id=current_field_id,
+        answer_summary=None,
+        missing_information=list(field_state.get("missingInformation") or []),
+        used_tools=[],
+        retrieval_policy=retrieval_policy,
+        retrieval_executed=False,
+        interview_state=interview_state,
+        assistant_message=assistant_message,
+        structured_draft=_build_structured_draft(interview_state, field_lookup),
+        messages=all_messages,
+    )
+    payload["dialogueAct"] = interpretation.act
+    payload["decision"] = "DIALOGUE_ACT"
     return payload
 
 
@@ -1109,6 +1201,26 @@ def _compose_assistant_content(reply: str, question_text: str | None) -> str:
     if len(parts) == 1:
         return parts[0]
     return "".join(parts)
+
+
+def _dialogue_response_text(
+    interpretation: DialogueInterpretation,
+    current_question: dict[str, Any] | None,
+) -> str:
+    if interpretation.response_text:
+        return interpretation.response_text
+    question_text = str((current_question or {}).get("text") or "").strip()
+    if interpretation.act in {"BACKCHANNEL", "HESITATION"}:
+        return "少し考えてからで大丈夫です。"
+    if interpretation.act == "CLARIFICATION_REQUEST" and question_text:
+        return f"この質問は、{question_text}という内容について伺っています。分かる範囲で教えてください。"
+    if interpretation.act == "QUESTION_TO_ASSISTANT":
+        return "直前に確認した内容についての質問ですね。もう少し具体的に聞きたい点を教えてください。"
+    if interpretation.act == "CONVERSATION_REQUEST":
+        return "少し補足しながら進めます。いまの質問について、分かる範囲で教えてください。"
+    if interpretation.act in {"IRRELEVANT", "OTHER"} and question_text:
+        return f"ありがとうございます。インタビューでは、いまは「{question_text}」について伺っています。"
+    return "ありがとうございます。いまの質問について、分かる範囲で教えてください。"
 
 
 def _save_assistant_message(
