@@ -42,7 +42,7 @@ class Settings:
     )
     structured_interview_model_id: str = os.getenv(
         "STRUCTURED_INTERVIEW_MODEL_ID",
-        "global.openai.gpt-5.6-terra",
+        "global.openai.gpt-5.6-luna",
     )
     structured_interview_connect_timeout_seconds: float = float(
         os.getenv("STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS", "5")
@@ -66,7 +66,14 @@ class Settings:
     )
     question_design_model_id: str = os.getenv(
         "QUESTION_DESIGN_MODEL_ID",
-        "global.openai.gpt-5.6-terra",
+        "global.openai.gpt-5.6-luna",
+    )
+    question_design_reasoning_effort: str = os.getenv(
+        "QUESTION_DESIGN_REASONING_EFFORT",
+        "low",
+    )
+    question_design_max_output_tokens: int = int(
+        os.getenv("QUESTION_DESIGN_MAX_OUTPUT_TOKENS", "6000")
     )
     question_design_temperature: float = float(
         os.getenv("QUESTION_DESIGN_TEMPERATURE", "0.0")
