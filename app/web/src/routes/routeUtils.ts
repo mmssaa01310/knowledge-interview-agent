@@ -4,13 +4,10 @@ import type { Route } from "./routeTypes";
 export function parseRoute(pathname: string): Route {
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0] === "login") return { name: "login" };
-  if (segments[0] === "settings") return { name: "settings" };
-  if (segments[0] === "chatbots") {
-    if (segments[1] && segments[2] === "chat") return { name: "chatbot-chat", chatbotId: segments[1] };
-    if (segments[1] && segments[2] === "references") return { name: "chatbot-references", chatbotId: segments[1] };
-    if (segments[1]) return { name: "chatbot-overview", chatbotId: segments[1] };
-    return { name: "chatbots", chatbotId: segments[1] };
+  if (segments[0] === "records") {
+    return segments[1] ? { name: "record-detail", recordId: segments[1] } : { name: "records" };
   }
+  if (segments[0] === "settings") return { name: "settings" };
   if (segments[0] === "knowledge" && !segments[1]) return { name: "knowledge-dbs" };
   if (segments[0] === "knowledge-dbs" || segments[0] === "knowledge") {
     if (!segments[1]) return { name: "knowledge-dbs" };
@@ -18,6 +15,9 @@ export function parseRoute(pathname: string): Route {
       return { name: "knowledge-new", knowledgeDbId: segments[1] };
     }
     if (segments[2] === "knowledges" && segments[3]) {
+      if (segments[4] === "interview" || !segments[4]) {
+        return { name: "knowledge-interview", knowledgeDbId: segments[1], knowledgeId: segments[3] };
+      }
       if (segments[4] === "settings") {
         return { name: "knowledge-settings", knowledgeDbId: segments[1], knowledgeId: segments[3] };
       }
@@ -25,12 +25,17 @@ export function parseRoute(pathname: string): Route {
         return { name: "knowledge-documents", knowledgeDbId: segments[1], knowledgeId: segments[3] };
       }
       if (segments[4] === "records" && segments[5]) {
-        return { name: "record-detail", knowledgeDbId: segments[1], knowledgeId: segments[3], recordId: segments[5] };
+        return {
+          name: "knowledge-record-detail",
+          knowledgeDbId: segments[1],
+          knowledgeId: segments[3],
+          recordId: segments[5],
+        };
       }
       if (segments[4] === "records") {
         return { name: "knowledge-records", knowledgeDbId: segments[1], knowledgeId: segments[3] };
       }
-      return { name: "knowledge", knowledgeDbId: segments[1], knowledgeId: segments[3] };
+      return { name: "knowledge-interview", knowledgeDbId: segments[1], knowledgeId: segments[3] };
     }
     return { name: "knowledge-db", knowledgeDbId: segments[1] };
   }
@@ -38,8 +43,9 @@ export function parseRoute(pathname: string): Route {
 }
 
 export function routeSection(route: Route): AppSection {
+  if (route.name === "records" || route.name === "record-detail") return "records";
   if (route.name === "settings") return "settings";
-  return route.name.startsWith("chatbot") || route.name === "chatbots" ? "chatbots" : "knowledge";
+  return "knowledge";
 }
 
 export function getRouteKnowledgeDbId(route: Route): string | undefined {

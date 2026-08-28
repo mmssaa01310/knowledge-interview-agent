@@ -1,47 +1,57 @@
-import type { KnowledgeDb } from "@ai-interviewer/shared-types";
+import { formatDate } from "../lib/date";
+import type { Knowledge } from "@ai-interviewer/shared-types";
 
 type KnowledgeListPageProps = {
-  knowledgeDbs: KnowledgeDb[];
+  knowledges: Knowledge[];
   onNavigate: (path: string) => void;
-  createKnowledgeDbError?: string;
+  onOpenCreateKnowledge: () => void;
+  isPreparingKnowledgeCreation?: boolean;
+  knowledgeCreationError?: string;
 };
 
 export function KnowledgeListPage({
-  knowledgeDbs,
+  knowledges,
   onNavigate,
-  createKnowledgeDbError = ""
+  onOpenCreateKnowledge,
+  isPreparingKnowledgeCreation = false,
+  knowledgeCreationError = ""
 }: KnowledgeListPageProps) {
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2>ナレッジDB一覧</h2>
-          <p className="lede">左タブの「+ 新規ナレッジDB作成」から登録し、DBを選択してナレッジ一覧へ進みます。</p>
+          <h2>ナレッジ一覧</h2>
         </div>
+        <button
+          type="button"
+          className="primary"
+          onClick={onOpenCreateKnowledge}
+          disabled={isPreparingKnowledgeCreation}
+        >
+          {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
+        </button>
       </div>
-      {createKnowledgeDbError && <p className="notice error">{createKnowledgeDbError}</p>}
+      {knowledgeCreationError && <p className="notice error">{knowledgeCreationError}</p>}
       <div className="table-list">
         <div className="table-row table-head">
-          <span>DB名</span>
+          <span>ナレッジ名</span>
           <span>用途</span>
-          <span>対象設備</span>
-          <span>状態</span>
-          <span>件数</span>
+          <span>記録数</span>
+          <span>更新日時</span>
         </div>
-        {knowledgeDbs.length === 0 ? (
-          <p className="empty">ナレッジDBがありません。左タブの「+ 新規ナレッジDB作成」から登録してください。</p>
-        ) : knowledgeDbs.map((db) => (
+        {knowledges.length === 0 ? (
+          <p className="empty">ナレッジがありません。「+ ナレッジを作成」から登録してください。</p>
+        ) : knowledges.map((knowledge) => (
           <button
             type="button"
-            key={db.id}
+            key={knowledge.id}
             className="table-row selectable"
-            onClick={() => onNavigate(`/knowledge-dbs/${db.id}`)}
+            onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
           >
-            <span><strong>{db.name}</strong>{db.description && <small>{db.description}</small>}</span>
-            <span>-</span>
-            <span>-</span>
-            <span><span className="status-pill">{db.status}</span></span>
-            <span>ナレッジ {db.knowledgeCount ?? 0}</span>
+            <span><strong>{knowledge.name}</strong>{knowledge.description && <small>{knowledge.description}</small>}</span>
+            <span>{knowledge.purpose ?? knowledge.category ?? "用途未設定"}</span>
+            <span>{knowledge.recordCount ?? 0}</span>
+            <span>{formatDate(knowledge.updatedAt)}</span>
           </button>
         ))}
       </div>

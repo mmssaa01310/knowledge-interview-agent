@@ -1,7 +1,8 @@
-import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb, UserRole } from "@ai-interviewer/shared-types";
 import type { ChatMessage, InterviewState } from "../types/app";
 
 export const API_BASE_URL = "";
+export const DEV_TOKEN_STORAGE_KEY = "ai-interviewer-dev-token";
 
 type ApiRequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
@@ -23,11 +24,12 @@ export class ApiError extends Error {
 async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   let response: Response;
   try {
+    const devToken = getDevelopmentToken();
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers: {
         "content-type": "application/json",
-        "x-dev-token": "dev-manager"
+        "x-dev-token": devToken
       },
       body: options.body ? JSON.stringify(options.body) : undefined
     });
@@ -57,9 +59,23 @@ async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Pro
 export type UserProfile = {
   userId: string;
   tenantId: string;
-  role: string;
+  role: UserRole;
   displayName: string;
 };
+
+export function getDevelopmentToken() {
+  if (typeof window === "undefined") return "dev-manager";
+  try {
+    return window.localStorage.getItem(DEV_TOKEN_STORAGE_KEY) ?? "dev-manager";
+  } catch {
+    return "dev-manager";
+  }
+}
+
+export function setDevelopmentToken(token: string) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(DEV_TOKEN_STORAGE_KEY, token);
+}
 
 export type DocumentSummary = {
   id: string;
@@ -114,17 +130,18 @@ export type AiProposal = {
   approvalMethod?: string | null;
 };
 
-export type ChatAnswerResponse = {
-  answer: string;
-  citations: string[];
-};
-
 export type FieldSuggestionResponse = {
   reply: string;
   fields: KnowledgeField[];
   interviewPlan?: InterviewPlan;
   modelId: string;
   bedrockInvoked?: boolean;
+  retrievedSources?: Array<{
+    sourceType: string;
+    sourceId: string;
+    title: string;
+    score: number;
+  }>;
 };
 
 export type FieldSuggestionChatMessage = {
@@ -214,20 +231,11 @@ export async function createKnowledge(
 
 export async function updateKnowledge(
   knowledgeId: string,
-  payload: Partial<Omit<Knowledge, "summary" | "systemPrompt">> & {
-    summary?: string | null;
-    systemPrompt?: string | null;
-  }
+  payload: Partial<Omit<Knowledge, "systemPrompt">> & { systemPrompt?: string | null }
 ) {
   return apiRequest<Knowledge>(`/api/knowledges/${knowledgeId}`, {
     method: "PATCH",
     body: payload
-  });
-}
-
-export async function createKnowledgeRecordSummaryDraft(knowledgeId: string) {
-  return apiRequest<{ summary: string; status: "draft" }>(`/api/knowledges/${knowledgeId}/record-summary-draft`, {
-    method: "POST"
   });
 }
 
@@ -239,9 +247,27 @@ export async function fetchRecords(knowledgeId: string) {
   return apiRequest<InterviewRecord[]>(`/api/knowledges/${knowledgeId}/records`);
 }
 
+export async function fetchAccessibleRecords() {
+  return apiRequest<InterviewRecord[]>("/api/records");
+}
+
+export async function fetchRecordInterviewContext(recordId: string) {
+  return apiRequest<{
+    record: InterviewRecord;
+    knowledge: Knowledge;
+    fields: KnowledgeField[];
+  }>(`/api/records/${recordId}/interview-context`);
+}
+
 export async function createRecord(
   knowledgeId: string,
-  payload: { title: string; targetEquipment?: string; targetProcess?: string }
+  payload: {
+    title: string;
+    targetEquipment?: string;
+    targetProcess?: string;
+    ownerUserId?: string;
+    viewerUserIds?: string[];
+  }
 ) {
   return apiRequest<InterviewRecord>(`/api/knowledges/${knowledgeId}/records`, {
     method: "POST",
@@ -333,25 +359,6 @@ export async function fetchInterviewState(recordId: string) {
   return apiRequest<InterviewStateResponse>(`/api/records/${recordId}/interview-state`);
 }
 
-export async function answerChat(
-  chatId: string,
-  payload: {
-    content: string;
-    modelId?: string;
-    referenceKnowledgeDbIds?: string[];
-    referenceKnowledgeIds?: string[];
-    referenceDocumentIds?: string[];
-    excludedDocumentIds?: string[];
-    searchLimit?: number;
-    confidenceThreshold?: number;
-  }
-) {
-  return apiRequest<ChatAnswerResponse>(`/api/chats/${chatId}/messages`, {
-    method: "POST",
-    body: payload
-  });
-}
-
 export async function suggestKnowledgeFields(
   knowledgeId: string,
   payload: {
@@ -379,10 +386,6 @@ export async function suggestKnowledgeFields(
 
 export async function approveProposal(proposalId: string) {
   return apiRequest<AiProposal>(`/api/proposals/${proposalId}/approve`, { method: "POST" });
-}
-
-export async function createRecordSummaryProposal(recordId: string) {
-  return apiRequest<AiProposal>(`/api/records/${recordId}/summary-proposals`, { method: "POST" });
 }
 
 export async function updateRecord(recordId: string, payload: Partial<InterviewRecord>) {

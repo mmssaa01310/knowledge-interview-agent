@@ -4,11 +4,12 @@ export {
   bulkApproveRecords,
   createRecord,
   createRecordMessage,
-  createRecordSummaryProposal,
   deleteRecord,
   fetchInterviewState,
   fetchProposals,
   fetchRecords,
+  fetchAccessibleRecords,
+  fetchRecordInterviewContext,
   updateRecord,
   updateInterviewAnswer,
   type AiProposal

@@ -1,8 +1,7 @@
 import type { InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
-import type { AiProposal, DocumentSummary, KnowledgeField } from "../lib/api";
+import type { AiProposal, DocumentSummary, KnowledgeField, UserProfile } from "../lib/api";
 import type { Route } from "../routes/routeTypes";
 import type {
-  Chatbot,
   ChatMessage,
   DocumentReadState,
   InterviewAnswerTarget,
@@ -18,6 +17,7 @@ export type PromptProfile = {
 
 export type KnowledgeLayoutProps = {
   route: Route;
+  user: UserProfile | null;
   knowledgeDbs: KnowledgeDb[];
   knowledges: Knowledge[];
   selectedKnowledgeDb: KnowledgeDb | null;
@@ -48,8 +48,6 @@ export type KnowledgeLayoutProps = {
   setSettingsInterviewPlan: (value: Knowledge["interviewPlan"]) => void;
   settingsNotice: string;
   settingsSaveState: "idle" | "saving" | "success" | "error";
-  newDbName: string;
-  setNewDbName: (value: string) => void;
   newRecordTitle: string;
   setNewRecordTitle: (value: string) => void;
   newDocumentName: string;
@@ -63,9 +61,6 @@ export type KnowledgeLayoutProps = {
   ) => void;
   selectedRecord: InterviewRecord | null;
   proposals: AiProposal[];
-  overviewSummaryDraft: string;
-  setOverviewSummaryDraft: (value: string) => void;
-  isGeneratingOverviewSummary: boolean;
   chatInput: string;
   setChatInput: (value: string) => void;
   interviewMessages: ChatMessage[];
@@ -79,32 +74,33 @@ export type KnowledgeLayoutProps = {
   setInterviewAnswerOverrides: (value: Record<string, string>) => void;
   deletedExtraQuestionIds: string[];
   setDeletedExtraQuestionIds: (value: string[]) => void;
-  summaryDraft: string;
-  setSummaryDraft: (value: string) => void;
-  isGeneratingSummary: boolean;
   recordNotice: string;
   setRecordNotice: (value: string) => void;
   navigate: (path: string) => void;
-  onCreateKnowledgeDb: () => void;
-  isCreatingKnowledgeDb: boolean;
-  createKnowledgeDbError: string;
-  onDeleteKnowledgeDb: (knowledgeDbId: string) => void;
+  onOpenCreateKnowledge: () => void;
+  isPreparingKnowledgeCreation: boolean;
+  knowledgeCreationError: string;
   onCreateKnowledge: (payload: {
     name: string;
     description?: string;
     purpose?: string;
-  }) => void;
+  }, knowledgeDbId?: string) => void;
   onDeleteKnowledge: (knowledgeId: string) => void;
-  onGenerateOverviewSummary: () => void;
-  onSaveOverviewSummary: () => void;
-  onRevertOverviewSummary: () => void;
-  onCreateDemoData: () => void;
-  onSaveSettings: (activeTab: "basic" | "fields" | "assist") => void;
+  onSaveSettings: (activeTab: "fields" | "execution") => void;
   onClearSettingsNotice: () => void;
   onCreatePromptProfile?: (payload: { name: string; prompt: string }) => Promise<PromptProfile>;
   onCreateDocument: () => void;
   onCreateRecord: () => void;
   onDeleteRecord: (recordId: string) => void;
+  onChangeRecordStatus: (
+    status: InterviewRecord["status"],
+    reviewNote?: string,
+  ) => Promise<void>;
+  onChangeRecordStatusForRecord: (
+    recordId: string,
+    status: InterviewRecord["status"],
+    reviewNote?: string,
+  ) => Promise<void>;
   onBulkApproveRecords: () => void;
   onSaveInterviewDraft: () => void;
   onSaveInterviewAnswer: (fieldId: string, recordAnswer: string) => Promise<void>;
@@ -114,27 +110,8 @@ export type KnowledgeLayoutProps = {
   onSendInterviewMessage: (target?: InterviewAnswerTarget | null) => void;
   onAppendInterviewMessage: (message: ChatMessage) => void;
   onRefreshInterviewSnapshot: () => void;
-  onGenerateRecordSummary: () => void;
-  onSaveRecordSummary: () => void;
-  onRevertRecordSummary: () => void;
   onApproveOne: (proposalId: string) => void;
   onRejectProposal: (proposalId: string) => void;
   onRemoveProposal: (proposalId: string) => void;
   onApproveAllForRecord: () => void;
-};
-
-export type ChatbotLayoutProps = {
-  route: Route;
-  chatbots: Chatbot[];
-  selectedChatbot: Chatbot;
-  knowledgeDbs: KnowledgeDb[];
-  knowledges: Knowledge[];
-  documents: DocumentSummary[];
-  chatbotInput: string;
-  setChatbotInput: (value: string) => void;
-  chatbotMessages: ChatMessage[];
-  navigate: (path: string) => void;
-  onCreateChatbot: () => void;
-  onSendChatbotMessage: () => void;
-  onUpdateReferences: (value: Partial<Chatbot>) => void;
 };

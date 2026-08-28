@@ -2,7 +2,6 @@ export {
   createDemoDataset,
   createKnowledge,
   createKnowledgeDb,
-  createKnowledgeRecordSummaryDraft,
   createKnowledgeField,
   deleteKnowledge,
   deleteKnowledgeDb,

@@ -8,11 +8,23 @@ import { VoiceConversationStatus } from "../features/realtime-voice/components/V
 import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
 import { ProcessModelPanel } from "../features/interviews/components/ProcessModelPanel";
 import { SystemRequirementProgressPanel } from "../features/interviews/components/SystemRequirementProgressPanel";
+import {
+  getInterviewModelLabel,
+  isInterviewConfigurationComplete,
+} from "../features/interviews/interviewConfiguration";
 import { resetDevSystemRequirementDemo, resetDevVoiceDemo } from "../lib/api";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
 const DEV_VOICE_DEMO_RECORD_ID = "dev-voice-demo-record";
 const DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID = "dev-system-requirement-demo-record";
+
+const recordStatusLabels: Record<NonNullable<KnowledgeLayoutProps["selectedRecord"]>["status"], string> = {
+  draft: "準備中",
+  in_progress: "回答中",
+  submitted: "確認待ち",
+  returned: "修正依頼",
+  approved: "承認済み",
+};
 
 type InterviewSidebarItem = {
   id: string;
@@ -44,9 +56,20 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isResettingDemo, setIsResettingDemo] = useState(false);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
+  const [summaryView, setSummaryView] = useState<"requirements" | "process">("requirements");
+  const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
+  const isInterviewConfigured = isInterviewConfigurationComplete(props.selectedKnowledge);
+  const canAnswerRecord = Boolean(
+    isInterviewConfigured
+      && (isManagementUser
+        || (props.user?.role === "interviewer" && ["in_progress", "returned"].includes(props.selectedRecord?.status ?? ""))),
+  );
+  const canSubmitRecord = isInterviewConfigured
+    && props.user?.role === "interviewer"
+    && ["in_progress", "returned"].includes(props.selectedRecord?.status ?? "");
 
   async function handleResetDemo() {
-    if (isResettingDemo || realtimeVoice.isActive) return;
+    if (!isManagementUser || isResettingDemo || realtimeVoice.isActive) return;
     setIsResettingDemo(true);
     try {
       if (props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID) {
@@ -104,7 +127,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     ?? props.selectedKnowledge?.interviewPlan?.profile;
   const isChatOnlyInterview = interviewProfile === "system_requirement";
   const hasVoiceQuestions = !isChatOnlyInterview && (
-    props.sortedFields.some((field) => field.askByAi)
+    props.sortedFields.some((field) => field.name.trim())
       || interviewProfile === "business_process"
   );
 
@@ -183,6 +206,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       !props.chatInput.trim()
       || props.isInterviewStreaming
       || props.interviewState?.status === "completed"
+      || !canAnswerRecord
       || realtimeVoice.isActive
     ) {
       return;
@@ -191,28 +215,37 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   }
 
   const canStartInterview = Boolean(props.selectedRecord)
+    && canAnswerRecord
     && !props.isInterviewStreaming
     && !realtimeVoice.isActive
     && props.interviewMessages.length === 0
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
-  const isTextInputDisabled = isCompleted || (!isChatOnlyInterview && realtimeVoice.isActive);
+  const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && realtimeVoice.isActive);
   const currentTargetLabel = props.interviewState?.nextQuestionTarget?.label;
   const currentTargetMessage = currentTargetLabel
     ? `いま確認していること：${currentTargetLabel}`
     : props.interviewMessages.length > 0
       ? "回答内容を整理しています。"
-      : "インタビューを開始すると、ここに質問が表示されます。";
+      : "開始すると質問が表示されます。";
 
   return (
     <section className="panel interview-page">
       <div className="panel-header interview-page-header">
         <div>
           <h2>AIインタビュー</h2>
-          <p className="lede">{props.selectedRecord?.title ?? "記録"}</p>
+          <span className="interview-model-badge">実行モデル：{getInterviewModelLabel(props.selectedKnowledge)}</span>
+          {props.selectedRecord ? (
+            <span className={props.selectedRecord.status === "approved" ? "status-pill" : "status-pill muted"}>
+              {recordStatusLabels[props.selectedRecord.status]}
+            </span>
+          ) : null}
+          {!isInterviewConfigured ? (
+            <p className="notice">用途と実行モデルを設定してください。</p>
+          ) : null}
         </div>
-        {props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID
-        || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID ? (
+        {isManagementUser && (props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID
+        || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID) ? (
           <button
             type="button"
             className="ghost compact"
@@ -222,12 +255,84 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             {isResettingDemo ? "リセット中" : "テスト状態をリセット"}
           </button>
         ) : null}
+        {isManagementUser && props.selectedRecord?.status === "draft" ? (
+          <button
+            type="button"
+            className="primary compact"
+            onClick={() => void props.onChangeRecordStatus("in_progress")}
+          >
+            対象者へ公開
+          </button>
+        ) : null}
+        {isManagementUser && props.selectedRecord?.status === "submitted" ? (
+          <>
+            <button
+              type="button"
+              className="ghost compact"
+              onClick={() => {
+                const note = window.prompt("修正してほしい内容を入力してください。", "");
+                if (note?.trim()) void props.onChangeRecordStatus("returned", note.trim());
+              }}
+            >
+              修正依頼
+            </button>
+            <button
+              type="button"
+              className="primary compact"
+              onClick={() => void props.onChangeRecordStatus("approved")}
+            >
+              記録を承認
+            </button>
+          </>
+        ) : null}
+        {canSubmitRecord ? (
+          <button
+            type="button"
+            className="primary compact"
+            onClick={() => void props.onChangeRecordStatus("submitted")}
+            disabled={props.interviewState?.status !== "completed"}
+            title={props.interviewState?.status === "completed" ? "管理者へ提出します" : "インタビュー完了後に提出できます"}
+          >
+            管理者へ提出
+          </button>
+        ) : null}
       </div>
 
       <div className="interview-shell">
         <aside className="interview-sidebar">
           {interviewProfile === "system_requirement" ? (
-            <SystemRequirementProgressPanel interviewState={props.interviewState} />
+            <>
+              <div className="interview-summary-header">
+                <strong>整理結果</strong>
+              </div>
+              <div className="interview-summary-tabs" role="tablist" aria-label="整理結果の表示切替">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={summaryView === "requirements"}
+                  className={summaryView === "requirements" ? "active" : ""}
+                  onClick={() => setSummaryView("requirements")}
+                >
+                  要件整理
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={summaryView === "process"}
+                  className={summaryView === "process" ? "active" : ""}
+                  onClick={() => setSummaryView("process")}
+                >
+                  処理の流れ
+                </button>
+              </div>
+              {summaryView === "requirements" ? (
+                <SystemRequirementProgressPanel interviewState={props.interviewState} />
+              ) : (
+                <ProcessModelPanel interviewState={props.interviewState} />
+              )}
+            </>
+          ) : interviewProfile === "business_process" ? (
+            <ProcessModelPanel interviewState={props.interviewState} />
           ) : <>
             <div className="interview-sidebar-header">
               <strong>質問リスト</strong>
@@ -245,7 +350,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                         <strong>{item.label}</strong>
                         <div className="interview-question-actions">
                           <span className={`question-status ${item.status}`}>{statusLabel}</span>
-                          {fieldState?.answerState === "CONFIRMED" ? (
+                          {fieldState?.answerState === "CONFIRMED" && canAnswerRecord ? (
                             <button
                               className="ghost compact"
                               type="button"
@@ -255,7 +360,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                               {savingFieldId === item.fieldId ? "保存中" : "保存"}
                             </button>
                           ) : null}
-                          <button className="ghost compact" type="button" onClick={() => handleConfiguredAnswerDelete(item.label)}>
+                          <button className="ghost compact" type="button" onClick={() => handleConfiguredAnswerDelete(item.label)} disabled={!canAnswerRecord}>
                             削除
                           </button>
                         </div>
@@ -268,6 +373,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                           value={item.answer ?? ""}
                           onChange={(event) => handleConfiguredAnswerChange(item.label, event.target.value)}
                           placeholder="回答を入力"
+                          disabled={!canAnswerRecord}
                         />
                       </div>
                     </div>
@@ -306,7 +412,12 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             </div>
             {isCompleted ? (
               <div className="interview-completed-banner">
-                <p>インタビューが完了しました。回答内容を確認してください。</p>
+                <p>{props.selectedRecord?.status === "submitted" ? "回答を提出しました。管理者の確認を待っています。" : "インタビューが完了しました。回答内容を確認してください。"}</p>
+              </div>
+            ) : null}
+            {props.selectedRecord?.status === "returned" && props.selectedRecord.reviewNote ? (
+              <div className="interview-completed-banner">
+                <p>管理者からの修正依頼：{props.selectedRecord.reviewNote}</p>
               </div>
             ) : null}
             <div className="answer-composer">
@@ -346,7 +457,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   <div className="voice-controls">
                     <VoiceConversationButton
                       status={realtimeVoice.status}
-                      disabled={!props.selectedRecord || isCompleted || realtimeVoice.status === "completed"}
+                      disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || realtimeVoice.status === "completed"}
                       onStart={() => void realtimeVoice.start()}
                       onStop={() => void realtimeVoice.stop()}
                     />
@@ -357,7 +468,6 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             </div>
           </div>
 
-          <ProcessModelPanel interviewState={props.interviewState} />
         </div>
       </div>
     </section>

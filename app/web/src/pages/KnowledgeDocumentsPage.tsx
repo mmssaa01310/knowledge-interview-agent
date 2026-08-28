@@ -2,33 +2,27 @@ import { ingestionStatuses, readStatuses } from "../features/documents/constants
 import { formatDate } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
-export function KnowledgeDocumentsPage(props: KnowledgeLayoutProps) {
-  function getReadStatusLabel(status: string) {
-    switch (status) {
-      case "opened":
-        return "閲覧開始";
-      case "reading":
-        return "閲覧中";
-      case "read":
-        return "既読";
-      case "acknowledged":
-        return "確認済み";
-      default:
-        return "未読";
-    }
+function getReadStatusLabel(status: string) {
+  switch (status) {
+    case "opened":
+      return "閲覧開始";
+    case "reading":
+      return "閲覧中";
+    case "read":
+      return "既読";
+    case "acknowledged":
+      return "確認済み";
+    default:
+      return "未読";
   }
+}
 
+export function KnowledgeDocumentsContent(props: KnowledgeLayoutProps) {
   return (
-    <section className="panel">
-      <div className="panel-header">
-        <div>
-          <p className="eyebrow">Documents</p>
-          <h2>ドキュメント追加・取り込み</h2>
-        </div>
-      </div>
+    <>
       <div className="inline-form wide">
         <input value={props.newDocumentName} onChange={(event) => props.setNewDocumentName(event.target.value)} placeholder="ドキュメント名またはファイル名 (pdf/docx/xlsx/pptx/txt)" />
-        <button className="primary" onClick={props.onCreateDocument}>ドキュメント追加</button>
+        <button className="primary" onClick={props.onCreateDocument}>文書を追加</button>
         <button
           type="button"
           className="icon-info-button"
@@ -76,6 +70,19 @@ export function KnowledgeDocumentsPage(props: KnowledgeLayoutProps) {
           ))}
         </div>
       ) : null}
+    </>
+  );
+}
+
+export function KnowledgeDocumentsPage(props: KnowledgeLayoutProps) {
+  return (
+    <section className="panel">
+      <div className="panel-header">
+        <div>
+          <h2>事前知識</h2>
+        </div>
+      </div>
+      <KnowledgeDocumentsContent {...props} />
     </section>
   );
 }

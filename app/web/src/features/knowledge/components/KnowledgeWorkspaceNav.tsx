@@ -1,61 +1,59 @@
-import type { KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { Knowledge } from "@ai-interviewer/shared-types";
 
 type KnowledgeWorkspaceNavProps = {
-  knowledgeDbs: KnowledgeDb[];
-  selectedKnowledgeDbId?: string | null;
+  knowledges: Knowledge[];
+  selectedKnowledgeId?: string | null;
   onNavigate: (path: string) => void;
-  onCreateKnowledgeDb: () => void;
-  isCreatingKnowledgeDb?: boolean;
-  createKnowledgeDbError?: string;
-  onToggleCollapsed: () => void;
+  onOpenCreateKnowledge: () => void;
+  isPreparingKnowledgeCreation?: boolean;
+  knowledgeCreationError?: string;
 };
 
+function sortKnowledges(knowledges: Knowledge[]) {
+  return [...knowledges].sort((left, right) => {
+    const createdAtOrder = left.createdAt.localeCompare(right.createdAt);
+    return createdAtOrder !== 0 ? createdAtOrder : left.id.localeCompare(right.id);
+  });
+}
+
 export function KnowledgeWorkspaceNav({
-  knowledgeDbs,
-  selectedKnowledgeDbId,
+  knowledges,
+  selectedKnowledgeId,
   onNavigate,
-  onCreateKnowledgeDb,
-  isCreatingKnowledgeDb = false,
-  createKnowledgeDbError = "",
-  onToggleCollapsed
+  onOpenCreateKnowledge,
+  isPreparingKnowledgeCreation = false,
+  knowledgeCreationError = ""
 }: KnowledgeWorkspaceNavProps) {
+  const orderedKnowledges = sortKnowledges(knowledges);
+
   return (
-    <aside className="workspace-nav">
-      <button
-        type="button"
-        className="workspace-collapse-button"
-        onClick={onToggleCollapsed}
-        aria-label="左側ナビを閉じる"
-        title="左側ナビを閉じる"
-      >
-        <span className="nav-toggle-icon close" aria-hidden="true" />
-      </button>
+    <div className="sidebar-section">
       <div className="workspace-nav-header">
-        <strong>ナレッジDB</strong>
+        <strong>ナレッジ</strong>
         <button
           type="button"
           className="workspace-create"
-          onClick={onCreateKnowledgeDb}
-          disabled={isCreatingKnowledgeDb}
-          aria-label="新規ナレッジDB作成"
+          onClick={onOpenCreateKnowledge}
+          disabled={isPreparingKnowledgeCreation}
+          aria-label="ナレッジを作成"
         >
-          {isCreatingKnowledgeDb ? "作成中" : "+ 新規ナレッジDB作成"}
+          {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
         </button>
       </div>
-      {createKnowledgeDbError && <p className="workspace-error">{createKnowledgeDbError}</p>}
-      {knowledgeDbs.length === 0 ? (
-        <p className="workspace-empty">ナレッジDBがありません。</p>
-      ) : knowledgeDbs.map((db) => (
+      {knowledgeCreationError && <p className="workspace-error">{knowledgeCreationError}</p>}
+      {orderedKnowledges.length === 0 ? (
+        <p className="workspace-empty">ナレッジがありません。</p>
+      ) : orderedKnowledges.map((knowledge) => (
         <button
           type="button"
-          key={db.id}
-          className={selectedKnowledgeDbId === db.id ? "workspace-item active" : "workspace-item"}
-          onClick={() => onNavigate(`/knowledge-dbs/${db.id}`)}
+          key={knowledge.id}
+          className={selectedKnowledgeId === knowledge.id ? "workspace-item active" : "workspace-item"}
+          onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
         >
-          <strong>{db.name}</strong>
-          <span>ナレッジ {db.knowledgeCount ?? 0}</span>
+          <strong>{knowledge.name}</strong>
+          <span>{knowledge.purpose ?? "用途未設定"}</span>
         </button>
       ))}
-    </aside>
+    </div>
   );
 }

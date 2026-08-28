@@ -4,11 +4,8 @@ import { confirmApproveAll } from "../components/ui/ApproveAllDialog";
 import {
   createKnowledge,
   createKnowledgeDb,
-  createKnowledgeRecordSummaryDraft,
-  createDemoDataset,
   createKnowledgeField,
   deleteKnowledge,
-  deleteKnowledgeDb,
   deleteKnowledgeField,
   fetchKnowledgeDbs,
   fetchKnowledgeFields,
@@ -31,9 +28,10 @@ import {
   bulkApproveRecords,
   createRecord,
   createRecordMessage,
-  createRecordSummaryProposal,
   deleteRecord,
   fetchInterviewState,
+  fetchAccessibleRecords,
+  fetchRecordInterviewContext,
   fetchProposals,
   fetchRecords,
   updateInterviewAnswer,
@@ -41,9 +39,9 @@ import {
   type AiProposal
 } from "../features/interviews/api/interviewApi";
 import { useInterviewStream } from "../features/interviews/hooks/useInterviewStream";
+import { isInterviewConfigurationComplete } from "../features/interviews/interviewConfiguration";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import type { ChatMessage, DocumentReadState, InterviewAnswerTarget, InterviewState, InterviewStreamMetadata } from "../types/app";
-import type { CreateKnowledgeDbDialogProps } from "./CreateKnowledgeDbDialog";
 import { getRouteKnowledgeDbId, getRouteKnowledgeId } from "./routeUtils";
 import type { Route } from "./routeTypes";
 
@@ -77,14 +75,28 @@ function createInterviewClientMessageId() {
 }
 
 const INTERVIEW_ERROR_REPLY = "一時的にAI応答を生成できませんでした。少し時間をおいて再度送信してください。";
+const LAST_KNOWLEDGE_ID_STORAGE_KEY = "ai-interviewer.last-knowledge-id";
+
+function getLastKnowledgeId() {
+  try {
+    return window.localStorage.getItem(LAST_KNOWLEDGE_ID_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberKnowledge(knowledgeId: string) {
+  try {
+    window.localStorage.setItem(LAST_KNOWLEDGE_ID_STORAGE_KEY, knowledgeId);
+  } catch {
+    // localStorageが利用できない環境でもインタビュー操作は継続する。
+  }
+}
 
 function getSettingsSaveErrorMessage(error: unknown, tabLabel: string) {
   if (error instanceof ApiError && error.status === 409) {
     if (error.detail === "interview_profile_change_not_allowed_after_start") {
       return `${tabLabel}を保存できませんでした。既に開始済みのインタビューがあるため、インタビュー用途は変更できません。用途を元に戻すか、新しいナレッジで設定してください。`;
-    }
-    if (error.detail === "interview_model_change_not_allowed_after_start") {
-      return `${tabLabel}を保存できませんでした。既に開始済みのインタビューがあるため、実行モデルは変更できません。現在のモデルに戻すか、新しいナレッジで設定してください。`;
     }
   }
 
@@ -111,10 +123,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [fields, setFields] = useState<KnowledgeField[]>([]);
   const [proposals, setProposals] = useState<AiProposal[]>([]);
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
-  const [overviewSummaryDraft, setOverviewSummaryDraft] = useState("");
-  const [isGeneratingOverviewSummary, setIsGeneratingOverviewSummary] = useState(false);
-  const [newDbName, setNewDbName] = useState("");
-  const [newDbDescription, setNewDbDescription] = useState("");
   const [newRecordTitle, setNewRecordTitle] = useState("");
   const [newDocumentName, setNewDocumentName] = useState("");
   const [settingsName, setSettingsName] = useState("");
@@ -129,9 +137,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [draftFields, setDraftFields] = useState<KnowledgeField[]>([]);
   const [settingsNotice, setSettingsNotice] = useState("");
   const [settingsSaveState, setSettingsSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
-  const [isCreateKnowledgeDbDialogOpen, setIsCreateKnowledgeDbDialogOpen] = useState(false);
-  const [isCreatingKnowledgeDb, setIsCreatingKnowledgeDb] = useState(false);
-  const [createKnowledgeDbError, setCreateKnowledgeDbError] = useState("");
+  const [isPreparingKnowledgeCreation, setIsPreparingKnowledgeCreation] = useState(false);
+  const [knowledgeCreationError, setKnowledgeCreationError] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
   const [interviewState, setInterviewState] = useState<InterviewState | null>(null);
@@ -141,10 +148,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [structuredDraft, setStructuredDraft] = useState<Record<string, string>>({});
   const [interviewAnswerOverrides, setInterviewAnswerOverrides] = useState<Record<string, string>>({});
   const [deletedExtraQuestionIds, setDeletedExtraQuestionIds] = useState<string[]>([]);
-  const [summaryDraft, setSummaryDraft] = useState("");
-  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [recordNotice, setRecordNotice] = useState("");
   const [documentReadStates, setDocumentReadStates] = useState<Record<string, DocumentReadState>>({});
+  const [recordContext, setRecordContext] = useState<Awaited<ReturnType<typeof fetchRecordInterviewContext>> | null>(null);
   const pendingInterviewSubmissionRef = useRef<{
     content: string;
     target: InterviewAnswerTarget | null;
@@ -158,7 +164,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     : null;
   const selectedKnowledge = routeKnowledgeId
     ? knowledges.find((knowledge) => knowledge.id === routeKnowledgeId) ?? null
-    : null;
+    : recordContext?.knowledge ?? null;
   const selectedRecordId = "recordId" in args.route ? args.route.recordId : undefined;
   const selectedRecord = selectedRecordId ? records.find((record) => record.id === selectedRecordId) ?? null : null;
 
@@ -168,6 +174,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   );
 
   async function refreshSelectedRecord(recordId: string) {
+    if (user && !["admin", "knowledge_manager"].includes(user.role)) {
+      setProposals([]);
+      return;
+    }
     setProposals(await fetchProposals(recordId));
   }
 
@@ -270,9 +280,26 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     return dbs;
   }
 
-  async function loadKnowledgeWorkspace(knowledgeDbId: string, knowledgeId?: string) {
-    const nextKnowledges = await fetchKnowledges(knowledgeDbId);
+  async function loadKnowledgeIndex(dbs: KnowledgeDb[]) {
+    const groupedKnowledges = await Promise.all(dbs.map((db) => fetchKnowledges(db.id)));
+    const nextKnowledges = groupedKnowledges.flat();
     setKnowledges(nextKnowledges);
+    return nextKnowledges;
+  }
+
+  async function loadKnowledgeWorkspace(
+    knowledgeDbId: string,
+    knowledgeId?: string,
+    knowledgeIndex?: Knowledge[],
+  ) {
+    setRecordContext(null);
+    const nextKnowledges = knowledgeIndex
+      ? knowledgeIndex.filter((knowledge) => knowledge.knowledgeDbId === knowledgeDbId)
+      : await fetchKnowledges(knowledgeDbId);
+    setKnowledges((current) => [
+      ...current.filter((knowledge) => knowledge.knowledgeDbId !== knowledgeDbId),
+      ...nextKnowledges,
+    ]);
 
     const nextKnowledgeId = knowledgeId ?? nextKnowledges[0]?.id;
     if (!nextKnowledgeId) {
@@ -283,6 +310,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       setProposals([]);
       return nextKnowledges;
     }
+    rememberKnowledge(nextKnowledgeId);
 
     const [nextRecords, nextDocuments, nextFields] = await Promise.all([
       fetchRecords(nextKnowledgeId),
@@ -304,30 +332,100 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     return nextKnowledges;
   }
 
+  async function loadAccessibleRecordWorkspace(recordId?: string) {
+    const nextRecords = await fetchAccessibleRecords();
+    setRecords(nextRecords);
+    setKnowledgeDbs([]);
+    setKnowledges([]);
+    setDocuments([]);
+    setFields([]);
+    setDraftFields([]);
+    setSelectedRecordIds([]);
+    setRecordContext(null);
+    setProposals([]);
+
+    if (!recordId) return;
+
+    const context = await fetchRecordInterviewContext(recordId);
+    setRecordContext(context);
+    setFields(context.fields);
+    setDraftFields(context.fields);
+    if (user && ["admin", "knowledge_manager"].includes(user.role)) {
+      setProposals(await fetchProposals(recordId));
+    }
+  }
+
   async function refresh() {
-    const dbs = await loadKnowledgeDbs();
+    const profile = await fetchMe();
+    setUser(profile);
+    const isRecordOnlyUser = profile.role === "interviewer" || profile.role === "viewer";
+    const isRecordsRoute = args.route.name === "records" || args.route.name === "record-detail";
+
+    if (isRecordsRoute || isRecordOnlyUser) {
+      await loadAccessibleRecordWorkspace(
+        args.route.name === "record-detail" ? args.route.recordId : undefined,
+      );
+      if (!isRecordsRoute) {
+        args.navigate("/records");
+      }
+      return;
+    }
+
+    if (args.route.name === "settings") {
+      if (profile.role === "admin") return;
+      args.navigate("/knowledge-dbs");
+    }
+
+    const dbs = await fetchKnowledgeDbs();
+    setKnowledgeDbs(dbs);
+    const knowledgeIndex = await loadKnowledgeIndex(dbs);
     const routeKnowledgeDbExists = routeKnowledgeDbId
       ? dbs.some((db: KnowledgeDb) => db.id === routeKnowledgeDbId)
       : false;
-    const nextKnowledgeDbId = routeKnowledgeDbExists ? routeKnowledgeDbId : dbs[0]?.id;
+    const lastKnowledgeId = !routeKnowledgeDbId ? getLastKnowledgeId() : null;
+    const lastKnowledge = lastKnowledgeId
+      ? knowledgeIndex.find((knowledge) => knowledge.id === lastKnowledgeId)
+      : undefined;
+    const nextKnowledgeDbId = routeKnowledgeDbExists
+      ? routeKnowledgeDbId
+      : lastKnowledge?.knowledgeDbId ?? dbs[0]?.id;
 
     if (routeKnowledgeDbId && !routeKnowledgeDbExists) {
       args.navigate(nextKnowledgeDbId ? `/knowledge-dbs/${nextKnowledgeDbId}` : "/knowledge");
     }
 
     if (nextKnowledgeDbId) {
-      const nextKnowledges = await loadKnowledgeWorkspace(nextKnowledgeDbId, routeKnowledgeId);
+      const routeKnowledgeForDb = routeKnowledgeId
+        && knowledgeIndex.some((knowledge) => knowledge.id === routeKnowledgeId && knowledge.knowledgeDbId === nextKnowledgeDbId)
+        ? routeKnowledgeId
+        : undefined;
+      const rememberedKnowledgeForDb = lastKnowledge?.knowledgeDbId === nextKnowledgeDbId
+        ? lastKnowledge.id
+        : undefined;
+      const initialKnowledgeId = routeKnowledgeForDb
+        ?? (args.route.name === "knowledge-dbs" ? rememberedKnowledgeForDb : undefined);
+      const nextKnowledges = await loadKnowledgeWorkspace(nextKnowledgeDbId, initialKnowledgeId, knowledgeIndex);
+      const openedKnowledge = nextKnowledges.find((knowledge) => knowledge.id === initialKnowledgeId)
+        ?? nextKnowledges[0];
+      if (!openedKnowledge) {
+        return;
+      }
+      if (args.route.name === "knowledge-dbs") {
+        args.navigate(`/knowledge-dbs/${nextKnowledgeDbId}/knowledges/${openedKnowledge.id}/interview`);
+        return;
+      }
       if (
         args.route.name === "knowledge-db"
         || args.route.name === "knowledge-new"
-        || routeKnowledgeId
+        || routeKnowledgeForDb
         || nextKnowledges.length === 0
       ) {
         return;
       }
 
-      args.navigate(`/knowledge-dbs/${nextKnowledgeDbId}/knowledges/${nextKnowledges[0].id}`);
+      args.navigate(`/knowledge-dbs/${nextKnowledgeDbId}/knowledges/${openedKnowledge.id}/interview`);
     } else {
+      setRecordContext(null);
       setKnowledges([]);
       setRecords([]);
       setDocuments([]);
@@ -337,81 +435,50 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     }
   }
 
-  async function createAndOpenKnowledgeDb(name: string, description: string) {
-    if (isCreatingKnowledgeDb) return false;
+  async function openCreateKnowledge() {
+    if (isPreparingKnowledgeCreation) return;
 
-    setIsCreatingKnowledgeDb(true);
-    setCreateKnowledgeDbError("");
+    setIsPreparingKnowledgeCreation(true);
+    setKnowledgeCreationError("");
     try {
-      const db = await createKnowledgeDb({
-        name,
-        description: description || undefined,
-        category: "knowledge",
-        language: "ja"
-      });
-      await loadKnowledgeDbs();
-      await loadKnowledgeWorkspace(db.id);
-      args.navigate(`/knowledge-dbs/${db.id}`);
-      return true;
+      let dbs = knowledgeDbs;
+      if (dbs.length === 0) {
+        dbs = await loadKnowledgeDbs();
+      }
+      if (dbs.length === 0) {
+        const defaultDb = await createKnowledgeDb({
+          name: "ナレッジ領域",
+          description: "ナレッジを管理する内部領域",
+          category: "knowledge",
+          language: "ja"
+        });
+        dbs = [defaultDb];
+        setKnowledgeDbs(dbs);
+      }
+      args.navigate(`/knowledge-dbs/${dbs[0].id}/knowledges/new`);
     } catch (error) {
-      console.error("Failed to create knowledge DB", error);
-      setCreateKnowledgeDbError("ナレッジDBを作成できませんでした。");
-      return false;
+      console.error("Failed to prepare knowledge creation", error);
+      setKnowledgeCreationError("ナレッジ作成の準備に失敗しました。もう一度お試しください。");
     } finally {
-      setIsCreatingKnowledgeDb(false);
+      setIsPreparingKnowledgeCreation(false);
     }
-  }
-
-  function openCreateKnowledgeDbDialog() {
-    setNewDbName("");
-    setNewDbDescription("");
-    setCreateKnowledgeDbError("");
-    setIsCreateKnowledgeDbDialogOpen(true);
-  }
-
-  function closeCreateKnowledgeDbDialog() {
-    if (isCreatingKnowledgeDb) return;
-    setIsCreateKnowledgeDbDialogOpen(false);
-    setNewDbName("");
-    setNewDbDescription("");
-    setCreateKnowledgeDbError("");
-  }
-
-  async function handleRegisterKnowledgeDb() {
-    const name = newDbName.trim();
-    if (!name) {
-      setCreateKnowledgeDbError("ナレッジ名を入力してください。");
-      return;
-    }
-
-    const created = await createAndOpenKnowledgeDb(name, newDbDescription.trim());
-    if (created) {
-      setIsCreateKnowledgeDbDialogOpen(false);
-      setNewDbName("");
-      setNewDbDescription("");
-    }
-  }
-
-  async function handleDeleteKnowledgeDb(knowledgeDbId: string) {
-    if (!window.confirm("このナレッジDBを削除します。関連する画面から参照できなくなります。")) return;
-    await deleteKnowledgeDb(knowledgeDbId);
-    const dbs = await loadKnowledgeDbs();
-    args.navigate(dbs[0] ? `/knowledge-dbs/${dbs[0].id}` : "/knowledge");
-  }
-
-  async function handleCreateDemoData() {
-    const db = await createDemoDataset();
-    await loadKnowledgeDbs();
-    args.navigate(`/knowledge-dbs/${db.id}`);
   }
 
   async function handleCreateKnowledge(payload: {
     name: string;
     description?: string;
     purpose?: string;
-  }) {
-    if (!selectedKnowledgeDb) return;
-    const knowledge = await createKnowledge(selectedKnowledgeDb.id, {
+  }, knowledgeDbId?: string) {
+    const targetKnowledgeDb = knowledgeDbId
+      ? knowledgeDbs.find((db) => db.id === knowledgeDbId) ?? null
+      : selectedKnowledgeDb;
+    if (!targetKnowledgeDb) {
+      setKnowledgeCreationError("ナレッジの保存先を確認できませんでした。");
+      return;
+    }
+
+    setKnowledgeCreationError("");
+    createKnowledge(targetKnowledgeDb.id, {
       name: payload.name,
       description: payload.description,
       purpose: payload.purpose,
@@ -420,9 +487,13 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       targetEquipment: settingsTargetEquipment || undefined,
       language: settingsLanguage,
       defaultModelId: settingsDefaultModelId || undefined
+    }).then(async (knowledge) => {
+      await loadKnowledgeWorkspace(targetKnowledgeDb.id, knowledge.id);
+      args.navigate(`/knowledge-dbs/${targetKnowledgeDb.id}/knowledges/${knowledge.id}/settings`);
+    }).catch((error) => {
+      console.error("Failed to create knowledge", error);
+      setKnowledgeCreationError("ナレッジを作成できませんでした。もう一度お試しください。");
     });
-    await loadKnowledgeWorkspace(selectedKnowledgeDb.id, knowledge.id);
-    args.navigate(`/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${knowledge.id}`);
   }
 
   async function handleDeleteKnowledge(knowledgeId: string) {
@@ -431,52 +502,25 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     await deleteKnowledge(knowledgeId);
     const nextKnowledges = await loadKnowledgeWorkspace(selectedKnowledgeDb.id);
     const nextKnowledgeId = nextKnowledges[0]?.id;
-    args.navigate(nextKnowledgeId ? `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${nextKnowledgeId}` : `/knowledge-dbs/${selectedKnowledgeDb.id}`);
+    args.navigate(nextKnowledgeId ? `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${nextKnowledgeId}/interview` : `/knowledge-dbs/${selectedKnowledgeDb.id}`);
   }
 
-  async function handleGenerateOverviewSummary() {
-    if (!selectedKnowledge) return;
-    setIsGeneratingOverviewSummary(true);
-    try {
-      const draft = await createKnowledgeRecordSummaryDraft(selectedKnowledge.id);
-      setOverviewSummaryDraft(draft.summary);
-      setRecordNotice("概要のAI要約候補を作成しました。確認して保存してください。");
-    } finally {
-      setIsGeneratingOverviewSummary(false);
-    }
-  }
-
-  async function handleSaveOverviewSummary() {
-    if (!selectedKnowledgeDb || !selectedKnowledge) return;
-    try {
-      await updateKnowledge(selectedKnowledge.id, {
-        summary: overviewSummaryDraft.trim() || null
-      });
-      await loadKnowledgeDbs();
-      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
-      setRecordNotice("概要の記録要約を保存しました");
-    } catch (error) {
-      console.error("Failed to save knowledge overview summary", error);
-      setRecordNotice("概要の記録要約を保存できませんでした");
-    }
-  }
-
-  function handleRevertOverviewSummary() {
-    setOverviewSummaryDraft(selectedKnowledge?.summary ?? "");
-    setRecordNotice("概要の記録要約を前の状態に戻しました");
-  }
-
-  async function handleSaveSettings(activeTab: "basic" | "fields" | "assist") {
-    const tabLabel = activeTab === "assist"
-      ? "AI設定"
-      : activeTab === "fields"
-        ? "ヒアリング項目"
-        : "基本設定";
+  async function handleSaveSettings(activeTab: "fields" | "execution") {
+    const tabLabel = activeTab === "execution"
+      ? "インタビュー設定"
+      : "質問項目";
     if (!selectedKnowledgeDb || !selectedKnowledge || settingsSaveState === "saving") return;
 
     setSettingsSaveState("saving");
     setSettingsNotice(`${tabLabel}を保存しています…`);
     try {
+      const interviewPlan = activeTab === "execution"
+        ? settingsInterviewPlan ?? {
+            version: 1,
+            profile: "fixed_form" as const,
+            modelId: "global.openai.gpt-5.6-luna" as const,
+          }
+        : settingsInterviewPlan ?? null;
       await updateKnowledge(selectedKnowledge.id, {
         name: settingsName,
         description: settingsDescription,
@@ -486,7 +530,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         targetEquipment: settingsTargetEquipment,
         language: settingsLanguage,
         defaultModelId: settingsDefaultModelId,
-        interviewPlan: settingsInterviewPlan ?? null
+        interviewPlan,
       });
 
       const existingIds = fields.map((field) => field.id).filter(Boolean);
@@ -527,15 +571,29 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
   async function handleCreateRecord() {
     if (!selectedKnowledgeDb || !selectedKnowledge) return;
+    if (!isInterviewConfigurationComplete(selectedKnowledge)) {
+      setRecordNotice("インタビュー設定で用途と実行モデルを保存してから、記録を作成してください。");
+      args.navigate(`/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}/settings`);
+      return;
+    }
     const title = newRecordTitle.trim() || buildDefaultRecordTitle();
-    const record = await createRecord(selectedKnowledge.id, {
-      title,
-      targetEquipment: selectedKnowledge.targetEquipment,
-      targetProcess: selectedKnowledge.targetBusiness
-    });
-    setNewRecordTitle("");
-    await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
-    args.navigate(`/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}/records/${record.id}`);
+    try {
+      const record = await createRecord(selectedKnowledge.id, {
+        title,
+        targetEquipment: selectedKnowledge.targetEquipment,
+        targetProcess: selectedKnowledge.targetBusiness
+      });
+      setNewRecordTitle("");
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      args.navigate(`/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}/records/${record.id}`);
+    } catch (error) {
+      console.error("Failed to create interview record", error);
+      setRecordNotice(
+        error instanceof ApiError && error.detail === "interview_configuration_required"
+          ? "インタビュー設定で用途と実行モデルを保存してから、記録を作成してください。"
+          : "記録を作成できませんでした。通信状態を確認して、もう一度お試しください。",
+      );
+    }
   }
 
   async function handleDeleteRecord(recordId: string) {
@@ -543,6 +601,55 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     if (!window.confirm("この記録を削除します。")) return;
     await deleteRecord(recordId);
     await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+  }
+
+  async function handleChangeRecordStatus(
+    status: InterviewRecord["status"],
+    reviewNote?: string,
+  ) {
+    if (!selectedRecord) return;
+    try {
+      await updateRecord(selectedRecord.id, { status, reviewNote });
+      if (args.route.name === "record-detail") {
+        await loadAccessibleRecordWorkspace(selectedRecord.id);
+      } else if (selectedKnowledgeDb && selectedKnowledge) {
+        await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      }
+      setRecordNotice(
+        status === "submitted"
+          ? "記録を確認待ちにしました"
+          : status === "approved"
+            ? "記録を承認しました"
+            : status === "returned"
+              ? "記録を修正依頼にしました"
+              : "記録を公開しました",
+      );
+    } catch (error) {
+      console.error("Failed to change record status", error);
+      setRecordNotice("記録の状態を変更できませんでした");
+    }
+  }
+
+  async function handleChangeRecordStatusForRecord(
+    recordId: string,
+    status: InterviewRecord["status"],
+    reviewNote?: string,
+  ) {
+    if (!selectedKnowledgeDb || !selectedKnowledge) return;
+    try {
+      await updateRecord(recordId, { status, reviewNote });
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      setRecordNotice(
+        status === "approved"
+          ? "記録を承認しました"
+          : status === "returned"
+            ? "記録を修正依頼にしました"
+            : "記録を対象者へ公開しました",
+      );
+    } catch (error) {
+      console.error("Failed to change record status", error);
+      setRecordNotice("記録の状態を変更できませんでした");
+    }
   }
 
   async function handleBulkApproveRecords() {
@@ -709,34 +816,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     });
   }
 
-  async function handleGenerateRecordSummary() {
-    if (!selectedRecord) return;
-    setIsGeneratingSummary(true);
-    try {
-      const proposal = await createRecordSummaryProposal(selectedRecord.id);
-      const summary = proposal.structuredData.summary;
-      if (typeof summary === "string") {
-        setSummaryDraft(summary);
-        setRecordNotice("要約候補を生成しました");
-      }
-      await refreshSelectedRecord(selectedRecord.id);
-    } finally {
-      setIsGeneratingSummary(false);
-    }
-  }
-
-  async function handleSaveRecordSummary() {
-    if (!selectedRecord) return;
-    await updateRecord(selectedRecord.id, { summary: summaryDraft.trim() || undefined });
-    await loadKnowledgeWorkspace(selectedKnowledgeDb?.id ?? "", selectedKnowledge?.id);
-    setRecordNotice("要約を保存しました");
-  }
-
-  function handleRevertRecordSummary() {
-    setSummaryDraft(selectedRecord?.summary ?? "");
-    setRecordNotice("要約の変更を元に戻しました");
-  }
-
   function handleUpdateDocumentReadState(documentId: string, nextState: DocumentReadState["readStatus"]) {
     const now = new Date().toISOString();
     setDocumentReadStates((current) => ({
@@ -764,14 +843,13 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
   useEffect(() => {
     refresh().catch(() => undefined);
-  }, [routeKnowledgeDbId, routeKnowledgeId]);
+  }, [args.route.name, routeKnowledgeDbId, routeKnowledgeId, selectedRecordId]);
 
   useEffect(() => {
     if (!selectedKnowledge) return;
     setSettingsName(selectedKnowledge.name);
     setSettingsDescription(selectedKnowledge.description ?? "");
     setSettingsSystemPrompt(selectedKnowledge.systemPrompt ?? "");
-    setOverviewSummaryDraft(selectedKnowledge.summary ?? "");
     setSettingsCategory(selectedKnowledge.category ?? "");
     setSettingsTargetBusiness(selectedKnowledge.targetBusiness ?? "");
     setSettingsTargetEquipment(selectedKnowledge.targetEquipment ?? "");
@@ -790,10 +868,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     }, 3000);
     return () => window.clearTimeout(timeoutId);
   }, [settingsNotice, settingsSaveState]);
-
-  useEffect(() => {
-    setSummaryDraft(selectedRecord?.summary ?? "");
-  }, [selectedRecord?.id, selectedRecord?.summary]);
 
   useEffect(() => {
     setChatInput("");
@@ -834,11 +908,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   }, [documents]);
 
   useEffect(() => {
-    if ("recordId" in args.route) refreshSelectedRecord(args.route.recordId).catch(() => undefined);
-  }, ["recordId" in args.route ? args.route.recordId : ""]);
+    if ("recordId" in args.route && user && ["admin", "knowledge_manager"].includes(user.role)) {
+      refreshSelectedRecord(args.route.recordId).catch(() => undefined);
+    }
+  }, ["recordId" in args.route ? args.route.recordId : "", user?.role]);
 
   const knowledgeLayoutProps: KnowledgeLayoutProps = {
     route: args.route,
+    user,
     knowledgeDbs,
     knowledges,
     selectedKnowledgeDb,
@@ -868,8 +945,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsInterviewPlan,
     settingsNotice,
     settingsSaveState,
-    newDbName,
-    setNewDbName,
     newRecordTitle,
     setNewRecordTitle,
     newDocumentName,
@@ -880,9 +955,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onUpdateDocumentReadState: handleUpdateDocumentReadState,
     selectedRecord,
     proposals,
-    overviewSummaryDraft,
-    setOverviewSummaryDraft,
-    isGeneratingOverviewSummary,
     chatInput,
     setChatInput,
     interviewMessages,
@@ -896,22 +968,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setInterviewAnswerOverrides,
     deletedExtraQuestionIds,
     setDeletedExtraQuestionIds,
-    summaryDraft,
-    setSummaryDraft,
-    isGeneratingSummary,
     recordNotice,
     setRecordNotice,
     navigate: args.navigate,
-    onCreateKnowledgeDb: openCreateKnowledgeDbDialog,
-    isCreatingKnowledgeDb,
-    createKnowledgeDbError: "",
-    onDeleteKnowledgeDb: handleDeleteKnowledgeDb,
+    onOpenCreateKnowledge: openCreateKnowledge,
+    isPreparingKnowledgeCreation,
+    knowledgeCreationError,
     onCreateKnowledge: handleCreateKnowledge,
     onDeleteKnowledge: handleDeleteKnowledge,
-    onGenerateOverviewSummary: handleGenerateOverviewSummary,
-    onSaveOverviewSummary: handleSaveOverviewSummary,
-    onRevertOverviewSummary: handleRevertOverviewSummary,
-    onCreateDemoData: handleCreateDemoData,
     onSaveSettings: handleSaveSettings,
     onClearSettingsNotice: () => {
       setSettingsNotice("");
@@ -920,6 +984,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onCreateDocument: handleCreateDocument,
     onCreateRecord: handleCreateRecord,
     onDeleteRecord: handleDeleteRecord,
+    onChangeRecordStatus: handleChangeRecordStatus,
+    onChangeRecordStatusForRecord: handleChangeRecordStatusForRecord,
     onBulkApproveRecords: handleBulkApproveRecords,
     onSaveInterviewDraft: handleSaveInterviewDraft,
     onSaveInterviewAnswer: handleSaveInterviewAnswer,
@@ -929,28 +995,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onSendInterviewMessage: handleSendInterviewMessage,
     onAppendInterviewMessage: appendRealtimeVoiceInterviewMessage,
     onRefreshInterviewSnapshot: refreshInterviewSnapshotForSelectedRecord,
-    onGenerateRecordSummary: handleGenerateRecordSummary,
-    onSaveRecordSummary: handleSaveRecordSummary,
-    onRevertRecordSummary: handleRevertRecordSummary,
     onApproveOne: handleApproveOne,
     onRejectProposal: handleRejectProposal,
     onRemoveProposal: handleRemoveProposal,
     onApproveAllForRecord: handleApproveAllForRecord
-  };
-
-  const createKnowledgeDbDialogProps: CreateKnowledgeDbDialogProps = {
-    isOpen: isCreateKnowledgeDbDialogOpen,
-    isCreating: isCreatingKnowledgeDb,
-    error: createKnowledgeDbError,
-    name: newDbName,
-    description: newDbDescription,
-    onNameChange: (value) => {
-      setNewDbName(value);
-      if (createKnowledgeDbError) setCreateKnowledgeDbError("");
-    },
-    onDescriptionChange: setNewDbDescription,
-    onClose: closeCreateKnowledgeDbDialog,
-    onSubmit: handleRegisterKnowledgeDb
   };
 
   return {
@@ -959,10 +1007,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     knowledges,
     documents,
     selectedKnowledgeDb,
-    knowledgeLayoutProps,
-    openCreateKnowledgeDbDialog,
-    isCreatingKnowledgeDb,
-    createKnowledgeDbDialogProps
+    knowledgeLayoutProps
   };
 }
 

@@ -1,57 +1,51 @@
-import type { KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { Knowledge } from "@ai-interviewer/shared-types";
 import { useState } from "react";
-import { GlobalNav } from "./GlobalNav";
 import { WorkspaceNav } from "./WorkspaceNav";
 import type { UserProfile } from "../lib/api";
-import type { AppSection, Chatbot } from "../types/app";
+import type { AppSection } from "../types/app";
 
 type AppShellProps = {
   activeSection: AppSection;
   activePath: string;
   user: UserProfile | null;
-  knowledgeDbs: KnowledgeDb[];
-  selectedKnowledgeDbId?: string | null;
-  chatbots: Chatbot[];
-  selectedChatbotId?: string | null;
+  knowledges: Knowledge[];
+  recordCount: number;
+  selectedKnowledgeId?: string | null;
   children: React.ReactNode;
   onNavigate: (path: string) => void;
-  onCreateKnowledgeDb: () => void;
-  isCreatingKnowledgeDb?: boolean;
-  createKnowledgeDbError?: string;
-  onCreateChatbot: () => void;
+  onOpenCreateKnowledge: () => void;
+  isPreparingKnowledgeCreation?: boolean;
+  knowledgeCreationError?: string;
 };
 
 export function AppShell({
   activeSection,
   activePath,
   user,
-  knowledgeDbs,
-  selectedKnowledgeDbId,
-  chatbots,
-  selectedChatbotId,
+  knowledges,
+  recordCount,
+  selectedKnowledgeId,
   children,
   onNavigate,
-  onCreateKnowledgeDb,
-  isCreatingKnowledgeDb,
-  createKnowledgeDbError,
-  onCreateChatbot
+  onOpenCreateKnowledge,
+  isPreparingKnowledgeCreation,
+  knowledgeCreationError
 }: AppShellProps) {
   const [isWorkspaceNavCollapsed, setIsWorkspaceNavCollapsed] = useState(false);
 
   return (
-    <div className={isWorkspaceNavCollapsed ? "app-shell workspace-collapsed" : "app-shell"}>
-      <GlobalNav activeSection={activeSection} user={user} onNavigate={onNavigate} />
+    <div className={isWorkspaceNavCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       <WorkspaceNav
         activeSection={activeSection}
-        knowledgeDbs={knowledgeDbs}
-        selectedKnowledgeDbId={selectedKnowledgeDbId}
-        chatbots={chatbots}
-        selectedChatbotId={selectedChatbotId}
+        activePath={activePath}
+        user={user}
+        knowledges={knowledges}
+        recordCount={recordCount}
+        selectedKnowledgeId={selectedKnowledgeId}
         onNavigate={onNavigate}
-        onCreateKnowledgeDb={onCreateKnowledgeDb}
-        isCreatingKnowledgeDb={isCreatingKnowledgeDb}
-        createKnowledgeDbError={createKnowledgeDbError}
-        onCreateChatbot={onCreateChatbot}
+        onOpenCreateKnowledge={onOpenCreateKnowledge}
+        isPreparingKnowledgeCreation={isPreparingKnowledgeCreation}
+        knowledgeCreationError={knowledgeCreationError}
         isCollapsed={isWorkspaceNavCollapsed}
         onToggleCollapsed={() => setIsWorkspaceNavCollapsed((value) => !value)}
       />

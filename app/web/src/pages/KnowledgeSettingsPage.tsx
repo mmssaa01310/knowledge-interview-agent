@@ -5,27 +5,29 @@ import {
   type FieldSuggestionChatMessage,
   type KnowledgeField
 } from "../lib/api";
+import { isInterviewConfigurationComplete } from "../features/interviews/interviewConfiguration";
+import { KnowledgeDocumentsContent } from "./KnowledgeDocumentsPage";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
 const modelOptions = [
-  { value: "global.openai.gpt-5.6-terra", label: "OpenAI GPT-5.6 Terra（Global）" },
-  { value: "global.openai.gpt-5.6-luna", label: "OpenAI GPT-5.6 Luna（Global）" },
+  { value: "global.openai.gpt-5.6-luna", label: "GPT-5.6 Luna（標準）" },
+  { value: "global.openai.gpt-5.6-terra", label: "GPT-5.6 Terra（高精度）" },
 ] as const;
 
 const structuredInterviewModelOptions = [
-  { value: "global.openai.gpt-5.6-terra", label: "OpenAI GPT-5.6 Terra（Global）", description: "通常の構造化インタビューに使用します。" },
-  { value: "global.openai.gpt-5.6-luna", label: "OpenAI GPT-5.6 Luna（Global）", description: "低コスト・大量処理を優先する構造化インタビューに使用します。" },
+  { value: "global.openai.gpt-5.6-luna", label: "GPT-5.6 Luna（標準）", description: "標準" },
+  { value: "global.openai.gpt-5.6-terra", label: "GPT-5.6 Terra（高精度）", description: "高精度優先" },
 ] as const;
 
 const interviewProfileOptions = [
-  { value: "fixed_form", label: "定型情報を聞き取る", description: "設定したヒアリング項目を順番に確認します。" },
+  { value: "fixed_form", label: "定型情報を聞き取る", description: "設定した質問項目を順番に確認します。" },
   { value: "business_process", label: "業務フローを整理する", description: "開始から終了までの業務フローと例外を整理します。" },
   { value: "system_requirement", label: "システム要件を整理する", description: "目的・課題、要求内容、必要な処理の流れを整理します。" },
 ] as const;
 
 const noPromptProfileValue = "__none__";
 
-type SettingsTab = "basic" | "fields" | "assist";
+type SettingsTab = "fields" | "execution" | "knowledge";
 
 type AssistMessage = {
   role: "user" | "ai";
@@ -38,6 +40,17 @@ type PendingSuggestedField = KnowledgeField & {
 };
 
 const settingsTabStorageKey = "knowledge-settings-active-tab";
+
+function getStoredSettingsTab(): SettingsTab {
+  const savedTab = window.localStorage.getItem(settingsTabStorageKey);
+  if (savedTab === "execution" || savedTab === "knowledge") return savedTab;
+  if (savedTab === "assist") return "execution";
+  return "fields";
+}
+
+function getSettingsSaveTab(tab: SettingsTab): "fields" | "execution" {
+  return tab === "fields" ? "fields" : "execution";
+}
 
 function uniqueFields(fields: KnowledgeField[]) {
   const seen = new Set<string>();
@@ -86,15 +99,12 @@ function toFieldSuggestionErrorMessage(error: unknown) {
 
 export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
-    const savedTab = window.localStorage.getItem(settingsTabStorageKey);
-    if (savedTab === "basic" || savedTab === "fields" || savedTab === "assist") {
-      return savedTab;
-    }
-    return savedTab === "chat" ? "fields" : "assist";
+    if (!isInterviewConfigurationComplete(props.selectedKnowledge)) return "execution";
+    return getStoredSettingsTab();
   });
   const [assistInput, setAssistInput] = useState("");
   const [assistMessages, setAssistMessages] = useState<AssistMessage[]>([
-    { role: "ai", text: "こんにちは。まず、どの業務や場面について質問項目を作りたいか教えてください。必要なら確認しながら整理します。" }
+    { role: "ai", text: "質問項目を作りたい業務や場面を入力してください。" }
   ]);
   const [pendingSuggestions, setPendingSuggestions] = useState<PendingSuggestedField[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -104,7 +114,9 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const [savePromptTemplateName, setSavePromptTemplateName] = useState("");
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const assistInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const initializedKnowledgeIdRef = useRef(props.selectedKnowledge?.id ?? null);
   const promptProfiles = props.promptProfiles ?? [];
+  const requiresInterviewConfiguration = !isInterviewConfigurationComplete(props.selectedKnowledge);
 
   const selectedModelOption = modelOptions.some((option) => option.value === props.settingsDefaultModelId)
     ? props.settingsDefaultModelId
@@ -120,12 +132,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const canSavePromptProfile = Boolean(props.onCreatePromptProfile)
     && props.settingsSystemPrompt.trim().length > 0
     && savePromptTemplateName.trim().length > 0;
-  const activeTabLabel = activeTab === "assist"
-    ? "AIインタビュー設定"
-    : activeTab === "fields"
-      ? "ヒアリング項目"
-      : "基本設定";
-
   function clearSettingsNotice() {
     if (!props.settingsNotice && props.settingsSaveState === "idle") return;
     props.onClearSettingsNotice();
@@ -148,6 +154,17 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     if (modelOptions.some((option) => option.value === props.settingsDefaultModelId)) return;
     props.setSettingsDefaultModelId(modelOptions[0].value);
   }, [props.settingsDefaultModelId, props.setSettingsDefaultModelId]);
+
+  useEffect(() => {
+    const knowledgeId = props.selectedKnowledge?.id ?? null;
+    if (initializedKnowledgeIdRef.current === knowledgeId) return;
+
+    initializedKnowledgeIdRef.current = knowledgeId;
+    const nextTab = requiresInterviewConfiguration
+      ? "execution"
+      : getStoredSettingsTab();
+    setActiveTab(nextTab);
+  }, [props.selectedKnowledge?.id, requiresInterviewConfiguration]);
 
   function selectTab(tab: SettingsTab) {
     if (tab !== activeTab) {
@@ -185,7 +202,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         description: suggestion.description,
         inputType: suggestion.inputType,
         required: suggestion.required,
-        askByAi: suggestion.askByAi,
+        askByAi: true,
         aiQuestionExamples: suggestion.aiQuestionExamples,
         questionPlan: suggestion.questionPlan,
         displayOrder: props.draftFields.length + 1
@@ -214,7 +231,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         description: item.description,
         inputType: item.inputType,
         required: item.required,
-        askByAi: item.askByAi,
+        askByAi: true,
         aiQuestionExamples: item.aiQuestionExamples,
         questionPlan: item.questionPlan,
         displayOrder: props.draftFields.length + index + 1
@@ -323,54 +340,63 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2>ナレッジDB設定</h2>
-          <p className="lede">ナレッジ名、説明、AI設定、ヒアリング項目を管理します。</p>
+          <h2>インタビュー設定</h2>
         </div>
-        <button className="ghost" onClick={() => props.navigate(`/knowledge/${props.selectedKnowledgeDb?.id}`)}>戻る</button>
+        <div className="actions">
+          <button
+            className="ghost"
+            type="button"
+            onClick={() => props.navigate(`/knowledge-dbs/${props.selectedKnowledgeDb?.id}/knowledges/${props.selectedKnowledge?.id}/interview`)}
+          >
+            インタビューに戻る
+          </button>
+          <button
+            className="primary"
+            type="button"
+            onClick={() => props.onSaveSettings(getSettingsSaveTab(activeTab))}
+            disabled={props.settingsSaveState === "saving"}
+          >
+            {props.settingsSaveState === "saving" ? "保存中…" : "設定を保存"}
+          </button>
+        </div>
       </div>
 
-      <div className="settings-tabs" role="tablist" aria-label="ナレッジDB設定メニュー">
-        <button type="button" role="tab" aria-selected={activeTab === "basic"} className={activeTab === "basic" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("basic")}>基本設定</button>
-        <button type="button" role="tab" aria-selected={activeTab === "fields"} className={activeTab === "fields" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("fields")}>ヒアリング項目</button>
-        <button type="button" role="tab" aria-selected={activeTab === "assist"} className={activeTab === "assist" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("assist")}>AI設定</button>
+      {requiresInterviewConfiguration ? (
+        <div className="settings-setup-notice">
+          <strong>インタビューを開始するには、用途と実行モデルの保存が必要です。</strong>
+        </div>
+      ) : null}
+
+      <section className="settings-section knowledge-info-section" aria-label="ナレッジ情報">
+        <div className="knowledge-info-fields">
+          <label>ナレッジ名<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
+          <label>説明<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
+        </div>
+      </section>
+
+      <div className="settings-tabs-row">
+        <div className="settings-tabs" role="tablist" aria-label="インタビュー設定メニュー">
+          <button id="settings-tab-fields" type="button" role="tab" aria-controls="settings-panel-fields" aria-selected={activeTab === "fields"} className={activeTab === "fields" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("fields")}>質問項目</button>
+          <button id="settings-tab-execution" type="button" role="tab" aria-controls="settings-panel-execution" aria-selected={activeTab === "execution"} className={activeTab === "execution" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("execution")}>実行設定</button>
+          <button id="settings-tab-knowledge" type="button" role="tab" aria-controls="settings-panel-knowledge" aria-selected={activeTab === "knowledge"} className={activeTab === "knowledge" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("knowledge")}>事前知識</button>
+        </div>
       </div>
 
       <div className="settings-workspace">
         <div className="settings-main">
-          {activeTab === "basic" ? (
-            <section className="settings-section" role="tabpanel">
+          {activeTab === "execution" ? (
+            <section id="settings-panel-execution" className="settings-section" role="tabpanel" aria-labelledby="settings-tab-execution">
               <div className="section-title-row">
                 <div>
-                  <h3>基本設定</h3>
-                  <p>ナレッジ名と説明を設定します。</p>
+                  <h3>実行設定</h3>
                 </div>
               </div>
-              <div className="form-grid">
-                <label>ナレッジ名<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
-              </div>
-              <label>説明<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
-            </section>
-          ) : null}
-
-          {activeTab === "assist" ? (
-            <section className="settings-section" role="tabpanel">
-              <div className="section-title-row">
-                <div>
-                  <h3>AIインタビュー設定</h3>
-                  <p>回答処理に使うモデルと、質問項目の設計方法を設定します。</p>
-                </div>
-              </div>
-              <p className="settings-notice">
-                用途と、それぞれのAI処理で使うモデルを設定します。質問項目の設計モデルとインタビュー実行モデルは別々に選択できます。
-              </p>
               <div className="interview-settings">
                 <div className="interview-setting-grid">
                   <section className="interview-setting-card">
                     <div className="interview-setting-card-header">
-                      <span className="interview-setting-step">1</span>
                       <div>
-                        <h4>インタビュー用途</h4>
-                        <p>何を整理したいかを選びます。</p>
+                        <h4>用途</h4>
                       </div>
                     </div>
                     <label className="sr-only" htmlFor="interview-profile">インタビュー用途</label>
@@ -396,10 +422,8 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   </section>
                   <section className="interview-setting-card featured">
                     <div className="interview-setting-card-header">
-                      <span className="interview-setting-step">2</span>
                       <div>
                         <h4>インタビュー実行モデル</h4>
-                        <p>回答の意味解釈と次の質問生成に使用します。</p>
                       </div>
                     </div>
                     <label className="sr-only" htmlFor="structured-interview-model">インタビュー実行モデル</label>
@@ -420,7 +444,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                       ))}
                     </select>
                     <p className="form-help">
-                      {structuredInterviewModelOptions.find((option) => option.value === selectedStructuredInterviewModel)?.description} 保存値が未設定の場合はTerraを使用します。
+                      {structuredInterviewModelOptions.find((option) => option.value === selectedStructuredInterviewModel)?.description}
                     </p>
                   </section>
                 </div>
@@ -428,7 +452,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   <div className="interview-setting-group-header">
                     <div>
                       <h4>補助設定</h4>
-                      <p>質問項目の設計と、保存済みテンプレートを設定します。</p>
                     </div>
                   </div>
                   <div className="interview-setting-grid">
@@ -438,7 +461,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                       <select id="question-design-model" value={selectedModelOption} onChange={(event) => { clearSettingsNotice(); props.setSettingsDefaultModelId(event.target.value); }}>
                         {modelOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}
                       </select>
-                      <p className="form-help">ヒアリング項目の提案に使用します。実行モデルには影響しません。</p>
                     </section>
                     <section className="interview-setting-card compact">
                       <h5>保存済みテンプレート</h5>
@@ -461,7 +483,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                           読み込む
                         </button>
                       </div>
-                      <p className="form-help">追加カスタマイズプロンプトに内容を読み込みます。</p>
                     </section>
                   </div>
                 </section>
@@ -490,18 +511,16 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   placeholder="必要なら、このナレッジ専用の深掘り観点や聞き方だけを追加してください。"
                 />
               </label>
-              <p className="empty">保存したテンプレートは、他のナレッジでも読み込めます。</p>
               {promptProfileNotice ? <span className="notice">{promptProfileNotice}</span> : null}
             </section>
           ) : null}
 
           {activeTab === "fields" ? (
-            <div className="settings-split" role="tabpanel">
+            <div id="settings-panel-fields" className="settings-split" role="tabpanel" aria-labelledby="settings-tab-fields">
               <section className="settings-section">
                 <div className="section-title-row">
                   <div>
-                    <h3>ヒアリング項目</h3>
-                    <p>AIが聞き取る項目と、構造化ナレッジとして保存する項目を編集します。</p>
+                    <h3>質問項目</h3>
                   </div>
                   <button className="ghost compact" onClick={() => {
                     clearSettingsNotice();
@@ -509,24 +528,23 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   }}>項目追加</button>
                 </div>
                 <div className="field-list">
-                  {props.draftFields.length === 0 ? <p className="empty">ヒアリング項目はまだありません。右側の AIチャット からも作成できます。</p> : props.draftFields.map((field, index) => (
+                  {props.draftFields.length === 0 ? <p className="empty">質問項目はありません。</p> : props.draftFields.map((field, index) => (
                     <div className="field-card readable-field-card" key={`${field.id ?? "new"}-${index}`}>
-                      <div className="field-card-header">
-                        <div>
-                          <span className="field-order">項目 {index + 1}</span>
-                          <strong>{field.name || "未命名項目"}</strong>
-                        </div>
+                      <div className="field-name-row">
+                        <label className="sr-only" htmlFor={`knowledge-field-name-${index}`}>質問項目{index + 1}の名前</label>
+                        <input
+                          id={`knowledge-field-name-${index}`}
+                          value={field.name}
+                          onChange={(event) => updateField(index, { name: event.target.value })}
+                          placeholder="質問項目名"
+                        />
                         <button className="danger compact" onClick={() => { clearSettingsNotice(); props.setDraftFields(props.draftFields.filter((_, i) => i !== index)); }}>削除</button>
                       </div>
-                      <div className="form-grid field-form-grid">
-                        <label>項目名<input value={field.name} onChange={(event) => updateField(index, { name: event.target.value })} /></label>
-                        <label className="wide-field">AI質問例
-                          <textarea value={(field.aiQuestionExamples ?? []).join("\n")} onChange={(event) => updateField(index, { aiQuestionExamples: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} placeholder="例: いつ、どこで、どの条件で発生しましたか" />
-                        </label>
-                      </div>
+                      <label className="field-detail-field">詳細項目
+                        <textarea value={field.description ?? ""} onChange={(event) => updateField(index, { description: event.target.value })} placeholder="例: 名前、年齢、性別、出身地" />
+                      </label>
                       <div className="toolbar">
                         <label className="check-row"><input type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />必須項目</label>
-                        <label className="check-row"><input type="checkbox" checked={field.askByAi} onChange={(event) => updateField(index, { askByAi: event.target.checked })} />AIが質問する</label>
                       </div>
                     </div>
                   ))}
@@ -534,10 +552,10 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               </section>
 
               <aside className="settings-side">
-                <div className="settings-ai-chat" aria-label="AIヒアリング項目提案チャット">
+                <div className="settings-ai-chat" aria-label="AI質問項目提案チャット">
                   <div className="ai-chat-header">
                     <div>
-                      <strong>AIヒアリング設計チャット</strong>
+                      <strong>AI質問項目設計チャット</strong>
                     </div>
                   </div>
                   <div className="settings-chat-log" ref={chatLogRef}>
@@ -550,7 +568,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                       <article key={field.proposalId} className="proposal-card settings-suggestion-card">
                         <div className="proposal-fields">
                           <div className="proposal-field"><strong>項目</strong><p>{field.name}</p></div>
-                          <div className="proposal-field"><strong>質問例</strong><p>{field.aiQuestionExamples?.join(" / ") || "質問例はまだありません。"}</p></div>
+                          <div className="proposal-field"><strong>詳細項目</strong><p>{field.description || "詳細項目はまだありません。"}</p></div>
                         </div>
                         <div className="actions">
                           <button className="primary compact" onClick={() => approveSuggestion(field.proposalId)}>承認</button>
@@ -572,15 +590,28 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             </div>
           ) : null}
 
+          {activeTab === "knowledge" ? (
+            <section id="settings-panel-knowledge" className="settings-section knowledge-documents-settings" role="tabpanel" aria-labelledby="settings-tab-knowledge">
+              <div className="section-title-row">
+                <div>
+                  <h3>事前知識</h3>
+                  <p className="form-help">登録した文書は、質問項目の設計やインタビュー内容の整理で参照されます。</p>
+                </div>
+                <span className="status-pill muted">{props.documents.length}件</span>
+              </div>
+              <KnowledgeDocumentsContent {...props} />
+            </section>
+          ) : null}
+
           <div className="actions sticky-actions">
             <button
               type="button"
               className="primary"
-              onClick={() => props.onSaveSettings(activeTab)}
+              onClick={() => props.onSaveSettings(getSettingsSaveTab(activeTab))}
               disabled={props.settingsSaveState === "saving"}
               aria-busy={props.settingsSaveState === "saving"}
             >
-              {props.settingsSaveState === "saving" ? "保存中…" : `${activeTabLabel}を保存`}
+              {props.settingsSaveState === "saving" ? "保存中…" : "設定を保存"}
             </button>
             {props.settingsNotice ? (
               <span

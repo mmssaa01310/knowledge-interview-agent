@@ -1,9 +1,8 @@
 import { AppShell } from "../layouts/AppShell";
-import { ChatbotLayout } from "../layouts/ChatbotLayout";
 import { KnowledgeLayout } from "../layouts/KnowledgeLayout";
+import { RecordsLayout } from "../layouts/RecordsLayout";
 import { LoginPage } from "../pages/LoginPage";
 import { SettingsPage } from "../pages/SettingsPage";
-import { CreateKnowledgeDbDialog } from "./CreateKnowledgeDbDialog";
 import { useAppRouterController } from "./useAppRouterController";
 
 export function AppRouter() {
@@ -11,20 +10,12 @@ export function AppRouter() {
     route,
     currentSection,
     user,
-    knowledgeDbs,
-    selectedKnowledgeDb,
-    chatbots,
-    selectedChatbot,
     navigate,
-    openCreateKnowledgeDbDialog,
-    isCreatingKnowledgeDb,
     knowledgeLayoutProps,
-    chatbotLayoutProps,
-    createKnowledgeDbDialogProps
   } = useAppRouterController();
 
   if (route.name === "login") {
-    return <LoginPage onLogin={() => navigate("/knowledge")} />;
+    return <LoginPage onLogin={() => navigate(user?.role === "interviewer" || user?.role === "viewer" ? "/records" : "/knowledge-dbs")} />;
   }
 
   return (
@@ -33,25 +24,16 @@ export function AppRouter() {
         user={user}
         activeSection={currentSection}
         activePath={window.location.pathname}
-        knowledgeDbs={knowledgeDbs}
-        selectedKnowledgeDbId={selectedKnowledgeDb?.id}
-        chatbots={chatbots}
-        selectedChatbotId={"chatbotId" in route ? selectedChatbot?.id : null}
+        knowledges={knowledgeLayoutProps.knowledges}
+        recordCount={knowledgeLayoutProps.records.length}
+        selectedKnowledgeId={knowledgeLayoutProps.selectedKnowledge?.id}
         onNavigate={navigate}
-        onCreateKnowledgeDb={openCreateKnowledgeDbDialog}
-        isCreatingKnowledgeDb={isCreatingKnowledgeDb}
-        createKnowledgeDbError=""
-        onCreateChatbot={chatbotLayoutProps.onCreateChatbot}
+        onOpenCreateKnowledge={knowledgeLayoutProps.onOpenCreateKnowledge}
+        isPreparingKnowledgeCreation={knowledgeLayoutProps.isPreparingKnowledgeCreation}
+        knowledgeCreationError={knowledgeLayoutProps.knowledgeCreationError}
       >
-      {currentSection === "settings" ? (
-        <SettingsPage />
-      ) : currentSection === "knowledge" ? (
-        <KnowledgeLayout {...knowledgeLayoutProps} />
-      ) : (
-        <ChatbotLayout {...chatbotLayoutProps} />
-      )}
+      {currentSection === "settings" ? <SettingsPage /> : currentSection === "records" ? <RecordsLayout {...knowledgeLayoutProps} /> : <KnowledgeLayout {...knowledgeLayoutProps} />}
       </AppShell>
-      <CreateKnowledgeDbDialog {...createKnowledgeDbDialogProps} />
     </>
   );
 }

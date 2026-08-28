@@ -1,61 +1,93 @@
+import type { InterviewRecord } from "@ai-interviewer/shared-types";
 import { formatDate } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
-export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
-  const basePath = props.selectedKnowledgeDb && props.selectedKnowledge
-    ? `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}`
-    : "/knowledge-dbs";
+const statusLabels: Record<InterviewRecord["status"], string> = {
+  draft: "準備中",
+  in_progress: "回答中",
+  submitted: "確認待ち",
+  returned: "修正依頼",
+  approved: "承認済み",
+};
 
-  function getClassificationLabel(record: (typeof props.records)[number]) {
-    return record.targetProcess || record.targetEquipment || "未分類";
+export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
+  const { selectedKnowledgeDb, selectedKnowledge } = props;
+  if (!selectedKnowledgeDb || !selectedKnowledge) return null;
+
+  const basePath = `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}`;
+
+  function openRecord(recordId: string) {
+    props.navigate(`${basePath}/records/${recordId}`);
   }
 
-  function getRecordSummary(record: (typeof props.records)[number]) {
-    return record.summary || record.title || "要約未作成";
+  function returnRecord(recordId: string) {
+    const reviewNote = window.prompt("修正してほしい内容を入力してください。", "");
+    if (reviewNote?.trim()) {
+      void props.onChangeRecordStatusForRecord(recordId, "returned", reviewNote.trim());
+    }
+  }
+
+  function approveRecord(recordId: string) {
+    if (window.confirm("この記録を承認しますか？")) {
+      void props.onChangeRecordStatusForRecord(recordId, "approved");
+    }
   }
 
   return (
-    <section className="panel">
+    <section className="panel page-stack">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Records</p>
-          <h2>記録一覧</h2>
+          <h2>記録</h2>
         </div>
+        <button className="primary" type="button" onClick={() => props.navigate(`${basePath}/interview`)}>
+          新しい記録
+        </button>
       </div>
-      <div className="inline-form wide">
-        <input value={props.newRecordTitle} onChange={(event) => props.setNewRecordTitle(event.target.value)} placeholder="新規記録" />
-        <button className="primary" onClick={props.onCreateRecord}>新規記録</button>
-        <button className="ghost" onClick={props.onBulkApproveRecords}>選択した記録を一括承認</button>
-      </div>
+
+      {props.recordNotice ? <p className="notice" role="status">{props.recordNotice}</p> : null}
+
       <div className="table-list">
-        <div className="table-row record-detail-row table-head">
-          <span>記録内容（要約）</span>
-          <span>分類ラベル</span>
-          <span>記録者</span>
-          <span>作成日</span>
-          <span>承認</span>
+        <div className="table-row table-head records-workspace-row knowledge-records-row">
+          <span>記録</span>
+          <span>担当者</span>
+          <span>状態</span>
+          <span>更新日</span>
           <span>操作</span>
         </div>
-        {props.records.map((record) => (
-          <div className="table-row record-detail-row" key={record.id}>
-            <span><strong>{getRecordSummary(record)}</strong></span>
-            <span><span className="status-pill muted">{getClassificationLabel(record)}</span></span>
-            <span>{record.createdByUserId}</span>
-            <span>{formatDate(record.createdAt)}</span>
-            <span className="record-approval-cell">
-              <span className={record.status === "approved" ? "status-pill" : "status-pill muted"}>{record.status}</span>
-              <label className="check-row compact-check">
-                <input type="checkbox" checked={props.selectedRecordIds.includes(record.id)} onChange={(event) => {
-                  props.setSelectedRecordIds(event.target.checked
-                    ? [...props.selectedRecordIds, record.id]
-                    : props.selectedRecordIds.filter((id) => id !== record.id));
-                }} />
-                一括対象
-              </label>
+        {props.records.length === 0 ? (
+          <p className="empty">記録はありません。</p>
+        ) : props.records.map((record) => (
+          <div className="table-row records-workspace-row knowledge-records-row" key={record.id}>
+            <span>
+              <strong>{record.title}</strong>
+              <small>{record.targetEquipment || record.targetProcess || "-"}</small>
             </span>
+            <span>{record.ownerUserId || "未設定"}</span>
+            <span>
+              <span className={record.status === "approved" ? "status-pill" : "status-pill muted"}>
+                {statusLabels[record.status]}
+              </span>
+            </span>
+            <span>{formatDate(record.updatedAt)}</span>
             <span className="inline-actions">
-              <button className="primary compact" onClick={() => props.navigate(`${basePath}/records/${record.id}`)}>詳細</button>
-              <button className="danger compact" onClick={() => props.onDeleteRecord(record.id)}>削除</button>
+              <button className="ghost compact" type="button" onClick={() => openRecord(record.id)}>
+                詳細
+              </button>
+              {record.status === "draft" ? (
+                <button className="primary compact" type="button" onClick={() => void props.onChangeRecordStatusForRecord(record.id, "in_progress")}>
+                  公開
+                </button>
+              ) : null}
+              {record.status === "submitted" ? (
+                <>
+                  <button className="ghost compact" type="button" onClick={() => returnRecord(record.id)}>
+                    差し戻す
+                  </button>
+                  <button className="primary compact" type="button" onClick={() => approveRecord(record.id)}>
+                    承認
+                  </button>
+                </>
+              ) : null}
             </span>
           </div>
         ))}

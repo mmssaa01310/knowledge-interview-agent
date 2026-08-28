@@ -1,16 +1,4 @@
-export type AppSection = "knowledge" | "chatbots" | "settings";
-
-export type Chatbot = {
-  id: string;
-  name: string;
-  referenceKnowledgeDbIds: string[];
-  referenceKnowledgeIds: string[];
-  referenceDocumentIds: string[];
-  excludedDocumentIds: string[];
-  modelId: string;
-  searchLimit: number;
-  confidenceThreshold: number;
-};
+export type AppSection = "records" | "knowledge" | "settings";
 
 export type ChatMessageEvidence = {
   type: "knowledge" | "document";
