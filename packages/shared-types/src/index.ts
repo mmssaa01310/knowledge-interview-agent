@@ -44,7 +44,6 @@ export type Knowledge = BaseEntity & {
   knowledgeDbId: string;
   name: string;
   description?: string;
-  summary?: string;
   systemPrompt?: string;
   purpose?: string;
   interviewPlan?: InterviewPlan | null;
@@ -70,10 +69,11 @@ export type InterviewRecord = BaseEntity & {
   knowledgeId: string;
   knowledgeName: string;
   title: string;
-  status: "draft" | "needs_review" | "approved" | "rejected" | "archived";
+  status: "draft" | "in_progress" | "submitted" | "returned" | "approved";
   targetEquipment?: string;
   targetProcess?: string;
-  summary?: string;
+  reviewNote?: string;
+  viewerUserIds: string[];
   approvedFieldCount: number;
   unapprovedFieldCount: number;
   rejectedFieldCount: number;

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_roles
+from ai_interviewer_api.core.permissions import require_management_role
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import InterviewPromptProfile
 from ai_interviewer_api.repositories.store import store
@@ -80,6 +80,7 @@ def _ensure_default_profiles(user: UserContext) -> list[dict]:
 
 @router.get("/interview-prompt-profiles")
 def list_interview_prompt_profiles(user: UserContext = Depends(get_current_user)) -> list[dict]:
+    require_management_role(user)
     return _ensure_default_profiles(user)
 
 
@@ -88,7 +89,7 @@ def create_interview_prompt_profile(
     payload: InterviewPromptProfileCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     _ensure_default_profiles(user)
     item = InterviewPromptProfile(
         tenantId=user.tenant_id,
@@ -106,7 +107,7 @@ def update_interview_prompt_profile(
     payload: InterviewPromptProfileUpdate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     item = get_scoped_item(
         "interview_prompt_profiles",
         profile_id,
@@ -126,7 +127,7 @@ def delete_interview_prompt_profile(
     profile_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     get_scoped_item(
         "interview_prompt_profiles",
         profile_id,

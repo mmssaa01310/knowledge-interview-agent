@@ -122,8 +122,6 @@ def _build_approved_fields(knowledge_fields: Sequence[Mapping[str, Any]]) -> lis
     items: list[InterviewField] = []
     sorted_fields = sorted(knowledge_fields, key=lambda field: int(field.get("displayOrder") or 0))
     for field in sorted_fields:
-        if not field.get("askByAi"):
-            continue
         name = _normalize_text(field.get("name"))
         if not name:
             continue

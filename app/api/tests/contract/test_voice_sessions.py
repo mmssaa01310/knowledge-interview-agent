@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
+from ai_interviewer_api.models.interview_plan import InterviewPlan
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.internal_voice import (
     cancel_internal_voice_turn,
@@ -194,7 +195,11 @@ def _create_record_with_field(user: UserContext) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
-        KnowledgeCreate(name="音声インタビュー", targetEquipment="圧入機A"),
+        KnowledgeCreate(
+            name="音声インタビュー",
+            targetEquipment="圧入機A",
+            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
+        ),
         user,
     )
     create_field(
@@ -216,7 +221,10 @@ def _create_record_with_name_and_role_fields(user: UserContext) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
-        KnowledgeCreate(name="音声インタビュー"),
+        KnowledgeCreate(
+            name="音声インタビュー",
+            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
+        ),
         user,
     )
     create_field(
@@ -252,7 +260,10 @@ def _create_record_with_self_intro_field(user: UserContext) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
-        KnowledgeCreate(name="音声インタビュー"),
+        KnowledgeCreate(
+            name="音声インタビュー",
+            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
+        ),
         user,
     )
     create_field(
@@ -275,7 +286,10 @@ def _create_record_with_self_intro_and_hobby_fields(user: UserContext) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
-        KnowledgeCreate(name="人物インタビュー"),
+        KnowledgeCreate(
+            name="人物インタビュー",
+            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
+        ),
         user,
     )
     create_field(
@@ -311,7 +325,11 @@ def _create_record_without_voice_field(user: UserContext) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
-        KnowledgeCreate(name="音声インタビュー", targetEquipment="圧入機A"),
+        KnowledgeCreate(
+            name="音声インタビュー",
+            targetEquipment="圧入機A",
+            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
+        ),
         user,
     )
     create_field(
@@ -858,16 +876,15 @@ def test_voice_session_requires_owner_match() -> None:
     assert exc_info.value.status_code == 403
 
 
-def test_create_voice_session_rejects_record_without_voice_questions_without_completing_state() -> None:
+def test_create_voice_session_includes_legacy_field_marked_not_ai_question() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_without_voice_field(user)
 
-    with pytest.raises(HTTPException) as exc_info:
-        create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "voice_session_missing_questions"
-    assert store.get("interview_states", f"interview-state-{record['id']}") is None
+    assert session["currentQuestionId"] == "q-001"
+    assert "現象について教えてください。" in (session.get("initialReplyText") or "")
+    assert store.get("interview_states", f"interview-state-{record['id']}") is not None
 
 
 def test_create_voice_session_recovers_state_when_voice_question_is_added_after_completed_state() -> None:
@@ -875,7 +892,11 @@ def test_create_voice_session_recovers_state_when_voice_question_is_added_after_
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
-        KnowledgeCreate(name="音声インタビュー", targetEquipment="圧入機A"),
+        KnowledgeCreate(
+            name="音声インタビュー",
+            targetEquipment="圧入機A",
+            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
+        ),
         user,
     )
     record = create_record(knowledge["id"], RecordCreate(title="朝一の荷重ばらつき"), user)

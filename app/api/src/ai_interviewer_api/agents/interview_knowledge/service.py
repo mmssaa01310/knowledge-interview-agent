@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from time import monotonic
 from typing import Any
 from uuid import uuid4
@@ -293,10 +294,14 @@ def get_structured_interview_state_snapshot(
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
     user: UserContext,
+    *,
+    persist: bool = True,
 ) -> dict[str, Any]:
     fields = _list_interview_fields(knowledge, user)
-    state = load_structured_interview_state(record, knowledge, user, fields=fields)
+    state = load_structured_interview_state(record, knowledge, user, fields=fields, persist=persist)
     messages = _list_record_messages(record, user)
+    if not persist:
+        messages = deepcopy(messages)
     return {
         "status": state.get("status", "in_progress"),
         "interviewState": state,
@@ -311,22 +316,24 @@ def load_structured_interview_state(
     user: UserContext,
     *,
     fields: Sequence[Mapping[str, Any]] | None = None,
+    persist: bool = True,
 ) -> dict[str, Any]:
     state_id = f"interview-state-{record['id']}"
     profile = resolve_profile(knowledge)
     existing = store.get("interview_states", state_id)
     if existing:
-        state_profile = existing.get("interviewProfile")
+        state = existing if persist else deepcopy(existing)
+        state_profile = state.get("interviewProfile")
         if state_profile in STRUCTURED_PROFILES:
             profile = state_profile
         elif state_profile not in {None, "fixed_form"}:
             profile = "system_requirement"
         if state_profile != profile:
-            existing["interviewProfile"] = profile
-        changed = _backfill_state(existing, profile, fields or ())
-        if changed:
-            _persist_state(existing, user)
-        return existing
+            state["interviewProfile"] = profile
+        changed = _backfill_state(state, profile, fields or ())
+        if changed and persist:
+            _persist_state(state, user)
+        return state
 
     state = build_initial_structured_state(profile, fields or ())
     state.update(
@@ -340,7 +347,8 @@ def load_structured_interview_state(
             "updatedAt": utc_now(),
         }
     )
-    store.upsert("interview_states", state)
+    if persist:
+        store.upsert("interview_states", state)
     return state
 
 
@@ -383,7 +391,7 @@ def _list_interview_fields(knowledge: Mapping[str, Any], user: UserContext) -> l
         [
             row
             for row in store.list("knowledge_fields", user.tenant_id)
-            if row.get("knowledgeId") == knowledge_id and row.get("askByAi")
+            if row.get("knowledgeId") == knowledge_id
         ],
         key=lambda row: int(row.get("displayOrder") or 0),
     )

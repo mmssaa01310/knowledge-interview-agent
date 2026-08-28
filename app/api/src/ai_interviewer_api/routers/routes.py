@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 
-from ai_interviewer_api.routers.chats import answer_chat, create_chat, router as chats_router
 from ai_interviewer_api.routers.documents import (
     acknowledge_document,
     create_document,
@@ -42,7 +41,6 @@ from ai_interviewer_api.routers.knowledge_fields import (
     update_field,
 )
 from ai_interviewer_api.routers.knowledges import (
-    create_record_summary_draft,
     create_knowledge,
     delete_knowledge,
     get_knowledge,
@@ -60,11 +58,12 @@ from ai_interviewer_api.routers.proposals import (
 from ai_interviewer_api.routers.records import (
     create_record,
     create_record_message,
-    create_summary_proposal,
     delete_record,
     get_record_interview_state,
+    get_record_interview_context,
     get_record,
     list_records,
+    list_accessible_records,
     router as records_router,
     stream_record,
     update_record,
@@ -87,16 +86,13 @@ router.include_router(records_router)
 router.include_router(voice_sessions_router)
 router.include_router(proposals_router)
 router.include_router(documents_router)
-router.include_router(chats_router)
 router.include_router(internal_voice_router)
 
 __all__ = [
     "acknowledge_document",
-    "answer_chat",
     "approve_all",
     "approve_proposal",
     "bulk_approve",
-    "create_chat",
     "create_document",
     "create_field",
     "create_internal_assistant_event",
@@ -104,11 +100,9 @@ __all__ = [
     "create_internal_voice_turn",
     "create_knowledge_db",
     "create_knowledge",
-    "create_record_summary_draft",
     "create_record",
     "create_record_message",
     "create_record_voice_session",
-    "create_summary_proposal",
     "delete_field",
     "delete_knowledge_db",
     "delete_knowledge",
@@ -117,6 +111,7 @@ __all__ = [
     "get_knowledge_db",
     "get_knowledge",
     "get_record",
+    "get_record_interview_context",
     "get_record_interview_state",
     "get_record_voice_session",
     "health",
@@ -129,6 +124,7 @@ __all__ = [
     "list_knowledges",
     "list_proposals",
     "list_records",
+    "list_accessible_records",
     "me",
     "process_internal_voice_turn",
     "router",

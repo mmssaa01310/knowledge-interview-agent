@@ -34,6 +34,11 @@ def _seed_stream_context() -> tuple[dict, object]:
         "name": "保全ノウハウ",
         "description": "圧入工程のインタビュー",
         "systemPrompt": "停止判断を優先して確認してください。",
+        "interviewPlan": {
+            "version": 1,
+            "profile": "fixed_form",
+            "modelId": "global.openai.gpt-5.6-terra",
+        },
     }
     record = {
         "id": "record-1",

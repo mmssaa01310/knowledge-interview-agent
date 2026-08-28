@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_roles
+from ai_interviewer_api.core.permissions import require_management_role
 from ai_interviewer_api.models.domain import KnowledgeDb
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
@@ -13,12 +13,13 @@ router = APIRouter(prefix="/api")
 
 @router.get("/knowledge-dbs")
 def list_knowledge_dbs(user: UserContext = Depends(get_current_user)) -> list[dict]:
+    require_management_role(user)
     return [_enrich_knowledge_db(row, user) for row in store.list("knowledge_dbs", user.tenant_id)]
 
 
 @router.post("/knowledge-dbs")
 def create_knowledge_db(payload: KnowledgeDbCreate, user: UserContext = Depends(get_current_user)) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     item = KnowledgeDb(
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
@@ -32,6 +33,7 @@ def create_knowledge_db(payload: KnowledgeDbCreate, user: UserContext = Depends(
 
 @router.get("/knowledge-dbs/{knowledge_db_id}")
 def get_knowledge_db(knowledge_db_id: str, user: UserContext = Depends(get_current_user)) -> dict:
+    require_management_role(user)
     return _enrich_knowledge_db(get_scoped_item("knowledge_dbs", knowledge_db_id, user, "knowledge_db_not_found"), user)
 
 
@@ -41,7 +43,7 @@ def update_knowledge_db(
     payload: KnowledgeDbUpdate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     item = get_knowledge_db(knowledge_db_id, user)
     for key, value in payload.model_dump(exclude_unset=True).items():
         item[key] = value
@@ -53,7 +55,7 @@ def update_knowledge_db(
 
 @router.delete("/knowledge-dbs/{knowledge_db_id}")
 def delete_knowledge_db(knowledge_db_id: str, user: UserContext = Depends(get_current_user)) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     get_knowledge_db(knowledge_db_id, user)
     store.delete("knowledge_dbs", knowledge_db_id)
     write_audit_log(user, "delete", "knowledge_db", knowledge_db_id, {})

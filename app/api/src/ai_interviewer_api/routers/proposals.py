@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_roles
+from ai_interviewer_api.core.permissions import require_management_role, require_record_action
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import approve_proposal_item, get_scoped_item, proposal_skip_reason
 from ai_interviewer_api.schemas.requests import BulkApproveRequest
@@ -12,14 +12,17 @@ router = APIRouter(prefix="/api")
 
 @router.get("/records/{record_id}/proposals")
 def list_proposals(record_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
-    get_scoped_item("records", record_id, user, "record_not_found")
+    record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_record_action(record, user, "review")
     return [row for row in store.list("proposals", user.tenant_id) if row["recordId"] == record_id]
 
 
 @router.post("/proposals/{proposal_id}/approve")
 def approve_proposal(proposal_id: str, user: UserContext = Depends(get_current_user)) -> dict:
-    require_roles(user, {"admin", "knowledge_manager", "interviewer"})
+    require_management_role(user)
     proposal = get_scoped_item("proposals", proposal_id, user, "proposal_not_found")
+    record = get_scoped_item("records", proposal["recordId"], user, "record_not_found")
+    require_record_action(record, user, "review")
     skip_reason = proposal_skip_reason(proposal)
     if skip_reason:
         raise HTTPException(status_code=409, detail=skip_reason)
@@ -36,7 +39,7 @@ def approve_proposal(proposal_id: str, user: UserContext = Depends(get_current_u
 
 @router.post("/records/{record_id}/approve-all-proposals")
 def approve_all(record_id: str, user: UserContext = Depends(get_current_user)) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     get_scoped_item("records", record_id, user, "record_not_found")
     proposals = [row for row in store.list("proposals", user.tenant_id) if row["recordId"] == record_id]
     approved = 0
@@ -71,7 +74,7 @@ def approve_all(record_id: str, user: UserContext = Depends(get_current_user)) -
 
 @router.post("/records/bulk-approve")
 def bulk_approve(payload: BulkApproveRequest, user: UserContext = Depends(get_current_user)) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     total_approved = 0
     results = []
     for record_id in payload.recordIds:

@@ -1,6 +1,6 @@
 """
 Role:
-    ローカル開発用のシステム要件ヒアリングデータを準備する。
+    ローカル開発用のシステム要件インタビューデータを準備する。
 
 Summary:
     システム要件ProfileのKnowledgeと、受注実績CSV出力要望のRecordを固定IDで冪等に作成する。
@@ -17,6 +17,7 @@ from ai_interviewer_api.repositories.store import store
 
 DEV_TENANT_ID = "tenant-demo"
 DEV_USER_ID = "user-manager"
+DEV_INTERVIEWEE_USER_ID = "user-interviewer"
 SYSTEM_REQUIREMENT_DEMO_DB_ID = "dev-system-requirement-demo-db"
 SYSTEM_REQUIREMENT_DEMO_KNOWLEDGE_ID = "dev-system-requirement-demo-knowledge"
 SYSTEM_REQUIREMENT_DEMO_RECORD_ID = "dev-system-requirement-demo-record"
@@ -31,7 +32,7 @@ def ensure_dev_system_requirement_demo() -> dict[str, str]:
                 tenantId=DEV_TENANT_ID,
                 createdByUserId=DEV_USER_ID,
                 updatedByUserId=DEV_USER_ID,
-                name="システム要件ヒアリングDB",
+                name="システム要件インタビューDB",
                 description="業務上の要望からシステム要件と処理の流れを整理する",
             ).model_dump(),
         )
@@ -47,7 +48,7 @@ def ensure_dev_system_requirement_demo() -> dict[str, str]:
                 knowledgeDbId=SYSTEM_REQUIREMENT_DEMO_DB_ID,
                 name="受注実績CSV出力要件",
                 description="営業担当の受注実績検索・CSV出力要望を要件化する",
-                purpose="システム開発要望のヒアリング動作確認",
+                purpose="システム開発要望のインタビュー動作確認",
                 category="システム要件",
                 targetBusiness="営業",
                 language="ja",
@@ -70,6 +71,8 @@ def ensure_dev_system_requirement_demo() -> dict[str, str]:
                 knowledgeId=SYSTEM_REQUIREMENT_DEMO_KNOWLEDGE_ID,
                 knowledgeName="受注実績CSV出力要件",
                 title="受注実績をCSVで取得する機能",
+                ownerUserId=DEV_INTERVIEWEE_USER_ID,
+                status="in_progress",
                 targetProcess="受注実績検索・CSV出力",
             ).model_dump(),
         )

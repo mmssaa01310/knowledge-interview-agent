@@ -3,7 +3,7 @@ Role:
     ローカル開発用の保全ナレッジ蓄積データを準備する。
 
 Summary:
-    保全ヒアリングの標準項目と動作確認用記録を固定IDで冪等に作成する。
+    保全インタビューの標準項目と動作確認用記録を固定IDで冪等に作成する。
 
 Relations:
     Uses domain models and the in-memory store. Used by API startup.
@@ -22,6 +22,7 @@ from ai_interviewer_api.repositories.store import store
 
 DEV_TENANT_ID = "tenant-demo"
 DEV_USER_ID = "user-manager"
+DEV_INTERVIEWEE_USER_ID = "user-interviewer"
 MAINTENANCE_DEMO_DB_ID = "dev-maintenance-demo-db"
 MAINTENANCE_DEMO_KNOWLEDGE_ID = "dev-maintenance-demo-knowledge"
 MAINTENANCE_DEMO_RECORD_ID = "dev-maintenance-demo-record"
@@ -151,6 +152,8 @@ def ensure_dev_maintenance_demo() -> dict[str, str]:
                 knowledgeId=MAINTENANCE_DEMO_KNOWLEDGE_ID,
                 knowledgeName="圧入設備の保全ノウハウ",
                 title="圧入機A 朝一の荷重ばらつき",
+                ownerUserId=DEV_INTERVIEWEE_USER_ID,
+                status="in_progress",
                 targetEquipment="圧入機A",
                 targetProcess="圧入工程",
             ).model_dump(),

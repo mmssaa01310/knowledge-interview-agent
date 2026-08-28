@@ -25,6 +25,8 @@ from pydantic import BaseModel, Field, field_validator
 from ai_interviewer_api.agents.common.strands_runtime import invoke_voice_bedrock_text
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.core.interview_configuration import require_interview_configuration
+from ai_interviewer_api.core.permissions import require_record_action
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import VoiceSession, VoiceTurn
 from ai_interviewer_api.models.interview_plan import CapturedInterviewItem
@@ -288,6 +290,9 @@ JSON以外の文章、Markdown、コードフェンスは返さないでくだ�
 def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: UserContext) -> dict:
     started_at = monotonic()
     record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_record_action(record, user, "answer")
+    knowledge = get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
+    require_interview_configuration(knowledge)
     if not _has_voice_interview_fields(record, user):
         raise HTTPException(status_code=409, detail="voice_session_missing_questions")
     initial_reply = _initialize_initial_question(record, user)
@@ -301,6 +306,7 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
         createdByUserId=user.user_id,
         updatedByUserId=user.user_id,
         ownerUserId=user.user_id,
+        ownerRole=user.role,
         recordId=record_id,
         provider=payload.provider,
         currentQuestionId=current_question_id,
@@ -1135,15 +1141,16 @@ def _has_voice_interview_fields(record: dict, user: UserContext) -> bool:
     return any(
         row
         for row in store.list("knowledge_fields", user.tenant_id)
-        if row.get("knowledgeId") == record["knowledgeId"] and row.get("askByAi")
+        if row.get("knowledgeId") == record["knowledgeId"]
     )
 
 
 def _get_voice_session_for_user(voice_session_id: str, user: UserContext) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
-    if session.get("ownerUserId") != user.user_id:
+    record = get_scoped_item("records", session["recordId"], user, "record_not_found")
+    require_record_action(record, user, "answer")
+    if user.role == "interviewer" and session.get("ownerUserId") != user.user_id:
         raise HTTPException(status_code=403, detail="voice_session_forbidden")
-    get_scoped_item("records", session["recordId"], user, "record_not_found")
     return session
 
 
@@ -1230,7 +1237,7 @@ def _build_user_context_from_session(session: dict) -> UserContext:
     return UserContext(
         user_id=user_id,
         tenant_id=session["tenantId"],
-        role="interviewer",
+        role=session.get("ownerRole", "interviewer"),
         display_name=user_id,
     )
 

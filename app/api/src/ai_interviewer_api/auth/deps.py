@@ -13,7 +13,7 @@ class UserContext:
 DEV_TOKENS = {
     "dev-admin": UserContext("user-admin", "tenant-demo", "admin", "管理者"),
     "dev-manager": UserContext("user-manager", "tenant-demo", "knowledge_manager", "ナレッジ管理者"),
-    "dev-interviewer": UserContext("user-interviewer", "tenant-demo", "interviewer", "インタビュアー"),
+    "dev-interviewer": UserContext("user-interviewer", "tenant-demo", "interviewer", "インタビュー対象者"),
     "dev-viewer": UserContext("user-viewer", "tenant-demo", "viewer", "閲覧者"),
 }
 

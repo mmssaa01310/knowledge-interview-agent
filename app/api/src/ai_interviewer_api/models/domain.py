@@ -19,7 +19,6 @@ class Knowledge(BaseEntity):
     knowledgeDbId: str
     name: str
     description: str | None = None
-    summary: str | None = None
     systemPrompt: str | None = None
     purpose: str | None = None
     interviewPlan: InterviewPlan | None = None
@@ -60,10 +59,11 @@ class InterviewRecord(BaseEntity):
     knowledgeId: str
     knowledgeName: str
     title: str
-    status: str = "draft"
+    status: Literal["draft", "in_progress", "submitted", "returned", "approved"] = "draft"
     targetEquipment: str | None = None
     targetProcess: str | None = None
-    summary: str | None = None
+    reviewNote: str | None = None
+    viewerUserIds: list[str] = Field(default_factory=list)
     approvedFieldCount: int = 0
     unapprovedFieldCount: int = 0
     rejectedFieldCount: int = 0
@@ -71,6 +71,7 @@ class InterviewRecord(BaseEntity):
 
 class VoiceSession(BaseEntity):
     recordId: str
+    ownerRole: Literal["admin", "knowledge_manager", "interviewer", "viewer"] = "interviewer"
     provider: str = "nova_sonic"
     status: str = "active"
     connectionStatus: str = "created"
@@ -151,8 +152,3 @@ class DocumentReadStatus(BaseEntity):
     lastOpenedAt: str | None = None
     readAt: str | None = None
     acknowledgedAt: str | None = None
-
-
-class ChatAnswer(BaseModel):
-    answer: str
-    citations: list[str] = Field(default_factory=list)

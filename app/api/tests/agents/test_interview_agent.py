@@ -211,7 +211,6 @@ def test_interview_prompt_contains_required_contract() -> None:
 
     assert "インタビューエージェント" in prompt
     assert "質問設計エージェントではありません" in prompt
-    assert "暗黙知回答エージェントでもありません" in prompt
     assert "正式データベースへの本登録" in prompt
     assert "read-only tool" in prompt
     assert "field_evaluation.isComplete" in prompt

@@ -13,6 +13,12 @@ from strands.models import BedrockModel
 from ai_interviewer_api.core.config import settings
 
 
+_OPENAI_GPT_56_MODEL_MARKERS = (
+    "openai.gpt-5.6-terra",
+    "openai.gpt-5.6-luna",
+)
+
+
 def _normalize_optional(value: str | None) -> str | None:
     if value is None:
         return None
@@ -37,6 +43,17 @@ def resolve_bedrock_region(region_name: str | None = None) -> str:
     )
 
 
+def _supports_bedrock_temperature(model_id: str) -> bool:
+    """Return whether the selected Bedrock model accepts temperature.
+
+    The GPT-5.6 Terra/Luna Global inference profiles reject the Converse
+    ``temperature`` field.  Keep temperature for other Bedrock models, while
+    also recognizing the ARN form of the same Global profiles.
+    """
+    normalized_model_id = model_id.strip().lower()
+    return not any(marker in normalized_model_id for marker in _OPENAI_GPT_56_MODEL_MARKERS)
+
+
 def create_bedrock_model(
     *,
     model_id: str | None = None,
@@ -45,13 +62,19 @@ def create_bedrock_model(
     max_tokens: int | None = None,
     boto_client_config: BotocoreConfig | None = None,
 ) -> BedrockModel:
+    resolved_model_id = (model_id or settings.bedrock_model_id).strip()
+    model_config: dict[str, Any] = {
+        "boto_client_config": boto_client_config,
+        "region_name": resolve_bedrock_region(region_name),
+        "model_id": resolved_model_id,
+        "max_tokens": settings.bedrock_max_tokens if max_tokens is None else max_tokens,
+        "streaming": False,
+    }
+    if _supports_bedrock_temperature(resolved_model_id):
+        model_config["temperature"] = settings.bedrock_temperature if temperature is None else temperature
+
     return BedrockModel(
-        boto_client_config=boto_client_config,
-        region_name=resolve_bedrock_region(region_name),
-        model_id=model_id or settings.bedrock_model_id,
-        temperature=settings.bedrock_temperature if temperature is None else temperature,
-        max_tokens=settings.bedrock_max_tokens if max_tokens is None else max_tokens,
-        streaming=False,
+        **model_config,
     )
 
 

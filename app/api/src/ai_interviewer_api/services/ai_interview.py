@@ -1,3 +1,4 @@
+from copy import deepcopy
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -13,7 +14,6 @@ from ai_interviewer_api.agents.interview_knowledge.service import (
     is_structured_interview_enabled,
 )
 from ai_interviewer_api.auth.deps import UserContext
-from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
@@ -90,168 +90,6 @@ def build_mock_proposal(user: UserContext, record_id: str, knowledge_id: str, co
             "actions": ["治具清掃", "位置決めピン確認"],
         },
     )
-
-
-def build_record_summary_proposal(user: UserContext, record: dict) -> AiProposal:
-    summary = summarize_record(record, user)
-    return AiProposal(
-        tenantId=user.tenant_id,
-        createdByUserId=user.user_id,
-        updatedByUserId=user.user_id,
-        recordId=record["id"],
-        knowledgeId=record["knowledgeId"],
-        proposalType="record_summary",
-        status="needs_review",
-        structuredData={"summary": summary},
-        confidence=0.74,
-    )
-
-
-def summarize_record(record: dict, user: UserContext) -> str:
-    if settings.bedrock_enabled:
-        try:
-            return _summarize_with_bedrock(record, user)
-        except Exception:
-            pass
-    return _fallback_summary(record, user)
-
-
-def _summarize_with_bedrock(record: dict, user: UserContext) -> str:
-    import boto3
-
-    client = boto3.client("bedrock-runtime", region_name=settings.bedrock_aws_region)
-    response = client.converse(
-        modelId=settings.bedrock_model_id,
-        system=[
-            {
-                "text": (
-                    "あなたは製造業のAIインタビュー記録を要約する補助AIです。"
-                    "記録された内容だけを根拠に、未確認事項は断定せず、"
-                    "日本語で80文字から160文字程度に要約してください。"
-                )
-            }
-        ],
-        messages=[
-            {
-                "role": "user",
-                "content": [{"text": _format_record_for_summary(record, user)}],
-            }
-        ],
-        inferenceConfig={
-            "maxTokens": min(settings.bedrock_max_tokens, 500),
-            "temperature": 0.1,
-        },
-    )
-    content = response.get("output", {}).get("message", {}).get("content", [])
-    text = "\n".join(part["text"] for part in content if "text" in part).strip()
-    return text or _fallback_summary(record, user)
-
-
-def _format_record_for_summary(record: dict, user: UserContext) -> str:
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
-    proposals = [
-        row
-        for row in store.list("proposals", user.tenant_id)
-        if row.get("recordId") == record["id"] and row.get("proposalType") == "field_update"
-    ]
-    lines = [
-        f"記録タイトル: {record.get('title') or '未設定'}",
-        f"既存要約: {record.get('summary') or '未作成'}",
-        "会話:",
-    ]
-    lines.extend(f"- {message.get('role', 'user')}: {message.get('content', '')}" for message in messages[-10:])
-    lines.append("構造化候補:")
-    lines.extend(f"- {proposal.get('structuredData', {})}" for proposal in proposals[-5:])
-    return "\n".join(lines)
-
-
-def _fallback_summary(record: dict, user: UserContext) -> str:
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
-    latest_message = messages[-1]["content"] if messages else ""
-    if latest_message:
-        return f"{record.get('title', '記録')}について、{latest_message[:90]}を中心に確認した記録です。"
-    return f"{record.get('title', '記録')}の要約候補です。詳細内容を確認してから保存してください。"
-
-
-def summarize_knowledge_records(knowledge: dict, user: UserContext) -> str:
-    if settings.bedrock_enabled:
-        try:
-            return _summarize_knowledge_with_bedrock(knowledge, user)
-        except Exception:
-            pass
-    return _fallback_knowledge_summary(knowledge, user)
-
-
-def _summarize_knowledge_with_bedrock(knowledge: dict, user: UserContext) -> str:
-    import boto3
-
-    client = boto3.client("bedrock-runtime", region_name=settings.bedrock_aws_region)
-    response = client.converse(
-        modelId=knowledge.get("defaultModelId") or settings.bedrock_model_id,
-        system=[
-            {
-                "text": (
-                    "あなたは製造業のナレッジ概要を要約する補助AIです。"
-                    "記録済み内容だけを根拠に、未確認事項は断定せず、"
-                    "概要画面に表示する日本語の要約を120文字から240文字程度で作成してください。"
-                )
-            }
-        ],
-        messages=[{"role": "user", "content": [{"text": _format_knowledge_for_summary(knowledge, user)}]}],
-        inferenceConfig={
-            "maxTokens": min(settings.bedrock_max_tokens, 700),
-            "temperature": 0.1,
-        },
-    )
-    content = response.get("output", {}).get("message", {}).get("content", [])
-    text = "\n".join(part["text"] for part in content if "text" in part).strip()
-    return text or _fallback_knowledge_summary(knowledge, user)
-
-
-def _format_knowledge_for_summary(knowledge: dict, user: UserContext) -> str:
-    records = [
-        row
-        for row in store.list("records", user.tenant_id)
-        if row.get("knowledgeId") == knowledge["id"]
-    ]
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") in {record["id"] for record in records}
-    ]
-    lines = [
-        f"ナレッジ名: {knowledge.get('name')}",
-        f"用途: {knowledge.get('purpose') or knowledge.get('category') or '未設定'}",
-        f"既存概要要約: {knowledge.get('summary') or '未作成'}",
-        "記録:",
-    ]
-    lines.extend(
-        f"- {record.get('title')}: {record.get('summary') or '要約未作成'}"
-        for record in records[-10:]
-    )
-    lines.append("直近チャット内容:")
-    lines.extend(f"- {message.get('content', '')}" for message in messages[-10:])
-    return "\n".join(lines)
-
-
-def _fallback_knowledge_summary(knowledge: dict, user: UserContext) -> str:
-    records = [
-        row
-        for row in store.list("records", user.tenant_id)
-        if row.get("knowledgeId") == knowledge["id"]
-    ]
-    if not records:
-        return ""
-    titled = "、".join(record.get("title", "記録") for record in records[-3:])
-    return f"{knowledge.get('name', 'ナレッジ')}では、{titled}などの記録をもとに現場ノウハウを整理しています。内容を確認してから保存してください。"
 
 
 def generate_interview_reply(
@@ -392,18 +230,25 @@ def _list_interview_fields(knowledge: dict, user: UserContext) -> list[dict]:
         [
             row
             for row in store.list("knowledge_fields", user.tenant_id)
-            if row.get("knowledgeId") == knowledge["id"] and row.get("askByAi")
+            if row.get("knowledgeId") == knowledge["id"]
         ],
         key=lambda row: int(row.get("displayOrder") or 0),
     )
 
 
-def _load_or_initialize_interview_state(record: dict, knowledge_fields: list[dict], user: UserContext) -> dict[str, Any]:
+def _load_or_initialize_interview_state(
+    record: dict,
+    knowledge_fields: list[dict],
+    user: UserContext,
+    *,
+    persist: bool = True,
+) -> dict[str, Any]:
     state_id = _build_interview_state_id(record["id"])
     existing = store.get("interview_states", state_id)
     if existing:
-        _sync_interview_state_fields(existing, knowledge_fields, user)
-        return existing
+        state = existing if persist else deepcopy(existing)
+        _sync_interview_state_fields(state, knowledge_fields, user, persist=persist)
+        return state
 
     pending_field_ids = [field["id"] for field in knowledge_fields if field.get("id")]
     field_states = {
@@ -443,7 +288,8 @@ def _load_or_initialize_interview_state(record: dict, knowledge_fields: list[dic
             "updatedAt": utc_now(),
         }
     )
-    store.upsert("interview_states", state)
+    if persist:
+        store.upsert("interview_states", state)
     return state
 
 
@@ -451,11 +297,13 @@ def _sync_interview_state_fields(
     interview_state: dict[str, Any],
     knowledge_fields: list[dict],
     user: UserContext,
+    *,
+    persist: bool = True,
 ) -> None:
     changed = _migrate_legacy_answer_states(interview_state)
     field_ids = [field["id"] for field in knowledge_fields if field.get("id")]
     if not field_ids:
-        if changed:
+        if changed and persist:
             _persist_interview_state(interview_state, user)
         return
 
@@ -466,7 +314,7 @@ def _sync_interview_state_fields(
     known_field_ids = set(pending_field_ids) | set(completed_field_ids) | set(field_states.keys())
     missing_field_ids = [field_id for field_id in field_ids if field_id not in known_field_ids]
     if not missing_field_ids:
-        if changed:
+        if changed and persist:
             _persist_interview_state(interview_state, user)
         return
 
@@ -492,7 +340,8 @@ def _sync_interview_state_fields(
         interview_state["currentFieldId"] = missing_field_ids[0]
     interview_state["updatedByUserId"] = user.user_id
     interview_state["updatedAt"] = utc_now()
-    store.upsert("interview_states", interview_state)
+    if persist:
+        store.upsert("interview_states", interview_state)
 
 
 def _migrate_legacy_answer_states(interview_state: dict[str, Any]) -> bool:
@@ -523,6 +372,8 @@ def _migrate_formal_record_answers(
     interview_state: dict[str, Any],
     messages: list[dict],
     user: UserContext,
+    *,
+    persist: bool = True,
 ) -> bool:
     """Backfill formal answers from actual user utterances, never from LLM summaries."""
     changed = False
@@ -580,10 +431,11 @@ def _migrate_formal_record_answers(
                 message["content"] = record_answer
                 message["updatedByUserId"] = user.user_id
                 message["updatedAt"] = utc_now()
-                store.upsert("messages", message)
+                if persist:
+                    store.upsert("messages", message)
                 changed = True
 
-    if changed:
+    if changed and persist:
         _persist_interview_state(interview_state, user)
     return changed
 
@@ -1347,14 +1199,26 @@ def _split_reply_chunks(reply_text: str) -> list[str]:
     return lines or [reply_text.strip()]
 
 
-def get_interview_state_snapshot(record: dict, user: UserContext) -> dict[str, Any]:
+def get_interview_state_snapshot(
+    record: dict,
+    user: UserContext,
+    *,
+    persist: bool = True,
+) -> dict[str, Any]:
     knowledge = store.get("knowledges", record["knowledgeId"]) or {}
     if is_structured_interview_enabled(knowledge):
-        return get_structured_interview_state_snapshot(record, knowledge, user)
+        return get_structured_interview_state_snapshot(record, knowledge, user, persist=persist)
     knowledge_fields = _list_interview_fields(knowledge, user)
-    interview_state = _load_or_initialize_interview_state(record, knowledge_fields, user)
+    interview_state = _load_or_initialize_interview_state(
+        record,
+        knowledge_fields,
+        user,
+        persist=persist,
+    )
     messages = _list_record_messages(record, user)
-    _migrate_formal_record_answers(interview_state, messages, user)
+    if not persist:
+        messages = deepcopy(messages)
+    _migrate_formal_record_answers(interview_state, messages, user, persist=persist)
     return {
         "status": interview_state.get("status", "in_progress"),
         "interviewState": interview_state,

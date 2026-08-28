@@ -32,14 +32,3 @@ def test_ensure_dev_maintenance_demo_creates_interview_ready_data() -> None:
     ]
     assert all(item["askByAi"] for item in fields)
     assert all(item["aiQuestionExamples"] for item in fields)
-
-
-def test_ensure_dev_maintenance_demo_does_not_overwrite_existing_record() -> None:
-    ensure_dev_maintenance_demo()
-    record = store.get("records", MAINTENANCE_DEMO_RECORD_ID)
-    record["summary"] = "入力済みの保全記録"
-    store.upsert("records", record)
-
-    ensure_dev_maintenance_demo()
-
-    assert store.get("records", MAINTENANCE_DEMO_RECORD_ID)["summary"] == "入力済みの保全記録"

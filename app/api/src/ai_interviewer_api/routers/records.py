@@ -5,14 +5,20 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
+from ai_interviewer_api.core.interview_configuration import require_interview_configuration
+from ai_interviewer_api.core.permissions import (
+    accessible_records,
+    require_management_role,
+    require_record_action,
+)
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import InterviewRecord
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
 from ai_interviewer_api.schemas.requests import ChatMessageCreate, InterviewAnswerUpdate, RecordCreate, RecordUpdate
+from ai_interviewer_api.services.audit import write_audit_log
 from ai_interviewer_api.services.ai_interview import (
     build_mock_proposal,
-    build_record_summary_proposal,
     generate_interview_reply,
     get_interview_state_snapshot,
 )
@@ -26,23 +32,50 @@ def create_record(
     payload: RecordCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
+    require_management_role(user)
     knowledge = get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+    require_interview_configuration(knowledge)
+    payload_data = payload.model_dump()
+    owner_user_id = payload_data.pop("ownerUserId", None) or user.user_id
     item = InterviewRecord(
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
         updatedByUserId=user.user_id,
         knowledgeId=knowledge_id,
         knowledgeName=knowledge["name"],
-        **payload.model_dump(),
+        ownerUserId=owner_user_id,
+        **payload_data,
     )
     store.upsert("records", item.model_dump())
     return item.model_dump()
 
 
+@router.get("/records")
+def list_accessible_records(user: UserContext = Depends(get_current_user)) -> list[dict]:
+    return accessible_records(store.list("records", user.tenant_id), user)
+
+
 @router.get("/knowledges/{knowledge_id}/records")
 def list_records(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
+    require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     return [row for row in store.list("records", user.tenant_id) if row["knowledgeId"] == knowledge_id]
+
+
+@router.get("/records/{record_id}/interview-context")
+def get_record_interview_context(record_id: str, user: UserContext = Depends(get_current_user)) -> dict:
+    record = get_scoped_item("records", record_id, user, "record_not_found")
+    knowledge = get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
+    fields = [
+        row
+        for row in store.list("knowledge_fields", user.tenant_id)
+        if row.get("knowledgeId") == record["knowledgeId"]
+    ]
+    return {
+        "record": record,
+        "knowledge": _interview_context_knowledge(knowledge, user),
+        "fields": _interview_context_fields(fields, user),
+    }
 
 
 @router.get("/records/{record_id}")
@@ -57,16 +90,45 @@ def update_record(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     item = get_record(record_id, user)
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    previous_status = item.get("status", "draft")
+    requested_updates = payload.model_dump(exclude_unset=True)
+    requested_status = requested_updates.pop("status", None)
+
+    if user.role == "interviewer":
+        if requested_updates:
+            raise HTTPException(status_code=403, detail="record_management_forbidden")
+        if requested_status is None:
+            raise HTTPException(status_code=403, detail="record_management_forbidden")
+    else:
+        require_management_role(user)
+
+    if requested_status is not None:
+        _transition_record_status(
+            item,
+            requested_status,
+            user,
+            review_note=requested_updates.get("reviewNote"),
+        )
+
+    for key, value in requested_updates.items():
         item[key] = value
     item["updatedByUserId"] = user.user_id
     item["updatedAt"] = utc_now()
     store.upsert("records", item)
+    if requested_status is not None:
+        write_audit_log(
+            user,
+            "record_status_change",
+            "record",
+            record_id,
+            {"from": previous_status, "to": item["status"]},
+        )
     return item
 
 
 @router.delete("/records/{record_id}")
 def delete_record(record_id: str, user: UserContext = Depends(get_current_user)) -> dict:
+    require_management_role(user)
     get_record(record_id, user)
     store.delete("records", record_id)
     return {"deleted": True}
@@ -79,6 +141,8 @@ def create_record_message(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_record_action(record, user, "answer")
+    require_interview_configuration(_get_record_knowledge(record, user))
     if payload.clientMessageId:
         existing_message = next(
             (
@@ -198,7 +262,8 @@ def get_record_interview_state(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
-    return get_interview_state_snapshot(record, user)
+    require_record_action(record, user, "interview_read")
+    return get_interview_state_snapshot(record, user, persist=user.role != "viewer")
 
 
 @router.patch("/records/{record_id}/interview-answers/{field_id}")
@@ -209,6 +274,7 @@ def update_record_interview_answer(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_record_action(record, user, "answer")
     interview_state = store.get("interview_states", f"interview-state-{record_id}")
     if not interview_state:
         raise HTTPException(status_code=404, detail="interview_state_not_found")
@@ -253,20 +319,11 @@ def update_record_interview_answer(
     }
 
 
-@router.post("/records/{record_id}/summary-proposals")
-def create_summary_proposal(
-    record_id: str,
-    user: UserContext = Depends(get_current_user),
-) -> dict:
-    record = get_scoped_item("records", record_id, user, "record_not_found")
-    proposal = build_record_summary_proposal(user, record)
-    store.upsert("proposals", proposal.model_dump())
-    return proposal.model_dump()
-
-
 @router.get("/records/{record_id}/stream")
 async def stream_record(record_id: str, user: UserContext = Depends(get_current_user)) -> StreamingResponse:
     record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_record_action(record, user, "interview")
+    require_interview_configuration(_get_record_knowledge(record, user))
     proposals = [row for row in store.list("proposals", user.tenant_id) if row["recordId"] == record_id]
     proposal_id = proposals[-1]["id"] if proposals else "pending"
     stream_result = generate_interview_reply(record, user)
@@ -284,3 +341,94 @@ async def stream_record(record_id: str, user: UserContext = Depends(get_current_
             await asyncio.sleep(0.15)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _transition_record_status(
+    item: dict,
+    requested_status: str,
+    user: UserContext,
+    *,
+    review_note: object = None,
+) -> None:
+    current_status = item.get("status", "draft")
+    if current_status == requested_status:
+        return
+
+    allowed_transitions = {
+        "draft": {"in_progress"},
+        "in_progress": {"submitted"},
+        "submitted": {"returned", "approved"},
+        "returned": {"in_progress"},
+        "approved": set(),
+    }
+    if requested_status not in allowed_transitions.get(current_status, set()):
+        raise HTTPException(
+            status_code=409,
+            detail=f"invalid_record_status_transition_{current_status}_to_{requested_status}",
+        )
+
+    if requested_status == "in_progress":
+        require_interview_configuration(_get_record_knowledge(item, user))
+        if user.role == "interviewer":
+            require_record_action(item, user, "answer")
+        else:
+            require_management_role(user)
+    elif requested_status == "submitted":
+        require_record_action(item, user, "submit")
+        if user.role == "interviewer":
+            interview_state = store.get("interview_states", f"interview-state-{item['id']}")
+            if not interview_state or interview_state.get("status") != "completed":
+                raise HTTPException(status_code=409, detail="interview_not_completed")
+    elif requested_status in {"returned", "approved"}:
+        require_record_action(item, user, "review")
+
+    if requested_status == "returned":
+        effective_review_note = review_note if review_note is not None else item.get("reviewNote")
+        if not str(effective_review_note or "").strip():
+            raise HTTPException(status_code=422, detail="review_note_required")
+    elif requested_status == "in_progress" and current_status == "returned":
+        item["reviewNote"] = None
+
+    item["status"] = requested_status
+
+
+def _get_record_knowledge(record: dict, user: UserContext) -> dict:
+    return get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
+
+
+def _interview_context_knowledge(knowledge: dict, user: UserContext) -> dict:
+    if user.role in {"admin", "knowledge_manager"}:
+        return knowledge
+
+    result = dict(knowledge)
+    result.pop("systemPrompt", None)
+    result.pop("defaultModelId", None)
+    plan = result.get("interviewPlan")
+    if isinstance(plan, dict):
+        result["interviewPlan"] = {
+            "profile": plan.get("profile"),
+            "modelId": plan.get("modelId"),
+        }
+    return result
+
+
+def _interview_context_fields(fields: list[dict], user: UserContext) -> list[dict]:
+    if user.role in {"admin", "knowledge_manager"}:
+        return fields
+
+    public_keys = {
+        "id",
+        "tenantId",
+        "createdByUserId",
+        "updatedByUserId",
+        "knowledgeId",
+        "name",
+        "description",
+        "inputType",
+        "required",
+        "askByAi",
+        "aiQuestionExamples",
+        "options",
+        "displayOrder",
+    }
+    return [{key: value for key, value in field.items() if key in public_keys} for field in fields]

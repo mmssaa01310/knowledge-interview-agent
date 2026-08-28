@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 
 from ai_interviewer_api.auth.deps import UserContext
-from ai_interviewer_api.core.permissions import ensure_tenant_scope
+from ai_interviewer_api.core.permissions import ensure_record_access, ensure_tenant_scope
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.repositories.store import store
 
@@ -15,6 +15,8 @@ def get_scoped_item(table: str, item_id: str, user: UserContext, not_found_detai
     if not item:
         raise HTTPException(status_code=404, detail=not_found_detail)
     ensure_tenant_scope(user, item["tenantId"])
+    if table == "records":
+        ensure_record_access(item, user, operation="read")
     return item
 
 
@@ -34,10 +36,4 @@ def approve_proposal_item(proposal: dict, user: UserContext, approval_method: st
     proposal["updatedByUserId"] = user.user_id
     proposal["updatedAt"] = utc_now()
     store.upsert("proposals", proposal)
-    if proposal.get("proposalType") == "record_summary":
-        record = get_scoped_item("records", proposal["recordId"], user, "record_not_found")
-        record["summary"] = str(proposal.get("structuredData", {}).get("summary", "")).strip()
-        record["updatedByUserId"] = user.user_id
-        record["updatedAt"] = utc_now()
-        store.upsert("records", record)
     return proposal

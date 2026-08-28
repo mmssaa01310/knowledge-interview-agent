@@ -22,6 +22,7 @@ from ai_interviewer_api.repositories.store import store
 
 DEV_TENANT_ID = "tenant-demo"
 DEV_USER_ID = "user-manager"
+DEV_INTERVIEWEE_USER_ID = "user-interviewer"
 VOICE_DEMO_DB_ID = "dev-voice-demo-db"
 VOICE_DEMO_KNOWLEDGE_ID = "dev-voice-demo-knowledge"
 VOICE_DEMO_RECORD_ID = "dev-voice-demo-record"
@@ -50,7 +51,7 @@ def ensure_dev_voice_demo() -> dict[str, str]:
                 createdByUserId=DEV_USER_ID,
                 updatedByUserId=DEV_USER_ID,
                 knowledgeDbId=VOICE_DEMO_DB_ID,
-                name="人物ヒアリング",
+                name="人物インタビュー",
                 description="自己紹介、趣味、担当業務を順番に確認する",
                 purpose="リアルタイム音声インタビューの動作確認",
                 language="ja",
@@ -122,8 +123,10 @@ def ensure_dev_voice_demo() -> dict[str, str]:
                 createdByUserId=DEV_USER_ID,
                 updatedByUserId=DEV_USER_ID,
                 knowledgeId=VOICE_DEMO_KNOWLEDGE_ID,
-                knowledgeName="人物ヒアリング",
+                knowledgeName="人物インタビュー",
                 title="音声会話テスト",
+                ownerUserId=DEV_INTERVIEWEE_USER_ID,
+                status="in_progress",
             ).model_dump(),
         )
 

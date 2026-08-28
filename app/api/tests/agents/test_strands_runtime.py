@@ -29,6 +29,42 @@ def test_voice_evaluation_bedrock_model_uses_short_timeouts_without_retry(
     assert settings.voice_answer_evaluation_deadline_seconds <= 2.0
 
 
+def test_create_bedrock_model_omits_temperature_for_gpt_56_profiles(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_bedrock_model(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(strands_runtime, "BedrockModel", fake_bedrock_model)
+
+    strands_runtime.create_bedrock_model(
+        model_id="global.openai.gpt-5.6-luna",
+        temperature=0.0,
+    )
+
+    assert captured["model_id"] == "global.openai.gpt-5.6-luna"
+    assert "temperature" not in captured
+
+
+def test_create_bedrock_model_keeps_temperature_for_other_models(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_bedrock_model(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(strands_runtime, "BedrockModel", fake_bedrock_model)
+
+    strands_runtime.create_bedrock_model(
+        model_id="apac.amazon.nova-pro-v1:0",
+        temperature=0.0,
+    )
+
+    assert captured["model_id"] == "apac.amazon.nova-pro-v1:0"
+    assert captured["temperature"] == 0.0
+
+
 def test_invoke_voice_bedrock_text_uses_plain_converse_response(monkeypatch) -> None:
     calls: list[dict] = []
 

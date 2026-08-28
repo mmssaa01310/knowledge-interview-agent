@@ -133,6 +133,33 @@ class BedrockResponsesStructuredProvider:
                 error = exc
         raise StructuredInterviewProviderError("question output validation failed after retry") from error
 
+    def request_structured_output(
+        self,
+        *,
+        schema_name: str,
+        schema: Mapping[str, Any],
+        system_prompt: str,
+        user_payload: Mapping[str, Any],
+        reasoning_effort: str,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        """Request a validated JSON-shaped response for another agent contract.
+
+        The HTTP/SigV4 and strict-schema handling is shared with the structured
+        interview provider. Callers remain responsible for validating the
+        returned payload with their own Pydantic model.
+        """
+
+        return self._request(
+            model=self.model_id,
+            reasoning_effort=reasoning_effort,
+            schema_name=schema_name,
+            schema=schema,
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            max_output_tokens=max_output_tokens,
+        )
+
     def _request(
         self,
         *,

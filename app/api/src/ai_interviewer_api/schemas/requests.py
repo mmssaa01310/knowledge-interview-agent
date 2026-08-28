@@ -21,7 +21,6 @@ class KnowledgeDbUpdate(BaseModel):
 class KnowledgeCreate(BaseModel):
     name: str
     description: str | None = None
-    summary: str | None = None
     systemPrompt: str | None = None
     purpose: str | None = None
     interviewPlan: InterviewPlan | None = None
@@ -35,7 +34,6 @@ class KnowledgeCreate(BaseModel):
 class KnowledgeUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    summary: str | None = None
     systemPrompt: str | None = None
     purpose: str | None = None
     interviewPlan: InterviewPlan | None = None
@@ -114,14 +112,18 @@ class RecordCreate(BaseModel):
     title: str
     targetEquipment: str | None = None
     targetProcess: str | None = None
+    ownerUserId: str | None = None
+    viewerUserIds: list[str] = Field(default_factory=list)
 
 
 class RecordUpdate(BaseModel):
     title: str | None = None
-    status: str | None = None
+    status: Literal["draft", "in_progress", "submitted", "returned", "approved"] | None = None
     targetEquipment: str | None = None
     targetProcess: str | None = None
-    summary: str | None = None
+    reviewNote: str | None = None
+    ownerUserId: str | None = None
+    viewerUserIds: list[str] | None = None
 
 
 class InterviewAnswerUpdate(BaseModel):
@@ -141,13 +143,6 @@ class ChatMessageCreate(BaseModel):
     targetType: str | None = None
     targetId: str | None = None
     turnType: Literal["ANSWER", "CONTROL"] | None = None
-    modelId: str | None = None
-    referenceKnowledgeDbIds: list[str] = Field(default_factory=list)
-    referenceKnowledgeIds: list[str] = Field(default_factory=list)
-    referenceDocumentIds: list[str] = Field(default_factory=list)
-    excludedDocumentIds: list[str] = Field(default_factory=list)
-    searchLimit: int = 5
-    confidenceThreshold: float = 0.7
 
 
 class DocumentCreate(BaseModel):

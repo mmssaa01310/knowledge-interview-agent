@@ -4,6 +4,7 @@ from fastapi import HTTPException
 
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
 from ai_interviewer_api.agents.interview_knowledge.coordinator import build_initial_structured_state
+from ai_interviewer_api.models.interview_plan import InterviewPlan
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.routes import (
     acknowledge_document,
@@ -16,13 +17,13 @@ from ai_interviewer_api.routers.routes import (
     create_knowledge_db,
     create_record,
     create_record_message,
-    create_summary_proposal,
     delete_knowledge_db,
     generate_fields,
     get_knowledge_db,
     list_knowledges,
     list_records,
     suggest_fields,
+    update_knowledge,
     update_knowledge_db,
     update_read_status,
 )
@@ -35,6 +36,7 @@ from ai_interviewer_api.schemas.requests import (
     KnowledgeDbUpdate,
     KnowledgeCreate,
     KnowledgeFieldCreate,
+    KnowledgeUpdate,
     ReadStatusUpdate,
     RecordCreate,
 )
@@ -56,6 +58,10 @@ def create_test_knowledge(knowledge_db_id: str, user: UserContext) -> dict:
             name="保全ノウハウ",
             purpose="保全",
             targetEquipment="圧入機A",
+            interviewPlan=InterviewPlan(
+                profile="fixed_form",
+                modelId="global.openai.gpt-5.6-terra",
+            ),
         ),
         user,
     )
@@ -109,27 +115,6 @@ def test_knowledge_record_proposal_and_document_flow() -> None:
     assert document["ingestionStatus"] == "queued"
 
 
-def test_ai_summary_proposal_requires_approval_before_record_update() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="summary db"), user)
-    knowledge = create_test_knowledge(knowledge_db["id"], user)
-    record = create_record(knowledge["id"], RecordCreate(title="圧入機A 朝一の荷重ばらつき"), user)
-    create_record_message(record["id"], ChatMessageCreate(content="朝一だけ圧入荷重が不安定です"), user)
-
-    proposal = create_summary_proposal(record["id"], user)
-    stored_record = store.get("records", record["id"])
-
-    assert proposal["proposalType"] == "record_summary"
-    assert proposal["status"] == "needs_review"
-    assert proposal["structuredData"]["summary"]
-    assert stored_record["summary"] is None
-
-    approve_proposal(proposal["id"], user)
-    approved_record = store.get("records", record["id"])
-
-    assert approved_record["summary"] == proposal["structuredData"]["summary"]
-
-
 def test_viewer_cannot_create_knowledge_db() -> None:
     with pytest.raises(HTTPException) as exc_info:
         create_knowledge_db(KnowledgeDbCreate(name="viewer should fail"), DEV_TOKENS["dev-viewer"])
@@ -156,20 +141,65 @@ def test_knowledge_db_update_delete_and_generated_fields() -> None:
     assert exc_info.value.status_code == 404
 
 
+def test_knowledge_model_can_change_after_interview_started() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="model change db"), user)
+    knowledge = create_test_knowledge(knowledge_db["id"], user)
+    record = create_record(knowledge["id"], RecordCreate(title="started interview"), user)
+    state = build_initial_structured_state("fixed_form", [])
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "askedQuestions": [
+                {
+                    "questionId": "q-001",
+                    "questionType": "structured",
+                    "fieldId": None,
+                    "text": "対象を教えてください。",
+                    "targetType": "issue",
+                    "targetId": "issue",
+                }
+            ],
+        }
+    )
+    store.upsert("interview_states", state)
+
+    updated = update_knowledge(
+        knowledge["id"],
+        KnowledgeUpdate(
+            interviewPlan=InterviewPlan(
+                profile="fixed_form",
+                modelId="global.openai.gpt-5.6-luna",
+            )
+        ),
+        user,
+    )
+
+    assert updated["interviewPlan"]["modelId"] == "global.openai.gpt-5.6-luna"
+
+
 def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -> None:
     user = DEV_TOKENS["dev-manager"]
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="model assist db"), user)
     knowledge = create_test_knowledge(knowledge_db["id"], user)
 
-    def fake_suggest(payload: FieldSuggestionRequest, current_user: UserContext) -> dict:
+    def fake_suggest(
+        payload: FieldSuggestionRequest,
+        current_user: UserContext,
+        *,
+        knowledge_id: str | None = None,
+    ) -> dict:
         assert current_user == user
+        assert knowledge_id == knowledge["id"]
         assert payload.context.defaultModelId == "global.openai.gpt-5.6-luna"
         assert [message.content for message in payload.recentMessages] == [
             "設備別に項目を分けたい",
             "設備名と現象の聞き取りを重視します。",
         ]
         return {
-            "reply": "Claudeでヒアリング項目を1件作成しました。",
+            "reply": "Claudeで質問項目を1件作成しました。",
             "modelId": payload.context.defaultModelId,
             "fields": [
                 {
@@ -214,10 +244,11 @@ def test_field_suggestion_prompt_documents_adjustable_and_fixed_scope() -> None:
     prompt = load_question_design_prompt()
 
     assert "質問設計エージェント" in prompt
-    assert "ヒアリング前に、確認すべき質問項目を設計します" in prompt
+    assert "インタビュー前に、確認すべき質問項目を設計します" in prompt
     assert "インタビューエージェントではありません" in prompt
     assert "正式DBへの保存" in prompt
-    assert "read-only tool" in prompt
+    assert "retrieved_knowledge" in prompt
+    assert "Backendが事前検索した参考情報" in prompt
     assert "「対象設備」「設備」「保全」「製造」「現場」「熟練者」" in prompt
 
 
@@ -343,7 +374,7 @@ def test_field_suggestions_invoke_bedrock_for_greeting_only(monkeypatch: pytest.
         return QuestionDesignOutput(
             reply="まずテーマや目的を確認します。",
             design_status="needs_info",
-            clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+            clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
             suggestions=[],
         )
 
@@ -402,7 +433,7 @@ def test_field_suggestions_keep_conversational_reply_when_suggestions_duplicate(
 
     def fake_run_question_design(question_input, **kwargs):
         assert [message.content for message in question_input.recent_messages] == [
-            "ナレッジDBの目的を教えてください。ヒアリング項目の候補や質問例を提案します。",
+            "ナレッジDBの目的を教えてください。質問項目の候補や質問例を提案します。",
             "こんちは",
             "まず、ナレッジDBの目的を確認しましょう。保全ナレッジを構造化するための基本的な情報を収集する項目を提案します。",
             "あなたは誰？",
@@ -439,7 +470,7 @@ def test_field_suggestions_keep_conversational_reply_when_suggestions_duplicate(
                 )
             ],
             recentMessages=[
-                {"role": "assistant", "content": "ナレッジDBの目的を教えてください。ヒアリング項目の候補や質問例を提案します。"},
+                {"role": "assistant", "content": "ナレッジDBの目的を教えてください。質問項目の候補や質問例を提案します。"},
                 {"role": "user", "content": "こんちは"},
                 {"role": "assistant", "content": "まず、ナレッジDBの目的を確認しましょう。保全ナレッジを構造化するための基本的な情報を収集する項目を提案します。"},
                 {"role": "user", "content": "あなたは誰？"},
@@ -462,7 +493,7 @@ def test_field_suggestions_return_reply_only_when_question_design_needs_more_mat
         return QuestionDesignOutput(
             reply="まずテーマや目的を確認します。",
             design_status="needs_info",
-            clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+            clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
             suggestions=[],
         )
 
@@ -478,7 +509,7 @@ def test_field_suggestions_return_reply_only_when_question_design_needs_more_mat
 
     assert result.keys() == {"reply", "fields", "modelId", "bedrockInvoked"}
     assert result["fields"] == []
-    assert result["reply"] == "質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。"
+    assert result["reply"] == "質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。"
     assert result["bedrockInvoked"] is True
     assert runner_called is True
 
