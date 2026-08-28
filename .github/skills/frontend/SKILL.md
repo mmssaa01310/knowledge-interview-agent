@@ -1,3 +1,8 @@
+---
+name: frontend
+description: ReactとViteでAIインタビューアプリの画面、状態管理、API連携を実装・変更するときに使用する。
+---
+
 # Skill: frontend
 
 ## 目的

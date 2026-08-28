@@ -1,3 +1,8 @@
+---
+name: elasticsearch
+description: Elasticsearchのインデックス、マッピング、検索、権限制御、AI提案の保存を設計・変更するときに使用する。
+---
+
 # Skill: elasticsearch
 
 ## 目的

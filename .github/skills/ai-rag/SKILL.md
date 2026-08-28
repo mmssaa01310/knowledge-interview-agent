@@ -1,3 +1,8 @@
+---
+name: ai-rag
+description: Bedrockを利用したAIインタビュー、構造化抽出、ナレッジ参照チャット、Embedding生成の実装・変更時に使用する。
+---
+
 # Skill: ai-rag
 
 ## 目的

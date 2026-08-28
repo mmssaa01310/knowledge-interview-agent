@@ -1,3 +1,8 @@
+---
+name: backend
+description: FastAPIの認証、認可、API、サービス、リポジトリ、AIインタビュー機能を実装・変更するときに使用する。
+---
+
 # Skill: backend
 
 ## 目的

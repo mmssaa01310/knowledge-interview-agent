@@ -1,3 +1,8 @@
+---
+name: testing
+description: AIインタビューアプリの変更に対するテスト、型検査、lint、build、認証認可の確認時に使用する。
+---
+
 # Skill: testing
 
 ## 目的

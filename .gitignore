@@ -13,3 +13,6 @@ build/
 .env.*
 !.env.example
 .DS_Store
+
+# Local agent runtime compatibility link. The canonical skills live in .github/skills/.
+.agents/

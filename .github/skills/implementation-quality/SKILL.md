@@ -1,3 +1,8 @@
+---
+name: implementation-quality
+description: コード変更時に仕様準拠、責務分離、境界条件、認証認可、検証を確認するときに使用する。
+---
+
 # Skill: implementation-quality
 
 ## 目的

@@ -12,7 +12,8 @@
 * `packages/shared-types`: 共有型
 * `infra/cdk`: AWS CDK
 * `docs`: 仕様・設計ドキュメント
-* `skills`: AIエージェント向け作業指針
+* `.github/skills`: GitHub Copilot向けAgent Skills
+* `specs`: 実装中の変更単位の作業仕様
 * `.github`: GitHub Copilot / GitHub Actions 関連設定
 
 ## 2. 想定フォルダ構成
@@ -22,15 +23,20 @@
 ├── AGENTS.md
 ├── docs/
 │   ├── spec.md
-│   ├── spec-governance.md
-│   ├── technology-stack.md
-│   ├── aws-architecture.md
-│   ├── repository-structure.md
-│   ├── development-workflow.md
-│   ├── verification.md
-│   ├── response-format.md
-│   ├── package-management.md
-│   └── refactoring.md
+│   ├── architecture/
+│   │   ├── agents/
+│   │   ├── aws/
+│   │   └── voice/
+│   ├── agents/
+│   ├── guides/
+│   ├── plans/
+│   └── reference/
+│       ├── current-implementation.md
+│       ├── repository-structure.md
+│       ├── spec-governance.md
+│       ├── technology-stack.md
+│       ├── response-format.md
+│       └── ...
 ├── app/
 │   ├── web/
 │   │   ├── src/
@@ -75,18 +81,14 @@
 ├── infra/
 │   ├── cdk/
 │   └── docker-compose.yml
-├── skills/
-│   ├── implementation-quality.md
-│   ├── frontend.md
-│   ├── backend.md
-│   ├── elasticsearch.md
-│   ├── ai-rag.md
-│   ├── aws-architecture.md
-│   ├── testing.md
-│   └── refactoring.md
+├── specs/
+│   └── <active-feature>/
 └── .github/
     ├── agents/
-    └── prompts/
+    ├── prompts/
+    └── skills/
+        └── <skill-name>/
+            └── SKILL.md
 ```
 
 ## 3. Frontend
@@ -217,7 +219,7 @@ Backend APIはFastAPIで実装する。
 プロンプト管理では、ヒアリング項目設計用とAIインタビュー用を分離して扱う。
 ユーザーが編集する追加カスタマイズは、質問項目設計用プロンプトとは混在させない。
 質問項目設計チャットの request/context には、実インタビュー用の追加カスタマイズを含めない。
-AIエージェントの責務分離は `docs/agent-architecture.md` に従う。
+AIエージェントの責務分離は `docs/architecture/agents/agent-architecture.md` に従う。
 
 ### 4.3 ディレクトリ責務
 
@@ -395,57 +397,19 @@ infra/docker-compose.yml
 
 仕様・設計ドキュメントを置く。
 
-```text
-docs/spec.md
-```
+| パス | 内容 |
+|---|---|
+| `docs/spec.md` | アプリ仕様・業務ルール |
+| `docs/architecture/` | システム構成、AI責務、音声構成 |
+| `docs/agents/` | 個別AIエージェント仕様 |
+| `docs/guides/` | 開発手順、検証手順、パッケージ運用 |
+| `docs/plans/` | 未実装機能の実装計画 |
+| `docs/reference/current-implementation.md` | 現行コードの実装範囲、API、データモデル |
+| `docs/reference/` | 共通ルール・技術情報 |
 
-アプリ仕様・業務ルール。
+## 9. .github/skills
 
-```text
-docs/technology-stack.md
-```
-
-技術スタック。
-
-```text
-docs/aws-architecture.md
-```
-
-AWS構成・インフラ設計。
-
-```text
-docs/repository-structure.md
-```
-
-リポジトリ構成・責務分離。
-
-```text
-docs/development-workflow.md
-```
-
-実装前後の進め方。
-
-```text
-docs/verification.md
-```
-
-確認項目・実行コマンド。
-
-```text
-docs/response-format.md
-```
-
-回答フォーマット。
-
-```text
-docs/package-management.md
-```
-
-pnpm workspace / Docker build の運用ルール。
-
-## 9. skills
-
-AIエージェント向けの作業指針を置く。
+GitHub Copilotが必要なタスクだけ読み込むAgent Skillsを置く。各スキルは独立したディレクトリを持ち、入口ファイルを`SKILL.md`とする。
 
 主な対象は以下。
 
@@ -458,7 +422,15 @@ AIエージェント向けの作業指針を置く。
 * Testing
 * Refactoring
 
-## 10. .github
+スキルの説明と指示は`.github/skills/<skill-name>/SKILL.md`に集約する。全タスクに適用するリポジトリ共通ルールは`AGENTS.md`に置く。
+
+`.agents/skills`はローカルエージェント互換用のリンクであり、編集対象にしない。スキルの正本は`.github/skills`だけとする。
+
+## 10. specs
+
+実装中の変更単位の作業仕様を置く。実装完了後は恒久情報を`docs/`へ反映し、対象の`specs/<id>/`を削除する。Spec Kitのエージェント定義とテンプレートは`.github/agents/`、`.github/prompts/`、`.specify/`に置く。
+
+## 11. .github
 
 GitHub関連の設定を置く。
 

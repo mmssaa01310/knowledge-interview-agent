@@ -3,7 +3,7 @@
 ## 1. 目的
 
 このリポジトリでは、`docs/` と `specs/` の役割を分けて管理する。
-仕様の重複や矛盾により、AIエージェント、GitHub Copilot、Codex、Claude Code などが誤った実装判断をしないようにする。
+実装済みの情報を`docs/`へ集約し、作業中の仕様だけを`specs/`に置くことで、AIエージェント、GitHub Copilot、Codex、Claude Codeなどが古い作業資料を現行仕様と誤認しないようにする。
 
 ## 2. docs の役割
 
@@ -16,6 +16,7 @@
 * 技術スタック
 * AWSアーキテクチャ
 * リポジトリ構成
+* 現行実装の範囲とAPI・データモデル
 * API仕様
 * 開発ルール
 * 検証ルール
@@ -23,17 +24,20 @@
 代表例。
 
 * `docs/spec.md`
-* `docs/technology-stack.md`
-* `docs/aws-architecture.md`
-* `docs/repository-structure.md`
-* `docs/development-workflow.md`
-* `docs/verification.md`
-* `docs/response-format.md`
-* `docs/package-management.md`
+* `docs/reference/technology-stack.md`
+* `docs/architecture/aws/aws-architecture.md`
+* `docs/reference/repository-structure.md`
+* `docs/reference/current-implementation.md`
+* `docs/guides/development-workflow.md`
+* `docs/guides/verification.md`
+* `docs/reference/response-format.md`
+* `docs/guides/package-management.md`
 
 ## 3. specs の役割
 
-`specs/` は、Spec Kit などで作成する変更単位の作業仕様を置く場所である。
+`specs/` は、Spec Kitなどで作成する実装中の変更単位の作業仕様を置く場所である。
+
+完了済みの実装を管理する場所ではない。完了後も維持する仕様、設計、API、データモデルは`docs/`へ反映する。
 
 主な対象は以下。
 
@@ -67,15 +71,16 @@ specs/
 
 1. `AGENTS.md`
 2. `docs/spec.md`
-3. `docs/technology-stack.md`
-4. `docs/aws-architecture.md`
-5. `docs/repository-structure.md`
-6. `docs/development-workflow.md`
-7. `docs/verification.md`
+3. `docs/reference/technology-stack.md`
+4. `docs/architecture/aws/aws-architecture.md`
+5. `docs/reference/repository-structure.md`
+6. `docs/guides/development-workflow.md`
+7. `docs/guides/verification.md`
 8. 作業対象の `specs/<id>/spec.md`
 9. 作業対象の `specs/<id>/plan.md`
 10. 作業対象の `specs/<id>/tasks.md`
-11. 古い `specs/` 配下のドキュメント
+
+完了済み`specs/`は優先順位の対象外とする。
 
 ## 5. 競合時の扱い
 
@@ -99,7 +104,7 @@ specs/
 
 ## 7. specs 完了後の反映
 
-`specs/<id>` の作業が完了したら、恒久的な仕様変更だけを `docs/` に反映する。
+`specs/<id>`の作業が完了したら、恒久的な情報を`docs/`へ反映する。その後、完了済みの`specs/<id>`を削除する。
 
 反映対象の例。
 
@@ -119,18 +124,25 @@ specs/
 * 作業中の仮説
 * すでに完了したチェックリスト
 
-## 8. 古い specs の扱い
+反映先の目安は次のとおりとする。
 
-完了済みの `specs/` は、現在の正規仕様として扱わない。
+* プロダクトの振る舞い・業務ルール: `docs/spec.md`
+* システム構成・AI責務・データフロー: `docs/architecture/`
+* 現行コードで実装済みの範囲、API、データモデル: `docs/reference/current-implementation.md`
+* 開発手順・検証手順: `docs/guides/`
 
-完了済み `specs/` は、過去の変更履歴・実装経緯として参照する。
+## 8. 完了済み specs の扱い
 
-古い `specs/` と `docs/` が矛盾する場合は、必ず `docs/` を優先する。
+完了済みの`specs/<id>`は、`docs/`への反映確認後に削除する。
+
+過去の作業内容が必要な場合はGit履歴を参照する。完了済みSpecを別の現行ドキュメントとして複製しない。
+
+`specs/`のルートディレクトリは、次の変更作業で再利用するため残してよい。
 
 ## 9. 禁止事項
 
-* `docs/spec.md` と同じ内容を `specs/` に重複して長く書かない。
-* 古い `specs/` を正規仕様として扱わない。
-* `specs/` だけを更新して、恒久仕様を `docs/` に反映し忘れない。
-* `docs/` と `specs/` の矛盾を放置しない。
-* 作業対象外の `specs/` を根拠に実装を変更しない。
+* `docs/spec.md`と同じ内容を`specs/`に重複して長く書かない。
+* 実装完了後も`specs/<id>`を現行仕様として残さない。
+* `specs/`だけを更新して、恒久情報を`docs/`に反映し忘れない。
+* `docs/`と作業中の`specs/<id>`の矛盾を放置しない。
+* 作業対象外の`specs/`を根拠に実装を変更しない。

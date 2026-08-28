@@ -1,3 +1,8 @@
+---
+name: aws-architecture
+description: AWS上でAIインタビューアプリの構成を設計・変更するときに使用する。
+---
+
 # Skill: aws-architecture
 
 ## 目的

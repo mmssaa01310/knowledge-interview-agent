@@ -1,3 +1,8 @@
+---
+name: refactoring
+description: 既存コードの責務分離や重複削減を、仕様と互換性を維持して実施するときに使用する。
+---
+
 # Skill: refactoring
 
 ## 目的
