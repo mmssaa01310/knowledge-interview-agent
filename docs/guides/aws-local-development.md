@@ -54,19 +54,22 @@ VOICE_BEDROCK_WARMUP_ENABLED=true
 AWS_REGION=ap-northeast-1
 AWS_DEFAULT_REGION=ap-northeast-1
 STRUCTURED_INTERVIEW_ENABLED=true
-STRUCTURED_INTERVIEW_MODEL_ID=global.openai.gpt-5.6-terra
-QUESTION_DESIGN_MODEL_ID=global.openai.gpt-5.6-terra
+STRUCTURED_INTERVIEW_MODEL_ID=global.openai.gpt-5.6-luna
+QUESTION_DESIGN_MODEL_ID=global.openai.gpt-5.6-luna
 STRUCTURED_INTERVIEW_REASONING_EFFORT=low
 STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT=medium
 STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS=6000
 STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS=600
+QUESTION_DESIGN_REASONING_EFFORT=low
+QUESTION_DESIGN_MAX_OUTPUT_TOKENS=6000
 STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS=5
 STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS=120
 ```
 
-構造化インタビューを有効にすると、APIは`BEDROCK_AWS_REGION`の`bedrock-runtime`へAWS SigV4で接続し、`global.openai.gpt-5.6-terra`またはナレッジ設定で選択された`global.openai.gpt-5.6-luna`を呼び出す。OpenAI APIキーは設定しない。Global profileは対応する商用AWSリージョンへルーティングされるため、データ処理リージョンを限定する要件がある環境では使用しない。
+構造化インタビューを有効にすると、APIは`BEDROCK_AWS_REGION`の`bedrock-runtime`へAWS SigV4で接続し、未選択時は`global.openai.gpt-5.6-luna`、選択時は`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`を呼び出す。OpenAI APIキーは設定しない。Global profileは対応する商用AWSリージョンへルーティングされるため、データ処理リージョンを限定する要件がある環境では使用しない。
 
-質問項目設計も同じGlobal profileを使用する。ナレッジ設定の「質問項目の設計モデル」でTerraまたはLunaを選択し、未設定時は`QUESTION_DESIGN_MODEL_ID`の値を使用する。質問項目設計にAmazon Novaまたは画像生成モデルを使用してはならない。
+質問項目設計も同じGlobal profileを使用する。ナレッジ設定の「質問項目の設計モデル」でTerraまたはLunaを選択し、未設定時は`QUESTION_DESIGN_MODEL_ID`の値（既定Luna）を使用する。生成前にBackendが同じテナント・Knowledgeの承認済み記録・提案と取り込み済み文書・チャンクを検索し、`retrieved_knowledge`としてStructured Outputの入力へ渡す。質問項目設計にAmazon Novaまたは画像生成モデルを使用してはならない。
+GPT-5.6 Terra／LunaはBedrock Converse APIの`temperature`をサポートしないため、質問項目設計のBackendはこのフィールドを送信しない。`QUESTION_DESIGN_TEMPERATURE`はGPT-5.6以外の対応モデルでのみ使用する。
 
 ユーザーが提示したGlobal profileのARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。ARNを直接設定する場合は`BEDROCK_AWS_REGION=us-east-1`とし、通常はリージョンに依存しないprofile IDを設定する。
 

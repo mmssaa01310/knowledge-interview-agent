@@ -131,6 +131,8 @@ WorkerはSQSからジョブを受け取り、非同期処理を実行する。
 * ユーザーが参照権限を持つデータだけを検索・表示する。
 * 権限フィルタなしでElasticsearch検索を行わない。
 
+ロール別ワークスペース、Recordの担当者、承認操作の権限は、[利用者ワークスペースと認可アーキテクチャ](../access-control.md)に従う。
+
 ## 9. Elasticsearch / Elastic Cloud on AWS
 
 Elasticsearchを中心に検索・保存を行う。

@@ -32,7 +32,7 @@
 `agents/interview/`:
 
 * 熟練者との会話を進める interview agent 固有処理を置く
-* 質問設計エージェントや暗黙知回答エージェントの責務を混ぜない
+* 質問設計エージェントの責務を混ぜない
 * 発話から構造化候補、不足情報、矛盾、Applicabilityを抽出する
 * Backendが指定した質問対象について質問文を生成する
 
@@ -67,4 +67,4 @@ backendは`answer_status`と`draft_updates`の整合、次の質問対象、質�
 
 Strands/Bedrockを互換経路として残す場合も、同じターンを構造化Providerと既存Strands経路の両方で処理してはならない。Bedrockへの接続はProviderアダプターへ限定し、Router、Repository、`app/voice`から直接呼び出してはならない。
 
-初期の構造化インタビューでは、InterpreterとQuestion Generatorに、ナレッジ設定で選択された`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`を使用する。選択未設定時の既定はTerraである。通常の`reasoning.effort=low`から、構造条件をBackendが検知した場合だけ選択済みモデルの`medium`で再実行する。TerraとLunaの自動ルーティングおよびSolの利用は行わない。
+初期の構造化インタビューでは、InterpreterとQuestion Generatorに、ナレッジ設定で選択された`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`を使用する。選択未設定時の既定はLunaである。通常の`reasoning.effort=low`から、構造条件をBackendが検知した場合だけ選択済みモデルの`medium`で再実行する。TerraとLunaの自動ルーティングおよびSolの利用は行わない。

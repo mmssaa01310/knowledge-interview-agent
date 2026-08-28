@@ -50,9 +50,11 @@ APIの現在のローカル実装は`InMemoryStore`を使用する。APIプロ�
 | `dev-interviewer` | `user-interviewer` | `interviewer` |
 | `dev-viewer` | `user-viewer` | `viewer` |
 
-既定のリクエストヘッダーは`x-dev-token: dev-manager`である。無効なトークンはHTTP 401を返す。
+既定のリクエストヘッダーは`x-dev-token: dev-manager`である。無効なトークンはHTTP 401を返す。Vite開発画面では、左側の「開発用ユーザー」セレクトから4ロールを切り替えられる。切り替え後は画面を再読み込みする。
 
 保存する主要エンティティには、`tenantId`、`createdByUserId`、`updatedByUserId`、作成日時、更新日時を含める。取得時は認証ユーザーの`tenantId`でスコープする。
+
+ローカル実装では、ロール別の1列サイドバー、Recordの担当者による一覧絞り込み、`viewer`向けの明示的な閲覧許可、記録の提出・差し戻し・承認状態を実装している。管理者側はサイドバーのナレッジ一覧を主導線とし、ナレッジ管理の入口から最後に開いたナレッジ、または最初のナレッジの「インタビュー」を開く。サイドバーのナレッジ一覧は作成日時順で固定し、ナレッジ選択後も並び順を変更しない。ナレッジ配下では「インタビュー」「記録」をメイン画面上部の主タブとして表示し、ヘッダーの主ボタン「インタビュー設定」から設定を開く。新規ナレッジは作成後に設定画面の「実行設定」を開き、設定が完了するまで記録作成を表示しない。全体の「記録」メニューは`interviewer`と`viewer`だけに表示する。記録詳細では会話を左、整理結果または質問リストを右に表示する。`system_requirement`の整理結果は「要件整理」「処理の流れ」タブで切り替え、「処理の流れ」内でフローチャートとシーケンス図を切り替える。「インタビュー」では新規記録の作成と、途中の記録の再開を行う。記録画面から公開、差し戻し、承認を実行できる。`KnowledgeDb`は内部の分類単位として保持し、ナレッジ一覧には表示しない。複数のDBがある場合の新規ナレッジ作成時だけ「業務領域」として選択できる。Record API、音声セッションAPI、記録に関連する提案APIで同じRecord認可判定を使用する。ユーザー一覧を永続管理する本番のユーザーディレクトリと、画面から担当者・閲覧者を選択する管理画面は未実装である。権限モデルは[利用者ワークスペースと認可アーキテクチャ](../architecture/access-control.md)を参照する。
 
 音声サービスからAPI内部エンドポイントを呼び出す場合は、`x-internal-api-token`を使用する。内部エンドポイントを外部ユーザー向けAPIとして扱ってはならない。
 
@@ -79,7 +81,7 @@ deletedAt?
 | `Knowledge` | ナレッジとインタビュー設定 | `KnowledgeDb`に属し、Field、Record、Documentを保持 |
 | `InterviewPromptProfile` | 実インタビューの追加カスタマイズ | テナントに属する |
 | `KnowledgeField` | 固定フォームの質問項目 | `Knowledge`に属する |
-| `InterviewRecord` | 1回のインタビュー記録 | `Knowledge`に属する |
+| `InterviewRecord` | 1回のインタビュー記録 | `Knowledge`に属し、`ownerUserId`で回答担当者、`viewerUserIds`で明示閲覧者を管理する。 |
 | `VoiceSession` | Recordの音声セッション | `InterviewRecord`に属する |
 | `VoiceTurn` | 音声セッション内の発話 | `VoiceSession`とRecordに属する |
 | `AiProposal` | AIが作成した未承認候補 | Recordに属する |
@@ -100,7 +102,11 @@ deletedAt?
 * `global.openai.gpt-5.6-terra`
 * `global.openai.gpt-5.6-luna`
 
-未選択時の構造化インタビューと質問項目設計の既定モデルはTerraである。画像生成モデルは使用しない。
+設定画面の初期選択はLunaとする。記録を作成・公開・開始するには、選択したモデルを`interviewPlan.modelId`へ保存しなければならない。画像生成モデルは使用しない。
+
+設定画面には「基本設定」タブを置かず、ナレッジ名と説明を「ナレッジ情報」としてタブの上に表示する。タブは「質問項目」「実行設定」「事前知識」の3つとし、事前知識タブでは参照文書の追加・取り込み状態・既読状態を管理する。設定保存操作はナレッジ情報、質問項目、実行設定をまとめて保存し、文書追加・既読状態更新は各操作時に反映する。
+
+記録を作成・公開・開始するには、`interviewPlan`へ有効な`profile`と`modelId`を保存済みであることが必要である。設定未完了の場合、Backendは`409 interview_configuration_required`を返す。
 
 ## 5. API
 
@@ -126,9 +132,8 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 * `GET /api/knowledges/{knowledge_id}`
 * `PATCH /api/knowledges/{knowledge_id}`
 * `DELETE /api/knowledges/{knowledge_id}`
-* `POST /api/knowledges/{knowledge_id}/record-summary-draft`
 
-### 5.4 ヒアリング項目と質問設計
+### 5.4 質問項目と質問設計
 
 * `GET /api/knowledges/{knowledge_id}/fields`
 * `POST /api/knowledges/{knowledge_id}/fields`
@@ -141,18 +146,23 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 * `PATCH /api/interview-prompt-profiles/{profile_id}`
 * `DELETE /api/interview-prompt-profiles/{profile_id}`
 
+`field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用し、質問項目設計の本番経路ではStrands Agentを使用しない。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
+
 ### 5.5 インタビュー記録
 
+* `GET /api/records`
 * `GET /api/knowledges/{knowledge_id}/records`
 * `POST /api/knowledges/{knowledge_id}/records`
 * `GET /api/records/{record_id}`
+* `GET /api/records/{record_id}/interview-context`
 * `PATCH /api/records/{record_id}`
 * `DELETE /api/records/{record_id}`
 * `POST /api/records/{record_id}/messages`
 * `GET /api/records/{record_id}/interview-state`
 * `PATCH /api/records/{record_id}/interview-answers/{field_id}`
-* `POST /api/records/{record_id}/summary-proposals`
 * `GET /api/records/{record_id}/stream`
+
+`GET /api/records`は、認証ユーザーのロールとRecordの状態・担当・明示閲覧許可で返却対象を絞り込む。`POST /api/knowledges/{knowledge_id}/records`と`PATCH /api/records/{record_id}`の担当者・閲覧者設定は管理者だけが実行できる。Recordの状態は`draft`、`in_progress`、`submitted`、`returned`、`approved`で管理する。記録作成、公開、テキスト開始・回答、音声開始ではインタビュー設定の完了を確認する。`viewer`の状態取得は表示用スナップショットとして処理し、状態を保存しない。
 
 テキストメッセージ送信は`clientMessageId`による重複排除と`stateVersion`による状態競合検出を行う。
 
@@ -183,14 +193,7 @@ AI提案は`draft`または`needs_review`で保存し、人の操作なしに`ap
 
 現在の文書登録はメタデータ登録であり、登録後にメモリ上の取り込みキューへ投入する。文書本体のアップロードは未実装である。
 
-### 5.8 参照チャット
-
-* `POST /api/chats`
-* `POST /api/chats/{chat_id}/messages`
-
-参照チャットの回答は`answer`と`citations`を返す。
-
-### 5.9 音声セッション
+### 5.8 音声セッション
 
 ユーザー向け音声セッションAPI:
 
@@ -211,7 +214,7 @@ AI提案は`draft`または`needs_review`で保存し、人の操作なしに`ap
 * `POST /internal/voice-sessions/{voice_session_id}/assistant-events`
 * `POST /internal/voice-sessions/{voice_session_id}/connection-events`
 
-### 5.10 開発用データ操作
+### 5.9 開発用データ操作
 
 開発用Composeで有効になるAPIであり、本番APIとして利用しない。
 
@@ -266,9 +269,9 @@ docker compose -f infra/docker-compose.yml up --build
 
 Composeでは次の開発用データを起動時に冪等作成する。
 
-* 保全ヒアリング
+* 保全インタビュー
 * 音声インタビュー
-* システム要件ヒアリング
+* システム要件インタビュー
 
 音声デモとシステム要件デモは、次のAPIで会話状態をリセットできる。
 
@@ -289,8 +292,9 @@ Composeを使用しない場合の詳細は[README.md](../../README.md)を参照
 * Elasticsearchへの実データ永続化
 * SQSの実接続とAPI・Worker間の実ジョブ連携
 * 文書ファイル本体のアップロードと実ファイル処理
-* チャットボット設定のサーバー永続化
 * 承認済み項目値を正式ナレッジへ反映する永続モデル
 * 本番向けの監視、負荷対策、マルチテナント運用
+
+質問項目設計の検索データ源は現在`InMemoryStore`である。実Elasticsearch接続と文書ファイル本体の取り込みは未実装である。
 
 これらを実装した場合は、恒久的な仕様を`docs/spec.md`または該当する`docs/architecture/`・`docs/reference/`へ反映し、この文書の実装状況も更新する。

@@ -72,13 +72,13 @@
 1. Knowledge設定でインタビュー用途を設定する。
 2. Record作成時に、Knowledge設定を初期値として読み込む。
 3. RecordはKnowledgeのProfileを使用する。Record単位のProfile上書きは提供しない。
-4. インタビュー開始後はKnowledgeのProfileを変更できない。
+4. インタビュー開始後はKnowledgeのProfileを変更できない。実行モデルは変更でき、保存後の次回処理から新しいモデルを使用する。
 5. `fixed / process / hybrid`は利用者向けUIに表示しない。
 6. `hybrid`という公開モードは作成しない。複数の状態を同時に抽出できる共通Interpreterを標準エンジンとする。
 
 ### 4.2 Profile設定
 
-Profile設定はKnowledgeの`interviewPlan.profile`に保存する。インタビュー実行モデルは同じ`interviewPlan.modelId`に保存する。`modelId`に指定できる値は`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`だけである。質問項目設計モデルはKnowledgeの`defaultModelId`に保存し、同じ2つの値から選択する。`defaultModelId`が未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。Profileごとの必須対象、Applicability確認順、完了条件はBackendの固定定義から読み込む。ユーザーの追加プロンプトで、これらの定義を変更してはならない。
+Profile設定はKnowledgeの`interviewPlan.profile`に保存する。インタビュー実行モデルは同じ`interviewPlan.modelId`に保存する。`modelId`に指定できる値は`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`だけである。実行モデルはインタビュー開始後も変更でき、保存後の次回処理から新しいモデルを使用する。既存の質問、回答、構造化状態は変更しない。質問項目設計モデルはKnowledgeの`defaultModelId`に保存し、同じ2つの値から選択する。`defaultModelId`が未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。Profileごとの必須対象、Applicability確認順、完了条件はBackendの固定定義から読み込む。ユーザーの追加プロンプトで、これらの定義を変更してはならない。
 
 Profileごとの必須対象は次のとおりである。
 
@@ -131,7 +131,7 @@ LLMは情報の抽出と自然文の生成を担当する。Backendは状態、�
 | Provider | Amazon Bedrock |
 | Endpoint | `bedrock-runtime.{BEDROCK_AWS_REGION}.amazonaws.com/openai/v1` |
 | API | OpenAI互換 Responses API |
-| 主モデルID | `global.openai.gpt-5.6-terra` |
+| 主モデルID | `global.openai.gpt-5.6-luna` |
 | `reasoning.effort` | `low` |
 | Structured Output | 必須 |
 | 画像生成 | 使用しない |
@@ -172,8 +172,8 @@ Lunaはナレッジ設定から明示的に選択できる。TerraとLunaの自�
 
 | モデル | 初期実装での扱い | 将来の候補 |
 |---|---|---|
-| `global.openai.gpt-5.6-luna` | ナレッジ単位で選択可能 | 高頻度・低コスト処理 |
-| `global.openai.gpt-5.6-terra` | 既定モデル。ナレッジ単位で選択可能 | 通常処理および中難度処理 |
+| `global.openai.gpt-5.6-luna` | 既定モデル。ナレッジ単位で選択可能 | 標準処理および低コスト処理 |
+| `global.openai.gpt-5.6-terra` | ナレッジ単位で選択可能 | 複雑な意味解釈および中難度処理 |
 | `global.openai.gpt-5.6-sol` | 使用しない | Terraで解決できない高難度の要件整理 |
 
 Solを追加する場合、またはTerraとLunaの自動ルーティングを追加する場合は、比較評価、対象条件、失敗時の挙動を別仕様で定義する。
@@ -213,18 +213,20 @@ GPT-5.6 Terra、BedrockのOpenAI互換Responses API、Structured Outputの仕様
 |---|---:|---|
 | `STRUCTURED_INTERVIEW_ENABLED` | いいえ | 標準設定は`true`。未設定時のコード既定値は`false` |
 | `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` |
-| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-terra` |
-| `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-terra` |
+| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
+| `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
 | `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` |
 | `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` |
 | `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000`。長文回答でJSONが上限に達した場合、最大10000トークンまで増やして1回だけ再試行する |
 | `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` |
+| `QUESTION_DESIGN_REASONING_EFFORT` | いいえ | `low` |
+| `QUESTION_DESIGN_MAX_OUTPUT_TOKENS` | いいえ | `6000` |
 | `STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS` | いいえ | `5` |
 | `STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS` | いいえ | `120` |
 
 Docker Composeで起動する場合は、上記の値をリポジトリルートの`.env`から`infra/docker-compose.yml`のAPIコンテナへ渡す。構造化インタビューを使うには、`STRUCTURED_INTERVIEW_ENABLED=true`、AWS認証情報、対象リージョンのBedrockモデルアクセス、Global inference profileのIAM許可を設定する。
 
-`STRUCTURED_INTERVIEW_MODEL_ID`には、既定の`global.openai.gpt-5.6-terra`または対象リージョンで利用できるGlobal inference profile ARNを指定する。ユーザーが提示したARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。ARNを使用する場合は`BEDROCK_AWS_REGION=us-east-1`に設定する。東京など別の呼び出し元リージョンでは、既定のprofile IDを使用する。
+`STRUCTURED_INTERVIEW_MODEL_ID`には、既定の`global.openai.gpt-5.6-luna`または対象リージョンで利用できるGlobal inference profile ARNを指定する。ユーザーが提示したARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。ARNを使用する場合は`BEDROCK_AWS_REGION=us-east-1`に設定する。東京など別の呼び出し元リージョンでは、既定のprofile IDを使用する。
 
 ## 7. Interpreter Structured Output契約
 
@@ -1051,7 +1053,7 @@ contradiction
 | `services/voice_interview.py` | 音声ターンのI/O境界と保存 | 確定transcriptを構造化サービスへ渡す |
 | `agents/common/strands_runtime.py` | BedrockModelとStrands Agent生成 | Structured InterviewのProviderとは別の既存互換経路として分離する |
 | `models/domain.py`の`AiProposal` | AI提案の汎用保存 | 構造化候補のレビュー公開で使用する |
-| `pages/KnowledgeSettingsPage.tsx` | Knowledge設定とAI設定 | 利用者向けProfile選択を追加する |
+| `pages/KnowledgeSettingsPage.tsx` | ナレッジ情報と実行設定 | 利用者向けProfile選択を追加する |
 | `pages/InterviewRecordPage.tsx` | チャットと音声UI | Process Viewの表示領域を追加する |
 | `types/app.ts` | Field中心のFrontend型 | Requirement、Process、Applicability型を追加する |
 
@@ -1106,7 +1108,7 @@ contradiction
 
 ### モデル
 
-* 初期の既定インタビュー意味処理モデルはBedrock Global inference profile `global.openai.gpt-5.6-terra`である。
+* 初期の既定インタビュー意味処理モデルはBedrock Global inference profile `global.openai.gpt-5.6-luna`である。
 * ナレッジ設定で`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`を選択できる。選択値はInterpreterとQuestion Generatorの両方に適用する。
 * 初期の`reasoning.effort`は`low`である。
 * 構造条件を検知した場合は、選択済みのTerraまたはLunaを`medium`で再実行する。

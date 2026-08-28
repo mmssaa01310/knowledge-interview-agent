@@ -26,6 +26,7 @@
 │   ├── architecture/
 │   │   ├── agents/
 │   │   ├── aws/
+│   │   ├── access-control.md
 │   │   └── voice/
 │   ├── agents/
 │   ├── guides/
@@ -43,9 +44,16 @@
 │   │   │   ├── app/
 │   │   │   ├── components/
 │   │   │   ├── features/
+│   │   │   │   ├── interviews/
+│   │   │   │   │   └── interviewConfiguration.ts
+│   │   │   │   └── records/
 │   │   │   ├── layouts/
+│   │   │   │   └── RecordsLayout.tsx
 │   │   │   ├── lib/
 │   │   │   ├── pages/
+│   │   │   │   ├── KnowledgeInterviewPage.tsx
+│   │   │   │   ├── KnowledgeRecordsPage.tsx
+│   │   │   │   └── RecordsPage.tsx
 │   │   │   ├── providers/
 │   │   │   ├── routes/
 │   │   │   ├── types/
@@ -59,6 +67,7 @@
 │   │   │       ├── agents/
 │   │   │       ├── auth/
 │   │   │       ├── core/
+│   │   │       │   └── interview_configuration.py
 │   │   │       ├── models/
 │   │   │       ├── repositories/
 │   │   │       ├── routers/
@@ -216,7 +225,7 @@ Backend APIはFastAPIで実装する。
 * SQSジョブ投入
 * SSEストリーミング
 
-プロンプト管理では、ヒアリング項目設計用とAIインタビュー用を分離して扱う。
+プロンプト管理では、質問項目設計用とAIインタビュー用を分離して扱う。
 ユーザーが編集する追加カスタマイズは、質問項目設計用プロンプトとは混在させない。
 質問項目設計チャットの request/context には、実インタビュー用の追加カスタマイズを含めない。
 AIエージェントの責務分離は `docs/architecture/agents/agent-architecture.md` に従う。
@@ -236,7 +245,7 @@ agents/question_design/
 
 質問項目設計を置く。
 既存の `field-suggestions` と `services/prompts/field_fill/` はこの責務に属する。
-`services/field_suggestions.py` は router 互換の薄いラッパーとして残し、実処理は Strands question design agent に置く。
+`services/field_suggestions.py` は router 互換の薄いラッパーとして残し、事前検索は`services/question_design_retrieval.py`、生成と検証はBedrock OpenAI互換Responses APIのStructured Output runnerに置く。
 
 ```text
 agents/interview/
@@ -246,17 +255,10 @@ agents/interview/
 正式ナレッジ化は人の承認後に限定する。
 
 ```text
-agents/tacit_answer/
-```
-
-承認済みナレッジを使った回答の責務を置く。
-回答専用であり、DB更新、項目作成、承認処理を行わない。
-
-```text
 agents/common/
 ```
 
-Bedrock client、prompt loader、JSON parser、contract retry、observability、read-only tools など、エージェント共通基盤の候補を置く。
+Bedrock client、prompt loader、JSON parser、contract retry、observabilityなど、エージェント共通基盤の候補を置く。
 tool は read-only から開始し、自律的なDB更新を行わない。
 
 ```text
@@ -314,10 +316,10 @@ services/prompts/
   loader.py
 ```
 
-* `field_fill/`: ヒアリング項目設計用の固定プロンプト
+* `field_fill/`: 質問項目設計用の固定プロンプト
 * `interview/base.md`: AIインタビュー用の固定ベースプロンプト
 * `interview/templates/`: ユーザー追加カスタマイズのたたき台
-* `field_fill/*`: ヒアリング項目設計専用プロンプト。`interview/*` やユーザー追加カスタマイズを連結しない
+* `field_fill/*`: 質問項目設計専用プロンプト。`interview/*` やユーザー追加カスタマイズを連結しない
 * `loader.py`: md や config から実行時にプロンプトを組み立てる処理
 
 将来的に prompt を `agents/question_design/prompts/` へ移す場合も、endpoint URL、request schema、response schema は維持する。

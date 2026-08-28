@@ -2,14 +2,13 @@
 
 ## 1. アプリの目的
 
-このアプリは、製造熟練者、業務担当者、システム開発関係者へのAIヒアリングを行い、回答を構造化ナレッジとして蓄積・検索・再利用するWebアプリである。
+このアプリは、製造熟練者、業務担当者、システム開発関係者へのAIインタビューを行い、回答を構造化ナレッジとして蓄積・承認するWebアプリである。
 
-単なるチャットボットではなく、以下を目的とする。
+単なる会話UIではなく、以下を目的とする。
 
 * 熟練者へのAIインタビュー
 * 会話内容からの構造化ナレッジ抽出
 * AI提案内容の人による修正・承認
-* 承認済みナレッジの検索・再利用
 * ドキュメント取り込みによるナレッジ補強
 * 将来的な外部DB連携
 
@@ -17,7 +16,7 @@
 
 * AIインタビュー
 * 目的別インタビュー（定型情報、業務フロー、システム要件）
-* ヒアリング項目設定
+* 質問項目設定
 * テキストによるインタビュー
 * リアルタイム音声によるインタビュー
 * 会話内容の構造化
@@ -26,7 +25,6 @@
 * 個別承認
 * 記録単位の全承認
 * 一覧からの一括承認
-* ナレッジ参照チャット
 * ドキュメント追加
 * ドキュメント取り込み状態管理
 * ユーザーごとの既読・確認済み状態管理
@@ -41,15 +39,12 @@
 
 * 質問設計
 * インタビュー実行
-* 暗黙知回答
 
 質問設計は、ユーザーから現場の答えを集める機能ではなく、熟練者に聞く質問項目を作成する機能である。
 
 インタビュー実行は、熟練者との会話を進め、回答を構造化候補にする。
 
 インタビューエージェントは不足情報、矛盾、Applicabilityを抽出し、Backendが決定した質問対象について質問文を生成する。次の質問対象、質問優先順位、完了判定はBackendが決定する。
-
-暗黙知回答は、承認済みナレッジを検索し、根拠付きで回答する。
 
 AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に従う。
 
@@ -243,18 +238,18 @@ Assistant音声への割り込みは音声出力の停止であり、コミッ�
 
 このアプリでは、AI関連のシステムプロンプトを用途ごとに分離して管理する。
 
-### 6.1 ヒアリング項目設計用プロンプト
+### 6.1 質問項目設計用プロンプト
 
-ヒアリング項目を埋める、または設計するためのシステムプロンプトは、開発者管理の固定プロンプトとする。
+質問項目を埋める、または設計するためのシステムプロンプトは、開発者管理の固定プロンプトとする。
 
 * ユーザーは編集できない。
-* AI設定アシストやヒアリング項目提案でのみ利用する。
+* 質問項目設計チャットや質問項目提案でのみ利用する。
 * 熟練者へのAIインタビュー用プロンプトと混在させない。
 * JSON出力制約、項目提案ガード、確認質問ルールはこの系統に含める。
 
 ### 6.2 AIインタビュー用プロンプト
 
-熟練者にヒアリングするためのプロンプトは、以下の2層に分ける。
+熟練者にインタビューするためのプロンプトは、以下の2層に分ける。
 
 * 開発者管理の固定ベースプロンプト
 * ユーザーが追加で設定する特化型カスタマイズプロンプト
@@ -277,9 +272,9 @@ Assistant音声への割り込みは音声出力の停止であり、コミッ�
 ユーザーは、AIインタビューの聞き方を調整するための追加カスタマイズプロンプトを設定できるようにする。
 
 * これは「どう質問するか」を調整するためのものである。
-* ヒアリング項目設計用プロンプトとは絶対に混ぜない。
-* 質問設定チャット、ヒアリング項目設計API、項目提案用のcontextへ流してはいけない。
-* ヒアリング項目設計では、この追加カスタマイズの文面を入力文脈として参照してはいけない。
+* 質問項目設計用プロンプトとは絶対に混ぜない。
+* 質問項目設計チャット、質問項目設計API、項目提案用のcontextへ流してはいけない。
+* 質問項目設計では、この追加カスタマイズの文面を入力文脈として参照してはいけない。
 * 固定ベースプロンプトを上書きするのではなく、追加で連結する。
 * 現場固有の観点、業務特化の深掘り方、聞き方の重点を記述対象とする。
 
@@ -312,14 +307,140 @@ Assistant音声への割り込みは音声出力の停止であり、コミッ�
 * 完成済みの全体プロンプトを保存する用途にしない。
 * ユーザーが追加カスタマイズ欄へ流し込むためのたたき台とする。
 
-## 7. データ保存の原則
+## 7. 利用者、画面、認可
+
+### 7.1 基本方針
+
+インタビュー対象者が回答する「記録」と、ナレッジの定義・承認を行う「管理」を、画面と権限の両方で分離する。
+
+同じ`InterviewRecord`を、対象者用と管理者用に複製してはいけない。インタビューの会話、回答状態、AI提案、承認履歴の正本は常に1件の`InterviewRecord`に置く。利用者ロールに応じて、表示範囲と許可する操作だけを変える。
+
+Frontendでメニューを隠すことは操作補助であり、認可ではない。直接URL、API、音声接続を含むすべての入口でBackendが認可する。
+
+### 7.2 ロール
+
+ロールIDと画面上の名称は次のとおりとする。既存の`interviewer`は、質問を行う管理者ではなく、AIインタビューに回答するインタビュー対象者を表すロールIDとして扱う。
+
+| ロールID | 画面上の名称 | 役割 |
+|---|---|---|
+| `admin` | システム管理者 | テナント内の全機能とシステム設定を管理する。 |
+| `knowledge_manager` | ナレッジ管理者 | ナレッジ設定、記録のレビュー、提案の承認を行う。 |
+| `interviewer` | インタビュー対象者 | 自分に割り当てられた記録へ回答し、レビューを依頼する。 |
+| `viewer` | 閲覧者 | 閲覧を許可された確定済み記録だけを閲覧する。 |
+
+### 7.3 ワークスペースとナビゲーション
+
+アプリの論理ワークスペースは、以下の3つとする。論理ワークスペースは権限と初期遷移先を定義する。画面上では、複数のグローバルナビゲーション列を表示せず、1列の左サイドバーとメイン画面で構成する。
+
+| ワークスペース | 用途 | 表示するロール |
+|---|---|---|
+| 記録 | インタビュー対象者が担当記録へ回答する。 | `interviewer`、`viewer` |
+| ナレッジ管理 | ナレッジDB、ナレッジ、質問項目、インタビュープロファイル、文書、実行設定を扱う。 | `admin`、`knowledge_manager` |
+| システム設定 | 利用者、ロール、テナント全体の設定を扱う。 | `admin` |
+
+`interviewer`には「記録」だけを表示する。`viewer`には読み取り専用の「記録」だけを表示する。`knowledge_manager`にはナレッジ一覧を表示し、記録は選択したナレッジ内の「記録」から扱う。`admin`にはナレッジ一覧と「システム設定」を表示し、記録は選択したナレッジ内の「記録」から扱う。
+
+左サイドバーは、ロールごとに次の内容を1列で表示する。
+
+* `admin`、`knowledge_manager`: 見出し「ナレッジ」、ナレッジ作成ボタン、ナレッジ一覧。`admin`だけは下部に「システム設定」を表示する。
+* `interviewer`、`viewer`: 見出し「記録」、利用可能な記録一覧。ナレッジ一覧、ナレッジ作成、ナレッジ設定を表示しない。
+
+「ナレッジ管理」を独立したグローバル列として表示してはいけない。ナレッジ配下の「インタビュー」「記録」は、選択中ナレッジのメイン画面上部に表示する。ナレッジごとの操作を左サイドバー内にツリー表示してはいけない。設定はナレッジヘッダーの操作から開く。
+
+サイドバーは開閉できる。閉じた状態では開閉ボタンだけを表示し、メイン画面を広げる。画面幅が狭い場合はサイドバーをメイン画面の上部へ移し、ナレッジまたは記録の一覧を横スクロールで表示する。
+
+ナレッジ一覧の表示順は、`Knowledge.createdAt`の昇順で固定する。同一の作成日時の場合は`Knowledge.id`の昇順で固定する。ナレッジを選択しても、選択状態の変更や画面遷移によって一覧の表示順を変更してはいけない。
+
+管理者・ナレッジ管理者がナレッジ管理の入口を開いた場合、メイン画面にナレッジ一覧を重複表示してはいけない。最後に開いたナレッジが存在する場合は、そのナレッジの「インタビュー」を開く。最後に開いたナレッジがない場合は、最初のナレッジの「インタビュー」を開く。ナレッジが1件もない場合だけ、メイン画面に作成案内を表示する。
+
+全体の「記録」ワークスペースでは、同じ記録をロールに応じて表示する。
+
+* `interviewer`: 担当中、差し戻し、提出済み、完了済みの自分の記録を表示する。
+* `knowledge_manager`と`admin`: 担当者、進捗、承認待ちを含む管理対象の記録を表示する。
+* `viewer`: 閲覧を許可された確定済み記録を表示する。
+
+`admin`と`knowledge_manager`が特定のナレッジを管理する画面は、次の2つを主ナビゲーションとして表示する。
+
+| ナレッジ配下の画面 | 役割 |
+|---|---|
+| インタビュー | 新しい記録を作成し、途中の記録を再開する。設定状態の詳細は主画面に表示しない。 |
+| 記録 | そのナレッジの記録一覧を表示し、公開、差し戻し、承認を行う。 |
+
+記録詳細のインタビュー画面は、左側に会話、右側に会話から整理した情報を表示する。`system_requirement`では、右側の整理結果を「要件整理」と「処理の流れ」の2タブで切り替える。「処理の流れ」タブ内では「フローチャート」と「シーケンス図」を切り替える。`business_process`では右側に処理の流れを表示し、`fixed_form`では右側に質問リストを表示する。画面幅が狭い場合は会話を上、整理結果または質問リストを下に表示する。
+
+設定は主ナビゲーションに表示せず、ナレッジヘッダーの主ボタン「インタビュー設定」から開く補助画面とする。ナレッジを新規作成した直後は、必ず設定画面の「実行設定」を開く。設定画面では、ナレッジ情報、質問項目、実行設定、事前知識を同じ画面内のタブで管理する。事前知識タブでは、質問項目設計やインタビュー内容の整理で参照する文書を追加・確認する。ドキュメント管理を主ナビゲーションの画面として表示してはいけない。インタビュー対象者と閲覧者には、ナレッジDB・ナレッジの設定画面を表示してはいけない。
+
+`KnowledgeDb`は複数の`Knowledge`をまとめる内部の管理単位である。ナレッジ管理者が通常操作する一覧では`Knowledge`を主対象として表示し、「ナレッジDB」を作成・選択する操作を主導線にしてはいけない。`KnowledgeDb`が複数ある場合に限り、ナレッジ作成時の保存先を「業務領域」として選択できる。ナレッジ一覧には`KnowledgeDb`の技術名称やIDを表示してはいけない。
+
+### 7.3.1 インタビュー設定の完了条件
+
+インタビュー設定は、`Knowledge.interviewPlan`に次の値を保存した時点で完了とする。
+
+* `profile`: `fixed_form`、`business_process`、`system_requirement`のいずれか
+* `modelId`: `global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`
+
+設定が完了していないナレッジでは、管理者は記録を作成してはいけない。既存の`draft`記録も公開してはいけない。テキストインタビューの開始、回答送信、音声セッションの開始も許可してはいけない。
+
+Frontendは設定未完了の状態を表示し、「設定を開始」を主操作として表示する。この状態では、記録作成・公開・開始操作を表示または有効化してはいけない。Backendは同じ条件を必ず検証し、満たさない場合は`409 interview_configuration_required`を返す。
+
+### 7.3.2 設定画面の構成
+
+設定画面に「基本設定」タブを置いてはいけない。ナレッジ名と説明は、設定画面上部の「ナレッジ情報」セクションに常に表示する。
+
+設定画面のタブは次の3つとする。
+
+| タブ | 設定内容 |
+|---|---|
+| 質問項目 | 質問項目の追加・編集・削除、詳細項目、必須/任意、質問項目設計チャット |
+| 実行設定 | インタビュー用途、インタビュー実行モデル、質問項目設計モデル、追加カスタマイズプロンプト |
+| 事前知識 | 参照文書の追加、取り込み状態、チャンク数、ユーザー既読状態、取り込みエラー |
+
+「ナレッジ情報」は3つのタブのいずれにも含めず、タブの上に配置する。設定画面の保存操作は、ナレッジ情報、質問項目、実行設定をまとめて保存する。事前知識の文書追加・既読状態更新は、それぞれの操作時に保存する。タブごとに別の設定保存状態を持たせてはいけない。
+
+### 7.4 記録の担当と状態
+
+各`InterviewRecord`には、回答を担当するインタビュー対象者を1人だけ設定する。担当者は`ownerUserId`に保存する。`ownerUserId`が未設定の記録は、`interviewer`へ表示してはいけない。
+
+記録のレビュー状態は、インタビュー内部の回答状態とは別に、次の値で管理する。
+
+| 記録状態 | 意味 | 許可する遷移 |
+|---|---|---|
+| `draft` | 管理者が作成中で、対象者へ公開していない。 | `in_progress` |
+| `in_progress` | 対象者が回答できる。 | `submitted` |
+| `submitted` | 対象者がレビューを依頼済みで、管理者の確認待ち。 | `returned`、`approved` |
+| `returned` | 管理者が修正依頼を付けて差し戻した。 | `in_progress` |
+| `approved` | 管理者が正式な記録として承認した。 | 遷移なし |
+
+`submitted`への遷移は、Profileで定義されたインタビュー完了条件を満たした場合だけ許可する。`returned`への遷移では、管理者は対象者に提示する差し戻し理由を必ず入力する。`approved`へ遷移した記録の回答、会話、AI提案を対象者が変更してはいけない。
+
+管理者向けのナレッジ配下「記録」画面では、`draft`の公開、`submitted`の差し戻し、`submitted`の承認を一覧から実行できる。詳細画面でも同じ状態遷移を実行できる。状態遷移の正本はBackendとし、画面上のボタン表示だけで許可を判断してはいけない。
+
+インタビュー内の`UNANSWERED`、`CANDIDATE_PENDING`、`AWAITING_CONFIRMATION`、`CONFIRMED`は、質問ごとの回答状態である。記録状態の`draft`、`in_progress`、`submitted`、`returned`、`approved`と混同してはいけない。
+
+### 7.5 操作権限
+
+| 操作 | `admin` | `knowledge_manager` | `interviewer` | `viewer` |
+|---|---:|---:|---:|---:|
+| ナレッジDB・ナレッジ・項目・文書・実行設定の管理 | 可 | 可 | 不可 | 不可 |
+| 記録の作成、担当者設定、削除 | 可 | 可 | 不可 | 不可 |
+| 担当記録の会話・音声回答・確定済み回答の編集 | 可 | 可 | 自分の担当記録だけ可 | 不可 |
+| 記録の提出 | 可 | 可 | 自分の担当記録だけ可 | 不可 |
+| 提案・記録のレビュー、差し戻し、承認 | 可 | 可 | 不可 | 不可 |
+| 確定済み記録の閲覧 | テナント内で可 | 管理対象で可 | 自分の担当記録だけ可 | 明示的に閲覧を許可された記録だけ可 |
+
+`interviewer`はAI提案を正式承認してはいけない。対象者は回答を確定し、記録を`submitted`へ遷移させる。AI提案と記録の最終承認は、`admin`または`knowledge_manager`だけが実行する。
+
+`viewer`は会話、音声接続、回答編集、提出、提案承認、文書既読状態の更新を実行してはいけない。
+
+### 7.6 認可と保存の原則
 
 * 保存データにはCognitoユーザーIDを含める。
 * ユーザーに紐づかない保存をしてはいけない。
 * 認証済みユーザーのみAPIを利用できる。
+* ロール、テナント、記録の担当または明示的な閲覧許可をすべて確認してからデータを返す。
 * 認可チェックを省略してはいけない。
 * AI出力を自動で正式ナレッジ化してはいけない。
-* 正式ナレッジ化には人の承認を必須とする。
+* 正式ナレッジ化には`admin`または`knowledge_manager`による承認を必須とする。
 * 音声インタビューのセッションと発話は、対象記録および認証ユーザーに紐付ける。
 * 音声経路の回答は、回答対象の質問IDと紐付ける。
 * 確定前の部分文字起こしを、正式な回答として保存してはいけない。
@@ -345,7 +466,7 @@ Assistant音声への割り込みは音声出力の停止であり、コミッ�
 
 インタビュー実行時に、1つのユーザー発話から次の情報を同時に抽出する。
 
-* 設定済みヒアリング項目の候補
+* 設定済み質問項目の候補
 * システム要求の候補
 * 業務フローの候補
 * 矛盾
@@ -506,44 +627,50 @@ LLMは質問対象、優先順位、完了状態を返してはならない。LL
 
 ### 9.8 モデル仕様
 
-初期のインタビュー意味処理には、Amazon Bedrock上のOpenAI GPT-5.6 Terraを使用する。
+初期のインタビュー意味処理には、Amazon Bedrock上のOpenAI GPT-5.6 Lunaを既定モデルとして使用する。
 呼び出しは`bedrock-runtime`のOpenAI互換Responses APIへ送信する。AWS SigV4で署名し、標準AWS認証情報チェーンから認証情報を取得する。OpenAI APIキーまたは画像生成モデルは使用しない。
 Structured OutputはResponses APIの`text.format`で指定する。この実装では、同じターンの構造化処理にネイティブConverse APIの`outputConfig.textFormat`を使用しない。
 
-モデルには、Global Inference Profileの`global.openai.gpt-5.6-terra`を指定する。Global profileは、対応する商用AWSリージョンの容量へルーティングされる。処理リージョンを単一リージョンまたは特定地域に限定する要件がある場合は、このGlobal profileを使用してはならず、別途リージョン要件を満たすprofileを定義する。
+モデルには、Global Inference Profileの`global.openai.gpt-5.6-luna`を既定値として指定する。Global profileは、対応する商用AWSリージョンの容量へルーティングされる。処理リージョンを単一リージョンまたは特定地域に限定する要件がある場合は、このGlobal profileを使用してはならず、別途リージョン要件を満たすprofileを定義する。
 
-ナレッジ単位で、AI設定の「構造化インタビュー実行モデル」から次の2つを選択できる。選択したモデルはInterpreterとQuestion Generatorの両方に適用する。モデルの自動切り替えは行わない。設定がない既存ナレッジはBackend設定の`STRUCTURED_INTERVIEW_MODEL_ID`を使用し、その既定値はTerraとする。
+ナレッジ単位で、実行設定の「構造化インタビュー実行モデル」から次の2つを選択できる。選択したモデルはInterpreterとQuestion Generatorの両方に適用する。モデルの自動切り替えは行わない。設定がない既存ナレッジはBackend設定の`STRUCTURED_INTERVIEW_MODEL_ID`を使用し、その既定値はLunaとする。
 
-質問項目設計では、AI設定の「質問項目の設計モデル」から同じ2つを選択できる。選択値はKnowledgeの`defaultModelId`に保存し、Question Design AgentとそのValidatorの両方に適用する。設定がない、または旧モデルが保存された既存ナレッジは、Backend設定の`QUESTION_DESIGN_MODEL_ID`を使用する。許可値はTerraとLunaだけであり、既定値はTerraとする。質問項目設計モデルとインタビュー実行モデルは別々に選択できる。
+質問項目設計では、実行設定の「質問項目の設計モデル」から同じ2つを選択できる。選択値はKnowledgeの`defaultModelId`に保存し、Question Design AgentとそのValidatorの両方に適用する。設定がない、または旧モデルが保存された既存ナレッジは、Backend設定の`QUESTION_DESIGN_MODEL_ID`を使用する。許可値はTerraとLunaだけであり、既定値はLunaとする。質問項目設計モデルとインタビュー実行モデルは別々に選択できる。
 
 | 表示名 | `interviewPlan.modelId` | 用途 |
 |---|---|---|
-| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 既定。意味解釈と構造化抽出の品質を優先する |
-| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 大量処理とコストを優先する |
+| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 既定。標準処理とコストを優先する |
+| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 意味解釈と構造化抽出の品質を優先する |
 
 質問項目設計モデルの選択値は次のとおりである。
 
 | 表示名 | `Knowledge.defaultModelId` | 用途 |
 |---|---|---|
-| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 既定。質問項目候補の意味解釈と検証品質を優先する |
-| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 大量の質問項目設計とコストを優先する |
+| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 既定。標準的な質問項目設計とコストを優先する |
+| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 複雑な意味解釈と検証品質を優先する |
 
-インタビュー実行モデル（`interviewPlan.modelId`）はインタビュー開始後に変更してはならない。変更要求はBackendがHTTP 409で拒否する。質問項目設計モデル（`Knowledge.defaultModelId`）は、保存後に実行する質問項目設計から適用し、既に作成済みの候補には適用しない。
+インタビュー実行モデル（`interviewPlan.modelId`）は、インタビュー開始後も変更できる。保存後の次回処理から、選択したモデルをInterpreterとQuestion Generatorに適用する。既に保存済みの質問、回答、構造化状態は変更しない。質問項目設計モデル（`Knowledge.defaultModelId`）は、保存後に実行する質問項目設計から適用し、既に作成済みの候補には適用しない。
 
-Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.format.name`、`text.format.strict=true`、`text.format.schema`で指定する。LLMの返却JSONはBackendがPydantic Schemaで検証し、検証成功後だけ状態へ適用する。
+Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.format.name`、`text.format.strict=true`、`text.format.schema`で指定する。Structured Outputは返却形式を固定する仕組みであり、BackendがLLM呼び出し前に検索を実行することを禁止しない。LLMの返却JSONはBackendがPydantic Schemaで検証し、検証成功後だけ状態へ適用する。
 
-次の処理表は、モデル未選択時またはTerra選択時の既定動作を示す。Lunaを選択した場合は、同じ処理、同じSchema、同じ推論強度でモデルIDだけをLunaへ置き換える。
+次の処理表は、モデル未選択時の既定動作を示す。Terraを選択した場合は、同じ処理、同じSchema、同じ推論強度でモデルIDだけをTerraへ置き換える。
 
 | 処理 | 初期モデル | `reasoning.effort` |
 |---|---|---|
-| Dialogue Act判定 | `global.openai.gpt-5.6-terra` | `low` |
-| Field抽出 | `global.openai.gpt-5.6-terra` | `low` |
-| Requirement抽出 | `global.openai.gpt-5.6-terra` | `low` |
-| Process抽出 | `global.openai.gpt-5.6-terra` | `low` |
-| 矛盾・曖昧性判定 | `global.openai.gpt-5.6-terra` | `low` |
-| 次の質問文生成 | `global.openai.gpt-5.6-terra` | `low` |
+| Dialogue Act判定 | `global.openai.gpt-5.6-luna` | `low` |
+| Field抽出 | `global.openai.gpt-5.6-luna` | `low` |
+| Requirement抽出 | `global.openai.gpt-5.6-luna` | `low` |
+| Process抽出 | `global.openai.gpt-5.6-luna` | `low` |
+| 矛盾・曖昧性判定 | `global.openai.gpt-5.6-luna` | `low` |
+| 次の質問文生成 | `global.openai.gpt-5.6-luna` | `low` |
 
 質問項目設計では、通常時も検証時もKnowledgeで選択された`defaultModelId`を使用する。未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。質問項目設計においてTerraとLunaを自動切り替えしてはならない。
+
+質問項目設計は、Strands Agentを本番経路に使用せず、BedrockのOpenAI互換Responses APIへ直接送信する。GPT-5.6 Terra／Lunaは`temperature`を使用せず、Structured OutputのJSON Schemaを指定する。GPT-5.6以外のモデルを追加する場合は、モデルが対応する場合に限り温度設定を別仕様で定義する。
+
+質問項目設計の生成前に、Backendは同じテナントかつ同じKnowledgeに属する情報だけを読み取る。検索対象は、既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済みの文書・文書チャンクである。未承認の記録・提案、取り込み中の文書、別Knowledgeの情報をLLMへ渡してはならない。検索結果は`retrieved_knowledge`として入力へ埋め込み、LLMにDBアクセスやDB更新を許可してはならない。
+
+Question Design AgentとValidatorは、同じ選択モデルへそれぞれStructured Outputリクエストを送る。生成結果と検証結果はBackendがPydantic Schemaで検証し、検証失敗時は各段階で1回だけ再実行する。Provider障害時にStrands、別モデル、別の自動フォールバックへ切り替えてはならない。
 
 既存状態との矛盾、複数フロー、大量更新、大量要求、既存ProcessStateの大幅変更をBackendが検知した場合だけ、ナレッジで選択されたTerraまたはLunaを`medium`で再実行する。
 
@@ -559,16 +686,18 @@ Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.fo
 |---|---:|---|---|
 | `STRUCTURED_INTERVIEW_ENABLED` | いいえ | 標準設定は`true`。未設定時のコード既定値は`false` | 構造化インタビューの有効化 |
 | `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` | Bedrock Runtimeへ接続する呼び出し元リージョン |
-| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-terra` | Bedrock inference profile IDまたはARN |
+| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` | Bedrock inference profile IDまたはARN |
 | `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` | 通常時の推論強度 |
 | `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` | 複雑条件検知時の推論強度 |
 | `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000` | Interpreterの1回のLLM出力上限。長文回答でJSONが上限に達した場合、最大10000トークンまで増やして1回だけ再試行する |
 | `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` | Question Generatorの1回のLLM出力上限。短い質問文のStructured Outputに適用する |
-| `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-terra` | 質問項目の設計モデル。TerraまたはLunaを指定する |
+| `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` | 質問項目の設計モデル。TerraまたはLunaを指定する |
+| `QUESTION_DESIGN_REASONING_EFFORT` | いいえ | `low` | 質問項目設計の推論強度 |
+| `QUESTION_DESIGN_MAX_OUTPUT_TOKENS` | いいえ | `6000` | 質問項目設計の生成・検証出力上限 |
 | `STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS` | いいえ | `5` | HTTP接続タイムアウト |
 | `STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS` | いいえ | `120` | HTTP応答読み取りタイムアウト |
 
-ユーザーが提示したprofile ARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。コードの既定値は、呼び出し元リージョンを変更しても同じ指定を使えるprofile IDの`global.openai.gpt-5.6-terra`とする。ARNを設定する場合は、ARNの呼び出し元リージョンと`BEDROCK_AWS_REGION`を一致させる。
+ユーザーが提示したprofile ARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。コードの既定値は、呼び出し元リージョンを変更しても同じ指定を使えるprofile IDの`global.openai.gpt-5.6-luna`とする。ARNを設定する場合は、ARNの呼び出し元リージョンと`BEDROCK_AWS_REGION`を一致させる。
 
 Global profileのIAM許可には、少なくとも対象inference profileへの`bedrock:InvokeModel`、アカウントの`project/default`、呼び出し元リージョンのfoundation model、Global profileが参照するGlobal foundation modelへの許可が必要である。組織のSCPでリージョン制限を行っている場合は、Global profileの宛先リージョンおよび`aws:RequestedRegion=unspecified`を考慮する。
 

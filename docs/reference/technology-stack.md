@@ -81,7 +81,7 @@ MVPでは以下を追加しない。
 
 ### 7.1 適用範囲
 
-この節は、`docs/spec.md`の「インタビュー構造化拡張仕様」に対応する追加設計である。現行コードの全AI処理を直ちに構造化インタビューProviderへ移行することを意味しない。
+この節は、`docs/spec.md`の「インタビュー構造化拡張仕様」に対応する追加設計である。現行コードの全AI処理を直ちに構造化インタビューProviderへ移行することを意味しない。質問項目設計は、本仕様のResponses API・Structured Output経路を使用する。
 
 ### 7.2 初期構成
 
@@ -89,17 +89,19 @@ MVPでは以下を追加しない。
 
 | 設定 | 値 |
 |---|---|
-| 既定モデルID | `global.openai.gpt-5.6-terra` |
+| 既定モデルID | `global.openai.gpt-5.6-luna` |
 | 選択可能モデルID | `global.openai.gpt-5.6-terra`、`global.openai.gpt-5.6-luna` |
 | 質問項目設計モデル設定 | Knowledgeの`defaultModelId`。未設定または旧モデル値は`QUESTION_DESIGN_MODEL_ID`へ解決 |
-| 質問項目設計モデル既定値 | `global.openai.gpt-5.6-terra` |
+| 質問項目設計モデル既定値 | `global.openai.gpt-5.6-luna` |
 | 初期`reasoning.effort` | `low` |
 | Question Generator出力上限 | `600` tokens |
 | 高難度時 | 選択済みモデルを`medium`で再実行 |
 | 画像生成モデル | 使用しない |
 | LLMによる図コード・座標生成 | 使用しない |
 
-初期実装では、TerraとLunaの自動ルーティングを行わない。Solは選択肢に含めない。Solを追加する場合、または自動ルーティングを追加する場合は、Terraとの比較評価、ルーティング条件、Provider障害時の挙動を別仕様で定義する。
+初期実装では、TerraとLunaの自動ルーティングを行わない。未選択時はLunaを使用し、Terraを選択した場合だけTerraを使用する。Solは選択肢に含めない。Solを追加する場合、または自動ルーティングを追加する場合は、Terraとの比較評価、ルーティング条件、Provider障害時の挙動を別仕様で定義する。
+
+質問項目設計は、生成前にBackendが同じテナント・Knowledgeの承認済み情報と取り込み済み文書・チャンクを検索し、検索結果をStructured Outputリクエストの入力へ渡す。LLMへDBアクセスを与えず、MermaidコードやReact Flow座標も生成させない。
 
 ### 7.3 Provider境界
 

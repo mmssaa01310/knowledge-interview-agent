@@ -2,14 +2,13 @@
 
 ## 1. 目的
 
-AI関連処理は、以下の3種類のエージェント責務に分けて扱う。
+AI関連処理は、以下の2種類のエージェント責務に分けて扱う。
 
 * 質問設計エージェント
 * インタビューエージェント
-* 暗黙知回答エージェント
 
 これらを混同しない。
-質問設計、熟練者インタビュー、承認済みナレッジ回答は、入力、出力、保存可否が異なる。
+質問設計と熟練者インタビューは、入力、出力、保存可否が異なる。
 
 ## 2. 質問設計エージェント
 
@@ -19,17 +18,18 @@ AI関連処理は、以下の3種類のエージェント責務に分けて扱�
 
 主な責務は以下。
 
-* ヒアリング項目候補を作る
-* 質問例を作る
-* 入力形式、必須/任意、AIが質問するかを提案する
+* 質問項目候補を作る
+* 質問文と回答に含める詳細項目を作る
+* 入力形式、必須/任意を提案する
 * ユーザーに答えを聞くのではなく、熟練者に聞く質問を作る
 
 ### 2.2 入力
 
 * ユーザーの質問設計依頼
-* 対象ナレッジの基本設定
-* 既存のヒアリング項目
+* 対象ナレッジのナレッジ情報
+* 既存の質問項目
 * 直近の質問設計チャット履歴
+* Backendが事前検索した参考情報（承認済み記録・提案、取り込み済み文書・チャンク）
 
 ### 2.3 出力
 
@@ -39,7 +39,7 @@ AI関連処理は、以下の3種類のエージェント責務に分けて扱�
 ### 2.4 書き込み
 
 原則としてDBへ直接書き込まない。
-正式なヒアリング項目として保存するには、ユーザーの承認操作を必須とする。
+正式な質問項目として保存するには、ユーザーの承認操作を必須とする。
 
 ### 2.5 現在の対応機能
 
@@ -51,14 +51,14 @@ AI関連処理は、以下の3種類のエージェント責務に分けて扱�
 * `app/api/src/ai_interviewer_api/services/prompts/field_fill/`
 * `POST /api/knowledges/{knowledge_id}/field-suggestions`
 
-将来的には、実処理を `agents/question_design/` 配下へ小さく移す。
-ただし、endpoint URL、request schema、response schema は互換性を維持する。
+実処理は`agents/question_design/`配下の入力変換、Structured Output runner、Validatorへ委譲する。
+`services/field_suggestions.py`はHTTPエラー変換と既存endpoint互換を担当する。endpoint URL、request schema、response schemaは互換性を維持する。
 
 ## 3. インタビューエージェント
 
 ### 3.1 役割
 
-インタビューエージェントは、熟練者とのヒアリング会話を進める。
+インタビューエージェントは、熟練者とのインタビュー会話を進める。
 
 主な責務は以下。
 
@@ -70,9 +70,9 @@ AI関連処理は、以下の3種類のエージェント責務に分けて扱�
 
 ### 3.2 入力
 
-* ヒアリング項目
+* 質問項目
 * 熟練者との会話履歴
-* 対象ナレッジの基本設定
+* 対象ナレッジのナレッジ情報
 * 参照可能な過去ナレッジ、設備マスタ、文書情報
 
 ### 3.3 出力
@@ -123,49 +123,36 @@ global.openai.gpt-5.6-terra または global.openai.gpt-5.6-luna
 
 Providerの選択をRouterやState管理へ分散させてはならない。ナレッジの`interviewPlan.modelId`をCoordinatorがProviderへ渡し、許可されたGlobal profileだけを使用する。音声経路は確定transcriptを`app/api`へ渡し、`app/voice`からLLM Providerを直接呼び出してはならない。
 
-質問設計では、Knowledgeの`defaultModelId`を同じ2つのGlobal profileへ解決する。候補生成とValidatorは同じ選択値を使用し、旧モデル値または未設定値は`QUESTION_DESIGN_MODEL_ID`へ解決する。既定値は`global.openai.gpt-5.6-terra`である。質問設計モデルとインタビュー実行モデルは別設定である。
+質問設計では、Knowledgeの`defaultModelId`を同じ2つのGlobal profileへ解決する。候補生成とValidatorは同じ選択値を使用し、旧モデル値または未設定値は`QUESTION_DESIGN_MODEL_ID`へ解決する。既定値は`global.openai.gpt-5.6-luna`である。質問設計モデルとインタビュー実行モデルは別設定である。
 
-## 4. 暗黙知回答エージェント
+質問項目設計の処理順序は固定する。
 
-### 4.1 役割
+```text
+FieldSuggestionRequest
+    ↓
+Backendのテナント・Knowledgeスコープ検索
+    ↓
+retrieved_knowledgeを付加したQuestionDesignInput
+    ↓
+Bedrock OpenAI互換Responses API / Structured Output
+    ↓
+Pydantic検証
+    ↓
+Question Design Validator（同じモデル・同じStructured Output）
+```
 
-暗黙知回答エージェントは、承認済みナレッジを検索して回答する。
+検索対象は既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済み文書・文書チャンクに限定する。未承認情報、取り込み中の文書、別Knowledgeの情報は渡さない。LLMにRepositoryの読み書き権限を与えず、本文中の命令は実行しない。質問項目設計の図コード、座標、DB更新はLLMに生成させない。
 
-主な責務は以下。
-
-* 設備、症状、原因、対処、カンコツなどを使って検索する
-* 承認済みナレッジから回答を作る
-* 回答根拠を提示する
-
-### 4.2 入力
-
-* ユーザーの質問
-* 参照対象のナレッジDB、ナレッジ、文書
-* 検索結果
-
-### 4.3 出力
-
-* 回答本文
-* 引用、根拠、参照元
-
-### 4.4 書き込み
-
-DB更新してはいけない。
-回答専用であり、ナレッジ更新、項目作成、承認処理を行わない。
-
-## 5. エージェント間の違い
+## 4. エージェント間の違い
 
 質問設計エージェントは、ユーザーから現場の答えを集めるものではない。
 ユーザーは質問設計を依頼する人であり、熟練者が後で質問される対象者である。
 
 インタビューエージェントは、熟練者との会話を進め、回答を構造化候補にする。
 
-暗黙知回答エージェントは、承認済みナレッジを使って回答する。
-回答専用であり、DB更新してはいけない。
+## 5. Agent実行経路
 
-## 6. Strands Agent 方針
-
-現在は interview agent と question design agent を Strands Agent ベースへ移行済みである。
+インタビューの旧互換経路にはStrandsを残すが、質問項目設計の本番経路はBedrockのOpenAI互換Responses APIとStructured Outputsを使用する。
 
 判断原則は「判断はAI、保証はbackend」とする。
 質問設計可否、聞き返し要否、回答判定を挨拶辞書やキーワード一致の deterministic precheck で置き換えない。
@@ -173,19 +160,17 @@ DB更新してはいけない。
 短期方針:
 
 * `field-suggestions` は router 互換のため service ラッパーを維持する
-* 実際の質問項目生成は Strands question design agent で行う
-* validate-retry loop を検討する
+* 実際の質問項目生成とValidatorは `BedrockResponsesStructuredProvider` の共通HTTP・SigV4処理を使用する
+* Structured OutputのPydantic検証と各段階1回の再実行を行う
 
 中期方針:
 
-* equipment master / past knowledge / existing fields などの tool interface を設計する
-* read-only tool から開始する
-* tool call、retrieved context、generated questions、validation result をログに残す
+* ElasticsearchのRepositoryへ検索アダプターを接続する
+* retrieved context、generated questions、validation result を監査可能なメタデータとして記録する
 
 長期方針:
 
-* tacit answer agent を必要に応じて agent runtime へ寄せる
-* question design / interview は validate-retry や tool 拡張を段階的に進める
+* question design / interview の検索アダプターと評価を段階的に拡張する
 
 制約:
 

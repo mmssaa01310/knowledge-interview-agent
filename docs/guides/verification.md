@@ -56,7 +56,7 @@ docker compose -f infra/docker-compose.yml build
 
 ## 6. プロンプト分離の確認
 
-質問項目設計まわり、AI設定まわり、プロンプト loader まわりを変更した場合は、以下を確認する。
+質問項目設計まわり、実行設定まわり、プロンプト loader まわりを変更した場合は、以下を確認する。
 
 * 質問項目設計の system prompt が `field_fill/*` だけで構成されているか
 * 実インタビューの system prompt が `interview/base.md` と追加カスタマイズの連結になっているか

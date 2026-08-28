@@ -427,11 +427,11 @@ failed
 
 ## 11. 認可ルール
 
-VoiceSessionの作成、取得、停止、WebRTC接続は、`owner_user_id`と認証済みCognitoユーザーIDの一致を確認する。
+VoiceSessionの作成、取得、停止、WebRTC接続は、認証済みCognitoユーザーが対象`record_id`へ回答操作を実行できることを確認する。Recordの認可は[利用者ワークスペースと認可アーキテクチャ](../access-control.md)に従う。
 
-`record_id`に対するアクセス権限も別途確認する。
+`interviewer`が操作する場合は、対象Recordの`ownerUserId`と認証済みCognitoユーザーIDが一致しなければならない。`admin`と`knowledge_manager`は、管理対象Recordに対して操作できる。
 
-`owner_user_id`だけでRecord権限の代替としてはいけない。
+`VoiceSession.ownerUserId`だけでRecord権限の代替としてはいけない。
 
 内部APIでは、サービス間認証に加えて、対象VoiceSessionの状態とRecord紐付きを確認する。
 
