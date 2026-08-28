@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_roles
+from ai_interviewer_api.core.permissions import require_management_role
 from ai_interviewer_api.models.domain import Document, DocumentReadStatus
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
@@ -17,7 +17,7 @@ def create_document(
     payload: DocumentCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     item = Document(
         tenantId=user.tenant_id,
@@ -33,6 +33,7 @@ def create_document(
 
 @router.get("/knowledges/{knowledge_id}/documents")
 def list_documents(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
+    require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     return [row for row in store.list("documents", user.tenant_id) if row["knowledgeId"] == knowledge_id]
 
@@ -43,6 +44,7 @@ def update_read_status(
     payload: ReadStatusUpdate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
+    require_management_role(user)
     get_scoped_item("documents", document_id, user, "document_not_found")
     item = DocumentReadStatus(
         tenantId=user.tenant_id,
@@ -59,6 +61,7 @@ def update_read_status(
 
 @router.post("/documents/{document_id}/acknowledge")
 def acknowledge_document(document_id: str, user: UserContext = Depends(get_current_user)) -> dict:
+    require_management_role(user)
     get_scoped_item("documents", document_id, user, "document_not_found")
     item = DocumentReadStatus(
         tenantId=user.tenant_id,

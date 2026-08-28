@@ -21,6 +21,20 @@ class QuestionDesignMessage(BaseModel):
     content: str
 
 
+class RetrievedKnowledgeContext(BaseModel):
+    source_type: Literal[
+        "knowledge_field",
+        "approved_record",
+        "approved_proposal",
+        "document",
+        "document_chunk",
+    ]
+    source_id: str
+    title: str
+    content: str
+    score: float = 0.0
+
+
 class QuestionDesignInput(BaseModel):
     knowledge_id: str | None = None
     knowledge_name: str | None = None
@@ -34,6 +48,7 @@ class QuestionDesignInput(BaseModel):
     desired_count: int | None = None
     existing_fields: list[ExistingQuestionField] = Field(default_factory=list)
     recent_messages: list[QuestionDesignMessage] = Field(default_factory=list)
+    retrieved_context: list[RetrievedKnowledgeContext] = Field(default_factory=list)
 
 
 class QuestionFieldSuggestion(BaseModel):

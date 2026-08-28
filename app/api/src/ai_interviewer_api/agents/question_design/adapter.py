@@ -7,6 +7,7 @@ from ai_interviewer_api.agents.question_design.schemas import (
     QuestionDesignInput,
     QuestionDesignMessage,
     QuestionDesignOutput,
+    RetrievedKnowledgeContext,
 )
 from ai_interviewer_api.agents.question_design.service import DEFAULT_CLARIFICATION
 from ai_interviewer_api.models.interview_plan import InterviewPlan
@@ -32,8 +33,14 @@ class AdaptedQuestionDesignResult:
     interview_plan: InterviewPlan | None = None
 
 
-def build_question_design_input(payload: FieldSuggestionRequest) -> QuestionDesignInput:
+def build_question_design_input(
+    payload: FieldSuggestionRequest,
+    *,
+    knowledge_id: str | None = None,
+    retrieved_context: list[RetrievedKnowledgeContext] | None = None,
+) -> QuestionDesignInput:
     return QuestionDesignInput(
+        knowledge_id=knowledge_id,
         knowledge_name=_normalize_text(payload.context.name),
         knowledge_description=_normalize_text(payload.context.description),
         category=_normalize_text(payload.context.category),
@@ -62,6 +69,7 @@ def build_question_design_input(payload: FieldSuggestionRequest) -> QuestionDesi
             for message in payload.recentMessages
             if message.content.strip()
         ],
+        retrieved_context=list(retrieved_context or []),
     )
 
 
@@ -80,10 +88,10 @@ def adapt_question_design_output(output: QuestionDesignOutput) -> AdaptedQuestio
         fields.append(
             KnowledgeFieldCreate(
                 name=suggestion.label,
-                description=None,
+                description=suggestion.description,
                 inputType=input_type,
                 required=suggestion.required,
-                askByAi=suggestion.ask_by_ai,
+                askByAi=True,
                 aiQuestionExamples=[suggestion.question],
                 options=list(suggestion.options),
                 displayOrder=index,

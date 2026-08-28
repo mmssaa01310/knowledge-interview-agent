@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_roles
+from ai_interviewer_api.core.permissions import require_management_role
 from ai_interviewer_api.models.domain import KnowledgeField
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api")
 
 @router.get("/knowledges/{knowledge_id}/fields")
 def list_fields(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
+    require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     return [
         row for row in store.list("knowledge_fields", user.tenant_id) if row["knowledgeId"] == knowledge_id
@@ -25,14 +26,18 @@ def create_field(
     payload: KnowledgeFieldCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+    field_data = payload.model_dump()
+    # 質問項目はすべてAIが質問する。旧クライアントからfalseが送られても、
+    # 保存データの意味を現在の仕様へ統一する。
+    field_data["askByAi"] = True
     item = KnowledgeField(
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
         updatedByUserId=user.user_id,
         knowledgeId=knowledge_id,
-        **payload.model_dump(),
+        **field_data,
     )
     store.upsert("knowledge_fields", item.model_dump())
     return item.model_dump()
@@ -40,6 +45,7 @@ def create_field(
 
 @router.post("/knowledges/{knowledge_id}/generate-fields")
 def generate_fields(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
+    require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     return [
         {
@@ -75,9 +81,9 @@ def suggest_fields(
     payload: FieldSuggestionRequest,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
-    return suggest_fields_with_bedrock(payload, user)
+    return suggest_fields_with_bedrock(payload, user, knowledge_id=knowledge_id)
 
 
 @router.patch("/knowledge-fields/{field_id}")
@@ -86,10 +92,13 @@ def update_field(
     payload: KnowledgeFieldUpdate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     item = get_scoped_item("knowledge_fields", field_id, user, "knowledge_field_not_found")
     for key, value in payload.model_dump(exclude_unset=True).items():
+        if key == "askByAi":
+            continue
         item[key] = value
+    item["askByAi"] = True
     item["updatedByUserId"] = user.user_id
     store.upsert("knowledge_fields", item)
     return item
@@ -97,7 +106,7 @@ def update_field(
 
 @router.delete("/knowledge-fields/{field_id}")
 def delete_field(field_id: str, user: UserContext = Depends(get_current_user)) -> dict:
-    require_roles(user, {"admin", "knowledge_manager"})
+    require_management_role(user)
     get_scoped_item("knowledge_fields", field_id, user, "knowledge_field_not_found")
     store.delete("knowledge_fields", field_id)
     return {"deleted": True}

@@ -40,7 +40,7 @@ class FakeAgentResult:
 
 def test_run_question_design_returns_structured_output() -> None:
     expected = QuestionDesignOutput(
-        reply="ヒアリング前に確認しておきたい質問項目を提案します。",
+        reply="インタビュー前に確認しておきたい質問項目を提案します。",
         design_status="ready",
         suggestions=[
             QuestionFieldSuggestion(
@@ -151,9 +151,9 @@ def test_run_question_design_does_not_assume_fixed_domain_terms_without_input() 
         captured_prompt = args[0]
         return FakeAgentResult(
             structured_output=QuestionDesignOutput(
-                reply="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+                reply="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 design_status="needs_info",
-                clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+                clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 suggestions=[],
                 used_tools=[],
             )
@@ -180,7 +180,7 @@ def test_run_question_design_clears_suggestions_when_design_status_is_needs_info
             structured_output=QuestionDesignOutput(
                 reply="汎用項目を提案します。",
                 design_status="needs_info",
-                clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+                clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 reason="missing_materials",
                 suggestions=[
                     QuestionFieldSuggestion(
@@ -263,7 +263,7 @@ def test_run_question_design_returns_needs_info_for_greeting_only() -> None:
             structured_output=QuestionDesignOutput(
                 reply="汎用項目ではなく、まずテーマを確認します。",
                 design_status="needs_info",
-                clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+                clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 suggestions=[],
                 used_tools=[],
             )
@@ -320,9 +320,9 @@ def test_run_question_design_allows_agent_to_handle_empty_input_when_called_dire
         runner_called = True
         return FakeAgentResult(
             structured_output=QuestionDesignOutput(
-                reply="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+                reply="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 design_status="needs_info",
-                clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+                clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 suggestions=[],
                 used_tools=[],
             )
@@ -530,13 +530,15 @@ def test_question_design_prompt_contains_required_contract() -> None:
     assert "質問設計エージェント" in prompt
     assert "インタビューエージェントではありません" in prompt
     assert "正式DBへの保存" in prompt
-    assert "read-only tool" in prompt
+    assert "retrieved_knowledge" in prompt
+    assert "Backendが事前検索した参考情報" in prompt
     assert "「対象設備」「設備」「保全」「製造」「現場」「熟練者」" in prompt
     assert "design_status" in prompt
     assert "needs_info" in prompt
     assert "汎用テンプレ項目" in prompt
     assert "3 件から 5 件" in prompt
-    assert "`description` や `reason` は原則として省略" in prompt
+    assert "`description` には、回答に含めてほしい詳細項目を簡潔に列挙" in prompt
+    assert "`reason` は原則として省略" in prompt
     assert "追加情報が必要だと判断する" in prompt
     assert "ready` の場合だけ `suggestions` を返す" in prompt
     assert "質問対象または聞きたい観点を具体的に示していれば" in prompt

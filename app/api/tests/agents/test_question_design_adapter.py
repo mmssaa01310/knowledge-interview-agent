@@ -10,7 +10,12 @@ from ai_interviewer_api.agents.question_design.adapter import (
     adapt_question_design_output,
     build_question_design_input,
 )
-from ai_interviewer_api.agents.question_design.schemas import QuestionDesignOutput, QuestionFieldSuggestion
+from ai_interviewer_api.agents.question_design.schemas import (
+    QuestionDesignOutput,
+    QuestionFieldSuggestion,
+    RetrievedKnowledgeContext,
+)
+from ai_interviewer_api.agents.interview_knowledge.provider import StructuredInterviewProviderError
 from ai_interviewer_api.agents.question_design.service import (
     DEFAULT_CLARIFICATION,
     QuestionDesignInternalError,
@@ -60,6 +65,25 @@ def test_build_question_design_input_maps_existing_contract() -> None:
     assert [message.role for message in interview_input.recent_messages] == ["assistant", "user"]
 
 
+def test_build_question_design_input_includes_retrieved_context() -> None:
+    context = RetrievedKnowledgeContext(
+        source_type="document_chunk",
+        source_id="chunk-1",
+        title="故障対応手順",
+        content="症状と発生条件を確認する。",
+        score=0.8,
+    )
+
+    interview_input = build_question_design_input(
+        FieldSuggestionRequest(content="故障原因の切り分けを質問にしたい"),
+        knowledge_id="knowledge-1",
+        retrieved_context=[context],
+    )
+
+    assert interview_input.knowledge_id == "knowledge-1"
+    assert interview_input.retrieved_context == [context]
+
+
 def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
     result = adapt_question_design_output(
         QuestionDesignOutput(
@@ -81,7 +105,7 @@ def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
 
     assert result.reply == "質問項目候補を提案します。"
     assert result.fields[0].name == "判断基準"
-    assert result.fields[0].description is None
+    assert result.fields[0].description == "見分け方を確認する"
     assert result.fields[0].aiQuestionExamples == ["正常と異常をどのように見分けますか。"]
     assert result.used_tools == ["search_existing_fields"]
 
@@ -172,6 +196,56 @@ def test_suggest_fields_with_bedrock_uses_selected_gpt_model(monkeypatch) -> Non
     assert result["modelId"] == "global.openai.gpt-5.6-luna"
 
 
+def test_suggest_fields_with_bedrock_passes_retrieved_context_to_design_engine(monkeypatch) -> None:
+    retrieved = RetrievedKnowledgeContext(
+        source_type="approved_record",
+        source_id="record-1",
+        title="承認済み記録",
+        content="故障原因の切り分け手順",
+        score=0.9,
+    )
+    captured_input = None
+
+    def fake_retrieve(*args, **kwargs):
+        assert kwargs["knowledge_id"] == "knowledge-1"
+        return [retrieved]
+
+    def fake_run_question_design(question_input, **kwargs):
+        nonlocal captured_input
+        captured_input = question_input
+        return QuestionDesignOutput(
+            reply="質問項目候補を提案します。",
+            design_status="ready",
+            suggestions=[
+                QuestionFieldSuggestion(
+                    label="切り分け手順",
+                    question="故障原因をどの順序で切り分けますか。",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(field_suggestions, "retrieve_question_design_context", fake_retrieve)
+    monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
+
+    result = field_suggestions.suggest_fields_with_bedrock(
+        FieldSuggestionRequest(content="故障原因の切り分けをする質問を考えて"),
+        DEV_TOKENS["dev-manager"],
+        knowledge_id="knowledge-1",
+    )
+
+    assert captured_input is not None
+    assert captured_input.knowledge_id == "knowledge-1"
+    assert captured_input.retrieved_context == [retrieved]
+    assert result["retrievedSources"] == [
+        {
+            "sourceType": "approved_record",
+            "sourceId": "record-1",
+            "title": "承認済み記録",
+            "score": 0.9,
+        }
+    ]
+
+
 def test_suggest_fields_with_bedrock_migrates_legacy_model_to_gpt_default(monkeypatch) -> None:
     captured_model_id = None
 
@@ -217,6 +291,25 @@ def test_suggest_fields_with_bedrock_returns_empty_fields_when_validation_failed
     assert exc_info.value.detail == "question_design_validation_failed"
 
 
+def test_suggest_fields_with_bedrock_maps_structured_provider_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        field_suggestions,
+        "run_question_design",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            StructuredInterviewProviderError("provider unavailable")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        field_suggestions.suggest_fields_with_bedrock(
+            FieldSuggestionRequest(content="故障原因の切り分けをする質問を考えて"),
+            DEV_TOKENS["dev-manager"],
+        )
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "question_design_provider_error"
+
+
 def test_suggest_fields_with_bedrock_returns_safe_empty_response_when_strands_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         field_suggestions,
@@ -243,7 +336,7 @@ def test_suggest_fields_with_bedrock_returns_reply_only_when_materials_are_insuf
         return QuestionDesignOutput(
             reply="まずテーマを確認します。",
             design_status="needs_info",
-            clarification_question="質問項目を作るために、まず今回ヒアリングしたいテーマや目的を教えてください。",
+            clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
             suggestions=[],
         )
 

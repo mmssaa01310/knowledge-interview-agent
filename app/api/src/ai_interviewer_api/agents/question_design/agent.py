@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from strands import Agent
@@ -9,18 +7,10 @@ from strands.hooks import AfterToolCallEvent
 
 from ai_interviewer_api.agents.common.strands_runtime import create_agent, create_bedrock_model
 from ai_interviewer_api.agents.common.tools import READ_ONLY_TOOL_NAMES, search_existing_fields, search_past_knowledge
-
-_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
-
-
-@lru_cache(maxsize=1)
-def load_question_design_prompt() -> str:
-    return (_PROMPTS_DIR / "base.md").read_text(encoding="utf-8").strip()
-
-
-@lru_cache(maxsize=1)
-def load_question_design_validation_prompt() -> str:
-    return (_PROMPTS_DIR / "validation.md").read_text(encoding="utf-8").strip()
+from ai_interviewer_api.agents.question_design.prompt_loader import (
+    load_question_design_prompt,
+    load_question_design_validation_prompt,
+)
 
 
 def _record_used_tool(event: AfterToolCallEvent) -> None:
