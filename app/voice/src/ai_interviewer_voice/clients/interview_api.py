@@ -61,6 +61,7 @@ class VoiceTurnProcessResult:
     interview_status: str
     retrieval_policy: str | None = None
     retrieval_executed: bool = False
+    turn_type: str = "ANSWER"
 
 
 class InterviewApiClient:
@@ -273,6 +274,7 @@ class InterviewApiClient:
             )
         payload = response.json()
         voice_session = payload.get("voiceSession") if isinstance(payload.get("voiceSession"), dict) else {}
+        voice_turn = payload.get("voiceTurn") if isinstance(payload.get("voiceTurn"), dict) else {}
         return VoiceTurnProcessResult(
             turn_id=str(payload["turnId"]),
             response_id=str(payload["responseId"]),
@@ -283,6 +285,7 @@ class InterviewApiClient:
             interview_status=str(voice_session.get("status") or "active"),
             retrieval_policy=_optional_str(payload.get("retrievalPolicy")),
             retrieval_executed=bool(payload.get("retrievalExecuted", False)),
+            turn_type=str(voice_turn.get("turnType") or "ANSWER"),
         )
 
     async def create_assistant_event(

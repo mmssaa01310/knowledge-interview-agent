@@ -134,11 +134,68 @@ def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatc
     )
 
     assert result["bedrockInvoked"] is True
-    assert result["modelId"] == field_suggestions.settings.bedrock_model_id
+    assert result["modelId"] == field_suggestions.settings.question_design_model_id
     assert captured_temperature == 0.0
     assert [field["name"] for field in result["fields"]] == ["判断基準"]
     assert store.tables["proposals"] == before_proposals
     assert store.tables["knowledge_fields"] == before_fields
+
+
+def test_suggest_fields_with_bedrock_uses_selected_gpt_model(monkeypatch) -> None:
+    captured_model_id = None
+
+    def fake_run_question_design(*args, **kwargs):
+        nonlocal captured_model_id
+        captured_model_id = kwargs.get("model_id")
+        return QuestionDesignOutput(
+            reply="質問項目候補を提案します。",
+            design_status="ready",
+            suggestions=[
+                QuestionFieldSuggestion(
+                    label="判断基準",
+                    question="判断基準を教えてください。",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
+
+    result = field_suggestions.suggest_fields_with_bedrock(
+        FieldSuggestionRequest(
+            content="保全業務の質問項目を作って",
+            context={"defaultModelId": "global.openai.gpt-5.6-luna"},
+        ),
+        DEV_TOKENS["dev-manager"],
+    )
+
+    assert captured_model_id == "global.openai.gpt-5.6-luna"
+    assert result["modelId"] == "global.openai.gpt-5.6-luna"
+
+
+def test_suggest_fields_with_bedrock_migrates_legacy_model_to_gpt_default(monkeypatch) -> None:
+    captured_model_id = None
+
+    def fake_run_question_design(*args, **kwargs):
+        nonlocal captured_model_id
+        captured_model_id = kwargs.get("model_id")
+        return QuestionDesignOutput(
+            reply="質問項目候補を提案します。",
+            design_status="ready",
+            suggestions=[QuestionFieldSuggestion(label="判断基準", question="判断基準を教えてください。")],
+        )
+
+    monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
+
+    result = field_suggestions.suggest_fields_with_bedrock(
+        FieldSuggestionRequest(
+            content="保全業務の質問項目を作って",
+            context={"defaultModelId": "apac.amazon.nova-pro-v1:0"},
+        ),
+        DEV_TOKENS["dev-manager"],
+    )
+
+    assert captured_model_id == field_suggestions.settings.question_design_model_id
+    assert result["modelId"] == field_suggestions.settings.question_design_model_id
 
 
 def test_suggest_fields_with_bedrock_returns_empty_fields_when_validation_failed(monkeypatch) -> None:

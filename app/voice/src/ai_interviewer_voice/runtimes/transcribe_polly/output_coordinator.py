@@ -187,7 +187,10 @@ class AudioOutputCoordinator:
                 await self._emit_frame(request, bytes(pending))
                 duration_ms += 20
             interrupted = interrupted or self._must_stop(holder)
-            if started and not interrupted:
+            # An empty Polly response is still a completed output. Notify the
+            # runtime so a formal reply cannot leave the input gate waiting
+            # forever for a speech-start event that will never be emitted.
+            if not interrupted:
                 await self._on_completed(request, duration_ms)
             return AudioOutputResult(True, interrupted, duration_ms)
         except asyncio.CancelledError:

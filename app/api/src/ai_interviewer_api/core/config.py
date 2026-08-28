@@ -12,6 +12,9 @@ class Settings:
     dev_auto_seed_maintenance_demo: bool = (
         os.getenv("DEV_AUTO_SEED_MAINTENANCE_DEMO", "false").lower() == "true"
     )
+    dev_auto_seed_system_requirement_demo: bool = (
+        os.getenv("DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO", "false").lower() == "true"
+    )
     cognito_user_pool_id: str = os.getenv("COGNITO_USER_POOL_ID", "local-placeholder")
     cognito_region: str = os.getenv("COGNITO_REGION", "ap-northeast-1")
     cognito_app_client_id: str = os.getenv("COGNITO_APP_CLIENT_ID", "local-placeholder")
@@ -31,6 +34,40 @@ class Settings:
     bedrock_fallback_model_id: str = os.getenv("BEDROCK_FALLBACK_MODEL_ID", "global.amazon.nova-2-lite-v1:0")
     bedrock_max_tokens: int = int(os.getenv("BEDROCK_MAX_TOKENS", "2400"))
     bedrock_temperature: float = float(os.getenv("BEDROCK_TEMPERATURE", "0.2"))
+    # The deployment templates enable this path. The code-level fallback stays
+    # disabled when the environment variable is omitted for compatibility with
+    # callers that construct the API without deployment configuration.
+    structured_interview_enabled: bool = (
+        os.getenv("STRUCTURED_INTERVIEW_ENABLED", "false").lower() == "true"
+    )
+    structured_interview_model_id: str = os.getenv(
+        "STRUCTURED_INTERVIEW_MODEL_ID",
+        "global.openai.gpt-5.6-terra",
+    )
+    structured_interview_connect_timeout_seconds: float = float(
+        os.getenv("STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS", "5")
+    )
+    structured_interview_read_timeout_seconds: float = float(
+        os.getenv("STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS", "120")
+    )
+    structured_interview_reasoning_effort: str = os.getenv(
+        "STRUCTURED_INTERVIEW_REASONING_EFFORT",
+        "low",
+    )
+    structured_interview_medium_reasoning_effort: str = os.getenv(
+        "STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT",
+        "medium",
+    )
+    structured_interview_max_output_tokens: int = int(
+        os.getenv("STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS", "6000")
+    )
+    structured_interview_question_max_output_tokens: int = int(
+        os.getenv("STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS", "600")
+    )
+    question_design_model_id: str = os.getenv(
+        "QUESTION_DESIGN_MODEL_ID",
+        "global.openai.gpt-5.6-terra",
+    )
     question_design_temperature: float = float(
         os.getenv("QUESTION_DESIGN_TEMPERATURE", "0.0")
     )
@@ -50,6 +87,9 @@ class Settings:
     )
     voice_bedrock_read_timeout_seconds: float = float(
         os.getenv("VOICE_BEDROCK_READ_TIMEOUT_SECONDS", "1.8")
+    )
+    voice_bedrock_warmup_enabled: bool = (
+        os.getenv("VOICE_BEDROCK_WARMUP_ENABLED", "true").lower() == "true"
     )
     internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")
 

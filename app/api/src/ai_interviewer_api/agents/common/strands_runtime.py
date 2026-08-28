@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from functools import lru_cache
 from typing import Any
 
+import boto3
 from botocore.config import Config as BotocoreConfig
 from strands import Agent
 from strands.models import BedrockModel
@@ -62,8 +64,66 @@ def create_voice_evaluation_bedrock_model() -> BedrockModel:
             connect_timeout=settings.voice_bedrock_connect_timeout_seconds,
             read_timeout=settings.voice_bedrock_read_timeout_seconds,
             retries={"total_max_attempts": 1, "mode": "standard"},
-        )
+        ),
     )
+
+
+@lru_cache(maxsize=4)
+def _voice_bedrock_runtime_client(
+    region_name: str,
+    connect_timeout: float,
+    read_timeout: float,
+) -> Any:
+    """Reuse the low-level client used by the latency-sensitive voice path."""
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=region_name,
+        config=BotocoreConfig(
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            retries={"total_max_attempts": 1, "mode": "standard"},
+        ),
+    )
+
+
+def invoke_voice_bedrock_text(
+    *,
+    system_prompt: str,
+    prompt: str,
+    max_tokens: int,
+) -> str:
+    """Invoke Bedrock Converse without Strands' tool-based structured output.
+
+    Voice decisions are still validated by the caller. This path avoids the
+    extra tool-use round trip that is unnecessary for compact, enum-oriented
+    responses.
+    """
+    region_name = resolve_bedrock_region()
+    client = _voice_bedrock_runtime_client(
+        region_name,
+        settings.voice_bedrock_connect_timeout_seconds,
+        settings.voice_bedrock_read_timeout_seconds,
+    )
+    request: dict[str, Any] = {
+        "modelId": settings.voice_bedrock_model_id,
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {
+            "temperature": settings.voice_bedrock_temperature,
+            "maxTokens": max_tokens,
+        },
+    }
+    if system_prompt.strip():
+        request["system"] = [{"text": system_prompt}]
+    response = client.converse(**request)
+    content = response.get("output", {}).get("message", {}).get("content", [])
+    text = "".join(
+        str(block.get("text") or "")
+        for block in content
+        if isinstance(block, dict) and block.get("text")
+    ).strip()
+    if not text:
+        raise ValueError("voice Bedrock text response missing")
+    return text
 
 
 def create_agent(

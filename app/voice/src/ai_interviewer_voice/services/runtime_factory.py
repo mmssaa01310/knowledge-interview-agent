@@ -68,6 +68,7 @@ def create_runtime(provider: str) -> RealtimeVoiceRuntime:
                 polly_voice_id=settings.polly_voice_id,
                 polly_engine=settings.polly_engine,
                 polly_max_parallel_requests=settings.polly_max_parallel_requests,
+                backchannel_enabled=settings.voice_enable_backchannels,
             ),
             interview_bridge=bridge,
         )

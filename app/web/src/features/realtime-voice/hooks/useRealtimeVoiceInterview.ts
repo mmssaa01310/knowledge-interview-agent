@@ -15,6 +15,11 @@ import type {
 } from "../types";
 import { createVoicePeerConnection, type VoicePeerConnectionHandle } from "../webrtc/voicePeerConnection";
 
+const VOICE_SIGNALING_TIMEOUT_MS = Number.parseInt(
+  import.meta.env.VITE_VOICE_SIGNALING_TIMEOUT_MS ?? "8000",
+  10,
+);
+
 type UseRealtimeVoiceInterviewArgs = {
   recordId?: string;
   hasQuestions: boolean;
@@ -73,7 +78,10 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     setPartialTranscript("");
     voiceSessionRef.current = null;
     if (voiceSessionId) {
-      await deleteVoicePeerConnection(voiceSessionId, reason).catch(() => undefined);
+      await withTimeout(
+        (signal) => deleteVoicePeerConnection(voiceSessionId, reason, signal),
+        VOICE_SIGNALING_TIMEOUT_MS,
+      ).catch(() => undefined);
     }
   }, [remoteAudioRef]);
 
@@ -281,16 +289,15 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       answer_ms: 0,
       total_ms: 0,
     };
+    let microphonePromise: Promise<MediaStream> | null = null;
+    let microphoneStreamForStart: MediaStream | null = null;
+    let stopMicrophoneWhenReady = false;
     try {
-      let stageStartedAt = performance.now();
-      const voiceSession = await createVoiceSession(recordId);
-      trace.voice_session_ms = Math.round(performance.now() - stageStartedAt);
-      voiceSessionRef.current = voiceSession;
-
-      failedStage = "microphone";
-      setStatus("requesting_microphone");
-      stageStartedAt = performance.now();
-      const microphoneStream = await navigator.mediaDevices.getUserMedia({
+      // The API may need to generate the first structured-interview question.
+      // Start the browser microphone handshake at the same time so this latency
+      // is not added to the server-side question-generation latency.
+      const microphoneStartedAt = performance.now();
+      microphonePromise = navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -298,19 +305,54 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
           autoGainControl: true,
         },
         video: false,
+      }).then((stream) => {
+        microphoneStreamForStart = stream;
+        trace.microphone_ms = Math.round(performance.now() - microphoneStartedAt);
+        if (stopMicrophoneWhenReady) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+        return stream;
       });
-      trace.microphone_ms = Math.round(performance.now() - stageStartedAt);
+
+      let stageStartedAt = performance.now();
+      const voiceSession = await withTimeout(
+        (signal) => createVoiceSession(recordId, signal),
+        VOICE_SIGNALING_TIMEOUT_MS,
+      );
+      trace.voice_session_ms = Math.round(performance.now() - stageStartedAt);
+      voiceSessionRef.current = voiceSession;
+
+      failedStage = "microphone_or_ice_config";
+      const iceStartedAt = performance.now();
+      setStatus("connecting");
+      const iceConfigPromise = withTimeout(
+        (signal) => getVoiceIceConfig(voiceSession.id, signal),
+        VOICE_SIGNALING_TIMEOUT_MS,
+      ).then((config) => {
+        trace.ice_config_ms = Math.round(performance.now() - iceStartedAt);
+        return config;
+      });
+      const [microphoneResult, iceConfigResult] = await Promise.allSettled([
+        microphonePromise,
+        iceConfigPromise,
+      ]);
+      if (microphoneResult.status === "rejected") {
+        failedStage = "microphone";
+        throw microphoneResult.reason;
+      }
+      if (iceConfigResult.status === "rejected") {
+        failedStage = "ice_config";
+        throw iceConfigResult.reason;
+      }
+      const microphoneStream = microphoneResult.value;
+      const iceConfig = iceConfigResult.value;
+      microphoneStreamForStart = microphoneStream;
       microphoneStreamRef.current = microphoneStream;
       setStats((current) => ({
         ...current,
         microphoneTrackLive: microphoneStream.getAudioTracks().some((track) => track.readyState === "live"),
       }));
 
-      failedStage = "ice_config";
-      setStatus("connecting");
-      stageStartedAt = performance.now();
-      const iceConfig = await getVoiceIceConfig(voiceSession.id);
-      trace.ice_config_ms = Math.round(performance.now() - stageStartedAt);
       failedStage = "peer_connection";
       stageStartedAt = performance.now();
       const peerHandle = await createVoicePeerConnection({
@@ -335,7 +377,10 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       peerRef.current = peerHandle;
       failedStage = "offer";
       stageStartedAt = performance.now();
-      const answer = await sendVoiceOffer(voiceSession.id, peerHandle.offer);
+      const answer = await withTimeout(
+        (signal) => sendVoiceOffer(voiceSession.id, peerHandle.offer, signal),
+        VOICE_SIGNALING_TIMEOUT_MS,
+      );
       trace.offer_ms = Math.round(performance.now() - stageStartedAt);
       failedStage = "answer";
       stageStartedAt = performance.now();
@@ -346,6 +391,11 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       trace.total_ms = Math.round(performance.now() - startStartedAt);
       console.info("realtime_voice_connection_latency", trace);
     } catch (error) {
+      stopMicrophoneWhenReady = true;
+      microphoneStreamForStart?.getTracks().forEach((track) => track.stop());
+      // If the Voice Session request fails while the permission prompt is still
+      // open, consume the eventual rejection and stop a late-arriving stream.
+      void microphonePromise?.catch(() => undefined);
       console.warn("realtime_voice_start_failed", {
         stage: failedStage,
         errorName: error instanceof Error ? error.name : "unknown",
@@ -358,7 +408,10 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       peerRef.current = null;
       const voiceSessionId = voiceSessionRef.current?.id;
       if (voiceSessionId) {
-        await deleteVoicePeerConnection(voiceSessionId, `start_failed_${failedStage}`).catch(() => undefined);
+        await withTimeout(
+          (signal) => deleteVoicePeerConnection(voiceSessionId, `start_failed_${failedStage}`, signal),
+          VOICE_SIGNALING_TIMEOUT_MS,
+        ).catch(() => undefined);
       }
       setStatus("error");
       setMessage(toStartErrorMessage(error, failedStage));
@@ -431,7 +484,7 @@ function toStartErrorMessage(error: unknown, stage: string): string {
   if (stage === "voice_session") {
     return "Voice Sessionを作成できませんでした。Recordの権限とapp/apiの起動状態を確認してください。";
   }
-  if (stage === "microphone") {
+  if (stage === "microphone" || stage === "microphone_or_ice_config") {
     return "マイクを準備できませんでした。ブラウザのマイク設定を確認してください。";
   }
   if (stage === "ice_config") {
@@ -464,4 +517,17 @@ function hasPendingInitialReply(session: VoiceSessionResponse | null) {
     return false;
   }
   return session.initialReplyStatus === "pending" || session.initialReplyStatus === "sending";
+}
+
+async function withTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await operation(controller.signal);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }

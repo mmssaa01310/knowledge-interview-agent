@@ -25,7 +25,7 @@ type VoicePeerConnectionOptions = {
 };
 
 const ICE_GATHERING_TIMEOUT_MS = Number.parseInt(
-  import.meta.env.VITE_VOICE_ICE_GATHERING_TIMEOUT_MS ?? "2000",
+  import.meta.env.VITE_VOICE_ICE_GATHERING_TIMEOUT_MS ?? "1000",
   10,
 );
 
@@ -114,6 +114,17 @@ export async function createVoicePeerConnection(
         console.info("realtime_voice_frontend_audio", {
           remote_track_playback_initialized_at: Math.round(remoteAudioTrackReceivedAt),
         });
+        options.remoteAudioElement.onplaying = () => {
+          playbackTracker.handleAudioElementPlaying();
+          console.info("realtime_voice_frontend_audio", {
+            event: "remote_track_playing",
+            frontend_audio_playing_event_at: Math.round(performance.now()),
+            remote_track_received_to_playing_ms: Math.max(
+              0,
+              Math.round(performance.now() - remoteAudioTrackReceivedAt),
+            ),
+          });
+        };
         console.info("frontend_audio_play_called");
         options.remoteAudioElement.play().then(() => {
           console.info("frontend_audio_play_succeeded");
@@ -128,17 +139,6 @@ export async function createVoicePeerConnection(
             message: "audio_playback_failed",
           });
         });
-        options.remoteAudioElement.onplaying = () => {
-          playbackTracker.handleAudioElementPlaying();
-          console.info("realtime_voice_frontend_audio", {
-            event: "remote_track_playing",
-            frontend_audio_playing_event_at: Math.round(performance.now()),
-            remote_track_received_to_playing_ms: Math.max(
-              0,
-              Math.round(performance.now() - remoteAudioTrackReceivedAt),
-            ),
-          });
-        };
       }
     }
     options.onStatsChange?.({

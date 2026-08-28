@@ -23,6 +23,7 @@ class TranscribePollyRuntimeConfig:
     listen_ack_min_speech_ms: int = 800
     listen_ack_min_stable_chars: int = 5
     backchannel_cooldown_ms: int = 3000
+    backchannel_enabled: bool = False
     processing_ack_delay_ms: int = 1300
     long_processing_notice_ms: int = 3000
     barge_in_voice_ms: int = 120

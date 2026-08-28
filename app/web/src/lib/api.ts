@@ -140,7 +140,7 @@ export type InterviewStateResponse = {
     role: "user" | "assistant";
     content: string;
     questionId?: string;
-    questionType?: "configured_field" | "follow_up";
+    questionType?: "configured_field" | "follow_up" | "structured";
     fieldId?: string | null;
     answerToQuestionId?: string;
     answerToFieldId?: string | null;
@@ -149,6 +149,9 @@ export type InterviewStateResponse = {
     voiceTurnId?: string | null;
     voiceResponseId?: string | null;
     isActualUtterance?: boolean;
+    targetType?: string | null;
+    targetId?: string | null;
+    candidateSource?: "user_statement" | "assistant_proposal" | null;
   }>;
   structuredDraft: Record<string, string>;
 };
@@ -292,21 +295,33 @@ export async function fetchProposals(recordId: string) {
 
 export async function createRecordMessage(
   recordId: string,
-  payload: { content: string; answerToQuestionId?: string | null; turnType?: "ANSWER" | "CONTROL" }
+  payload: {
+    content: string;
+    clientMessageId?: string;
+    stateVersion?: number | null;
+    answerToQuestionId?: string | null;
+    targetType?: string | null;
+    targetId?: string | null;
+    turnType?: "ANSWER" | "CONTROL";
+  }
 ) {
   return apiRequest<{
     message: string;
     proposalId: string | null;
     recordMessage: {
       id: string;
+      clientMessageId?: string | null;
       role: "user" | "assistant";
       content: string;
       questionId?: string;
-      questionType?: "configured_field" | "follow_up";
+      questionType?: "configured_field" | "follow_up" | "structured";
       fieldId?: string | null;
       answerToQuestionId?: string;
       answerToFieldId?: string | null;
       turnType?: "ANSWER" | "CONTROL";
+      targetType?: string | null;
+      targetId?: string | null;
+      candidateSource?: "user_statement" | "assistant_proposal" | null;
     };
   }>(`/api/records/${recordId}/messages`, {
     method: "POST",
@@ -463,4 +478,12 @@ export async function resetDevVoiceDemo() {
     knowledgeId: string;
     recordId: string;
   }>("/api/dev/voice-demo/reset", { method: "POST" });
+}
+
+export async function resetDevSystemRequirementDemo() {
+  return apiRequest<{
+    knowledgeDbId: string;
+    knowledgeId: string;
+    recordId: string;
+  }>("/api/dev/system-requirement-demo/reset", { method: "POST" });
 }

@@ -17,6 +17,7 @@ from ai_interviewer_api.models.domain import (
     KnowledgeDb,
     KnowledgeField,
 )
+from ai_interviewer_api.models.interview_plan import InterviewPlan
 from ai_interviewer_api.repositories.store import store
 
 DEV_TENANT_ID = "tenant-demo"
@@ -54,6 +55,10 @@ def ensure_dev_voice_demo() -> dict[str, str]:
                 purpose="リアルタイム音声インタビューの動作確認",
                 language="ja",
                 defaultModelId="apac.amazon.nova-pro-v1:0",
+                interviewPlan=InterviewPlan(
+                    profile="fixed_form",
+                    modelId="global.openai.gpt-5.6-terra",
+                ),
             ).model_dump(),
         )
 

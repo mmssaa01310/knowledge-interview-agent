@@ -47,6 +47,7 @@ export type KnowledgeLayoutProps = {
   settingsInterviewPlan: Knowledge["interviewPlan"];
   setSettingsInterviewPlan: (value: Knowledge["interviewPlan"]) => void;
   settingsNotice: string;
+  settingsSaveState: "idle" | "saving" | "success" | "error";
   newDbName: string;
   setNewDbName: (value: string) => void;
   newRecordTitle: string;

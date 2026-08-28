@@ -3,6 +3,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi import HTTPException
 
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
+from ai_interviewer_api.agents.interview_knowledge.coordinator import build_initial_structured_state
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.routes import (
     acknowledge_document,
@@ -162,7 +163,7 @@ def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -
 
     def fake_suggest(payload: FieldSuggestionRequest, current_user: UserContext) -> dict:
         assert current_user == user
-        assert payload.context.defaultModelId == "anthropic.claude-3-5-sonnet-20240620-v1:0"
+        assert payload.context.defaultModelId == "global.openai.gpt-5.6-luna"
         assert [message.content for message in payload.recentMessages] == [
             "設備別に項目を分けたい",
             "設備名と現象の聞き取りを重視します。",
@@ -195,7 +196,7 @@ def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -
             content="保全ノウハウ用の項目を作って",
             context={
                 "name": "保全",
-                "defaultModelId": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+                "defaultModelId": "global.openai.gpt-5.6-luna",
             },
             recentMessages=[
                 {"role": "user", "content": "設備別に項目を分けたい"},
@@ -205,7 +206,7 @@ def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -
         user,
     )
 
-    assert result["modelId"] == "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    assert result["modelId"] == "global.openai.gpt-5.6-luna"
     assert result["fields"][0]["name"] == "判断基準"
 
 
@@ -545,3 +546,64 @@ def test_record_bulk_approval_skips_low_confidence_and_already_approved_proposal
         "status_not_approvable",
         "confidence_too_low",
     }
+
+
+def test_record_message_retry_is_idempotent_and_checks_state_version() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="idempotency db"), user)
+    knowledge = create_test_knowledge(knowledge_db["id"], user)
+    record = create_record(knowledge["id"], RecordCreate(title="record"), user)
+    state = build_initial_structured_state("system_requirement", [])
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "stateVersion": 3,
+            "currentQuestionId": "q-001",
+            "askedQuestions": [
+                {
+                    "questionId": "q-001",
+                    "questionType": "structured",
+                    "fieldId": None,
+                    "text": "利用者を教えてください。",
+                    "targetType": "requirement",
+                    "targetId": "requirement.users",
+                }
+            ],
+        }
+    )
+    store.upsert("interview_states", state)
+    payload = ChatMessageCreate(
+        content="営業担当です。",
+        clientMessageId="client-turn-1",
+        stateVersion=3,
+        answerToQuestionId="q-001",
+        targetType="requirement",
+        targetId="requirement.users",
+        turnType="ANSWER",
+    )
+
+    first = create_record_message(record["id"], payload, user)
+    duplicate = create_record_message(record["id"], payload, user)
+
+    assert first["duplicate"] is False
+    assert duplicate["duplicate"] is True
+    assert duplicate["recordMessage"]["id"] == first["recordMessage"]["id"]
+    assert len(store.list("messages", user.tenant_id)) == 1
+
+    with pytest.raises(HTTPException) as payload_mismatch:
+        create_record_message(
+            record["id"],
+            payload.model_copy(update={"content": "別の回答"}),
+            user,
+        )
+    assert payload_mismatch.value.status_code == 409
+
+    with pytest.raises(HTTPException) as version_conflict:
+        create_record_message(
+            record["id"],
+            payload.model_copy(update={"clientMessageId": "client-turn-2", "stateVersion": 2}),
+            user,
+        )
+    assert version_conflict.value.detail == "interview_state_version_conflict"

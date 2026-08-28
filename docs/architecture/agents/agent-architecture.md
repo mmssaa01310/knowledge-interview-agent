@@ -62,10 +62,11 @@ AI関連処理は、以下の3種類のエージェント責務に分けて扱�
 
 主な責務は以下。
 
-* 次に聞くべき質問を判断する
 * 熟練者の回答から構造化データ候補を作る
-* 不足情報を判断する
+* 不足している情報と矛盾を抽出する
 * 必要に応じて過去ナレッジや設備マスタを参照する
+
+次の質問対象、質問優先順位、インタビュー完了判定はBackendが決定する。
 
 ### 3.2 入力
 
@@ -76,15 +77,53 @@ AI関連処理は、以下の3種類のエージェント責務に分けて扱�
 
 ### 3.3 出力
 
-* 次の質問
+* Backendが決定した次の質問文
 * 構造化データ候補
 * AI提案カード
-* 不足情報の判断結果
+* 不足情報、矛盾、Applicabilityの抽出結果
 
 ### 3.4 書き込み
 
 draft保存までを許可する。
 承認なしに正式ナレッジへ登録してはいけない。
+
+### 3.5 構造化インタビュー拡張
+
+インタビュー実行で、固定項目、システム要求、業務フローを同じ発話から抽出する場合は、共通Interpreterを使用する。
+
+共通Interpreterの出力先は次のとおりである。
+
+```text
+Interpreter
+├── FieldState
+├── RequirementState
+├── ProcessState
+├── ApplicabilityState
+├── contradictions
+└── openIssues
+```
+
+Profileごとに使用する状態をBackendが決定する。LLMが質問対象、完了状態、Patch適用可否を決定してはならない。
+
+LLM出力、状態機械、ProcessPatch、ProcessModel、質問優先順位の詳細は、[AIインタビュー構造化キャプチャ設計](interview-knowledge-capture.md)に従う。
+
+### 3.6 Provider境界
+
+現在のInterview AgentはStrands/Bedrockを使用している。構造化インタビューの追加実装では、意味処理を`StructuredInterviewProvider`のProvider境界から呼び出す。
+
+```text
+Interview Coordinator
+    ↓
+StructuredInterviewProvider
+    ↓
+Bedrock Runtime OpenAI互換 Responses API adapter
+    ↓
+global.openai.gpt-5.6-terra または global.openai.gpt-5.6-luna
+```
+
+Providerの選択をRouterやState管理へ分散させてはならない。ナレッジの`interviewPlan.modelId`をCoordinatorがProviderへ渡し、許可されたGlobal profileだけを使用する。音声経路は確定transcriptを`app/api`へ渡し、`app/voice`からLLM Providerを直接呼び出してはならない。
+
+質問設計では、Knowledgeの`defaultModelId`を同じ2つのGlobal profileへ解決する。候補生成とValidatorは同じ選択値を使用し、旧モデル値または未設定値は`QUESTION_DESIGN_MODEL_ID`へ解決する。既定値は`global.openai.gpt-5.6-terra`である。質問設計モデルとインタビュー実行モデルは別設定である。
 
 ## 4. 暗黙知回答エージェント
 

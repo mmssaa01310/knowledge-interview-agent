@@ -16,7 +16,6 @@
 
 * 質問項目を生成できるだけの材料があるか
 * 追加情報を聞き返すべきか
-* どの観点を次に確認すべきか
 * ユーザー回答が現在の質問への回答になっているか
 * 回答からどの構造化候補を作るか
 * 会話の自然な聞き返し方
@@ -34,6 +33,7 @@ backend が保証する invariant の例:
 * `design_status="needs_info"` の場合、`suggestions=[]` にする
 * `answer_status="not_answered"` の場合、`draft_updates={}` にする
 * schema 外の出力を安全に fallback する
+* 次の質問対象、質問優先順位、完了判定をBackendで決定する
 * DB保存しないものを保存しない
 * read-only tool 以外を agent に渡さない
 * `used_tools` は許可された tool 名だけに正規化する
@@ -138,13 +138,14 @@ AIに任せる:
 
 * 回答が現在の質問への回答になっているか
 * 聞き返すべきか
-* 次に何を聞くべきか
+* 不足情報、矛盾、Applicabilityを抽出する
 * `draft_updates` の候補
 
 backend が保証する:
 
 * `not_answered` のとき `draft_updates` を破棄する
 * `not_answered` のとき `next_questions` を進めない
+* 次の質問対象を固定優先順位で決定する
 * `draft_updates` をDB保存しない
 * `approved_fields` を勝手に更新しない
 

@@ -7,6 +7,11 @@ from uuid import uuid4
 from ai_interviewer_api.agents.interview.adapter import AdaptedInterviewTurnResult
 from ai_interviewer_api.agents.interview.adapter import run_adapted_interview_turn as _run_adapted_interview_turn
 from ai_interviewer_api.agents.interview.schemas import InterviewAgentResult, InterviewQuestion, InterviewState
+from ai_interviewer_api.agents.interview_knowledge.service import (
+    generate_structured_interview_result,
+    get_structured_interview_state_snapshot,
+    is_structured_interview_enabled,
+)
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.base import utc_now
@@ -22,6 +27,9 @@ from ai_interviewer_api.services.interview_answer_processor import (
     ConfirmationEvaluation,
     InterviewAnswerProcessor,
     compose_record_answer,
+)
+from ai_interviewer_api.services.interview_confirmation import (
+    is_unambiguous_confirmation,
 )
 
 
@@ -252,8 +260,25 @@ def generate_interview_reply(
     *,
     persist_assistant_messages: bool = True,
 ) -> InterviewStreamResult:
-    knowledge = store.get("knowledges", record["knowledgeId"])
+    knowledge = store.get("knowledges", record["knowledgeId"]) or {}
+    structured_enabled = is_structured_interview_enabled(knowledge)
     try:
+        if structured_enabled:
+            logger.info(
+                "Using Structured Interview engine record_id=%s knowledge_id=%s",
+                record["id"],
+                record["knowledgeId"],
+            )
+            result = generate_structured_interview_result(
+                record,
+                knowledge,
+                user,
+                persist_assistant_messages=persist_assistant_messages,
+            )
+            return InterviewStreamResult(
+                reply_chunks=_split_reply_chunks(str(result.get("reply") or "")),
+                metadata=result,
+            )
         logger.info(
             "Using Strands interview agent record_id=%s knowledge_id=%s",
             record["id"],
@@ -266,10 +291,11 @@ def generate_interview_reply(
             persist_assistant_messages=persist_assistant_messages,
         )
     except Exception:
-        logger.exception("Strands interview agent failed; returning safe error response")
+        engine_name = "Structured Interview" if structured_enabled else "Strands interview agent"
+        logger.exception("%s failed; returning safe error response", engine_name)
         return InterviewStreamResult(
             reply_chunks=[_SAFE_INTERVIEW_ERROR_REPLY],
-            metadata={"error": "strands_interview_failed"},
+            metadata={"error": "structured_interview_failed" if structured_enabled else "strands_interview_failed"},
         )
 
 
@@ -770,14 +796,24 @@ def _process_text_answer_turn(
     field_lookup = _build_field_lookup(knowledge_fields)
     current_field = field_lookup.get(current_field_id) or {"id": current_field_id, "name": current_field_id}
     field_state = interview_state.setdefault("fieldStates", {}).setdefault(current_field_id, {})
-    interpretation = interpret_dialogue_act(
-        transcript=str(latest_user_message.get("content") or ""),
-        current_question=current_question,
-        current_field=current_field,
-        field_state=field_state,
-        recent_messages=messages,
-        last_assistant_message=_latest_assistant_message(messages),
-    )
+    latest_transcript = str(latest_user_message.get("content") or "")
+    if (
+        field_state.get("answerState") == "AWAITING_CONFIRMATION"
+        and is_unambiguous_confirmation(latest_transcript)
+    ):
+        interpretation = DialogueInterpretation(
+            act="CONFIRMATION",
+            reason="explicit_confirmation_reply",
+        )
+    else:
+        interpretation = interpret_dialogue_act(
+            transcript=latest_transcript,
+            current_question=current_question,
+            current_field=current_field,
+            field_state=field_state,
+            recent_messages=messages,
+            last_assistant_message=_latest_assistant_message(messages),
+        )
     latest_user_message["dialogueAct"] = interpretation.act
     store.upsert("messages", latest_user_message)
     if not should_route_to_answer_processor(
@@ -840,6 +876,11 @@ def _process_text_answer_turn(
         )
 
     def evaluate_text_confirmation(**_: Any) -> ConfirmationEvaluation:
+        if is_unambiguous_confirmation(latest_transcript):
+            return ConfirmationEvaluation(
+                outcome="CONFIRM",
+                record_answer=str(field_state.get("candidateAnswer") or "").strip() or None,
+            )
         adapted_result = run_adapted_interview_turn(
             record,
             knowledge,
@@ -1307,7 +1348,9 @@ def _split_reply_chunks(reply_text: str) -> list[str]:
 
 
 def get_interview_state_snapshot(record: dict, user: UserContext) -> dict[str, Any]:
-    knowledge = store.get("knowledges", record["knowledgeId"])
+    knowledge = store.get("knowledges", record["knowledgeId"]) or {}
+    if is_structured_interview_enabled(knowledge):
+        return get_structured_interview_state_snapshot(record, knowledge, user)
     knowledge_fields = _list_interview_fields(knowledge, user)
     interview_state = _load_or_initialize_interview_state(record, knowledge_fields, user)
     messages = _list_record_messages(record, user)

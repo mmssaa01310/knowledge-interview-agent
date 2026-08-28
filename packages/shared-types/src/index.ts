@@ -36,6 +36,8 @@ export type KnowledgeDb = BaseEntity & {
 export type InterviewPlan = {
   version?: number;
   purpose?: string | null;
+  profile?: "fixed_form" | "business_process" | "system_requirement";
+  modelId?: "global.openai.gpt-5.6-terra" | "global.openai.gpt-5.6-luna" | null;
 };
 
 export type Knowledge = BaseEntity & {

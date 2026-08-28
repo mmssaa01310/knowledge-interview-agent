@@ -113,6 +113,12 @@ class FailingPolly(FakePolly):
         raise PollySynthesisError("polly unavailable")
 
 
+class EmptyPolly(FakePolly):
+    async def synthesize(self, text: str) -> bytes:
+        self.calls.append(text)
+        return b""
+
+
 class WarmFailingPolly(FakePolly):
     async def warm(self, texts: tuple[str, ...]) -> None:
         raise RuntimeError("warm failed")
@@ -204,9 +210,20 @@ class BlockingBridge(FakeBridge):
 
 
 class ControlBridge(FakeBridge):
-    async def classify_turn_intent(self, **kwargs):
-        self.intent_calls.append(kwargs)
-        return SimpleNamespace(turn_type="CONTROL")
+    async def process_turn(self, **kwargs) -> InterviewBridgeResult:
+        result = await super().process_turn(**kwargs)
+        return InterviewBridgeResult(
+            turn_id=result.turn_id,
+            response_id=result.response_id,
+            reply_text=result.reply_text,
+            action=result.action,
+            question_id=result.question_id,
+            state_version=result.state_version,
+            interview_status=result.interview_status,
+            retrieval_policy=result.retrieval_policy,
+            retrieval_executed=result.retrieval_executed,
+            turn_type="CONTROL",
+        )
 
 
 def _config() -> TranscribePollyRuntimeConfig:
@@ -219,6 +236,7 @@ def _config() -> TranscribePollyRuntimeConfig:
         listen_ack_min_speech_ms=40,
         listen_ack_min_stable_chars=5,
         backchannel_cooldown_ms=0,
+        backchannel_enabled=True,
         processing_ack_delay_ms=1000,
         long_processing_notice_ms=2000,
     )
@@ -298,6 +316,57 @@ async def test_five_hundred_ms_pause_ack_does_not_finalize_turn() -> None:
 
 
 @pytest.mark.anyio
+async def test_backchannels_are_disabled_by_default() -> None:
+    polly = FakePolly()
+    runtime = TranscribePollyRuntime(
+        config=TranscribePollyRuntimeConfig(),
+        interview_bridge=FakeBridge(),  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=polly,
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    runtime._voiced_duration_ms = 1000
+    await runtime._maybe_play_listen_ack("設備を担当しています")
+
+    assert polly.calls == []
+    assert not any(
+        isinstance(event, AssistantBackchannel)
+        for event in runtime._events._queue
+    )
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_initial_reply_preload_is_reused_by_formal_audio() -> None:
+    polly = FakePolly()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=FakeBridge(),  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=polly,
+    )
+
+    await runtime.prepare_initial_reply("これからインタビューを開始します。最初の質問です。")
+    audio = [
+        chunk
+        async for chunk in runtime._synthesize_chunks(
+            "これからインタビューを開始します。最初の質問です。",
+            generation=0,
+        )
+    ]
+
+    assert len(audio) == 2
+    assert polly.calls == ["これからインタビューを開始します。", "最初の質問です。"]
+    await runtime.close()
+
+
+@pytest.mark.anyio
 async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -330,7 +399,7 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
     assert bridge.process_calls[0]["transcript"] == "最終回答です"
     assert bridge.process_calls[0]["turn_type"] == "ANSWER"
     assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
-    assert bridge.intent_calls[0]["transcript"] == "最終回答です"
+    assert bridge.intent_calls == []
     assert "voice_turn_api_completed" in caplog.text
     assert "voice_turn_polly_started" in caplog.text
     assert "voice_turn_polly_first_chunk_ready" in caplog.text
@@ -339,7 +408,7 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
 
 
 @pytest.mark.anyio
-async def test_control_transcript_is_scoped_out_before_turn_save() -> None:
+async def test_control_transcript_is_classified_by_api_before_commit() -> None:
     transcribe = FakeTranscribe()
     bridge = ControlBridge()
     runtime = TranscribePollyRuntime(
@@ -360,8 +429,8 @@ async def test_control_transcript_is_scoped_out_before_turn_save() -> None:
     await runtime.push_audio(_frame(0))
     await asyncio.sleep(0.11)
 
-    assert bridge.process_calls[0]["turn_type"] == "CONTROL"
-    assert bridge.process_calls[0]["answer_to_question_id"] is None
+    assert bridge.process_calls[0]["turn_type"] == "ANSWER"
+    assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
     events = []
     while not runtime._events.empty():
         events.append(runtime._events.get_nowait())
@@ -419,6 +488,59 @@ async def test_new_user_generation_discards_delayed_polly_audio() -> None:
         and event.response_id == "response-old"
         for event in events
     )
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_formal_reply_waits_for_previous_browser_playback_to_drain() -> None:
+    polly = FakePolly()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=FakeBridge(),  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=polly,
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    await runtime.send_reply(
+        SimpleNamespace(
+            turn_id="turn-first",
+            response_id="response-first",
+            text="最初の回答です。",
+            action="NEXT_QUESTION",
+            question_id="q-2",
+            state_version=2,
+        )
+    )
+    second_task = asyncio.create_task(
+        runtime.send_reply(
+            SimpleNamespace(
+                turn_id="turn-second",
+                response_id="response-second",
+                text="次の質問です。",
+                action="NEXT_QUESTION",
+                question_id="q-3",
+                state_version=3,
+            )
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert second_task.done() is False
+    assert polly.calls == ["最初の回答です。"]
+
+    await runtime.notify_assistant_playback_drained(
+        response_id="response-first",
+        generation=runtime._generation,
+    )
+    await second_task
+    assert polly.calls == ["最初の回答です。", "次の質問です。"]
     await runtime.close()
 
 
@@ -534,6 +656,60 @@ async def test_polly_failure_keeps_formal_text_and_emits_nonfatal_error() -> Non
     assert not any(
         isinstance(event, AssistantAudioChunk)
         and event.response_id == "response-text-only"
+        for event in events
+    )
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_empty_polly_output_reopens_input_after_formal_text() -> None:
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=FakeBridge(),  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=EmptyPolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    await runtime.send_reply(
+        SimpleNamespace(
+            turn_id="turn-1",
+            response_id="response-empty-audio",
+            text="音声が空でもテキスト回答は表示されます。",
+            action="NEXT_QUESTION",
+            question_id="q-2",
+            state_version=2,
+        )
+    )
+
+    events = []
+    while not runtime._events.empty():
+        events.append(runtime._events.get_nowait())
+    assert any(
+        isinstance(event, AssistantTranscriptFinal)
+        and event.response_id == "response-empty-audio"
+        for event in events
+    )
+    assert any(
+        isinstance(event, AssistantSpeechEnded)
+        and event.response_id == "response-empty-audio"
+        and event.audio_duration_ms == 0
+        for event in events
+    )
+    assert any(
+        isinstance(event, InputStateChanged)
+        and event.input_state == "ANSWER_LISTENING"
+        for event in events
+    )
+    assert not any(
+        isinstance(event, AssistantAudioChunk)
+        and event.response_id == "response-empty-audio"
         for event in events
     )
     await runtime.close()

@@ -20,12 +20,9 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from ai_interviewer_api.agents.common.strands_runtime import (
-    create_agent,
-    create_voice_evaluation_bedrock_model,
-)
+from ai_interviewer_api.agents.common.strands_runtime import invoke_voice_bedrock_text
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.base import utc_now
@@ -52,8 +49,13 @@ from ai_interviewer_api.services.ai_interview import (
     generate_interview_reply,
     get_interview_state_snapshot,
 )
+from ai_interviewer_api.agents.interview_knowledge.service import (
+    generate_structured_interview_result,
+    is_structured_interview_enabled,
+)
 from ai_interviewer_api.services.dialogue_interpreter import (
-    interpret_dialogue_act,
+    DialogueAct,
+    DialogueInterpretation,
     should_route_to_answer_processor,
 )
 from ai_interviewer_api.services.interview_answer_processor import (
@@ -61,6 +63,9 @@ from ai_interviewer_api.services.interview_answer_processor import (
     ConfirmationEvaluation,
     InterviewAnswerProcessor,
     compose_record_answer,
+)
+from ai_interviewer_api.services.interview_confirmation import (
+    is_unambiguous_confirmation,
 )
 from ai_interviewer_api.services.voice_evaluation_deadline import (
     VoiceEvaluationDeadlineExceeded,
@@ -113,6 +118,31 @@ class VoiceConfirmationEvaluation:
     evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
 
 
+def _normalize_captured_items(value: Any) -> list[Any]:
+    """Keep only structurally valid optional extraction items.
+
+    Plain-text model responses occasionally collapse a one-item list into an
+    object. Normalize that container shape, but never invent a missing item
+    value; malformed items are ignored and the backend continues with the
+    validated answer fields.
+    """
+    if value is None:
+        return []
+    values = [value] if isinstance(value, dict) else value
+    if not isinstance(values, list):
+        return []
+    return [
+        item
+        for item in values
+        if isinstance(item, CapturedInterviewItem)
+        or (
+            isinstance(item, dict)
+            and isinstance(item.get("itemId"), str)
+            and isinstance(item.get("value"), str)
+        )
+    ]
+
+
 class VoiceAnswerEvaluationOutput(BaseModel):
     decision: Literal["CONFIRMABLE", "NEEDS_MORE_INFORMATION", "NOT_ANSWER", "UNCLEAR"]
     normalized_answer: str = ""
@@ -129,6 +159,11 @@ class VoiceAnswerEvaluationOutput(BaseModel):
     answer_disposition: Literal["ANSWERED", "UNCLEAR", "IRRELEVANT"] | None = None
     evaluation_status: Literal["OK", "EVALUATION_ERROR"] = "OK"
 
+    @field_validator("captured_items", mode="before")
+    @classmethod
+    def normalize_captured_items(cls, value: Any) -> Any:
+        return _normalize_captured_items(value)
+
 
 class VoiceConfirmationEvaluationOutput(BaseModel):
     outcome: Literal["CONFIRM", "REVISE_WITH_CONTENT", "REJECT_WITHOUT_CONTENT", "UNCLEAR"]
@@ -137,6 +172,38 @@ class VoiceConfirmationEvaluationOutput(BaseModel):
     confirmation_question: str | None = None
     clarification_question: str | None = None
     captured_items: list[CapturedInterviewItem] = Field(default_factory=list)
+
+    @field_validator("captured_items", mode="before")
+    @classmethod
+    def normalize_captured_items(cls, value: Any) -> Any:
+        return _normalize_captured_items(value)
+
+
+class VoiceTurnEvaluationOutput(BaseModel):
+    """Compact plain-text contract for one normal voice turn."""
+
+    turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
+    act: DialogueAct = "ANSWER"
+    responseText: str | None = None
+    reason: str | None = None
+    decision: Literal["CONFIRMABLE", "NEEDS_MORE_INFORMATION", "NOT_ANSWER", "UNCLEAR"] = "UNCLEAR"
+    normalizedAnswer: str = ""
+    isRelevant: bool = False
+    isSufficient: bool = False
+    missingInformation: list[str] = Field(default_factory=list)
+    followUpQuestion: str | None = None
+    confirmationQuestion: str | None = None
+    evidenceTranscriptIds: list[str] = Field(default_factory=list)
+    recordAnswer: str | None = None
+    retrievalNeeded: bool = False
+    evaluationReason: str | None = None
+    capturedItems: list[CapturedInterviewItem] = Field(default_factory=list)
+    answerDisposition: Literal["ANSWERED", "UNCLEAR", "IRRELEVANT"] | None = None
+
+    @field_validator("capturedItems", mode="before")
+    @classmethod
+    def normalize_captured_items(cls, value: Any) -> Any:
+        return _normalize_captured_items(value)
 
 
 @dataclass(frozen=True)
@@ -179,11 +246,47 @@ ANSWERは、現在の質問への回答、確認への肯定・否定、訂正�
 CONTROLは、現在の質問への回答をせず、インタビューの開始・終了・一時停止・再開・音声操作など、会話の進行自体を操作する主意図です。
 発話の単語や固定フレーズの一致ではなく、現在の質問と会話状態を踏まえた意味で判断してください。
 確認待ちの「はい」「違います」などは、確認に対する回答なのでANSWERです。
-結果は指定された構造化スキーマだけで返してください。
+結果は指定されたJSONオブジェクトだけで返してください。Markdownや説明文は不要です。
+""".strip()
+
+
+_VOICE_TURN_EVALUATION_SYSTEM_PROMPT = """
+あなたは音声インタビューの判定器です。質問・項目・状態・発話の意味で判断し、JSONオブジェクト1個だけを返してください。
+固定キーワードだけで判断しないでください。
+turnTypeはANSWERまたはCONTROL。CONTROLは開始・終了・一時停止・再開・音声操作など回答以外の進行操作です。
+actはANSWER, CLARIFICATION_REQUEST, QUESTION_TO_ASSISTANT, CONVERSATION_REQUEST, BACKCHANNEL, HESITATION, CORRECTION, REJECTION, CONFIRMATION, IRRELEVANT, OTHERのいずれかです。
+回答ならdecisionはCONFIRMABLE, NEEDS_MORE_INFORMATION, NOT_ANSWER, UNCLEARのいずれかです。
+recordAnswer等の文章値は文字列またはnull、isRelevant/isSufficient/retrievalNeededはboolean、missingInformation/capturedItemsは配列です。
+capturedItemsは[{"itemId":"...","value":"..."}]形式で、取得できなければ[]です。questionPlanの不足・完了・正式確定はbackendが判断します。
+回答処理へ渡すactはANSWER、確認待ちの訂正はCORRECTION、否定はREJECTION、承認はCONFIRMATIONです。それ以外はresponseTextに短い返答を入れてください。
+JSON以外、Markdown、コードフェンスは禁止です。例: {"turnType":"ANSWER","act":"ANSWER","decision":"CONFIRMABLE","recordAnswer":"山田","isRelevant":true,"isSufficient":true,"missingInformation":[],"capturedItems":[],"confirmationQuestion":"山田さんでよろしいですか？"}
+""".strip()
+
+
+_VOICE_CONFIRMATION_TEXT_SYSTEM_PROMPT = """
+あなたは音声インタビューの確認返答判定器です。
+候補回答に対するユーザー返答そのものの意味を判断し、次の4つのoutcomeのいずれかを含むJSONオブジェクトだけを返してください。
+
+- CONFIRM: 候補をそのまま承認
+- REVISE_WITH_CONTENT: 具体的な訂正内容がある
+- REJECT_WITHOUT_CONTENT: 候補を否定したが訂正内容がない
+- UNCLEAR: 判断不能、質問、曖昧な返答
+
+ユーザー返答が候補を肯定していればCONFIRMです。「はい」「そうです」「正しいです」は、候補を肯定する文脈ならCONFIRMにしてください。
+REVISE_WITH_CONTENTではrecord_answerとrevised_answerに訂正後の回答内容だけを入れてください。
+CONFIRMではrecord_answerに候補回答を入れてください。REJECT_WITH_CONTENTという値は使わないでください。
+訂正・候補の意味を変えず、固定キーワード一致ではなく文脈で判断してください。
+UNCLEARではclarification_questionに、ユーザーが次に何を言えばよいか分かる短い自然な案内を入れてください。
+質問や確認文への質問なら、候補を確定せず、clarification_questionで自然に説明してください。
+captured_itemsは必ず配列で、各要素はitemIdとvalueを持つオブジェクトにしてください。
+例: 候補=「山田」、返答=「はい」なら{"outcome":"CONFIRM","record_answer":"山田"}。
+例: 候補=「山田」、返答=「違います、佐藤です」ならREVISE_WITH_CONTENTです。
+JSON以外の文章、Markdown、コードフェンスは返さないでください。出力は必要なキーだけの短いJSONにしてください。
 """.strip()
 
 
 def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: UserContext) -> dict:
+    started_at = monotonic()
     record = get_scoped_item("records", record_id, user, "record_not_found")
     if not _has_voice_interview_fields(record, user):
         raise HTTPException(status_code=409, detail="voice_session_missing_questions")
@@ -208,6 +311,15 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
         startedAt=utc_now(),
     ).model_dump()
     voice_session_repository.save(session)
+    logger.info(
+        "voice_session_created voice_session_id=%s record_id=%s provider=%s initial_question_id=%s initial_reply_status=%s elapsed_ms=%s",
+        session["id"],
+        record_id,
+        payload.provider,
+        current_question_id,
+        session.get("initialReplyStatus"),
+        round((monotonic() - started_at) * 1000),
+    )
     return session
 
 
@@ -252,10 +364,11 @@ def classify_voice_turn_intent(
         ]
     )
     try:
-        result = _run_voice_structured_output(
+        result = _run_voice_json_output(
             system_prompt=_VOICE_TURN_INTENT_SYSTEM_PROMPT,
             prompt=prompt,
             output_model=VoiceTurnIntentOutput,
+            max_tokens=48,
         )
     except Exception as exc:
         logger.exception(
@@ -315,6 +428,9 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     ):
         raise HTTPException(status_code=409, detail="turn_state_conflict")
     interview_state = store.get("interview_states", f"interview-state-{session['recordId']}") or {}
+    record = store.get("records", session["recordId"]) or {}
+    knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
+    structured_mode = is_structured_interview_enabled(knowledge)
     turn_type = payload.turnType
     question_id = payload.answerToQuestionId
     question = None
@@ -328,16 +444,19 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
             raise HTTPException(status_code=409, detail="turn_question_conflict")
         question = _find_question_by_id(interview_state, question_id)
         field_id = question.get("fieldId") if question else None
-        if not question_id or not field_id:
+        if not question_id or (not field_id and not structured_mode):
             raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
-        field_state = _ensure_voice_field_state(interview_state, field_id)
-        processing_mode = (
-            "confirmation_reply"
-            if field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION
-            and field_state.get("pendingQuestionId") == question_id
-            and field_state.get("pendingFieldId") == field_id
-            else "answer_evaluation"
-        )
+        if structured_mode:
+            processing_mode = "structured_interpretation"
+        else:
+            field_state = _ensure_voice_field_state(interview_state, field_id)
+            processing_mode = (
+                "confirmation_reply"
+                if field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION
+                and field_state.get("pendingQuestionId") == question_id
+                and field_state.get("pendingFieldId") == field_id
+                else "answer_evaluation"
+            )
     turn = VoiceTurn(
         tenantId=session["tenantId"],
         createdByUserId=session["ownerUserId"] or session["createdByUserId"],
@@ -508,54 +627,17 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
         interview_state = snapshot.get("interviewState", {})
     turn["baseInterviewState"] = deepcopy(interview_state)
     voice_turn_repository.save(turn)
+    if is_structured_interview_enabled(store.get("knowledges", record.get("knowledgeId")) or {}):
+        return _process_structured_voice_turn(
+            session=session,
+            turn=turn,
+            record=record,
+            user=user,
+            interview_state=interview_state,
+        )
     if turn.get("turnType") == "CONTROL":
         try:
-            current_question_id = interview_state.get("currentQuestionId")
-            result_payload = {
-                "replyText": "承知しました。",
-                "action": "ask_configured_field",
-                "questionId": current_question_id,
-                "retrievalPolicy": None,
-                "retrievalExecuted": False,
-            }
-            reply_text = result_payload["replyText"]
-            action = result_payload["action"]
-            current_question_id = result_payload["questionId"]
-            response_id = f"voice-response-{uuid4().hex[:12]}"
-            latest_session = _get_voice_session_for_internal_use(voice_session_id)
-            latest_turn = _get_voice_turn_for_session(turn_id, latest_session)
-            if latest_turn.get("processingStatus") == "cancelled":
-                raise HTTPException(status_code=409, detail="turn_cancelled")
-            next_state_version = int(session.get("stateVersion") or 0) + 1
-            turn["processingStatus"] = "completed"
-            turn["lifecycleStatus"] = "COMMITTED"
-            turn["responseText"] = reply_text
-            turn["action"] = action
-            turn["stateVersion"] = next_state_version
-            turn["responseId"] = response_id
-            turn["questionId"] = current_question_id
-            turn["retrievalPolicy"] = None
-            turn["retrievalExecuted"] = False
-            turn["updatedAt"] = utc_now()
-            voice_turn_repository.save(turn)
-            session["stateVersion"] = next_state_version
-            session["updatedAt"] = utc_now()
-            voice_session_repository.save(session)
-            _save_voice_assistant_message(
-                session,
-                AssistantEventCreate(
-                    eventType="assistant_transcript_final",
-                    responseId=response_id,
-                    transcript=reply_text,
-                    detail={
-                        "turnId": turn_id,
-                        "action": action,
-                        "questionId": current_question_id,
-                        "source": "control_turn_commit",
-                    },
-                ),
-            )
-            return _build_process_result(session, turn).model_dump()
+            return _commit_control_turn(session=session, turn=turn, interview_state=interview_state)
         except Exception:
             latest_turn = voice_turn_repository.get(turn_id)
             if latest_turn is not None and latest_turn.get("processingStatus") == "cancelled":
@@ -568,7 +650,8 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             raise
     current_question = _find_question_by_id(interview_state, turn.get("answerToQuestionId"))
     current_field_id = turn.get("answerToFieldId")
-    if not current_question or not current_field_id:
+    question_type = current_question.get("questionType") if current_question else None
+    if not current_question or (not current_field_id and question_type != "structured"):
         raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
     field_state = _ensure_voice_field_state(interview_state, current_field_id)
     logger.info(
@@ -591,14 +674,115 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             turn.get("answerToQuestionId"),
             session.get("stateVersion"),
         )
-        interpretation = interpret_dialogue_act(
-            transcript=str(turn.get("transcript") or ""),
-            current_question=current_question,
-            current_field=current_field,
-            field_state=field_state,
-            recent_messages=_list_voice_record_messages(record, user),
-            last_assistant_message=_latest_voice_assistant_message(record, user),
-        )
+        confirmation_evaluation: VoiceConfirmationEvaluation | None = None
+        answer_evaluation: VoiceAnswerEvaluation | None = None
+        if field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION:
+            evaluation_request = VoiceEvaluationRequest(
+                voice_session_id=session["id"],
+                voice_turn_id=turn["id"],
+                question_id=turn.get("answerToQuestionId"),
+                field_id=current_field_id,
+                evaluation_request_id=f"voice-confirmation-{uuid4().hex}",
+                state_version=int(session.get("stateVersion") or 0),
+                deadline_at=monotonic() + VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS,
+            )
+            try:
+                confirmation_evaluation = run_with_evaluation_deadline(
+                    lambda: _evaluate_confirmation_response(
+                        current_question=current_question,
+                        candidate_answer=str(field_state.get("candidateAnswer") or "").strip(),
+                        user_reply=str(turn.get("transcript") or ""),
+                        field_state=field_state,
+                    ),
+                    request=evaluation_request,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "voice_confirmation_evaluation_failed voice_session_id=%s turn_id=%s question_id=%s error_type=%s",
+                    session["id"],
+                    turn["id"],
+                    turn.get("answerToQuestionId"),
+                    exc.__class__.__name__,
+                )
+                confirmation_evaluation = VoiceConfirmationEvaluation(
+                    outcome="UNCLEAR",
+                    clarification_question=(
+                        "内容を確定してよいか判断できませんでした。正しければ『はい』、"
+                        "修正があれば正しい内容を教えてください。"
+                    ),
+                    evaluation_status="EVALUATION_ERROR",
+                )
+            interpretation = DialogueInterpretation(act="CONFIRMATION")
+        else:
+            evaluation_request = VoiceEvaluationRequest(
+                voice_session_id=session["id"],
+                voice_turn_id=turn["id"],
+                question_id=turn.get("answerToQuestionId"),
+                field_id=current_field_id,
+                evaluation_request_id=f"voice-turn-{uuid4().hex}",
+                state_version=int(session.get("stateVersion") or 0),
+                deadline_at=monotonic() + VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS,
+            )
+            try:
+                combined_evaluation = run_with_evaluation_deadline(
+                    lambda: _evaluate_voice_turn_candidate(
+                        transcript=str(turn.get("transcript") or ""),
+                        current_question=current_question,
+                        current_field=current_field,
+                        field_state=field_state,
+                        evidence_message_id=user_message["id"],
+                    ),
+                    request=evaluation_request,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "voice_turn_evaluation_failed voice_session_id=%s turn_id=%s question_id=%s error_type=%s",
+                    session["id"],
+                    turn["id"],
+                    turn.get("answerToQuestionId"),
+                    exc.__class__.__name__,
+                )
+                answer_evaluation = VoiceAnswerEvaluation(
+                    decision="UNCLEAR",
+                    normalized_answer="",
+                    is_relevant=None,
+                    is_sufficient=False,
+                    missing_information=[],
+                    follow_up_question=_build_evaluation_fallback_prompt(current_question),
+                    evidence_transcript_ids=[user_message["id"]],
+                    evaluation_degraded=True,
+                    degraded_reason=_voice_evaluation_degraded_reason(exc),
+                    evaluation_status="EVALUATION_ERROR",
+                )
+                combined_evaluation = VoiceTurnEvaluation(
+                    turn_type="ANSWER",
+                    interpretation=DialogueInterpretation(act="ANSWER"),
+                    answer_evaluation=answer_evaluation,
+                )
+            if combined_evaluation.turn_type == "CONTROL":
+                turn["turnType"] = "CONTROL"
+                turn["answerToQuestionId"] = None
+                turn["answerToFieldId"] = None
+                turn["processingMode"] = "control"
+                turn["dialogueAct"] = combined_evaluation.interpretation.act
+                voice_turn_repository.save(turn)
+                user_message.update(
+                    {
+                        "turnType": "CONTROL",
+                        "answerToQuestionId": None,
+                        "answerToFieldId": None,
+                        "questionType": None,
+                        "dialogueAct": combined_evaluation.interpretation.act,
+                    }
+                )
+                store.upsert("messages", user_message)
+                return _commit_control_turn(
+                    session=session,
+                    turn=turn,
+                    interview_state=interview_state,
+                )
+            interpretation = combined_evaluation.interpretation
+            answer_evaluation = combined_evaluation.answer_evaluation
         user_message["dialogueAct"] = interpretation.act
         store.upsert("messages", user_message)
         turn["dialogueAct"] = interpretation.act
@@ -630,6 +814,7 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
                 field_state=field_state,
                 current_question=current_question,
                 user_message=user_message,
+                precomputed_confirmation=confirmation_evaluation,
             )
         else:
             result_payload = _process_candidate_turn(
@@ -641,6 +826,7 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
                 field_state=field_state,
                 current_question=current_question,
                 user_message=user_message,
+                precomputed_evaluation=answer_evaluation,
             )
 
         reply_text = result_payload["replyText"]
@@ -721,6 +907,137 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
         raise
 
 
+def _process_structured_voice_turn(
+    *,
+    session: dict[str, Any],
+    turn: dict[str, Any],
+    record: dict[str, Any],
+    user: UserContext,
+    interview_state: dict[str, Any],
+) -> dict:
+    """Send a voice transcript through the same semantic engine as text."""
+
+    if turn.get("turnType") == "CONTROL":
+        return _commit_control_turn(session=session, turn=turn, interview_state=interview_state)
+
+    try:
+        knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
+        result = generate_structured_interview_result(
+            record,
+            knowledge,
+            user,
+            persist_assistant_messages=False,
+        )
+        reply_text = str(result.get("reply") or "").strip()
+        action = str(result.get("action") or "ask_structured").strip() or "ask_structured"
+        question = result.get("question") if isinstance(result.get("question"), dict) else None
+        question_id = question.get("questionId") if question else None
+        response_id = f"voice-response-{uuid4().hex[:12]}"
+        latest_session = _get_voice_session_for_internal_use(session["id"])
+        latest_turn = _get_voice_turn_for_session(turn["id"], latest_session)
+        if latest_turn.get("processingStatus") == "cancelled":
+            raise HTTPException(status_code=409, detail="turn_cancelled")
+        expected_state_version = turn.get("expectedStateVersion")
+        if (
+            expected_state_version is not None
+            and int(latest_session.get("stateVersion") or 0) != int(expected_state_version)
+        ):
+            raise HTTPException(status_code=409, detail="turn_state_conflict")
+
+        next_state_version = int(session.get("stateVersion") or 0) + 1
+        turn["processingStatus"] = "completed"
+        turn["lifecycleStatus"] = "COMMITTED"
+        turn["responseText"] = reply_text
+        turn["action"] = action
+        turn["stateVersion"] = next_state_version
+        turn["responseId"] = response_id
+        turn["questionId"] = question_id
+        turn["retrievalPolicy"] = "auto"
+        turn["retrievalExecuted"] = False
+        turn["updatedAt"] = utc_now()
+        voice_turn_repository.save(turn)
+        session["currentQuestionId"] = question_id
+        session["stateVersion"] = next_state_version
+        session["status"] = "completed" if action == "finish" else session.get("status", "active")
+        session["updatedAt"] = utc_now()
+        voice_session_repository.save(session)
+        _save_voice_assistant_message(
+            session,
+            AssistantEventCreate(
+                eventType="assistant_transcript_final",
+                responseId=response_id,
+                transcript=reply_text,
+                detail={
+                    "turnId": turn["id"],
+                    "action": action,
+                    "questionId": question_id,
+                    "questionType": "structured",
+                    "fieldId": question.get("fieldId") if question else None,
+                    "targetType": question.get("targetType") if question else None,
+                    "targetId": question.get("targetId") if question else None,
+                    "source": "structured_interview_turn_commit",
+                },
+            ),
+        )
+        return _build_process_result(session, turn).model_dump()
+    except Exception:
+        latest_turn = voice_turn_repository.get(turn["id"])
+        if latest_turn is not None and latest_turn.get("processingStatus") == "cancelled":
+            _restore_cancelled_turn_artifacts(latest_turn, session)
+        elif latest_turn is not None:
+            latest_turn["processingStatus"] = "failed"
+            latest_turn["lifecycleStatus"] = "RECEIVED"
+            latest_turn["updatedAt"] = utc_now()
+            voice_turn_repository.save(latest_turn)
+        raise
+
+
+def _commit_control_turn(
+    *,
+    session: dict,
+    turn: dict,
+    interview_state: dict[str, Any],
+) -> dict:
+    current_question_id = interview_state.get("currentQuestionId")
+    reply_text = "承知しました。"
+    action = "ask_configured_field"
+    response_id = f"voice-response-{uuid4().hex[:12]}"
+    latest_session = _get_voice_session_for_internal_use(session["id"])
+    latest_turn = _get_voice_turn_for_session(turn["id"], latest_session)
+    if latest_turn.get("processingStatus") == "cancelled":
+        raise HTTPException(status_code=409, detail="turn_cancelled")
+    next_state_version = int(session.get("stateVersion") or 0) + 1
+    turn["processingStatus"] = "completed"
+    turn["lifecycleStatus"] = "COMMITTED"
+    turn["responseText"] = reply_text
+    turn["action"] = action
+    turn["stateVersion"] = next_state_version
+    turn["responseId"] = response_id
+    turn["questionId"] = current_question_id
+    turn["retrievalPolicy"] = None
+    turn["retrievalExecuted"] = False
+    turn["updatedAt"] = utc_now()
+    voice_turn_repository.save(turn)
+    session["stateVersion"] = next_state_version
+    session["updatedAt"] = utc_now()
+    voice_session_repository.save(session)
+    _save_voice_assistant_message(
+        session,
+        AssistantEventCreate(
+            eventType="assistant_transcript_final",
+            responseId=response_id,
+            transcript=reply_text,
+            detail={
+                "turnId": turn["id"],
+                "action": action,
+                "questionId": current_question_id,
+                "source": "control_turn_commit",
+            },
+        ),
+    )
+    return _build_process_result(session, turn).model_dump()
+
+
 def create_assistant_event(voice_session_id: str, payload: AssistantEventCreate) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
     item = {
@@ -765,10 +1082,17 @@ def create_connection_event(voice_session_id: str, payload: ConnectionEventCreat
 
 
 def _initialize_initial_question(record: dict, user: UserContext) -> str | None:
+    started_at = monotonic()
     snapshot = get_interview_state_snapshot(record, user)
     interview_state = snapshot.get("interviewState", {})
     current_question_text = _find_current_question_text(interview_state)
     if current_question_text:
+        logger.info(
+            "voice_initial_question_reused record_id=%s question_id=%s elapsed_ms=%s",
+            record.get("id"),
+            interview_state.get("currentQuestionId"),
+            round((monotonic() - started_at) * 1000),
+        )
         return f"{INITIAL_VOICE_GREETING}{current_question_text}"
     if interview_state.get("status") == "completed":
         return None
@@ -776,6 +1100,11 @@ def _initialize_initial_question(record: dict, user: UserContext) -> str | None:
     initial_question = "\n".join(result.reply_chunks).strip()
     if not initial_question:
         return None
+    logger.info(
+        "voice_initial_question_generated record_id=%s elapsed_ms=%s",
+        record.get("id"),
+        round((monotonic() - started_at) * 1000),
+    )
     return f"{INITIAL_VOICE_GREETING}{initial_question}"
 
 
@@ -800,6 +1129,9 @@ def _find_question_by_id(interview_state: dict[str, Any], question_id: str | Non
 
 
 def _has_voice_interview_fields(record: dict, user: UserContext) -> bool:
+    knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
+    if is_structured_interview_enabled(knowledge):
+        return True
     return any(
         row
         for row in store.list("knowledge_fields", user.tenant_id)
@@ -940,12 +1272,14 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
             "answerToFieldId": None,
             "voiceSessionId": turn["voiceSessionId"],
             "voiceTurnId": turn["id"],
+            "targetType": None,
+            "targetId": None,
         }
         return store.upsert("messages", message)
-    if not current_question_id or not current_field_id:
-        raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
     question = _find_question_by_id(interview_state, current_question_id)
     question_type = question.get("questionType") if question else None
+    if not current_question_id or (not current_field_id and question_type != "structured"):
+        raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
 
     message = {
         "id": f"voice-msg-{turn['id']}",
@@ -960,6 +1294,8 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
         "answerToQuestionId": current_question_id,
         "answerToFieldId": current_field_id,
         "questionType": question_type,
+        "targetType": question.get("targetType") if question else None,
+        "targetId": question.get("targetId") if question else None,
         "voiceSessionId": turn["voiceSessionId"],
         "voiceTurnId": turn["id"],
     }
@@ -1014,8 +1350,10 @@ def _save_voice_assistant_message(session: dict, payload: AssistantEventCreate) 
         "createdAt": existing.get("createdAt") or utc_now(),
         "updatedAt": utc_now(),
         "questionId": detail.get("questionId"),
-        "questionType": None,
-        "fieldId": None,
+        "questionType": detail.get("questionType"),
+        "fieldId": detail.get("fieldId"),
+        "targetType": detail.get("targetType"),
+        "targetId": detail.get("targetId"),
         "voiceSessionId": session["id"],
         "voiceTurnId": detail.get("turnId"),
         "voiceResponseId": response_id,
@@ -1057,6 +1395,7 @@ def _process_candidate_turn(
     field_state: dict[str, Any],
     current_question: dict[str, Any] | None,
     user_message: dict[str, Any],
+    precomputed_evaluation: VoiceAnswerEvaluation | None = None,
 ) -> dict[str, Any]:
     evaluation_started_at = monotonic()
     evaluation_started_at_ms = int(time() * 1000)
@@ -1124,7 +1463,7 @@ def _process_candidate_turn(
         retrieval_policy,
     )
     try:
-        evaluation = run_with_evaluation_deadline(
+        evaluation = precomputed_evaluation or run_with_evaluation_deadline(
             lambda: _evaluate_voice_answer_candidate(
                 transcript=turn["transcript"],
                 current_question=current_question,
@@ -1279,6 +1618,7 @@ def _process_confirmation_turn(
     field_state: dict[str, Any],
     current_question: dict[str, Any] | None,
     user_message: dict[str, Any],
+    precomputed_confirmation: VoiceConfirmationEvaluation | None = None,
 ) -> dict[str, Any]:
     current_question_id = (
         field_state.get("pendingQuestionId")
@@ -1298,24 +1638,31 @@ def _process_confirmation_turn(
         raise RuntimeError("candidate evaluation called while awaiting confirmation")
 
     def evaluate_confirmation(**kwargs: Any) -> ConfirmationEvaluation:
-        try:
-            decision = _evaluate_confirmation_response(
-                current_question=current_question,
-                candidate_answer=kwargs["candidate_answer"],
-                user_reply=kwargs["user_reply"],
-                field_state=field_state,
-            )
-        except Exception:
-            logger.exception(
-                "voice_confirmation_evaluation_failed voice_session_id=%s turn_id=%s question_id=%s",
-                session["id"],
-                turn["id"],
-                current_question_id,
-            )
-            decision = VoiceConfirmationEvaluation(
-                outcome="UNCLEAR",
-                evaluation_status="EVALUATION_ERROR",
-            )
+        if precomputed_confirmation is not None:
+            decision = precomputed_confirmation
+        else:
+            try:
+                decision = _evaluate_confirmation_response(
+                    current_question=current_question,
+                    candidate_answer=kwargs["candidate_answer"],
+                    user_reply=kwargs["user_reply"],
+                    field_state=field_state,
+                )
+            except Exception:
+                logger.exception(
+                    "voice_confirmation_evaluation_failed voice_session_id=%s turn_id=%s question_id=%s",
+                    session["id"],
+                    turn["id"],
+                    current_question_id,
+                )
+                decision = VoiceConfirmationEvaluation(
+                    outcome="UNCLEAR",
+                    clarification_question=(
+                        "内容を確定してよいか判断できませんでした。正しければ『はい』、"
+                        "修正があれば正しい内容を教えてください。"
+                    ),
+                    evaluation_status="EVALUATION_ERROR",
+                )
         return ConfirmationEvaluation(
             outcome=decision.outcome,
             revised_answer=decision.revised_answer,
@@ -1381,6 +1728,7 @@ def _process_confirmation_turn(
     field_state["clarificationQuestion"] = (
         turn_result.reply_text if turn_result.action == "ask_follow_up" else None
     )
+    interview_state["lastProcessedUserMessageId"] = user_message["id"]
     _persist_interview_state(interview_state, user)
     return {
         "replyText": turn_result.reply_text,
@@ -1441,6 +1789,75 @@ def _build_voice_next_question_result(
         "retrievalExecuted": retrieval_executed,
         "currentFieldId": completed_field_id,
     }
+
+
+@dataclass(frozen=True)
+class VoiceTurnEvaluation:
+    turn_type: Literal["ANSWER", "CONTROL"]
+    interpretation: DialogueInterpretation
+    answer_evaluation: VoiceAnswerEvaluation | None = None
+
+
+def _evaluate_voice_turn_candidate(
+    *,
+    transcript: str,
+    current_question: dict[str, Any] | None,
+    current_field: dict[str, Any] | None,
+    field_state: dict[str, Any],
+    evidence_message_id: str,
+) -> VoiceTurnEvaluation:
+    result = _run_voice_json_output(
+        system_prompt=_VOICE_TURN_EVALUATION_SYSTEM_PROMPT,
+        prompt=_build_voice_turn_evaluation_prompt(
+            transcript=transcript,
+            current_question=current_question,
+            current_field=current_field,
+            field_state=field_state,
+            evidence_message_id=evidence_message_id,
+        ),
+        output_model=VoiceTurnEvaluationOutput,
+        max_tokens=256,
+    )
+    interpretation = DialogueInterpretation(
+        act=result.act,
+        response_text=result.responseText.strip() if isinstance(result.responseText, str) else None,
+        reason=result.reason,
+    )
+    if result.turnType == "CONTROL":
+        return VoiceTurnEvaluation(
+            turn_type="CONTROL",
+            interpretation=interpretation,
+        )
+    answer_evaluation = VoiceAnswerEvaluation(
+        decision=result.decision,
+        normalized_answer=result.normalizedAnswer.strip(),
+        record_answer=result.recordAnswer.strip()
+        if isinstance(result.recordAnswer, str)
+        else "",
+        is_relevant=result.isRelevant,
+        is_sufficient=result.isSufficient,
+        missing_information=[item.strip() for item in result.missingInformation if item.strip()],
+        follow_up_question=(
+            result.followUpQuestion.strip()
+            if isinstance(result.followUpQuestion, str) and result.followUpQuestion.strip()
+            else None
+        ),
+        confirmation_question=(
+            result.confirmationQuestion.strip()
+            if isinstance(result.confirmationQuestion, str) and result.confirmationQuestion.strip()
+            else None
+        ),
+        evidence_transcript_ids=result.evidenceTranscriptIds or [evidence_message_id],
+        retrieval_needed=result.retrievalNeeded,
+        evaluation_reason=result.evaluationReason,
+        captured_items=[item.model_dump() for item in result.capturedItems],
+        answer_disposition=result.answerDisposition,
+    )
+    return VoiceTurnEvaluation(
+        turn_type="ANSWER",
+        interpretation=interpretation,
+        answer_evaluation=_stabilize_voice_answer_evaluation(answer_evaluation),
+    )
 
 
 def _ensure_voice_field_state(interview_state: dict[str, Any], field_id: str | None) -> dict[str, Any]:
@@ -1504,10 +1921,11 @@ def _evaluate_voice_answer_candidate(
         field_state=field_state,
         evidence_message_id=evidence_message_id,
     )
-    result = _run_voice_structured_output(
+    result = _run_voice_json_output(
         system_prompt=_voice_answer_evaluation_system_prompt(),
         prompt=prompt,
         output_model=VoiceAnswerEvaluationOutput,
+        max_tokens=256,
     )
     evaluation = VoiceAnswerEvaluation(
         decision=result.decision,
@@ -1592,21 +2010,43 @@ def _evaluate_confirmation_response(
     user_reply: str,
     field_state: dict[str, Any],
 ) -> VoiceConfirmationEvaluation:
+    if is_unambiguous_confirmation(user_reply):
+        logger.info(
+            "voice_confirmation_fast_path outcome=CONFIRM candidate_length=%s",
+            len(candidate_answer),
+        )
+        return VoiceConfirmationEvaluation(
+            outcome="CONFIRM",
+            record_answer=candidate_answer,
+        )
     prompt = _build_voice_confirmation_prompt(
         current_question=current_question,
         candidate_answer=candidate_answer,
         user_reply=user_reply,
         field_state=field_state,
     )
-    result = _run_voice_structured_output(
-        system_prompt=_voice_confirmation_system_prompt(),
+    result = _run_voice_json_output(
+        system_prompt=_VOICE_CONFIRMATION_TEXT_SYSTEM_PROMPT,
         prompt=prompt,
         output_model=VoiceConfirmationEvaluationOutput,
+        max_tokens=160,
     )
     return VoiceConfirmationEvaluation(
         outcome=result.outcome,
-        revised_answer=result.revised_answer.strip() if isinstance(result.revised_answer, str) and result.revised_answer.strip() else None,
-        record_answer=result.record_answer.strip() if isinstance(result.record_answer, str) and result.record_answer.strip() else None,
+        revised_answer=result.revised_answer.strip()
+        if isinstance(result.revised_answer, str) and result.revised_answer.strip()
+        else None,
+        record_answer=(
+            result.revised_answer.strip()
+            if result.outcome == "REVISE_WITH_CONTENT"
+            and isinstance(result.revised_answer, str)
+            and result.revised_answer.strip()
+            else (
+                result.record_answer.strip()
+                if isinstance(result.record_answer, str) and result.record_answer.strip()
+                else None
+            )
+        ),
         confirmation_question=result.confirmation_question.strip() if isinstance(result.confirmation_question, str) and result.confirmation_question.strip() else None,
         clarification_question=result.clarification_question.strip() if isinstance(result.clarification_question, str) and result.clarification_question.strip() else None,
         captured_items=[item.model_dump() for item in result.captured_items],
@@ -1654,21 +2094,19 @@ def _resolve_field(record: dict, field_id: str | None, user: UserContext) -> dic
     return None
 
 
-def _run_voice_structured_output(*, system_prompt: str, prompt: str, output_model: type[BaseModel]) -> BaseModel:
+def _run_voice_json_output(
+    *,
+    system_prompt: str,
+    prompt: str,
+    output_model: type[BaseModel],
+    max_tokens: int,
+) -> BaseModel:
     invocation_started_at = monotonic()
-    agent = create_agent(
-        model=create_voice_evaluation_bedrock_model(),
-        system_prompt=system_prompt,
-        tools=[],
-        hooks=[],
-        name="Voice Interview Evaluator",
-        description="Evaluates voice interview answers and confirmation replies.",
-    )
     try:
-        result = agent(
-            prompt,
-            invocation_state={},
-            structured_output_model=output_model,
+        text = invoke_voice_bedrock_text(
+            system_prompt=system_prompt,
+            prompt=prompt,
+            max_tokens=max_tokens,
         )
     except Exception:
         logger.info(
@@ -1678,34 +2116,31 @@ def _run_voice_structured_output(*, system_prompt: str, prompt: str, output_mode
         raise
     model_completed_at = monotonic()
     logger.info(
-        "voice_bedrock_model_completed bedrock_model_ms=%s",
+        "voice_bedrock_text_completed bedrock_model_ms=%s",
         round((model_completed_at - invocation_started_at) * 1000, 1),
     )
     parse_started_at = monotonic()
-    structured_output = getattr(result, "structured_output", None)
-    if isinstance(structured_output, output_model):
-        parsed = structured_output
-        logger.info("voice_response_parse_completed response_parse_ms=%s", round((monotonic() - parse_started_at) * 1000, 1))
-        return parsed
-    if structured_output is not None:
-        parsed = output_model.model_validate(structured_output)
-        logger.info("voice_response_parse_completed response_parse_ms=%s", round((monotonic() - parse_started_at) * 1000, 1))
-        return parsed
-    if isinstance(result, output_model):
-        logger.info("voice_response_parse_completed response_parse_ms=%s", round((monotonic() - parse_started_at) * 1000, 1))
-        return result
-    text = str(result).strip()
-    if text:
-        try:
-            parsed = output_model.model_validate_json(text)
-        except Exception:  # noqa: BLE001 - SDK output may fail with multiple parse errors
-            parsed = output_model.model_validate(json.loads(text))
-        logger.info(
-            "voice_response_parse_completed response_parse_ms=%s",
-            round((monotonic() - parse_started_at) * 1000, 1),
-        )
-        return parsed
-    raise ValueError("structured output missing")
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    try:
+        parsed = output_model.model_validate_json(cleaned)
+    except Exception:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("voice JSON response missing object") from None
+        parsed = output_model.model_validate(json.loads(cleaned[start : end + 1]))
+    logger.info(
+        "voice_response_parse_completed response_parse_ms=%s",
+        round((monotonic() - parse_started_at) * 1000, 1),
+    )
+    return parsed
 
 
 def _voice_answer_evaluation_system_prompt() -> str:
@@ -1745,22 +2180,6 @@ def _voice_answer_evaluation_system_prompt() -> str:
         "ユーザーが『何を答えればよいか』『どんな内容か』と案内を求めた場合は、"
         "回答候補にせずNOT_ANSWERとし、明示された要件の範囲で答え方を説明する"
         "follow_up_questionを返してください。要件がなければ、質問に沿った一般的な例を簡潔に示してください。"
-    )
-
-
-def _voice_confirmation_system_prompt() -> str:
-    return (
-        "あなたは音声インタビューの確認返答判定器です。\n"
-        "確認待ちの候補回答とユーザー返答を見て、"
-        "CONFIRM / REVISE_WITH_CONTENT / REJECT_WITHOUT_CONTENT / UNCLEAR を返してください。\n"
-        "CONFIRMでは候補の回答内容だけをrecord_answerに返してください。"
-        "REVISE_WITH_CONTENTでは、訂正後の回答内容だけをrecord_answerに返し、"
-        "『はい』『いいえ』『違います』等の会話制御語やメタ説明を含めないでください。"
-        "同時に訂正後のcaptured_itemsと、訂正内容を自然に確認するconfirmation_questionを返してください。"
-        "否定や訂正の語に続いて具体的な内容がある場合は、語句の一致ではなく意味として"
-        "REVISE_WITH_CONTENTに分類してください。例えば候補が『宮崎です』で返答が"
-        "『いえ、宮崎、です』なら、record_answerは『宮崎です』、"
-        "confirmation_questionは『宮崎さんでよろしいですか？』です。"
     )
 
 
@@ -1851,6 +2270,45 @@ def _build_voice_answer_evaluation_prompt(
     )
 
 
+def _build_voice_turn_evaluation_prompt(
+    *,
+    transcript: str,
+    current_question: dict[str, Any] | None,
+    current_field: dict[str, Any] | None,
+    field_state: dict[str, Any],
+    evidence_message_id: str,
+) -> str:
+    return json.dumps(
+        {
+            "question": {
+                "questionId": (current_question or {}).get("questionId"),
+                "text": (current_question or {}).get("text"),
+                "questionType": (current_question or {}).get("questionType"),
+                "questionPlan": (current_question or {}).get("questionPlan"),
+            },
+            "field": {
+                "id": (current_field or {}).get("id"),
+                "name": (current_field or {}).get("name"),
+                "description": (current_field or {}).get("description"),
+                "aiAssistPrompt": (current_field or {}).get("aiAssistPrompt"),
+                "questionPlan": (current_field or {}).get("questionPlan"),
+            },
+            "fieldState": {
+                "answerState": field_state.get("answerState"),
+                "candidateAnswer": field_state.get("candidateAnswer"),
+                "recordAnswer": field_state.get("recordAnswer"),
+                "capturedItems": field_state.get("capturedItems") or [],
+                "missingInformation": field_state.get("missingInformation") or [],
+                "pendingQuestionId": field_state.get("pendingQuestionId"),
+                "pendingFieldId": field_state.get("pendingFieldId"),
+            },
+            "transcript": transcript,
+            "evidenceTranscriptId": evidence_message_id,
+        },
+        ensure_ascii=False,
+    )
+
+
 def _build_voice_confirmation_prompt(
     *,
     current_question: dict[str, Any] | None,
@@ -1860,6 +2318,7 @@ def _build_voice_confirmation_prompt(
 ) -> str:
     return json.dumps(
         {
+            "task": "candidateAnswerに対するuserReplyの意味だけを分類し、候補を正式確定するかは判断しない",
             "question": current_question or {},
             "candidateAnswer": candidate_answer,
             "userReply": user_reply,

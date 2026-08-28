@@ -94,7 +94,12 @@ class VoiceTurn(BaseEntity):
     turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None
     answerToFieldId: str | None = None
-    processingMode: Literal["answer_evaluation", "confirmation_reply", "control"] = "answer_evaluation"
+    processingMode: Literal[
+        "answer_evaluation",
+        "confirmation_reply",
+        "structured_interpretation",
+        "control",
+    ] = "answer_evaluation"
     processingStatus: Literal["pending", "processing", "completed", "failed", "cancelled"] = "pending"
     lifecycleStatus: Literal[
         "RECEIVED",

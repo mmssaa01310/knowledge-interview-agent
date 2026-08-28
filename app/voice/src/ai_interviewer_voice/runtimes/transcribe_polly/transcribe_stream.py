@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import boto3
 from aws_sdk_transcribe_streaming.client import TranscribeStreamingClient
 from aws_sdk_transcribe_streaming.config import Config
 from aws_sdk_transcribe_streaming.models import (
@@ -17,6 +18,8 @@ from aws_sdk_transcribe_streaming.models import (
     StartStreamTranscriptionInput,
     TranscriptResultStreamTranscriptEvent,
 )
+from smithy_aws_core.identity.chain import create_default_chain
+from smithy_http.aio.crt import AWSCRTHTTPClient
 
 from ai_interviewer_voice.runtimes.transcribe_polly.config import (
     TranscribePollyRuntimeConfig,
@@ -31,6 +34,10 @@ class TranscribeResult:
     stable_text: str
     is_partial: bool
     result_id: str | None = None
+
+
+class TranscribeCredentialsResolutionError(RuntimeError):
+    pass
 
 
 class TranscribeStreamingPort(Protocol):
@@ -55,9 +62,7 @@ class AwsTranscribeStreamingPort:
         client: Any | None = None,
     ) -> None:
         self._config = config
-        self._client = client or TranscribeStreamingClient(
-            Config(region=config.aws_region)
-        )
+        self._client = client or _create_transcribe_client(config)
         self._on_result: Callable[[TranscribeResult], Awaitable[None]] | None = None
         self._on_reconnecting: Callable[[int], Awaitable[None]] | None = None
         self._on_fatal_error: Callable[[Exception], Awaitable[None]] | None = None
@@ -222,3 +227,23 @@ def _stable_text(items: list[Any], *, fallback: str) -> str:
     if not stable_items:
         return fallback
     return "".join(stable_items).strip()
+
+
+def _create_transcribe_client(config: TranscribePollyRuntimeConfig) -> TranscribeStreamingClient:
+    credentials = boto3.Session(region_name=config.aws_region).get_credentials()
+    if credentials is None:
+        raise TranscribeCredentialsResolutionError(
+            "AWS credentials could not be resolved for Transcribe Streaming"
+        )
+    frozen_credentials = credentials.get_frozen_credentials()
+    transport = AWSCRTHTTPClient()
+    return TranscribeStreamingClient(
+        Config(
+            region=config.aws_region,
+            transport=transport,
+            aws_access_key_id=frozen_credentials.access_key,
+            aws_secret_access_key=frozen_credentials.secret_key,
+            aws_session_token=frozen_credentials.token,
+            aws_credentials_identity_resolver=create_default_chain(transport),
+        )
+    )

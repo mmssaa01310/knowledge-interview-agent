@@ -10,7 +10,7 @@ import pytest
 from fastapi import HTTPException
 from aiortc import MediaStreamTrack
 
-from ai_interviewer_voice.schemas.events import AssistantAudioChunk, RuntimeError, UserTranscriptFinal
+from ai_interviewer_voice.schemas.events import AssistantAudioChunk, AssistantSpeechEnded, RuntimeError, UserTranscriptFinal
 from ai_interviewer_voice.schemas.events import InputStateChanged
 from ai_interviewer_voice.services.ice_server_service import IceServer
 from ai_interviewer_voice.services.voice_session_service import AuthorizedVoiceSession, InitialReplyClaim
@@ -38,6 +38,7 @@ class StubRuntime:
         self.delay_seconds = delay_seconds
         self.frames: list[bytes] = []
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.playback_drained: list[tuple[str | None, int | None]] = []
 
     async def push_audio(self, frame) -> None:
         if self.delay_seconds:
@@ -58,6 +59,14 @@ class StubRuntime:
 
     async def interrupt(self) -> None:
         return None
+
+    async def notify_assistant_playback_drained(
+        self,
+        *,
+        response_id: str | None,
+        generation: int | None,
+    ) -> None:
+        self.playback_drained.append((response_id, generation))
 
     async def close(self) -> None:
         return None
@@ -392,6 +401,52 @@ async def test_peer_close_logs_explicit_reason_and_runtime_state(
     assert "runtime_close_requested" in caplog.text
     assert "reason=client_requested" in caplog.text
     assert "source=webrtc_delete_endpoint" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_peer_playback_watchdog_reopens_runtime_when_browser_drain_is_missing() -> None:
+    runtime = StubRuntime()
+
+    class StubVoiceSessionService:
+        async def mark_initial_reply_failed(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+        async def create_connection_event(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+    peer = VoicePeerConnection(
+        session=AuthorizedVoiceSession(
+            voice_session_id="vs-watchdog",
+            record_id="record-1",
+            owner_user_id="user-1",
+            provider="fake",
+            status="active",
+            current_question_id="q-001",
+            state_version=1,
+            interview_status="active",
+        ),
+        bearer_token="dev-manager",
+        runtime_factory=lambda provider: runtime,
+        ice_servers=(),
+        voice_session_service=StubVoiceSessionService(),  # type: ignore[arg-type]
+        on_closed=lambda _: asyncio.sleep(0),
+        ice_gathering_timeout_seconds=1.0,
+        peer_disconnected_grace_seconds=1.0,
+        playback_drain_timeout_seconds=0.01,
+    )
+    peer._runtime_started = True
+
+    await peer._handle_runtime_event(
+        AssistantSpeechEnded(
+            response_id="response-watchdog",
+            generation=1,
+            audio_duration_ms=None,
+        )
+    )
+    await asyncio.sleep(0.6)
+
+    assert runtime.playback_drained == [("response-watchdog", 1)]
+    await peer.close()
 
 
 @pytest.mark.anyio

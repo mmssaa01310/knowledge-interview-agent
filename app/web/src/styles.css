@@ -742,6 +742,129 @@ label {
   gap: 12px;
 }
 
+.form-help {
+  display: block;
+  margin-top: 4px;
+  color: #6b7d90;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.interview-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.interview-setting-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.interview-setting-card,
+.interview-setting-group {
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.interview-setting-card {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+}
+
+.interview-setting-card.featured {
+  border-color: #9dbddd;
+  background: #f7fbff;
+}
+
+.interview-setting-card.compact {
+  padding: 12px;
+}
+
+.interview-setting-card-header {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.interview-setting-step {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: #245f9f;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.interview-setting-card h4,
+.interview-setting-card h5,
+.interview-setting-card p,
+.interview-setting-group h4,
+.interview-setting-group p {
+  margin: 0;
+}
+
+.interview-setting-card h4,
+.interview-setting-group h4 {
+  font-size: 15px;
+}
+
+.interview-setting-card h5 {
+  font-size: 14px;
+}
+
+.interview-setting-card-header p,
+.interview-setting-group-header p {
+  margin-top: 3px;
+  color: #6b7d90;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.interview-setting-card .form-help {
+  margin-top: 0;
+}
+
+.interview-setting-group {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: #f7f9fb;
+}
+
+.settings-notice {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #b9d6ef;
+  border-radius: 8px;
+  background: #f1f8ff;
+  color: #245f9f;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .field-card {
   border: 1px solid #d7e0e8;
   border-radius: 12px;
@@ -1026,6 +1149,39 @@ label {
   color: #b42318;
 }
 
+.settings-save-status {
+  display: inline-flex;
+  flex: 1 1 260px;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.settings-save-status.saving {
+  color: #245f9f;
+}
+
+.settings-save-status.error {
+  color: #b42318;
+}
+
+.save-status-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: save-status-spin 0.8s linear infinite;
+}
+
+@keyframes save-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .workspace-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -1190,6 +1346,27 @@ label {
   color: #4d6074;
 }
 
+.status-pill.confirmed {
+  background: #e4f5ec;
+  color: #11663f;
+}
+
+.status-pill.active {
+  background: #e4efff;
+  color: #245f9f;
+}
+
+.status-pill.candidate {
+  background: #fff0bd;
+  color: #8a6917;
+}
+
+.status-pill.pending,
+.status-pill.not-applicable {
+  background: #edf1f5;
+  color: #4d6074;
+}
+
 .counter {
   min-width: 32px;
   background: #edf1f5;
@@ -1313,11 +1490,321 @@ label {
   min-height: auto;
 }
 
+.process-model-panel {
+  border: 1px solid #d7e0e8;
+  border-radius: 10px;
+  background: #fbfcfd;
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.process-model-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.process-model-header strong,
+.process-model-header p {
+  margin: 0;
+}
+
+.process-model-header p {
+  margin-top: 4px;
+  color: #6b7d90;
+  font-size: 13px;
+}
+
+.process-model-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.process-model-tabs button {
+  border: 1px solid #cbd7e2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #40546a;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.process-model-tabs button.active {
+  border-color: #245f9f;
+  background: #245f9f;
+  color: #ffffff;
+}
+
+.process-flow-canvas {
+  height: 290px;
+  overflow: hidden;
+  border: 1px solid #d7e0e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.process-flow-canvas .react-flow__attribution {
+  display: none;
+}
+
+.process-model-empty {
+  margin: 0;
+  padding: 28px 12px;
+  border: 1px dashed #cbd7e2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.system-requirement-progress {
+  display: grid;
+  gap: 14px;
+}
+
+.system-progress-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.system-progress-header strong,
+.system-progress-header p {
+  margin: 0;
+}
+
+.system-progress-header p {
+  margin-top: 4px;
+  color: #6b7d90;
+  font-size: 12px;
+}
+
+.system-progress-section {
+  display: grid;
+  gap: 8px;
+}
+
+.system-progress-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #40546a;
+  font-size: 12px;
+}
+
+.system-progress-section-title span,
+.system-progress-subsection-title {
+  color: #7a8b9c;
+  font-size: 11px;
+}
+
+.system-progress-subsection-title {
+  padding-top: 4px;
+  font-weight: 700;
+}
+
+.system-progress-list {
+  display: grid;
+  gap: 6px;
+}
+
+.system-progress-item,
+.system-progress-applicability {
+  border: 1px solid #d7e0e8;
+  border-radius: 8px;
+  padding: 8px 9px;
+  background: #ffffff;
+}
+
+.system-progress-item.candidate {
+  border-color: #e5c675;
+  background: #fffdf5;
+}
+
+.system-progress-item.active,
+.system-progress-applicability.current {
+  border-color: #5f8cc7;
+  background: #eef6ff;
+  box-shadow: 0 0 0 2px rgba(95, 140, 199, 0.12);
+}
+
+.system-progress-item.confirmed,
+.system-progress-applicability.confirmed {
+  border-color: #b7d9c3;
+  background: #f2fbf5;
+}
+
+.system-progress-item.current {
+  border-color: #5f8cc7;
+  background: #eef6ff;
+  box-shadow: 0 0 0 2px rgba(95, 140, 199, 0.12);
+}
+
+.system-progress-applicability.not-applicable {
+  border-color: #d7e0e8;
+  background: #f7f9fb;
+}
+
+.system-progress-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.system-progress-item-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.system-progress-item-title strong {
+  min-width: 0;
+  color: #26394d;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.system-progress-symbol {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #eef2f5;
+  color: #6b7d90;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.system-progress-symbol.confirmed {
+  background: #dff1e5;
+  color: #287a4b;
+}
+
+.system-progress-symbol.active {
+  background: #dcecff;
+  color: #245f9f;
+}
+
+.system-progress-symbol.candidate {
+  background: #fff0bd;
+  color: #8a6917;
+}
+
+.system-progress-symbol.not-applicable {
+  background: #e7edf2;
+  color: #6b7d90;
+}
+
+.system-progress-item p {
+  margin: 6px 0 0 24px;
+  color: #40546a;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.system-progress-value-details {
+  margin: 6px 0 0 24px;
+  color: #40546a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.system-progress-value-details summary {
+  cursor: pointer;
+  color: #245f9f;
+  font-weight: 700;
+}
+
+.system-progress-item .system-progress-value-details p {
+  margin: 6px 0 0;
+}
+
+.system-progress-current {
+  display: block;
+  margin: 6px 0 0 24px;
+  color: #245f9f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.system-progress-optional {
+  border-top: 1px solid #e1e8ef;
+  padding-top: 8px;
+}
+
+.system-progress-optional summary {
+  cursor: pointer;
+  color: #40546a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.system-progress-optional .system-progress-list {
+  margin-top: 8px;
+}
+
+.system-progress-next {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid #e1e8ef;
+  padding-top: 12px;
+  color: #245f9f;
+  font-size: 12px;
+}
+
+.system-progress-next span {
+  color: #6b7d90;
+}
+
+.sequence-interaction-list {
+  margin: 0;
+  padding: 0 0 0 28px;
+  display: grid;
+  gap: 5px;
+  color: #40546a;
+  font-size: 13px;
+}
+
+.sequence-interaction-list li {
+  padding-left: 4px;
+}
+
+.sequence-interaction-list li span {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: #eee8f8;
+  color: #533c73;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .interview-shell {
   display: grid;
-  grid-template-columns: minmax(260px, 0.75fr) minmax(0, 1.45fr);
+  grid-template-columns: minmax(270px, 0.38fr) minmax(0, 0.62fr);
   gap: 16px;
-  align-items: stretch;
+  align-items: start;
+}
+
+.interview-main-column {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 16px;
 }
 
 .interview-sidebar,
@@ -1332,6 +1819,10 @@ label {
   display: grid;
   align-content: start;
   gap: 12px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 140px);
+  overflow: auto;
 }
 
 .interview-sidebar-header,
@@ -1348,6 +1839,12 @@ label {
 
 .interview-chat-header p {
   margin-top: 4px;
+}
+
+.interview-current-target {
+  color: #245f9f;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .interview-sidebar-header > span {
@@ -1566,6 +2063,14 @@ label {
 
 .bubble p {
   margin: 0;
+}
+
+.proposal-message-label {
+  display: block;
+  margin-bottom: 5px;
+  color: #6b4a93;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .bubble.ai {
@@ -1992,8 +2497,15 @@ textarea {
   .reference-chat-layout,
   .reference-settings,
   .flow-grid,
-  .two-column {
+  .two-column,
+  .interview-setting-grid {
     grid-template-columns: 1fr;
+  }
+
+  .interview-sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
   }
 
   .table-row,
@@ -2014,6 +2526,10 @@ textarea {
     align-items: stretch;
   }
 
+  .process-model-header {
+    flex-direction: column;
+  }
+
   .field-editor,
   .inline-form,
   .inline-form.wide {
@@ -2024,6 +2540,10 @@ textarea {
     position: static;
     max-height: none;
     height: 620px;
+  }
+
+  .process-flow-canvas {
+    height: 260px;
   }
 }
 

@@ -98,6 +98,7 @@ class InterviewAction(StrEnum):
         normalized = value.strip().upper()
         aliases = {
             "ASK_CONFIGURED_FIELD": cls.NEXT_QUESTION,
+            "ASK_STRUCTURED": cls.NEXT_QUESTION,
             "ASK_INITIAL_QUESTION": cls.NEXT_QUESTION,
             "FINISH": cls.END_INTERVIEW,
         }
@@ -169,10 +170,13 @@ class TranscribePollyRuntime:
         self._active_client_turn_id: str | None = None
         self._active_expected_state_version: int | None = None
         self._reply_task: asyncio.Task[None] | None = None
+        self._reply_lock = asyncio.Lock()
         self._notice_tasks: set[asyncio.Task[None]] = set()
         self._background_tasks: set[asyncio.Task[object]] = set()
+        self._prepared_polly_tasks: dict[str, asyncio.Task[bytes]] = {}
         self._formal_response_id: str | None = None
         self._formal_generation: int | None = None
+        self._formal_playback_drained_event: asyncio.Event | None = None
         self._assistant_response_states: dict[str, AssistantResponseState] = {}
         self._interrupt_emitted_for: set[str] = set()
         self._backchannel_metadata: dict[str, tuple[OutputKind, str]] = {}
@@ -204,30 +208,94 @@ class TranscribePollyRuntime:
     async def start(self, context: VoiceRuntimeContext) -> None:
         if self._started and not self._closed:
             return
+        started_at = monotonic()
         self._context = context
         self._closed = False
         self._input_available = True
-        if self._interview_bridge is not None:
-            snapshot = await self._interview_bridge.load_voice_session(
-                context.voice_session_id
-            )
-            self._current_question_id = snapshot.current_question_id
-            self._state_version = snapshot.state_version
-            self._interview_status = snapshot.interview_status
-        await self._transcribe.start(
+        transcribe_start_task = asyncio.create_task(self._transcribe.start(
             on_result=self._on_transcribe_result,
             on_reconnecting=self._on_transcribe_reconnecting,
             on_fatal_error=self._on_transcribe_fatal_error,
+        ))
+        state_load_task = (
+            asyncio.create_task(
+                self._interview_bridge.load_voice_session(context.voice_session_id)
+            )
+            if self._interview_bridge is not None
+            else None
         )
+        try:
+            await transcribe_start_task
+            if state_load_task is not None:
+                snapshot = await state_load_task
+                self._current_question_id = snapshot.current_question_id
+                self._state_version = snapshot.state_version
+                self._interview_status = snapshot.interview_status
+        except BaseException:
+            if not transcribe_start_task.done():
+                transcribe_start_task.cancel()
+            if state_load_task is not None and not state_load_task.done():
+                state_load_task.cancel()
+            cleanup_tasks = [transcribe_start_task]
+            if state_load_task is not None:
+                cleanup_tasks.append(state_load_task)
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            raise
         self._started = True
         self._endpoint_task = asyncio.create_task(self._endpoint_loop())
-        self._spawn_background(
-            self._polly.warm(
-                (LISTEN_ACK_TEXT, PROCESSING_ACK_TEXT, LONG_PROCESSING_TEXT)
+        if self._config.backchannel_enabled:
+            self._spawn_background(
+                self._polly.warm(
+                    (LISTEN_ACK_TEXT, PROCESSING_ACK_TEXT, LONG_PROCESSING_TEXT)
+                )
             )
+        logger.info(
+            "transcribe_polly_runtime_ready voice_session_id=%s startup_ms=%s",
+            context.voice_session_id,
+            round((monotonic() - started_at) * 1000),
         )
         await self._emit(RuntimeReady())
         await self._emit_input_state("ANSWER_LISTENING")
+
+    async def prepare_initial_reply(self, reply_text: str) -> None:
+        """Start Polly synthesis before the first reply is sent to the output queue.
+
+        The WebRTC offer is processed before the remote track starts the runtime.  The
+        initial greeting and question are already known at that point, so synthesizing
+        the first output chunks in parallel with ICE negotiation removes the initial
+        Polly request latency from the user's visible ``preparing_audio`` state.
+        """
+        if self._closed:
+            return
+        chunks = split_text_for_polly(
+            reply_text,
+            PollyTextChunkerConfig(
+                first_min_chars=self._config.first_chunk_min_chars,
+                first_max_chars=self._config.first_chunk_max_chars,
+                following_min_chars=self._config.following_chunk_min_chars,
+                following_max_chars=self._config.following_chunk_max_chars,
+            ),
+        )
+        if not chunks:
+            return
+
+        prepared_count = 0
+        parallel = max(1, self._config.polly_max_parallel_requests)
+        for chunk in chunks[:parallel]:
+            if chunk in self._prepared_polly_tasks:
+                continue
+            if await self._polly.get_cached(chunk) is not None:
+                continue
+            task = asyncio.create_task(self._polly.synthesize(chunk))
+            task.add_done_callback(self._consume_prepared_task_exception)
+            self._prepared_polly_tasks[chunk] = task
+            prepared_count += 1
+        if prepared_count:
+            logger.info(
+                "voice_initial_reply_audio_preload_scheduled voice_session_id=%s prepared_chunks=%s",
+                self._context.voice_session_id if self._context is not None else None,
+                prepared_count,
+            )
 
     async def push_audio(self, frame: AudioFrame) -> None:
         if (
@@ -258,13 +326,18 @@ class TranscribePollyRuntime:
     async def send_reply(self, reply: AssistantReply) -> None:
         if not self._started or self._closed:
             return
-        task = asyncio.create_task(self._play_formal_reply(reply))
-        self._reply_task = task
-        try:
-            await task
-        finally:
-            if self._reply_task is task:
-                self._reply_task = None
+        async with self._reply_lock:
+            if not await self._wait_for_formal_reply_to_finish():
+                return
+            if self._closed:
+                return
+            task = asyncio.create_task(self._play_formal_reply(reply))
+            self._reply_task = task
+            try:
+                await task
+            finally:
+                if self._reply_task is task:
+                    self._reply_task = None
 
     async def interrupt(self) -> None:
         if self._closed:
@@ -293,16 +366,55 @@ class TranscribePollyRuntime:
             response_id != self._formal_response_id
             or generation != self._formal_generation
         ):
+            logger.debug(
+                "assistant_playback_drain_ignored response_id=%s generation=%s expected_response_id=%s expected_generation=%s",
+                response_id,
+                generation,
+                self._formal_response_id,
+                self._formal_generation,
+            )
             return
+        logger.info(
+            "assistant_playback_drained response_id=%s generation=%s next_input_state=%s",
+            response_id,
+            generation,
+            self._pending_listening_state,
+        )
         self._assistant_speaking = False
         next_state = self._pending_listening_state
         self._formal_response_id = None
         self._formal_generation = None
+        self._release_formal_playback_waiter()
         self._pending_listening_state = None
         if response_id is not None:
             self._assistant_response_states[response_id] = AssistantResponseState.PLAYED
         if next_state is not None:
             await self._emit_input_state(next_state)
+
+    async def _wait_for_formal_reply_to_finish(self) -> bool:
+        """Keep formal replies serialized until the browser has drained audio."""
+        while self._formal_response_id is not None:
+            response_id = self._formal_response_id
+            generation = self._formal_generation
+            drained_event = self._formal_playback_drained_event
+            if drained_event is None:
+                return True
+            logger.info(
+                "assistant_reply_waiting_for_playback_drain response_id=%s generation=%s",
+                response_id,
+                generation,
+            )
+            await drained_event.wait()
+            if self._closed:
+                return False
+            if self._assistant_response_states.get(response_id) is AssistantResponseState.INTERRUPTED:
+                logger.info(
+                    "assistant_reply_dropped_after_previous_interrupt response_id=%s generation=%s",
+                    response_id,
+                    generation,
+                )
+                return False
+        return True
 
     def events(self) -> AsyncIterator[VoiceRuntimeEvent]:
         return self._event_generator()
@@ -312,7 +424,10 @@ class TranscribePollyRuntime:
             return
         self._closed = True
         self._input_available = False
+        self._release_formal_playback_waiter()
         await self._output.close()
+        prepared_tasks = tuple(self._prepared_polly_tasks.values())
+        self._prepared_polly_tasks.clear()
         tasks = [
             self._endpoint_task,
             self._processing_task,
@@ -320,6 +435,7 @@ class TranscribePollyRuntime:
             self._reply_task,
             *self._notice_tasks,
             *self._background_tasks,
+            *prepared_tasks,
         ]
         current = asyncio.current_task()
         for task in tasks:
@@ -334,6 +450,12 @@ class TranscribePollyRuntime:
         self._background_tasks.clear()
         await self._transcribe.close()
         await self._emit(RuntimeClosed())
+
+    @staticmethod
+    def _consume_prepared_task_exception(task: asyncio.Task[bytes]) -> None:
+        if task.cancelled():
+            return
+        task.exception()
 
     async def _event_generator(self) -> AsyncIterator[VoiceRuntimeEvent]:
         while True:
@@ -501,6 +623,8 @@ class TranscribePollyRuntime:
                     await self._finalize_user_turn(stable)
 
     async def _maybe_play_listen_ack(self, stable: str) -> None:
+        if not self._config.backchannel_enabled:
+            return
         if self._listen_ack_played or self._assistant_speaking:
             return
         if self._voiced_duration_ms < self._config.listen_ack_min_speech_ms:
@@ -562,42 +686,37 @@ class TranscribePollyRuntime:
             expected_state_version = self._state_version
         self._active_client_turn_id = client_turn_id
         self._active_expected_state_version = expected_state_version
-        self._schedule_notice(
-            delay_ms=self._config.processing_ack_delay_ms,
-            kind=OutputKind.PROCESSING_ACK,
-            text=PROCESSING_ACK_TEXT,
-            generation=generation,
-        )
-        self._schedule_notice(
-            delay_ms=self._config.long_processing_notice_ms,
-            kind=OutputKind.LONG_PROCESSING,
-            text=LONG_PROCESSING_TEXT,
-            generation=generation,
-        )
+        if self._config.backchannel_enabled:
+            self._schedule_notice(
+                delay_ms=self._config.processing_ack_delay_ms,
+                kind=OutputKind.PROCESSING_ACK,
+                text=PROCESSING_ACK_TEXT,
+                generation=generation,
+            )
+            self._schedule_notice(
+                delay_ms=self._config.long_processing_notice_ms,
+                kind=OutputKind.LONG_PROCESSING,
+                text=LONG_PROCESSING_TEXT,
+                generation=generation,
+            )
         result_received = False
         api_started_at = monotonic()
         try:
-            intent = await self._interview_bridge.classify_turn_intent(
-                voice_session_id=self._context.voice_session_id,
-                transcript=transcript,
-                answer_to_question_id=self._current_question_id,
-                expected_state_version=expected_state_version,
-            )
-            is_answer = intent.turn_type == "ANSWER"
-            await self._emit(
-                UserTranscriptFinal(
-                    text=transcript,
-                    turn_type=intent.turn_type,
-                    question_id=self._current_question_id if is_answer else None,
-                )
-            )
             result = await self._interview_bridge.process_turn(
                 voice_session_id=self._context.voice_session_id,
                 transcript=transcript,
-                answer_to_question_id=self._current_question_id if is_answer else None,
-                turn_type=intent.turn_type,
+                answer_to_question_id=self._current_question_id,
+                turn_type="ANSWER",
                 expected_state_version=expected_state_version,
                 client_turn_id=client_turn_id,
+            )
+            is_answer = result.turn_type == "ANSWER"
+            await self._emit(
+                UserTranscriptFinal(
+                    text=transcript,
+                    turn_type=result.turn_type,
+                    question_id=self._current_question_id if is_answer else None,
+                )
             )
             result_received = True
         except asyncio.CancelledError:
@@ -687,7 +806,11 @@ class TranscribePollyRuntime:
         generation: int,
     ) -> None:
         await asyncio.sleep(delay_ms / 1000)
-        if generation != self._generation or self._closed:
+        if (
+            not self._config.backchannel_enabled
+            or generation != self._generation
+            or self._closed
+        ):
             return
         if kind is OutputKind.PROCESSING_ACK:
             if self._listen_ack_played or self._processing_ack_played:
@@ -712,6 +835,8 @@ class TranscribePollyRuntime:
         text: str,
         pcm: bytes,
     ) -> bool:
+        if not self._config.backchannel_enabled:
+            return False
         response_id = f"backchannel-{kind.value}-{uuid4().hex[:10]}"
         request = AudioOutputRequest(
             response_id=response_id,
@@ -766,6 +891,7 @@ class TranscribePollyRuntime:
         )
         self._formal_response_id = reply.response_id
         self._formal_generation = generation
+        self._formal_playback_drained_event = asyncio.Event()
         self._pending_listening_state = self._next_input_state(action)
         request = AudioOutputRequest(
             response_id=reply.response_id,
@@ -787,6 +913,7 @@ class TranscribePollyRuntime:
             self._assistant_speaking = False
             self._formal_response_id = None
             self._formal_generation = None
+            self._release_formal_playback_waiter()
             self._pending_listening_state = None
             self._assistant_response_states[reply.response_id] = (
                 AssistantResponseState.INTERRUPTED
@@ -802,10 +929,26 @@ class TranscribePollyRuntime:
             return
         if not result.accepted or result.cancelled:
             self._pipeline_timings.pop(reply.response_id, None)
+            if self._formal_response_id == reply.response_id:
+                self._formal_response_id = None
+                self._formal_generation = None
+                self._pending_listening_state = None
+                self._release_formal_playback_waiter()
             return
         if action is InterviewAction.END_INTERVIEW:
             self._interview_status = "completed"
             self._input_available = False
+        if result.audio_duration_ms <= 0:
+            logger.warning(
+                "formal_reply_audio_empty response_id=%s generation=%s action=%s; reopening input",
+                reply.response_id,
+                generation,
+                action.value,
+            )
+            await self.notify_assistant_playback_drained(
+                response_id=reply.response_id,
+                generation=generation,
+            )
 
     async def _synthesize_chunks(
         self,
@@ -836,9 +979,8 @@ class TranscribePollyRuntime:
         next_to_schedule = 0
         try:
             while next_to_schedule < min(parallel, len(chunks)):
-                tasks[next_to_schedule] = asyncio.create_task(
-                    self._polly.synthesize(chunks[next_to_schedule])
-                )
+                chunk = chunks[next_to_schedule]
+                tasks[next_to_schedule] = self._take_or_schedule_polly_task(chunk)
                 next_to_schedule += 1
             for index in range(len(chunks)):
                 pcm = await tasks.pop(index)
@@ -854,9 +996,8 @@ class TranscribePollyRuntime:
                     )
                 yield pcm
                 if next_to_schedule < len(chunks):
-                    tasks[next_to_schedule] = asyncio.create_task(
-                        self._polly.synthesize(chunks[next_to_schedule])
-                    )
+                    chunk = chunks[next_to_schedule]
+                    tasks[next_to_schedule] = self._take_or_schedule_polly_task(chunk)
                     next_to_schedule += 1
         finally:
             for task in tasks.values():
@@ -864,6 +1005,12 @@ class TranscribePollyRuntime:
                     task.cancel()
             if tasks:
                 await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    def _take_or_schedule_polly_task(self, chunk: str) -> asyncio.Task[bytes]:
+        prepared = self._prepared_polly_tasks.pop(chunk, None)
+        if prepared is not None:
+            return prepared
+        return asyncio.create_task(self._polly.synthesize(chunk))
 
     async def _emit_output_frame(
         self,
@@ -961,6 +1108,7 @@ class TranscribePollyRuntime:
         if self._formal_response_id == request.response_id:
             self._formal_response_id = None
             self._formal_generation = None
+            self._release_formal_playback_waiter()
             self._pending_listening_state = None
         self._backchannel_metadata.pop(request.response_id, None)
         self._assistant_response_states[request.response_id] = (
@@ -979,6 +1127,12 @@ class TranscribePollyRuntime:
                 generation=self._generation,
             )
         )
+
+    def _release_formal_playback_waiter(self) -> None:
+        drained_event = self._formal_playback_drained_event
+        self._formal_playback_drained_event = None
+        if drained_event is not None:
+            drained_event.set()
 
     async def _interrupt_output(self, *, reason: str) -> None:
         """Stop Assistant output without changing any committed Interview Turn."""

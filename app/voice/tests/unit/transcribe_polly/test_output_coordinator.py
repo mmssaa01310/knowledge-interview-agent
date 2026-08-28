@@ -93,6 +93,42 @@ async def test_cancel_stops_frames_and_emits_only_interrupted() -> None:
 
 
 @pytest.mark.anyio
+async def test_empty_pcm_is_completed_without_speech_started() -> None:
+    started: list[str] = []
+    completed: list[tuple[str, int]] = []
+    interrupted: list[str] = []
+    coordinator = AudioOutputCoordinator(
+        sample_rate_hz=16000,
+        emit_frame=lambda request, pcm: asyncio.sleep(0),
+        on_started=lambda request: _append_async(started, request.response_id),
+        on_completed=lambda request, duration: _append_async(
+            completed, (request.response_id, duration)
+        ),
+        on_interrupted=lambda request: _append_async(
+            interrupted, request.response_id
+        ),
+        is_generation_current=lambda generation: generation == 1,
+    )
+
+    result = await coordinator.play(
+        AudioOutputRequest(
+            response_id="formal-empty",
+            generation=1,
+            kind=OutputKind.FORMAL_REPLY,
+            pcm_chunks=_pcm_chunks(b""),
+        )
+    )
+
+    assert result.accepted is True
+    assert result.cancelled is False
+    assert result.audio_duration_ms == 0
+    assert started == []
+    assert completed == [("formal-empty", 0)]
+    assert interrupted == []
+    await coordinator.close()
+
+
+@pytest.mark.anyio
 async def test_formal_preempts_notice_without_waiting_for_notice_end() -> None:
     started: list[str] = []
     interrupted: list[str] = []

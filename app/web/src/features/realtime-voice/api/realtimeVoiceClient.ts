@@ -88,10 +88,14 @@ export async function sendVoiceOffer(
   );
 }
 
-export async function deleteVoicePeerConnection(voiceSessionId: string, reason = "client_requested") {
+export async function deleteVoicePeerConnection(
+  voiceSessionId: string,
+  reason = "client_requested",
+  signal?: AbortSignal,
+) {
   await requestJson<void>(
     VOICE_API_BASE_URL,
     `/voice/webrtc/${voiceSessionId}?reason=${encodeURIComponent(reason)}`,
-    { method: "DELETE" },
+    { method: "DELETE", signal },
   );
 }

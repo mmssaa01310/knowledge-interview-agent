@@ -24,6 +24,7 @@ import {
   fetchDocuments,
   type DocumentSummary
 } from "../features/documents/api/documentApi";
+import { ApiError } from "../lib/api";
 import {
   approveAllProposals,
   approveProposal,
@@ -68,6 +69,28 @@ type UseKnowledgeWorkspaceControllerArgs = {
   navigate: (path: string) => void;
 };
 
+function createInterviewClientMessageId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+const INTERVIEW_ERROR_REPLY = "一時的にAI応答を生成できませんでした。少し時間をおいて再度送信してください。";
+
+function getSettingsSaveErrorMessage(error: unknown, tabLabel: string) {
+  if (error instanceof ApiError && error.status === 409) {
+    if (error.detail === "interview_profile_change_not_allowed_after_start") {
+      return `${tabLabel}を保存できませんでした。既に開始済みのインタビューがあるため、インタビュー用途は変更できません。用途を元に戻すか、新しいナレッジで設定してください。`;
+    }
+    if (error.detail === "interview_model_change_not_allowed_after_start") {
+      return `${tabLabel}を保存できませんでした。既に開始済みのインタビューがあるため、実行モデルは変更できません。現在のモデルに戻すか、新しいナレッジで設定してください。`;
+    }
+  }
+
+  return `${tabLabel}を保存できませんでした。通信状態を確認して、もう一度お試しください。`;
+}
+
 export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceControllerArgs) {
   function buildDefaultRecordTitle() {
     const base = selectedKnowledge?.targetEquipment || selectedKnowledge?.name || "新規インタビュー記録";
@@ -105,6 +128,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [settingsInterviewPlan, setSettingsInterviewPlan] = useState<Knowledge["interviewPlan"]>(undefined);
   const [draftFields, setDraftFields] = useState<KnowledgeField[]>([]);
   const [settingsNotice, setSettingsNotice] = useState("");
+  const [settingsSaveState, setSettingsSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [isCreateKnowledgeDbDialogOpen, setIsCreateKnowledgeDbDialogOpen] = useState(false);
   const [isCreatingKnowledgeDb, setIsCreatingKnowledgeDb] = useState(false);
   const [createKnowledgeDbError, setCreateKnowledgeDbError] = useState("");
@@ -124,6 +148,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const pendingInterviewSubmissionRef = useRef<{
     content: string;
     target: InterviewAnswerTarget | null;
+    clientMessageId: string;
   } | null>(null);
 
   const routeKnowledgeDbId = getRouteKnowledgeDbId(args.route);
@@ -161,10 +186,13 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         fieldId: message.fieldId,
         answerToQuestionId: message.answerToQuestionId,
         answerToFieldId: message.answerToFieldId,
+        targetType: message.targetType,
+        targetId: message.targetId,
         turnType: message.turnType,
         voiceSessionId: message.voiceSessionId,
         voiceTurnId: message.voiceTurnId,
         voiceResponseId: message.voiceResponseId,
+        candidateSource: message.candidateSource,
         isActualUtterance: message.isActualUtterance,
         isLegacy: !message.questionId && !message.answerToQuestionId && !message.turnType,
       }));
@@ -176,9 +204,25 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onDelta: (chunk) => setStreamingInterviewReply((current) => `${current}${chunk}`),
     onStreamEnd: (metadata) => {
       setInterviewStreamMetadata(metadata);
-        if (metadata?.assistantMessage) {
+      if (metadata?.error) {
+        const pending = pendingInterviewSubmissionRef.current;
+        setInterviewMessages((messages) => mergeVoiceMessages(messages, [{
+          id: `interview-error-${pending?.clientMessageId ?? Date.now()}`,
+          recordId: selectedRecordId,
+          role: "assistant",
+          text: INTERVIEW_ERROR_REPLY,
+        }]));
+        setStreamingInterviewReply("");
+        setIsInterviewStreaming(false);
+        setRecordNotice("回答処理に失敗しました。内容を確認して、もう一度送信してください。");
+        if (pending) {
+          setChatInput(pending.content);
+        }
+        return;
+      }
+      if (metadata?.assistantMessage) {
         const assistantMessage = metadata.assistantMessage as ChatMessage & { content?: string };
-        setInterviewMessages((messages) => [...messages, {
+        setInterviewMessages((messages) => mergeVoiceMessages(messages, [{
           id: assistantMessage.id,
           recordId: selectedRecordId,
           role: assistantMessage.role === "user" ? "user" : "assistant",
@@ -188,7 +232,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
           fieldId: assistantMessage.fieldId,
           answerToQuestionId: assistantMessage.answerToQuestionId,
           answerToFieldId: assistantMessage.answerToFieldId,
-        }]);
+          targetType: assistantMessage.targetType,
+          targetId: assistantMessage.targetId,
+          candidateSource: assistantMessage.candidateSource,
+        }]));
       }
       if (metadata?.interviewState) {
         setInterviewState(metadata.interviewState);
@@ -206,10 +253,13 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       }
     },
     onError: () => {
-      pendingInterviewSubmissionRef.current = null;
+      const pending = pendingInterviewSubmissionRef.current;
       setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
       setRecordNotice("AI応答の受信に失敗しました");
+      if (pending) {
+        setChatInput(pending.content);
+      }
     }
   });
 
@@ -417,42 +467,52 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   }
 
   async function handleSaveSettings(activeTab: "basic" | "fields" | "assist") {
-    if (!selectedKnowledgeDb || !selectedKnowledge) return;
-    await updateKnowledge(selectedKnowledge.id, {
-      name: settingsName,
-      description: settingsDescription,
-      systemPrompt: settingsSystemPrompt.trim() || null,
-      category: settingsCategory,
-      targetBusiness: settingsTargetBusiness,
-      targetEquipment: settingsTargetEquipment,
-      language: settingsLanguage,
-      defaultModelId: settingsDefaultModelId,
-      interviewPlan: settingsInterviewPlan ?? null
-    });
-
-    const existingIds = fields.map((field) => field.id).filter(Boolean);
-    const draftIds = draftFields.map((field) => field.id).filter(Boolean);
-    await Promise.all(
-      existingIds
-        .filter((fieldId) => fieldId && !draftIds.includes(fieldId))
-        .map((fieldId) => deleteKnowledgeField(fieldId as string))
-    );
-    await Promise.all(
-      draftFields.map((field, index) => {
-        const payload = { ...field, displayOrder: index + 1 };
-        return field.id
-          ? updateKnowledgeField(field.id, payload)
-          : createKnowledgeField(selectedKnowledge.id, payload);
-      })
-    );
-    await loadKnowledgeDbs();
-    await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
     const tabLabel = activeTab === "assist"
       ? "AI設定"
       : activeTab === "fields"
         ? "ヒアリング項目"
         : "基本設定";
-    setSettingsNotice(`${tabLabel}を保存しました`);
+    if (!selectedKnowledgeDb || !selectedKnowledge || settingsSaveState === "saving") return;
+
+    setSettingsSaveState("saving");
+    setSettingsNotice(`${tabLabel}を保存しています…`);
+    try {
+      await updateKnowledge(selectedKnowledge.id, {
+        name: settingsName,
+        description: settingsDescription,
+        systemPrompt: settingsSystemPrompt.trim() || null,
+        category: settingsCategory,
+        targetBusiness: settingsTargetBusiness,
+        targetEquipment: settingsTargetEquipment,
+        language: settingsLanguage,
+        defaultModelId: settingsDefaultModelId,
+        interviewPlan: settingsInterviewPlan ?? null
+      });
+
+      const existingIds = fields.map((field) => field.id).filter(Boolean);
+      const draftIds = draftFields.map((field) => field.id).filter(Boolean);
+      await Promise.all(
+        existingIds
+          .filter((fieldId) => fieldId && !draftIds.includes(fieldId))
+          .map((fieldId) => deleteKnowledgeField(fieldId as string))
+      );
+      await Promise.all(
+        draftFields.map((field, index) => {
+          const payload = { ...field, displayOrder: index + 1 };
+          return field.id
+            ? updateKnowledgeField(field.id, payload)
+            : createKnowledgeField(selectedKnowledge.id, payload);
+        })
+      );
+      await loadKnowledgeDbs();
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      setSettingsSaveState("success");
+      setSettingsNotice(`${tabLabel}を保存しました`);
+    } catch (error) {
+      console.error("Failed to save knowledge settings", error);
+      setSettingsSaveState("error");
+      setSettingsNotice(getSettingsSaveErrorMessage(error, tabLabel));
+    }
   }
 
   async function handleCreateDocument() {
@@ -555,7 +615,17 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   async function handleSendInterviewMessage(target?: InterviewAnswerTarget | null) {
     if (!selectedRecord || !chatInput.trim() || isInterviewStreaming) return;
     const content = chatInput.trim();
-    pendingInterviewSubmissionRef.current = { content, target: target ?? null };
+    const previousPending = pendingInterviewSubmissionRef.current;
+    const isRetry = previousPending?.content === content;
+    const effectiveTarget = isRetry ? previousPending?.target ?? null : target ?? null;
+    const clientMessageId = isRetry && previousPending
+      ? previousPending.clientMessageId
+      : createInterviewClientMessageId();
+    pendingInterviewSubmissionRef.current = {
+      content,
+      target: effectiveTarget,
+      clientMessageId,
+    };
     setChatInput("");
     setStreamingInterviewReply("");
     setInterviewStreamMetadata(null);
@@ -563,11 +633,15 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     try {
       const response = await createRecordMessage(selectedRecord.id, {
         content,
-        turnType: target ? "ANSWER" : "CONTROL",
-        answerToQuestionId: target?.questionId ?? null,
+        clientMessageId,
+        stateVersion: interviewState?.stateVersion ?? null,
+        turnType: effectiveTarget ? "ANSWER" : "CONTROL",
+        answerToQuestionId: effectiveTarget?.questionId ?? null,
+        targetType: effectiveTarget?.targetType ?? null,
+        targetId: effectiveTarget?.targetId ?? null,
       });
       const userMessage = response.recordMessage;
-      setInterviewMessages((messages) => [...messages, {
+      setInterviewMessages((messages) => mergeVoiceMessages(messages, [{
         id: userMessage.id,
         recordId: selectedRecord.id,
         role: userMessage.role === "assistant" ? "assistant" : "user",
@@ -577,12 +651,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         fieldId: userMessage.fieldId,
         answerToQuestionId: userMessage.answerToQuestionId,
         answerToFieldId: userMessage.answerToFieldId,
+        targetType: userMessage.targetType,
+        targetId: userMessage.targetId,
         turnType: userMessage.turnType,
-      }]);
+        candidateSource: userMessage.candidateSource,
+      }]));
       interviewStream.start(selectedRecord.id);
     } catch (error) {
       console.error("Failed to send interview message", error);
-      pendingInterviewSubmissionRef.current = null;
       setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
       setRecordNotice("メッセージを送信できませんでした");
@@ -703,13 +779,17 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsDefaultModelId(selectedKnowledge.defaultModelId ?? "");
     setSettingsInterviewPlan(selectedKnowledge.interviewPlan ?? undefined);
     setSettingsNotice("");
+    setSettingsSaveState("idle");
   }, [selectedKnowledge?.id]);
 
   useEffect(() => {
-    if (!settingsNotice) return;
-    const timeoutId = window.setTimeout(() => setSettingsNotice(""), 3000);
+    if (!settingsNotice || settingsSaveState !== "success") return;
+    const timeoutId = window.setTimeout(() => {
+      setSettingsNotice("");
+      setSettingsSaveState("idle");
+    }, 3000);
     return () => window.clearTimeout(timeoutId);
-  }, [settingsNotice]);
+  }, [settingsNotice, settingsSaveState]);
 
   useEffect(() => {
     setSummaryDraft(selectedRecord?.summary ?? "");
@@ -787,6 +867,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     settingsInterviewPlan,
     setSettingsInterviewPlan,
     settingsNotice,
+    settingsSaveState,
     newDbName,
     setNewDbName,
     newRecordTitle,
@@ -832,7 +913,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onRevertOverviewSummary: handleRevertOverviewSummary,
     onCreateDemoData: handleCreateDemoData,
     onSaveSettings: handleSaveSettings,
-    onClearSettingsNotice: () => setSettingsNotice(""),
+    onClearSettingsNotice: () => {
+      setSettingsNotice("");
+      setSettingsSaveState("idle");
+    },
     onCreateDocument: handleCreateDocument,
     onCreateRecord: handleCreateRecord,
     onDeleteRecord: handleDeleteRecord,

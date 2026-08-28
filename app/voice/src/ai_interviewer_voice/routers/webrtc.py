@@ -88,6 +88,7 @@ async def post_offer(
         playback_buffer_retention_max_ms=settings.webrtc_playback_buffer_retention_max_ms,
         playback_preroll_ms=settings.webrtc_playback_preroll_ms,
         playback_short_underrun_ms=settings.webrtc_playback_short_underrun_ms,
+        playback_drain_timeout_seconds=settings.webrtc_playback_drain_timeout_seconds,
     )
     try:
         await _registry.create(voice_session_id, peer)

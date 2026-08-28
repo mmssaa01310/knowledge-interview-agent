@@ -2,7 +2,7 @@
 
 ## 1. アプリの目的
 
-このアプリは、製造熟練者の暗黙知をAIがヒアリングし、構造化ナレッジとして蓄積・検索・再利用するWebアプリである。
+このアプリは、製造熟練者、業務担当者、システム開発関係者へのAIヒアリングを行い、回答を構造化ナレッジとして蓄積・検索・再利用するWebアプリである。
 
 単なるチャットボットではなく、以下を目的とする。
 
@@ -16,6 +16,7 @@
 ## 2. 主な機能
 
 * AIインタビュー
+* 目的別インタビュー（定型情報、業務フロー、システム要件）
 * ヒアリング項目設定
 * テキストによるインタビュー
 * リアルタイム音声によるインタビュー
@@ -46,6 +47,8 @@
 
 インタビュー実行は、熟練者との会話を進め、回答を構造化候補にする。
 
+インタビューエージェントは不足情報、矛盾、Applicabilityを抽出し、Backendが決定した質問対象について質問文を生成する。次の質問対象、質問優先順位、完了判定はBackendが決定する。
+
 暗黙知回答は、承認済みナレッジを検索し、根拠付きで回答する。
 
 AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に従う。
@@ -69,18 +72,43 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 
 音声機能は、既存のインタビュー機能に対する別の入出力経路として扱う。
 
+`system_requirement`の実行画面はテキストチャット専用とする。音声会話の開始操作、音声接続状態、音声再生操作を表示してはならない。これは音声経路とテキスト経路の状態処理を分けることを意味しない。将来このProfileへ音声入力を提供する場合も、同じ共通Interview Coordinatorを使用する。
+
 回答処理はテキスト・音声共通の状態機械を使用する。生発話は監査用会話履歴として保持し、AI評価後の候補は明示確認まで正式回答へ保存しない。状態は`UNANSWERED`、`CANDIDATE_PENDING`、`AWAITING_CONFIRMATION`、`CONFIRMED`の順で管理し、`answerSummary`と`completedFieldIds`を更新できるのは`CONFIRMED`への遷移時だけとする。
 
 `retrievalPolicy`は外部ナレッジ検索の実行可否だけを制御する。`never`でも発話意図、質問との関連性、十分性、正規化のAI評価を省略してはいけない。
 
 質問設計機能は音声インタビューの対象外とし、音声経路から変更してはいけない。
 
-インタビュー画面の質問リストは、設定済み項目だけを表示する。
+`fixed_form`と`business_process`のインタビュー画面は、設定済み項目を「質問リスト」として表示する。`system_requirement`では通常の質問リストを表示せず、RequirementStateとProcessStateの確認状況を統合した「要件整理」パネルを表示する。
+
+`system_requirement`の「要件整理」パネルは、システム要件の必須5項目、業務フローの有無、`process=present`確定後のProcess必須項目と追加確認項目を、Backendの状態順に表示する。各項目には`未確認`、`候補`、`確認中`、`確定`、`対象外`の状態を表示し、現在の質問対象を強調する。候補値は確認前の情報として表示し、パネルから正式回答へ直接確定してはならない。
+
+`system_requirement`では、別の「システム要件ドラフト」一覧と質問リストを同時に表示してはならない。要件整理パネルを唯一の確認状況ナビゲーションとする。フローチャートとシーケンス図は、要件整理パネルとは分離した処理モデル表示として表示する。
 深掘りのための追加質問は、別タブ、別カード、別回答欄へ表示しない。
 聞き返しで得た回答内容は、対象の設定項目の回答要約へ統合する。
 質問または項目へ紐付けられない会話履歴を「過去データ」や「分類不能な過去データ」として回答欄へ表示してはいけない。
 ユーザーは確定済み回答をキーボードで編集し、対象項目へ明示的に保存できる。
 編集操作によって未確認の回答を確定済みに変更してはいけない。
+
+### 2.3 インタビュー実行画面
+
+インタビュー実行画面は、利用者が「いま何を答えればよいか」「どこまで整理できたか」「図が表示されない理由」を画面内で確認できる構成とする。
+
+画面幅が広い場合は、次の2列で表示する。
+
+* 左列: インタビューの進捗
+* 右列: 会話、その下に処理の流れ
+
+画面幅が狭い場合は、左列、会話、処理の流れの順に縦へ並べる。画面幅が広い場合に進捗項目が画面高さを超えるときは、左列内でスクロールできるようにする。画面幅が狭い場合は、画面全体の通常の縦スクロールで操作できるようにする。
+
+右列の会話には、次の質問対象を1件だけ「いま確認していること」として表示する。質問対象がない場合は、インタビュー開始前、回答整理中、完了後の状態に応じた案内を表示する。
+
+`system_requirement`では、左列に「要件整理」パネルを1つだけ表示する。要件整理パネルには、システム要件、業務フローの有無、業務フローの詳細の確認状況を表示する。別の要件ドラフト一覧と質問リストを同時に表示してはならない。
+
+処理の流れは、会話から抽出したProcessStateを表示用に変換したビューである。LLMが生成したMermaidコード、React Flowの座標、または会話本文を直接表示してはならない。`process=unknown`では業務フローの確認中であることだけを表示し、`process=not_applicable`では処理フローなしで要件を整理することを表示する。`process=present`では情報の収集状況に応じてフローチャートとシーケンス図を表示する。
+
+候補値や未確定の図要素は、確定値・確定要素と見た目で区別する。画面には`active`、`version`、`ProcessState`などの内部管理用語を表示してはならない。長い候補値は要約表示し、利用者の操作で全文を確認できるようにする。
 
 ## 3. AI提案・承認仕様
 
@@ -310,3 +338,307 @@ Assistant音声への割り込みは音声出力の停止であり、コミッ�
 * リアルタイム音声インタビューの複数話者対応
 * Nova SonicおよびTranscribe + Polly以外の音声Provider追加
 * 音声セッションの複数インスタンス間引き継ぎ
+
+## 9. インタビュー構造化拡張仕様
+
+### 9.1 目的
+
+インタビュー実行時に、1つのユーザー発話から次の情報を同時に抽出する。
+
+* 設定済みヒアリング項目の候補
+* システム要求の候補
+* 業務フローの候補
+* 矛盾
+* 分岐・例外・外部システム・エラー処理・引き渡し・入出力・業務フロー有無の適用可能性
+* 未解決事項
+
+インタビューの目的は、ユーザーが選択する用途で指定する。ユーザーに技術的な`fixed`、`process`、`hybrid`を選択させてはならない。
+
+詳細なLLM契約、状態、Patch、描画処理は、[AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)に定義する。
+
+### 9.2 利用者向け用途と内部Profile
+
+| 利用者向け用途 | 内部Profile | 必須の正本情報 | 図の扱い |
+|---|---|---|---|
+| 定型情報を聞き取る | `fixed_form` | `FieldState` | 図を作成しない |
+| 業務フローを整理する | `business_process` | `ProcessState` | フローチャートとシーケンス図を表示する |
+| システム要件を整理する | `system_requirement` | `RequirementState`、`process=present`が確定した場合だけ`ProcessState` | 要求だけの場合は図を作成しない |
+
+Profileの選択場所はKnowledge設定とする。RecordはKnowledgeのProfileを使用する。インタビュー開始後はKnowledgeのProfileを変更できない。Record単位のProfile上書きは提供しない。
+
+### 9.3 共通Interpreter
+
+Profileにかかわらず、インタビュー処理は共通Interpreterを使用する。
+
+```text
+ユーザー発話
+  ↓
+共通Interpreter
+  ├── FieldState更新候補
+  ├── RequirementState更新候補
+  ├── ProcessState更新候補
+  ├── 矛盾
+  ├── Applicability
+  └── 未解決事項
+```
+
+`fixed_form`では、共通Schemaを受け取った後もProcessStateをインタビューの有効な状態として適用しない。`business_process`ではProcessStateを使用する。`system_requirement`ではRequirementStateを必須とし、`process=present`が確定した場合だけProcessStateを使用する。
+
+`FieldState`は全Profileで候補抽出対象にできる。完了条件に含める設定済みFieldは、`fixed_form`の`required=true`項目だけとする。`business_process`と`system_requirement`の設定済みFieldは補助情報として保存できるが、現在のProfile定義では必須質問対象にしない。
+
+### 9.4 正本情報と派生ビュー
+
+インタビュー中の正本は次の状態である。
+
+```text
+InterviewState
+├── FieldState
+├── RequirementState
+├── ProcessState
+└── ApplicabilityState
+```
+
+`ProcessModel`は`ProcessState`から生成する派生ビューである。フローチャートとシーケンス図は、`ProcessModel`から生成する。
+
+ProcessStateの要素は、インタビュー確認状態`candidate`または`confirmed`と、履歴状態`active`または`superseded`を持つ。ProcessPatchで追加・変更した要素は`candidate`で保存し、Processの必須項目がすべて確認済みになった時だけBackendが`confirmed`へ更新する。`confirmed`は正式承認を意味しない。
+
+`business_process`では、インタビュー画面に「フローチャート」と「シーケンス図」の表示を用意する。検証済みのProcessStateが更新されるたびに、両方の表示を更新する。候補状態の要素は確定済み要素と区別して表示し、正式承認前の図を正式ナレッジの図として扱わない。`fixed_form`では図を表示しない。`system_requirement`では`process=present`が確定した場合だけ図を表示する。
+
+LLMに次の情報を生成させてはならない。
+
+* Mermaidコード
+* React Flowの座標
+* ELKのレイアウト結果
+* HTML、SVG、画像データ
+
+### 9.5 Applicabilityの扱い
+
+次の項目は、存在確認を完了条件に含める場合、初期状態を`unknown`とする。
+
+* `branch`: 条件による分岐
+* `exception`: 通常と異なるケース
+* `external_system`: 外部システム連携
+* `error_handling`: エラー処理
+* `handoff`: 担当者・部門・システム間の引き渡し
+* `input_output`: 入出力データ
+* `process`: 業務フローの有無
+
+状態値は次の3つだけとする。
+
+```text
+unknown
+present
+not_applicable
+```
+
+* 発話に対象が登場しないだけでは`not_applicable`にしない。
+* `present`は、対象が存在すると発話から確認できた場合だけ設定する。
+* `not_applicable`は、対象が存在しないと発話から確認できた場合だけ設定する。
+* `present`と`not_applicable`には根拠メッセージIDを保存する。
+* 根拠がない状態更新はBackendが拒否する。
+
+`system_requirement`では、要求内容の確認後、次の質問で業務フローの有無を確認する。
+
+> この要望には、利用者の操作やシステム間連携など、業務上の処理の流れがありますか？
+
+回答が「ある」の場合は`process=present`、回答が「ない」の場合は`process=not_applicable`とする。どちらとも判断できない場合は`process=unknown`のままにする。`process=not_applicable`の場合はProcessStateの詳細を質問しない。
+
+`business_process`では通常経路を確認した後、`system_requirement`で`process=present`が確定した場合は通常経路の確認後、未確認の存在確認が残っている場合は、次の確認を1回行う。
+
+> 通常と異なるケース、条件によって処理が変わるケース、外部システムとの連携、エラー発生時の処理はありますか？
+
+この回答から確認できなかった項目は`unknown`のまま保持する。`present`になった項目だけ詳細を質問し、`not_applicable`になった項目は詳細を質問しない。
+
+### 9.6 Profile別の完了条件（Definition of Done）
+
+完了判定はBackendが行う。LLMは完了状態を決定しない。
+
+#### `fixed_form`
+
+次のすべてを満たした場合に完了とする。
+
+1. Profileの必須Fieldがすべて`CONFIRMED`である。
+2. `AWAITING_CONFIRMATION`のFieldがない。
+3. 未解決の矛盾がない。
+
+#### `business_process`
+
+次のすべてを満たした場合に完了とする。
+
+1. `process.scope`が確定している。
+2. `process.start`が確定している。
+3. `process.end`が確定している。
+4. `process.actors`が確定している。
+5. `process.main_flow`が確定している。
+6. Profileで定義されたApplicabilityがすべて`present`または`not_applicable`である。
+7. `present`のApplicabilityの詳細が確定している。
+8. `AWAITING_CONFIRMATION`の候補がない。
+9. 未解決の矛盾がない。
+
+#### `system_requirement`
+
+次のすべてを満たした場合に完了とする。
+
+1. `requirement.purpose_problem`が確定している。
+2. `requirement.users`が確定している。
+3. `requirement.request`が確定している。
+4. `requirement.expected_result`が確定している。
+5. `requirement.constraints`が確定している。
+6. 業務フローの有無が確定している。
+7. 業務フローがない場合、ProcessStateの詳細と条件付きApplicabilityの詳細を要求しない。
+8. 業務フローがある場合、`process.trigger`、`process.actors`、`process.main_flow`、`process.end`、`process.interaction`を確定する。
+9. `AWAITING_CONFIRMATION`の候補がない。
+10. 未解決の矛盾がない。
+
+### 9.7 次の質問対象
+
+Backendは、次の優先順位で1件だけ質問対象を決定する。
+
+1. 未解決の矛盾
+2. `AWAITING_CONFIRMATION`中の候補
+3. Profile必須項目の未確認
+4. `ApplicabilityState=unknown`の項目
+5. 任意項目の深掘り
+
+同じ優先順位の候補が複数ある場合は、Profileの定義順、依存関係、項目の表示順で1件に絞る。
+
+LLMは質問対象、優先順位、完了状態を返してはならない。LLMはBackendが指定した対象について自然な質問文だけを生成する。
+
+### 9.8 モデル仕様
+
+初期のインタビュー意味処理には、Amazon Bedrock上のOpenAI GPT-5.6 Terraを使用する。
+呼び出しは`bedrock-runtime`のOpenAI互換Responses APIへ送信する。AWS SigV4で署名し、標準AWS認証情報チェーンから認証情報を取得する。OpenAI APIキーまたは画像生成モデルは使用しない。
+Structured OutputはResponses APIの`text.format`で指定する。この実装では、同じターンの構造化処理にネイティブConverse APIの`outputConfig.textFormat`を使用しない。
+
+モデルには、Global Inference Profileの`global.openai.gpt-5.6-terra`を指定する。Global profileは、対応する商用AWSリージョンの容量へルーティングされる。処理リージョンを単一リージョンまたは特定地域に限定する要件がある場合は、このGlobal profileを使用してはならず、別途リージョン要件を満たすprofileを定義する。
+
+ナレッジ単位で、AI設定の「構造化インタビュー実行モデル」から次の2つを選択できる。選択したモデルはInterpreterとQuestion Generatorの両方に適用する。モデルの自動切り替えは行わない。設定がない既存ナレッジはBackend設定の`STRUCTURED_INTERVIEW_MODEL_ID`を使用し、その既定値はTerraとする。
+
+質問項目設計では、AI設定の「質問項目の設計モデル」から同じ2つを選択できる。選択値はKnowledgeの`defaultModelId`に保存し、Question Design AgentとそのValidatorの両方に適用する。設定がない、または旧モデルが保存された既存ナレッジは、Backend設定の`QUESTION_DESIGN_MODEL_ID`を使用する。許可値はTerraとLunaだけであり、既定値はTerraとする。質問項目設計モデルとインタビュー実行モデルは別々に選択できる。
+
+| 表示名 | `interviewPlan.modelId` | 用途 |
+|---|---|---|
+| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 既定。意味解釈と構造化抽出の品質を優先する |
+| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 大量処理とコストを優先する |
+
+質問項目設計モデルの選択値は次のとおりである。
+
+| 表示名 | `Knowledge.defaultModelId` | 用途 |
+|---|---|---|
+| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 既定。質問項目候補の意味解釈と検証品質を優先する |
+| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 大量の質問項目設計とコストを優先する |
+
+インタビュー実行モデル（`interviewPlan.modelId`）はインタビュー開始後に変更してはならない。変更要求はBackendがHTTP 409で拒否する。質問項目設計モデル（`Knowledge.defaultModelId`）は、保存後に実行する質問項目設計から適用し、既に作成済みの候補には適用しない。
+
+Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.format.name`、`text.format.strict=true`、`text.format.schema`で指定する。LLMの返却JSONはBackendがPydantic Schemaで検証し、検証成功後だけ状態へ適用する。
+
+次の処理表は、モデル未選択時またはTerra選択時の既定動作を示す。Lunaを選択した場合は、同じ処理、同じSchema、同じ推論強度でモデルIDだけをLunaへ置き換える。
+
+| 処理 | 初期モデル | `reasoning.effort` |
+|---|---|---|
+| Dialogue Act判定 | `global.openai.gpt-5.6-terra` | `low` |
+| Field抽出 | `global.openai.gpt-5.6-terra` | `low` |
+| Requirement抽出 | `global.openai.gpt-5.6-terra` | `low` |
+| Process抽出 | `global.openai.gpt-5.6-terra` | `low` |
+| 矛盾・曖昧性判定 | `global.openai.gpt-5.6-terra` | `low` |
+| 次の質問文生成 | `global.openai.gpt-5.6-terra` | `low` |
+
+質問項目設計では、通常時も検証時もKnowledgeで選択された`defaultModelId`を使用する。未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。質問項目設計においてTerraとLunaを自動切り替えしてはならない。
+
+既存状態との矛盾、複数フロー、大量更新、大量要求、既存ProcessStateの大幅変更をBackendが検知した場合だけ、ナレッジで選択されたTerraまたはLunaを`medium`で再実行する。
+
+初期実装ではTerraとLunaの自動ルーティングを行わない。Solは選択肢に含めず、利用しない。Solを追加する場合、または自動ルーティングを追加する場合は、Terraとの比較評価、ルーティング条件、失敗時の挙動を別仕様で定義する。
+
+画像生成モデルはインタビュー処理、図生成、図表示のいずれにも使用しない。
+
+標準の開発・Compose実行では、Backendの`STRUCTURED_INTERVIEW_ENABLED=true`を設定し、構造化インタビューを使用する。`STRUCTURED_INTERVIEW_ENABLED=false`を明示した場合だけ、既存のStrands/Bedrock経路を使用する。環境変数を設定しない場合のコード既定値は、既存利用者との互換性を保つため`false`である。同じターンを構造化経路と既存経路で重複処理してはならない。AWS認証情報またはIAM権限が不足している場合は状態を更新せず、エラーとして扱う。
+
+構造化インタビューの環境変数は次のとおりである。
+
+| 環境変数 | 必須 | 既定値 | 用途 |
+|---|---:|---|---|
+| `STRUCTURED_INTERVIEW_ENABLED` | いいえ | 標準設定は`true`。未設定時のコード既定値は`false` | 構造化インタビューの有効化 |
+| `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` | Bedrock Runtimeへ接続する呼び出し元リージョン |
+| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-terra` | Bedrock inference profile IDまたはARN |
+| `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` | 通常時の推論強度 |
+| `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` | 複雑条件検知時の推論強度 |
+| `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000` | Interpreterの1回のLLM出力上限。長文回答でJSONが上限に達した場合、最大10000トークンまで増やして1回だけ再試行する |
+| `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` | Question Generatorの1回のLLM出力上限。短い質問文のStructured Outputに適用する |
+| `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-terra` | 質問項目の設計モデル。TerraまたはLunaを指定する |
+| `STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS` | いいえ | `5` | HTTP接続タイムアウト |
+| `STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS` | いいえ | `120` | HTTP応答読み取りタイムアウト |
+
+ユーザーが提示したprofile ARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。コードの既定値は、呼び出し元リージョンを変更しても同じ指定を使えるprofile IDの`global.openai.gpt-5.6-terra`とする。ARNを設定する場合は、ARNの呼び出し元リージョンと`BEDROCK_AWS_REGION`を一致させる。
+
+Global profileのIAM許可には、少なくとも対象inference profileへの`bedrock:InvokeModel`、アカウントの`project/default`、呼び出し元リージョンのfoundation model、Global profileが参照するGlobal foundation modelへの許可が必要である。組織のSCPでリージョン制限を行っている場合は、Global profileの宛先リージョンおよび`aws:RequestedRegion=unspecified`を考慮する。
+
+### 9.9 LLMとBackendの責務
+
+LLMの責務は次のとおりである。
+
+* 発話の意味解釈
+* Field、Requirement、Processの候補抽出
+* 矛盾の検出
+* Applicabilityの候補抽出
+* 未解決事項の抽出
+* Backendが指定した対象についての質問文生成
+
+Backendの責務は次のとおりである。
+
+* Structured OutputのSchema検証
+* 根拠メッセージIDの検証
+* FieldState、RequirementState、ProcessStateの更新
+* Applicabilityの確定
+* ProcessPatchの適用可否判定
+* 完了判定
+* 次の質問対象の決定
+* 質問の重複防止
+* 候補、確認済み、正式承認済みの境界保証
+
+### 9.10 テキストと音声
+
+テキスト経路と音声経路は、確定したユーザー発話を同じInterpreter、同じ状態、同じ完了条件、同じ質問優先順位へ渡す。
+
+音声経路では次のルールを適用する。
+
+* partial transcriptを正式回答として処理しない。
+* 確定transcriptだけを`app/api`へ渡す。
+* `app/voice`にInterviewの意味判断を実装しない。
+* `app/voice`から`app/api`のPythonモジュールを直接importしない。
+* Terraへ音声データを直接送信しない。
+* 音声経路専用の完了条件、質問優先順位、回答評価を作らない。
+
+### 9.11 提案と正式承認
+
+Interpreterの出力は、Backendの検証後も候補またはAI提案として扱う。
+
+* インタビュー対象者による候補確認と、レビュー担当者による正式承認を分ける。
+* `ProcessState`の候補を正式ProcessModelとして公開しない。
+* `RequirementState`の候補を正式要求として公開しない。
+* AI提案は`draft`または`needs_review`で保存する。
+* 人の操作なしに`approved`へ変更しない。
+
+### 9.12 会話進行、提案、図表示
+
+確認質問には、発行した`questionId`、質問対象の`targetType`、`targetId`を必ず紐付ける。確認への回答は、その`questionId`が示す現在の対象だけに適用する。確認待ち一覧の先頭項目や、LLMが再抽出した別候補へ適用してはならない。
+
+利用者が候補を明示的に肯定した場合、Backendは対象を`CONFIRMED`へ遷移させ、候補値を確定値へ移し、次の質問対象を再評価する。肯定の直後に、同じ`targetType`と`targetId`の確認質問を新規発行してはならない。訂正、否定、不明確な回答、または技術エラーからの明示再試行だけは同じ対象を再質問できる。
+
+利用者が「提案して」「例を出して」など、値の提案を求めた場合、AIが示す値は`assistant_proposal`由来の候補として扱う。利用者の発話から抽出した事実として保存してはならない。提案には「AIの案」であることを表示し、利用者の明示的な採用または修正を受けてから確定候補として扱う。提案を採用しても正式承認にはならない。
+
+`system_requirement`で`process=unknown`の間は、業務フローがないと表示してはならない。`process=present`になった時点で、要件整理パネルに処理モデルの収集中であることと、現在不足している情報を表示する。`process=not_applicable`になった場合だけ、業務フローを作成しないことを表示する。
+
+フローチャートは、activeな処理ノードが2件以上、かつ遷移が1件以上ある場合に有効化する。シーケンス図は、activeな参加者が2件以上、かつ根拠付きの相互作用が1件以上ある場合に有効化する。条件を満たさない場合は空の図を表示せず、次に必要な情報を表示する。条件を満たした図は、ProcessStateの検証済み更新ごとに更新する。
+
+テキスト経路の同一回答の再送、SSE再接続、音声経路の再送によって、同じ回答を二重に処理したり、同じ質問を二重発行したりしてはならない。
+
+テキスト送信はクライアント生成の`clientMessageId`を付与する。同じ`clientMessageId`、回答対象、内容の再送は、保存済みメッセージを返して再処理しない。インタビュー状態に`stateVersion`を保持し、回答送信時に画面が参照したバージョンと一致しない場合は状態競合として拒否する。保存済みメッセージの再送は、状態バージョンの検証より先に冪等応答として処理する。
+
+### 9.13 関連設計
+
+以下の文書を本仕様と合わせて参照する。
+
+* [AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)
+* [エージェントアーキテクチャ](architecture/agents/agent-architecture.md)
+* [Interview Agent仕様](agents/interview-agent-strands.md)
+* [リアルタイム音声仕様](architecture/voice/realtime-voice.md)

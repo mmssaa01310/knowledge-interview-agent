@@ -21,16 +21,19 @@ from ai_interviewer_api.agents.question_design.service import (
 )
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.models.interview_plan import STRUCTURED_INTERVIEW_MODEL_IDS
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_QUESTION_DESIGN_MODEL_ID = "global.openai.gpt-5.6-terra"
 
 
 def suggest_fields_with_bedrock(payload: FieldSuggestionRequest, user: UserContext) -> dict:
     if not settings.bedrock_enabled:
         raise HTTPException(status_code=503, detail="bedrock_disabled")
 
-    model_id = payload.context.defaultModelId or settings.bedrock_model_id
+    model_id = _resolve_question_design_model_id(payload.context.defaultModelId)
     if not payload.content.strip():
         return {
             "reply": "まだ作りたい質問テーマが見えていません。どんな場面のナレッジを整理したいかを一言で教えてください。",
@@ -87,6 +90,23 @@ def suggest_fields_with_bedrock(payload: FieldSuggestionRequest, user: UserConte
     if adapted.interview_plan is not None:
         response["interviewPlan"] = adapted.interview_plan.model_dump()
     return response
+
+
+def _resolve_question_design_model_id(requested_model_id: str | None) -> str:
+    """Allow only the GPT-5.6 models exposed by the question-design UI.
+
+    Existing Knowledge rows may still contain the former Nova/Claude value.
+    Those values are migrated at runtime to the configured GPT-5.6 default
+    instead of being sent to the question-design agent.
+    """
+    requested = requested_model_id.strip() if isinstance(requested_model_id, str) else ""
+    if requested in STRUCTURED_INTERVIEW_MODEL_IDS:
+        return requested
+
+    configured = settings.question_design_model_id.strip()
+    if configured in STRUCTURED_INTERVIEW_MODEL_IDS:
+        return configured
+    return DEFAULT_QUESTION_DESIGN_MODEL_ID
 
 
 def _map_bedrock_client_error(exc: ClientError) -> HTTPException:

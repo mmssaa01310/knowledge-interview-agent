@@ -53,12 +53,6 @@ def clear_store() -> None:
 
 @pytest.fixture(autouse=True)
 def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        voice_interview_service,
-        "interpret_dialogue_act",
-        lambda **_: DialogueInterpretation(act="ANSWER"),
-    )
-
     def fake_evaluate(
         *,
         transcript: str,
@@ -179,9 +173,16 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
             clarification_question="内容を確定してよいか判断できませんでした。正しければ『はい』、修正があれば正しい内容を教えてください。",
         )
 
+    def fake_turn_evaluate(**kwargs):  # type: ignore[no-untyped-def]
+        return voice_interview_service.VoiceTurnEvaluation(
+            turn_type="ANSWER",
+            interpretation=DialogueInterpretation(act="ANSWER"),
+            answer_evaluation=fake_evaluate(**kwargs),
+        )
+
     monkeypatch.setattr(
-        "ai_interviewer_api.services.voice_interview._evaluate_voice_answer_candidate",
-        fake_evaluate,
+        "ai_interviewer_api.services.voice_interview._evaluate_voice_turn_candidate",
+        fake_turn_evaluate,
     )
     monkeypatch.setattr(
         "ai_interviewer_api.services.voice_interview._evaluate_confirmation_response",
@@ -511,16 +512,12 @@ def test_voice_dialogue_question_to_assistant_does_not_enter_confirmation_proces
     field_state["pendingFieldId"] = field_id
     store.upsert("interview_states", state)
 
-    def fail_confirmation(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("dialogue questions must not enter confirmation evaluation")
-
-    monkeypatch.setattr(voice_interview_service, "_evaluate_confirmation_response", fail_confirmation)
     monkeypatch.setattr(
         voice_interview_service,
-        "interpret_dialogue_act",
-        lambda **_: DialogueInterpretation(
-            act="QUESTION_TO_ASSISTANT",
-            response_text="先ほどの「清掃員」という回答のことです。",
+        "_evaluate_confirmation_response",
+        lambda **_: voice_interview_service.VoiceConfirmationEvaluation(
+            outcome="UNCLEAR",
+            clarification_question="先ほどの「清掃員」という回答のことです。",
         ),
     )
 
@@ -539,8 +536,8 @@ def test_voice_dialogue_question_to_assistant_does_not_enter_confirmation_proces
     assert updated_field_state["rawAnswerHistory"] == []
     assert updated_field_state["capturedItems"] == []
     assert updated_state["lastProcessedUserMessageId"] == saved_message["id"]
-    assert saved_turn["dialogueAct"] == "QUESTION_TO_ASSISTANT"
-    assert saved_message["dialogueAct"] == "QUESTION_TO_ASSISTANT"
+    assert saved_turn["dialogueAct"] == "CONFIRMATION"
+    assert saved_message["dialogueAct"] == "CONFIRMATION"
 
 
 def test_voice_confirmation_is_natural_and_reads_next_question(
@@ -575,7 +572,14 @@ def test_voice_confirmation_is_natural_and_reads_next_question(
             record_answer=kwargs["candidate_answer"],
         )
 
-    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_answer_candidate", evaluate_answer)
+    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
+        return voice_interview_service.VoiceTurnEvaluation(
+            turn_type="ANSWER",
+            interpretation=DialogueInterpretation(act="ANSWER"),
+            answer_evaluation=evaluate_answer(**kwargs),
+        )
+
+    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
     monkeypatch.setattr(voice_interview_service, "_evaluate_confirmation_response", confirm_with_llm_record_answer)
 
     self_intro_turn = create_internal_voice_turn(
@@ -678,7 +682,7 @@ def test_voice_turn_falls_back_to_clarification_when_ai_evaluation_fails(
         raise RuntimeError("evaluate failed")
 
     monkeypatch.setattr(
-        "ai_interviewer_api.services.voice_interview._evaluate_voice_answer_candidate",
+        "ai_interviewer_api.services.voice_interview._evaluate_voice_turn_candidate",
         fail_evaluator,
     )
 
@@ -705,7 +709,7 @@ def test_voice_answer_evaluation_deadline_returns_fallback_and_discards_late_res
 
     def delayed_evaluator(**kwargs):  # type: ignore[no-untyped-def]
         release_evaluator.wait(timeout=30.0)
-        return voice_interview_service.VoiceAnswerEvaluation(
+        answer_evaluation = voice_interview_service.VoiceAnswerEvaluation(
             decision="CONFIRMABLE",
             normalized_answer="遅れて返った回答",
             is_relevant=True,
@@ -714,8 +718,13 @@ def test_voice_answer_evaluation_deadline_returns_fallback_and_discards_late_res
             follow_up_question=None,
             evidence_transcript_ids=[kwargs["evidence_message_id"]],
         )
+        return voice_interview_service.VoiceTurnEvaluation(
+            turn_type="ANSWER",
+            interpretation=DialogueInterpretation(act="ANSWER"),
+            answer_evaluation=answer_evaluation,
+        )
 
-    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_answer_candidate", delayed_evaluator)
+    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", delayed_evaluator)
 
     started_at = time.monotonic()
     result = process_internal_voice_turn(session["id"], turn["id"])
@@ -943,12 +952,12 @@ def test_voice_turn_intent_classification_is_semantic_and_pre_save(monkeypatch: 
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
 
-    def classify(*, system_prompt, prompt, output_model):
+    def classify(*, system_prompt, prompt, output_model, max_tokens):
         assert "固定フレーズ" in system_prompt
         assert "current_question:" in prompt
         return output_model(turnType="CONTROL")
 
-    monkeypatch.setattr(voice_interview_service, "_run_voice_structured_output", classify)
+    monkeypatch.setattr(voice_interview_service, "_run_voice_json_output", classify)
     result = classify_internal_voice_turn_intent(
         session["id"],
         VoiceTurnIntentCreate(

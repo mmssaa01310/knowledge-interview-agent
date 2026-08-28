@@ -1,0 +1,1179 @@
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence, Set
+from copy import deepcopy
+from typing import Any
+
+from ai_interviewer_api.agents.interview_knowledge.schemas import (
+    Contradiction,
+    FieldUpdate,
+    InterviewProfile,
+    OpenIssue,
+    ProcessPatch,
+    RequirementUpdate,
+    StructuredInterviewOutput,
+)
+
+
+APPLICABILITY_TOPICS: tuple[str, ...] = (
+    "process",
+    "branch",
+    "exception",
+    "external_system",
+    "error_handling",
+    "handoff",
+    "input_output",
+)
+
+APPLICABILITY_LABELS: dict[str, str] = {
+    "process": "処理の流れ",
+    "branch": "分岐",
+    "exception": "例外処理",
+    "external_system": "外部システム連携",
+    "error_handling": "エラー処理",
+    "handoff": "担当者間の引き継ぎ",
+    "input_output": "入出力情報",
+}
+
+PROFILE_LABELS: dict[InterviewProfile, str] = {
+    "fixed_form": "定型情報を聞き取る",
+    "business_process": "業務フローを整理する",
+    "system_requirement": "システム要件を整理する",
+}
+
+REQUIREMENT_DEFINITIONS: dict[InterviewProfile, tuple[tuple[str, str, str], ...]] = {
+    "fixed_form": (),
+    "business_process": (
+        ("process.scope", "対象範囲", "process"),
+        ("process.start", "開始条件", "process"),
+        ("process.end", "終了条件", "process"),
+        ("process.actors", "関係者", "process"),
+        ("process.main_flow", "通常フロー", "process"),
+    ),
+    "system_requirement": (
+        ("requirement.purpose_problem", "目的・課題", "requirement"),
+        ("requirement.users", "利用者", "requirement"),
+        ("requirement.request", "要求内容", "requirement"),
+        ("requirement.expected_result", "期待結果", "requirement"),
+        ("requirement.constraints", "制約", "requirement"),
+        ("process.trigger", "処理の開始条件", "process"),
+        ("process.actors", "処理に関係する利用者・担当者", "process"),
+        ("process.main_flow", "処理の流れ", "process"),
+        ("process.end", "処理の終了条件", "process"),
+        ("process.interaction", "利用者・システム間のやり取り", "process"),
+    ),
+}
+
+OPTIONAL_TARGETS: dict[InterviewProfile, tuple[tuple[str, str], ...]] = {
+    "fixed_form": (),
+    "business_process": (
+        ("process.branch", "条件による分岐"),
+        ("process.exception", "通常と異なる処理"),
+        ("process.handoff", "担当者間の引き継ぎ"),
+        ("process.input_output", "処理の入力と出力"),
+        ("process.external_system", "外部システムとの連携"),
+        ("process.error_handling", "エラー処理"),
+    ),
+    "system_requirement": (
+        ("process.branch", "条件による分岐"),
+        ("process.exception", "通常と異なる処理"),
+        ("process.external_system", "外部システムとの連携"),
+        ("process.error_handling", "エラー処理"),
+        ("process.handoff", "担当者間の引き継ぎ"),
+        ("process.input_output", "処理の入力と出力"),
+    ),
+}
+
+
+def resolve_profile(knowledge: Mapping[str, Any]) -> InterviewProfile:
+    plan = knowledge.get("interviewPlan")
+    raw_profile = plan.get("profile") if isinstance(plan, Mapping) else None
+    if raw_profile in PROFILE_LABELS:
+        return raw_profile
+    return "fixed_form"
+
+
+def profile_label(profile: InterviewProfile) -> str:
+    return PROFILE_LABELS[profile]
+
+
+def build_initial_structured_state(
+    profile: InterviewProfile,
+    fields: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    field_states = {
+        str(field["id"]): _new_field_state(str(field["id"]))
+        for field in fields
+        if field.get("id")
+    }
+    requirement_states: dict[str, dict[str, Any]] = {}
+    for target_id, label, kind in REQUIREMENT_DEFINITIONS[profile]:
+        requirement_states[target_id] = _new_requirement_state(target_id, label, kind)
+    for target_id, label in OPTIONAL_TARGETS[profile]:
+        requirement_states.setdefault(target_id, _new_requirement_state(target_id, label, "process"))
+
+    applicability_state = {
+        topic: {
+            "topic": topic,
+            "status": "unknown",
+            "evidenceTranscriptIds": [],
+            "reason": None,
+        }
+        for topic in APPLICABILITY_TOPICS
+        if _is_applicability_tracked(profile, topic)
+    }
+    process_state = {
+        "version": 0,
+        "participants": [],
+        "nodes": [],
+        "edges": [],
+        "interactions": [],
+        "sourceMessageIds": [],
+    }
+    return {
+        "status": "in_progress",
+        "interviewProfile": profile,
+        "stateVersion": 0,
+        "currentFieldId": None,
+        "currentQuestionId": None,
+        "completedFieldIds": [],
+        "pendingFieldIds": [field_id for field_id in field_states],
+        "askedQuestions": [],
+        "followUpCounts": {},
+        "fieldStates": field_states,
+        "lastProcessedUserMessageId": None,
+        "nextQuestionTarget": None,
+        "requirementStates": requirement_states,
+        "processState": process_state,
+        "applicabilityState": applicability_state,
+        "applicabilityOverviewAsked": False,
+        "contradictions": [],
+        "openIssues": [],
+        "processVersion": 0,
+    }
+
+
+def sync_structured_state_fields(
+    state: dict[str, Any],
+    fields: Sequence[Mapping[str, Any]],
+) -> bool:
+    changed = False
+    field_states = state.setdefault("fieldStates", {})
+    pending_ids = state.setdefault("pendingFieldIds", [])
+    for field in fields:
+        field_id = str(field.get("id") or "").strip()
+        if not field_id or field_id in field_states:
+            continue
+        field_states[field_id] = _new_field_state(field_id)
+        pending_ids.append(field_id)
+        changed = True
+    return changed
+
+
+def apply_structured_output(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    *,
+    latest_message_id: str,
+    fields: Sequence[Mapping[str, Any]],
+    profile: InterviewProfile | None = None,
+    valid_evidence_ids: Set[str] | None = None,
+    current_question: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Apply only validated meaning; completion remains a coordinator decision."""
+
+    changed_topics: list[str] = []
+    field_ids = {str(field.get("id")) for field in fields if field.get("id")}
+    current_target = _target_for_current_question(state, current_question)
+    confirmation_applied = _apply_confirmation_or_rejection(
+        state,
+        output,
+        current_question=current_question,
+        confirmation_message_id=latest_message_id,
+    )
+    state["lastConfirmationApplied"] = confirmation_applied
+    process_present_in_output = any(
+        update.topic == "process"
+        and update.status == "present"
+        and _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+        for update in output.applicability
+    )
+    process_not_applicable_in_output = any(
+        update.topic == "process"
+        and update.status == "not_applicable"
+        and _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+        for update in output.applicability
+    )
+    process_is_present = (
+        process_present_in_output
+        or (_process_is_present(state, profile) and not process_not_applicable_in_output)
+    )
+
+    for update in output.fieldUpdates:
+        if (
+            update.fieldId not in field_ids
+            or not update.value.strip()
+            or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+        ):
+            continue
+        _apply_field_update(
+            state,
+            update,
+            latest_message_id,
+            valid_evidence_ids,
+            force_awaiting_confirmation=_target_matches(current_target, "field", update.fieldId),
+        )
+        changed_topics.append(f"field:{update.fieldId}")
+
+    for update in output.requirementUpdates:
+        if (
+            update.requirementId not in state.setdefault("requirementStates", {})
+            or not update.value.strip()
+            or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+        ):
+            continue
+        if (
+            profile == "system_requirement"
+            and update.requirementId.startswith("process.")
+            and not process_is_present
+        ):
+            continue
+        _apply_requirement_update(
+            state,
+            update,
+            latest_message_id,
+            valid_evidence_ids,
+            force_awaiting_confirmation=_target_matches(
+                current_target,
+                "requirement" if update.requirementId.startswith("requirement.") else "process",
+                update.requirementId,
+            ),
+        )
+        changed_topics.append(update.requirementId)
+
+    process_changed = False
+    if profile != "fixed_form" and _allows_process_patch(
+        state,
+        output,
+        profile=profile,
+        valid_evidence_ids=valid_evidence_ids,
+    ):
+        process_changed = _apply_process_patch(
+            state,
+            output.processPatch,
+            latest_message_id,
+            valid_evidence_ids=valid_evidence_ids,
+        )
+    if process_changed:
+        changed_topics.append("process_model")
+
+    for update in output.applicability:
+        if update.topic not in state.setdefault("applicabilityState", {}):
+            continue
+        if (
+            profile == "system_requirement"
+            and update.topic != "process"
+            and not process_is_present
+        ):
+            continue
+        if not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids):
+            # Unknown evidence cannot establish applicability. Preserve unknown.
+            continue
+        state["applicabilityState"][update.topic] = {
+            "topic": update.topic,
+            "status": update.status,
+            "evidenceTranscriptIds": _ensure_latest_evidence(
+                update.evidenceTranscriptIds,
+                latest_message_id,
+                valid_evidence_ids,
+            ),
+            "reason": update.reason,
+        }
+        changed_topics.append(f"applicability:{update.topic}")
+
+    _upsert_contradictions(
+        state,
+        (
+            contradiction
+            for contradiction in output.contradictions
+            if _has_valid_evidence(contradiction.evidenceTranscriptIds, valid_evidence_ids)
+        ),
+        latest_message_id,
+        valid_evidence_ids=valid_evidence_ids,
+    )
+    _resolve_contradictions(state, output.resolvedContradictionIds, latest_message_id)
+    _upsert_open_issues(
+        state,
+        (
+            issue
+            for issue in output.openIssues
+            if _has_valid_evidence(issue.evidenceTranscriptIds, valid_evidence_ids)
+        ),
+        latest_message_id,
+        valid_evidence_ids=valid_evidence_ids,
+    )
+    state["lastStructuredDialogueAct"] = output.dialogueAct
+    state["lastProcessedUserMessageId"] = latest_message_id
+    return changed_topics
+
+
+def evaluate_completion(
+    state: Mapping[str, Any],
+    profile: InterviewProfile,
+    fields: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    unresolved_contradictions = [
+        item for item in state.get("contradictions", []) if item.get("status", "open") == "open"
+    ]
+    pending_confirmations = list_pending_confirmation_targets(state)
+    missing_required = list_missing_required_targets(state, profile, fields)
+    unknown_applicability = list_unknown_applicability(state, profile)
+    complete = not unresolved_contradictions and not pending_confirmations and not missing_required and not unknown_applicability
+    return {
+        "complete": complete,
+        "unresolvedContradictionIds": [str(item.get("contradictionId")) for item in unresolved_contradictions],
+        "pendingConfirmationTargets": pending_confirmations,
+        "missingRequiredTargets": missing_required,
+        "unknownApplicabilityTopics": unknown_applicability,
+    }
+
+
+def select_next_question_target(
+    state: dict[str, Any],
+    profile: InterviewProfile,
+    fields: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Select exactly one target using the fixed backend priority."""
+
+    _promote_one_candidate(state)
+    contradictions = [
+        item for item in state.get("contradictions", []) if item.get("status", "open") == "open"
+    ]
+    if contradictions:
+        item = contradictions[0]
+        return _target("contradiction", str(item.get("contradictionId")), str(item.get("topic") or "矛盾"), 1)
+
+    pending_confirmations = list_pending_confirmation_targets(state)
+    if pending_confirmations:
+        return pending_confirmations[0]
+
+    missing_required = list_missing_required_targets(state, profile, fields)
+    if missing_required:
+        return missing_required[0]
+
+    unknown_applicability = list_unknown_applicability(state, profile)
+    if unknown_applicability:
+        if profile == "system_requirement" and "process" in unknown_applicability:
+            return _target("applicability", "process", "処理の流れがあるか", 4)
+        grouped_topics = {
+            "branch",
+            "exception",
+            "external_system",
+            "error_handling",
+            "handoff",
+            "input_output",
+        }
+        if (
+            not state.get("applicabilityOverviewAsked")
+            and any(topic in grouped_topics for topic in unknown_applicability)
+        ):
+            return _target(
+                "applicability_overview",
+                "optional_cases",
+                "通常と異なるケースや条件による処理変更の有無",
+                4,
+            )
+        topic = unknown_applicability[0]
+        if topic == "process" and profile == "system_requirement":
+            label = "処理の流れがあるか"
+        else:
+            label = APPLICABILITY_LABELS.get(topic, topic)
+        return _target("applicability", topic, label, 4)
+
+    optional = _select_optional_target(state, profile)
+    if optional:
+        return optional
+    return None
+
+
+def list_pending_confirmation_targets(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    for field_id, field_state in state.get("fieldStates", {}).items():
+        if field_state.get("answerState") == "AWAITING_CONFIRMATION":
+            targets.append(
+                _target(
+                    "field",
+                    str(field_id),
+                    str(field_id),
+                    2,
+                    candidate_source=field_state.get("candidateSource"),
+                )
+            )
+    for requirement_id, requirement_state in state.get("requirementStates", {}).items():
+        if requirement_state.get("status") == "AWAITING_CONFIRMATION":
+            targets.append(
+                _target(
+                    str(requirement_state.get("kind") or "requirement"),
+                    str(requirement_id),
+                    str(requirement_state.get("label") or requirement_id),
+                    2,
+                    candidate_source=requirement_state.get("candidateSource"),
+                )
+            )
+    return targets
+
+
+def list_missing_required_targets(
+    state: Mapping[str, Any],
+    profile: InterviewProfile,
+    fields: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    if profile == "fixed_form":
+        for field in fields:
+            field_id = str(field.get("id") or "").strip()
+            if not field_id or not field.get("required"):
+                continue
+            field_state = state.get("fieldStates", {}).get(field_id, {})
+            if field_state.get("answerState") != "CONFIRMED":
+                targets.append(_target("field", field_id, str(field.get("name") or field_id), 3))
+
+    process_is_present = _process_is_present(state, profile)
+    for target_id, label, kind in REQUIREMENT_DEFINITIONS[profile]:
+        if kind == "process" and profile == "system_requirement" and not process_is_present:
+            continue
+        requirement_state = state.get("requirementStates", {}).get(target_id, {})
+        if requirement_state.get("status") != "CONFIRMED":
+            targets.append(_target(kind, target_id, label, 3))
+    targets.extend(_list_missing_present_optional_targets(state, profile))
+    return targets
+
+
+def list_unknown_applicability(state: Mapping[str, Any], profile: InterviewProfile) -> list[str]:
+    process_status = state.get("applicabilityState", {}).get("process", {}).get("status", "unknown")
+    return [
+        topic
+        for topic in APPLICABILITY_TOPICS
+        if _is_applicability_tracked(profile, topic)
+        and state.get("applicabilityState", {}).get(topic, {}).get("status", "unknown") == "unknown"
+        and (topic != "process" or profile == "system_requirement")
+        and not (
+            profile == "system_requirement"
+            and topic != "process"
+            and process_status != "present"
+        )
+    ]
+
+
+def _new_field_state(field_id: str) -> dict[str, Any]:
+    return {
+        "fieldId": field_id,
+        "status": "pending",
+        "answerSummary": None,
+        "missingInformation": [],
+        "answerState": "UNANSWERED",
+        "candidateAnswer": None,
+        "candidateSource": None,
+        "candidateProposalMessageId": None,
+        "confirmedSource": None,
+        "confirmedProposalMessageId": None,
+        "confirmationEvidenceTranscriptIds": [],
+        "rawAnswer": None,
+        "rawAnswerHistory": [],
+        "recordAnswer": None,
+        "capturedItems": [],
+        "candidateItems": [],
+        "confirmedItems": [],
+        "missingRequiredItemIds": [],
+        "answerDisposition": None,
+    }
+
+
+def _new_requirement_state(target_id: str, label: str, kind: str) -> dict[str, Any]:
+    return {
+        "requirementId": target_id,
+        "label": label,
+        "kind": kind,
+        "status": "UNANSWERED",
+        "candidateValue": None,
+        "candidateSource": None,
+        "candidateProposalMessageId": None,
+        "confirmedSource": None,
+        "confirmedProposalMessageId": None,
+        "confirmationEvidenceTranscriptIds": [],
+        "value": None,
+        "evidenceTranscriptIds": [],
+    }
+
+
+def _target(
+    kind: str,
+    target_id: str,
+    label: str,
+    priority: int,
+    *,
+    candidate_source: str | None = None,
+) -> dict[str, Any]:
+    target = {
+        "targetType": kind,
+        "targetId": target_id,
+        "label": label,
+        "priority": priority,
+    }
+    if candidate_source == "assistant_proposal":
+        target["candidateSource"] = candidate_source
+    return target
+
+
+def _apply_confirmation_or_rejection(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    *,
+    current_question: Mapping[str, Any] | None = None,
+    confirmation_message_id: str | None = None,
+) -> bool:
+    if output.dialogueAct not in {"CONFIRMATION", "REJECTION"}:
+        return False
+    target = _target_for_current_question(state, current_question)
+    if target is None:
+        pending = list_pending_confirmation_targets(state)
+        if not pending:
+            return False
+        target = pending[0]
+    if not _is_confirmation_target(state, target):
+        return False
+    if output.dialogueAct == "CONFIRMATION":
+        _confirm_target(state, target, confirmation_message_id=confirmation_message_id)
+    else:
+        _reject_target(state, target)
+    return True
+
+
+def _target_for_current_question(
+    state: Mapping[str, Any],
+    current_question: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not current_question:
+        return None
+    target_type = str(current_question.get("targetType") or current_question.get("kind") or "")
+    target_id = str(current_question.get("targetId") or "")
+    if not target_type or not target_id:
+        return None
+    target = _target(
+        target_type,
+        target_id,
+        str(current_question.get("targetLabel") or current_question.get("label") or target_id),
+        2,
+    )
+    if target_type == "field":
+        field_state = state.get("fieldStates", {}).get(target_id, {})
+        target["candidateSource"] = field_state.get("candidateSource")
+    else:
+        requirement_state = state.get("requirementStates", {}).get(target_id, {})
+        target["candidateSource"] = requirement_state.get("candidateSource")
+    return target
+
+
+def _is_confirmation_target(state: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
+    target_type = target.get("targetType") or target.get("kind")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        return state.get("fieldStates", {}).get(target_id, {}).get("answerState") == "AWAITING_CONFIRMATION"
+    if target_type in {"requirement", "process"}:
+        return state.get("requirementStates", {}).get(target_id, {}).get("status") == "AWAITING_CONFIRMATION"
+    return False
+
+
+def _target_matches(
+    target: Mapping[str, Any] | None,
+    target_type: str,
+    target_id: str,
+) -> bool:
+    if not target:
+        return False
+    current_type = target.get("targetType") or target.get("kind")
+    return current_type == target_type and str(target.get("targetId") or "") == target_id
+
+
+def is_current_question_confirmation_target(
+    state: Mapping[str, Any],
+    current_question: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether the current question is asking for a candidate confirmation."""
+
+    target = _target_for_current_question(state, current_question)
+    return target is not None and _is_confirmation_target(state, target)
+
+
+def _confirm_target(
+    state: dict[str, Any],
+    target: Mapping[str, Any],
+    *,
+    confirmation_message_id: str | None = None,
+) -> None:
+    kind = target.get("targetType") or target.get("kind")
+    target_id = str(target.get("targetId") or "")
+    if kind == "field":
+        field_state = state.get("fieldStates", {}).get(target_id)
+        if field_state and field_state.get("candidateAnswer"):
+            field_state["answerState"] = "CONFIRMED"
+            field_state["status"] = "completed"
+            field_state["recordAnswer"] = field_state["candidateAnswer"]
+            field_state["answerSummary"] = None
+            field_state["confirmedItems"] = list(field_state.get("candidateItems", []))
+            field_state["confirmedSource"] = field_state.get("candidateSource")
+            field_state["confirmedProposalMessageId"] = field_state.get("candidateProposalMessageId")
+            field_state["confirmationEvidenceTranscriptIds"] = (
+                [confirmation_message_id] if confirmation_message_id else []
+            )
+            field_state["candidateSource"] = None
+            field_state["candidateProposalMessageId"] = None
+            _mark_field_completed(state, target_id)
+        return
+    requirement_state = state.get("requirementStates", {}).get(target_id)
+    if requirement_state and requirement_state.get("candidateValue"):
+        requirement_state["status"] = "CONFIRMED"
+        requirement_state["value"] = requirement_state["candidateValue"]
+        requirement_state["confirmedSource"] = requirement_state.get("candidateSource")
+        requirement_state["confirmedProposalMessageId"] = requirement_state.get("candidateProposalMessageId")
+        requirement_state["confirmationEvidenceTranscriptIds"] = (
+            [confirmation_message_id] if confirmation_message_id else []
+        )
+        requirement_state["candidateValue"] = None
+        requirement_state["candidateSource"] = None
+        requirement_state["candidateProposalMessageId"] = None
+        _maybe_confirm_process_entities(state)
+
+
+def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
+    kind = target.get("targetType") or target.get("kind")
+    target_id = str(target.get("targetId") or "")
+    if kind == "field":
+        field_state = state.get("fieldStates", {}).get(target_id)
+        if field_state:
+            field_state["answerState"] = "UNANSWERED"
+            field_state["status"] = "asking"
+            field_state["candidateAnswer"] = None
+            field_state["candidateSource"] = None
+            field_state["candidateProposalMessageId"] = None
+            field_state["candidateItems"] = []
+            field_state["recordAnswer"] = None
+        return
+    requirement_state = state.get("requirementStates", {}).get(target_id)
+    if requirement_state:
+        requirement_state["status"] = "UNANSWERED"
+        requirement_state["candidateValue"] = None
+        requirement_state["candidateSource"] = None
+        requirement_state["candidateProposalMessageId"] = None
+
+
+def _apply_field_update(
+    state: dict[str, Any],
+    update: FieldUpdate,
+    message_id: str,
+    valid_evidence_ids: Set[str] | None = None,
+    *,
+    force_awaiting_confirmation: bool = False,
+) -> None:
+    field_state = state.setdefault("fieldStates", {}).setdefault(update.fieldId, _new_field_state(update.fieldId))
+    current_pending = bool(list_pending_confirmation_targets(state))
+    field_state["answerState"] = (
+        "AWAITING_CONFIRMATION"
+        if force_awaiting_confirmation or not current_pending
+        else "CANDIDATE_PENDING"
+    )
+    field_state["status"] = "asking"
+    field_state["candidateAnswer"] = update.value.strip()
+    field_state["candidateSource"] = update.candidateSource
+    field_state["candidateProposalMessageId"] = None
+    field_state["rawAnswer"] = update.value.strip()
+    field_state.setdefault("rawAnswerHistory", []).append(update.value.strip())
+    field_state["candidateItems"] = [
+        {
+            "itemId": update.itemId or update.fieldId,
+            "value": update.value.strip(),
+            "evidenceTranscriptIds": _ensure_latest_evidence(
+                update.evidenceTranscriptIds,
+                message_id,
+                valid_evidence_ids,
+            ),
+        }
+    ]
+    field_state["capturedItems"] = list(field_state["candidateItems"])
+
+
+def _apply_requirement_update(
+    state: dict[str, Any],
+    update: RequirementUpdate,
+    message_id: str,
+    valid_evidence_ids: Set[str] | None = None,
+    *,
+    force_awaiting_confirmation: bool = False,
+) -> None:
+    requirement_state = state["requirementStates"][update.requirementId]
+    current_pending = bool(list_pending_confirmation_targets(state))
+    requirement_state["status"] = (
+        "AWAITING_CONFIRMATION"
+        if force_awaiting_confirmation or not current_pending
+        else "CANDIDATE_PENDING"
+    )
+    requirement_state["candidateValue"] = update.value.strip()
+    requirement_state["candidateSource"] = update.candidateSource
+    requirement_state["candidateProposalMessageId"] = None
+    requirement_state["evidenceTranscriptIds"] = _ensure_latest_evidence(
+        update.evidenceTranscriptIds,
+        message_id,
+        valid_evidence_ids,
+    )
+
+
+def _apply_process_patch(
+    state: dict[str, Any],
+    patch: ProcessPatch,
+    message_id: str,
+    *,
+    valid_evidence_ids: Set[str] | None = None,
+) -> bool:
+    process_state = state.setdefault("processState", {})
+    current_version = int(process_state.get("version", state.get("processVersion", 0)) or 0)
+    if patch.baseProcessVersion != current_version:
+        if _has_process_operations(patch):
+            _upsert_open_issues(
+                state,
+                [
+                    OpenIssue(
+                        issueId=f"process-version-{current_version}",
+                        topic="process_model",
+                        description="ProcessModelの更新基準バージョンが現在の状態と一致しません。最新の状態を確認してください。",
+                        evidenceTranscriptIds=[message_id],
+                    )
+                ],
+                message_id,
+            )
+        return False
+
+    if not _validate_process_patch(process_state, patch, valid_evidence_ids=valid_evidence_ids):
+        _upsert_open_issues(
+            state,
+            [
+                OpenIssue(
+                    issueId=f"invalid-process-patch-{current_version}",
+                    topic="process_model",
+                    description="ProcessModelの更新内容が現在の要素または根拠メッセージと一致しないため、更新を適用しませんでした。",
+                    evidenceTranscriptIds=[message_id],
+                )
+            ],
+            message_id,
+        )
+        return False
+
+    next_process_state = deepcopy(process_state)
+    changed = False
+    changed |= _merge_entities(next_process_state, "participants", patch.addParticipants, patch.updateParticipants, "participantId")
+    changed |= _merge_entities(next_process_state, "nodes", patch.addNodes, patch.updateNodes, "nodeId")
+    changed |= _merge_entities(next_process_state, "interactions", patch.addInteractions, patch.updateInteractions, "interactionId")
+    edges = next_process_state.setdefault("edges", [])
+    for edge in patch.addEdges:
+        edges.append(edge.model_dump())
+        changed = True
+    for edge in patch.updateEdges:
+        edge_dict = edge.model_dump()
+        for item in edges:
+            if item.get("edgeId") == edge.edgeId:
+                item.update(edge_dict)
+                changed = True
+                break
+    for edge in patch.removeEdges:
+        for item in edges:
+            if item.get("edgeId") == edge and item.get("lifecycle") != "superseded":
+                item["lifecycle"] = "superseded"
+                changed = True
+                break
+    interactions = next_process_state.setdefault("interactions", [])
+    for interaction_id in patch.removeInteractions:
+        for item in interactions:
+            if item.get("interactionId") == interaction_id and item.get("lifecycle") != "superseded":
+                item["lifecycle"] = "superseded"
+                changed = True
+                break
+    if changed:
+        current_version += 1
+        next_process_state["version"] = current_version
+        source_message_ids = next_process_state.setdefault("sourceMessageIds", [])
+        if message_id and message_id not in source_message_ids:
+            source_message_ids.append(message_id)
+        process_state.clear()
+        process_state.update(next_process_state)
+        state["processVersion"] = current_version
+    return changed
+
+
+def _has_process_operations(patch: ProcessPatch) -> bool:
+    return bool(
+        patch.addParticipants
+        or patch.updateParticipants
+        or patch.addNodes
+        or patch.updateNodes
+        or patch.addEdges
+        or patch.updateEdges
+        or patch.removeEdges
+        or patch.addInteractions
+        or patch.updateInteractions
+        or patch.removeInteractions
+    )
+
+
+def _allows_process_patch(
+    state: Mapping[str, Any],
+    output: StructuredInterviewOutput,
+    *,
+    profile: InterviewProfile | None,
+    valid_evidence_ids: Set[str] | None,
+) -> bool:
+    if profile != "system_requirement":
+        return True
+    valid_process_updates = [
+        update
+        for update in output.applicability
+        if update.topic == "process"
+        and _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+    ]
+    if any(update.status == "not_applicable" for update in valid_process_updates):
+        return False
+    if state.get("applicabilityState", {}).get("process", {}).get("status") == "present":
+        return True
+    return any(
+        update.topic == "process"
+        and update.status == "present"
+        and _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+        for update in output.applicability
+    )
+
+
+def _validate_process_patch(
+    process_state: Mapping[str, Any],
+    patch: ProcessPatch,
+    *,
+    valid_evidence_ids: Set[str] | None = None,
+) -> bool:
+    participants = process_state.get("participants", [])
+    nodes = process_state.get("nodes", [])
+    edges = process_state.get("edges", [])
+    interactions = process_state.get("interactions", [])
+    participant_ids = {item.get("participantId") for item in participants}
+    node_ids = {item.get("nodeId") for item in nodes}
+    edge_ids = {item.get("edgeId") for item in edges}
+    interaction_ids = {item.get("interactionId") for item in interactions}
+
+    if any(
+        not str(getattr(entity, identifier, "")).strip()
+        for entity_group, identifier in (
+            ([*patch.addParticipants, *patch.updateParticipants], "participantId"),
+            ([*patch.addNodes, *patch.updateNodes], "nodeId"),
+            ([*patch.addEdges, *patch.updateEdges], "edgeId"),
+            ([*patch.addInteractions, *patch.updateInteractions], "interactionId"),
+        )
+        for entity in entity_group
+    ):
+        return False
+    if any(not entity.name.strip() for entity in [*patch.addParticipants, *patch.updateParticipants]):
+        return False
+    if any(not entity.label.strip() for entity in [*patch.addNodes, *patch.updateNodes]):
+        return False
+    if any(
+        not entity.sourceNodeId.strip() or not entity.targetNodeId.strip()
+        for entity in [*patch.addEdges, *patch.updateEdges]
+    ):
+        return False
+    if any(
+        not entity.sourceParticipantId.strip()
+        or not entity.targetParticipantId.strip()
+        or not entity.action.strip()
+        for entity in [*patch.addInteractions, *patch.updateInteractions]
+    ):
+        return False
+    if any(
+        entity.lifecycle != "active"
+        for entity in [*patch.addParticipants, *patch.addNodes, *patch.addEdges, *patch.addInteractions]
+    ):
+        return False
+
+    if not _validate_add_update_ids(
+        patch.addParticipants,
+        patch.updateParticipants,
+        "participantId",
+        participant_ids,
+    ):
+        return False
+    participant_ids.update(item.participantId for item in patch.addParticipants)
+    if not _validate_add_update_ids(patch.addNodes, patch.updateNodes, "nodeId", node_ids):
+        return False
+    node_ids.update(item.nodeId for item in patch.addNodes)
+    if not _validate_add_update_ids(patch.addEdges, patch.updateEdges, "edgeId", edge_ids):
+        return False
+    if not _validate_add_update_ids(
+        patch.addInteractions,
+        patch.updateInteractions,
+        "interactionId",
+        interaction_ids,
+    ):
+        return False
+    if any(edge_id not in edge_ids for edge_id in patch.removeEdges):
+        return False
+    if any(interaction_id not in interaction_ids for interaction_id in patch.removeInteractions):
+        return False
+
+    if any(
+        participant_id not in participant_ids
+        for node in [*patch.addNodes, *patch.updateNodes]
+        for participant_id in node.participantIds
+    ):
+        return False
+    if any(
+        edge.sourceNodeId not in node_ids or edge.targetNodeId not in node_ids
+        for edge in [*patch.addEdges, *patch.updateEdges]
+    ):
+        return False
+    if any(
+        interaction.sourceParticipantId not in participant_ids
+        or interaction.targetParticipantId not in participant_ids
+        for interaction in [*patch.addInteractions, *patch.updateInteractions]
+    ):
+        return False
+    return all(
+        entity.confirmationStatus == "candidate"
+        and _has_valid_evidence(entity.evidenceTranscriptIds, valid_evidence_ids)
+        for entity in [
+            *patch.addParticipants,
+            *patch.updateParticipants,
+            *patch.addNodes,
+            *patch.updateNodes,
+            *patch.addEdges,
+            *patch.updateEdges,
+            *patch.addInteractions,
+            *patch.updateInteractions,
+        ]
+    )
+
+
+def _validate_add_update_ids(
+    added: Sequence[Any],
+    updated: Sequence[Any],
+    identifier: str,
+    existing_ids: set[Any],
+) -> bool:
+    added_ids = [getattr(item, identifier) for item in added]
+    updated_ids = [getattr(item, identifier) for item in updated]
+    if len(added_ids) != len(set(added_ids)) or len(updated_ids) != len(set(updated_ids)):
+        return False
+    if set(added_ids) & existing_ids:
+        return False
+    if set(added_ids) & set(updated_ids):
+        return False
+    return set(updated_ids).issubset(existing_ids)
+
+
+def _merge_entities(
+    process_state: dict[str, Any],
+    key: str,
+    added: Iterable[Any],
+    updated: Iterable[Any],
+    identifier: str,
+) -> bool:
+    entities = process_state.setdefault(key, [])
+    changed = False
+    for entity in added:
+        entity_dict = entity.model_dump()
+        entity_id = entity_dict.get(identifier)
+        if not any(item.get(identifier) == entity_id for item in entities):
+            entities.append(entity_dict)
+            changed = True
+    for entity in updated:
+        entity_dict = entity.model_dump()
+        entity_id = entity_dict.get(identifier)
+        for item in entities:
+            if item.get(identifier) == entity_id:
+                item.update(entity_dict)
+                changed = True
+                break
+    return changed
+
+
+def _upsert_contradictions(
+    state: dict[str, Any],
+    contradictions: Iterable[Contradiction],
+    message_id: str,
+    *,
+    valid_evidence_ids: Set[str] | None = None,
+) -> None:
+    items = state.setdefault("contradictions", [])
+    for contradiction in contradictions:
+        record = contradiction.model_dump()
+        record["status"] = "open"
+        record["evidenceTranscriptIds"] = _ensure_latest_evidence(
+            contradiction.evidenceTranscriptIds,
+            message_id,
+            valid_evidence_ids,
+        )
+        existing = next(
+            (item for item in items if item.get("contradictionId") == contradiction.contradictionId),
+            None,
+        )
+        if existing is None:
+            items.append(record)
+        else:
+            existing.update(record)
+
+
+def _resolve_contradictions(
+    state: dict[str, Any],
+    contradiction_ids: Iterable[str],
+    message_id: str,
+) -> None:
+    identifiers = {str(item).strip() for item in contradiction_ids if str(item).strip()}
+    if not identifiers:
+        return
+    for item in state.setdefault("contradictions", []):
+        if item.get("contradictionId") in identifiers:
+            item["status"] = "resolved"
+            item["resolvedEvidenceTranscriptIds"] = [message_id]
+
+
+def _upsert_open_issues(
+    state: dict[str, Any],
+    issues: Iterable[OpenIssue],
+    message_id: str,
+    *,
+    valid_evidence_ids: Set[str] | None = None,
+) -> None:
+    items = state.setdefault("openIssues", [])
+    for issue in issues:
+        record = issue.model_dump()
+        record["evidenceTranscriptIds"] = _ensure_latest_evidence(
+            issue.evidenceTranscriptIds,
+            message_id,
+            valid_evidence_ids,
+        )
+        existing = next((item for item in items if item.get("issueId") == issue.issueId), None)
+        if existing is None:
+            items.append(record)
+        else:
+            existing.update(record)
+
+
+def _ensure_latest_evidence(
+    evidence_ids: Iterable[str],
+    latest_message_id: str,
+    valid_evidence_ids: Set[str] | None = None,
+) -> list[str]:
+    result = [
+        str(item)
+        for item in evidence_ids
+        if str(item).strip()
+        and (valid_evidence_ids is None or str(item) in valid_evidence_ids)
+    ]
+    if latest_message_id.strip() and latest_message_id not in result:
+        result.append(latest_message_id)
+    return list(dict.fromkeys(result))
+
+
+def _has_valid_evidence(
+    evidence_ids: Iterable[str],
+    valid_evidence_ids: Set[str] | None,
+) -> bool:
+    cleaned = {str(item).strip() for item in evidence_ids if str(item).strip()}
+    if not cleaned:
+        return False
+    return valid_evidence_ids is None or cleaned.issubset(valid_evidence_ids)
+
+
+def _mark_field_completed(state: dict[str, Any], field_id: str) -> None:
+    completed = state.setdefault("completedFieldIds", [])
+    pending = state.setdefault("pendingFieldIds", [])
+    if field_id not in completed:
+        completed.append(field_id)
+    if field_id in pending:
+        pending.remove(field_id)
+
+
+def _promote_one_candidate(state: dict[str, Any]) -> None:
+    if list_pending_confirmation_targets(state):
+        return
+    for field_state in state.get("fieldStates", {}).values():
+        if field_state.get("answerState") == "CANDIDATE_PENDING":
+            field_state["answerState"] = "AWAITING_CONFIRMATION"
+            return
+    for requirement_state in state.get("requirementStates", {}).values():
+        if requirement_state.get("status") == "CANDIDATE_PENDING":
+            requirement_state["status"] = "AWAITING_CONFIRMATION"
+            return
+
+
+def _select_optional_target(state: Mapping[str, Any], profile: InterviewProfile) -> dict[str, Any] | None:
+    if profile == "system_requirement" and not _process_is_present(state, profile):
+        return None
+    for target_id, label in OPTIONAL_TARGETS[profile]:
+        topic = target_id.removeprefix("process.")
+        applicability = state.get("applicabilityState", {}).get(topic, {})
+        if applicability.get("status") == "unknown":
+            return _target("applicability", topic, label, 5)
+        if applicability.get("status") == "present":
+            target_state = state.get("requirementStates", {}).get(target_id, {})
+            if target_state.get("status") != "CONFIRMED":
+                return _target("process", target_id, label, 5)
+    return None
+
+
+def _list_missing_present_optional_targets(
+    state: Mapping[str, Any],
+    profile: InterviewProfile,
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    if profile == "system_requirement" and not _process_is_present(state, profile):
+        return targets
+    for target_id, label in OPTIONAL_TARGETS[profile]:
+        topic = target_id.removeprefix("process.")
+        if state.get("applicabilityState", {}).get(topic, {}).get("status") != "present":
+            continue
+        requirement_state = state.get("requirementStates", {}).get(target_id, {})
+        if requirement_state.get("status") != "CONFIRMED":
+            targets.append(_target("process", target_id, label, 3))
+    return targets
+
+
+def _maybe_confirm_process_entities(state: dict[str, Any]) -> None:
+    profile = state.get("interviewProfile")
+    if profile not in PROFILE_LABELS or not _process_is_present(state, profile):
+        return
+    required_process_ids = {
+        target_id
+        for target_id, _, kind in REQUIREMENT_DEFINITIONS[profile]
+        if kind == "process"
+    }
+    requirement_states = state.get("requirementStates", {})
+    if any(
+        requirement_states.get(requirement_id, {}).get("status") != "CONFIRMED"
+        for requirement_id in required_process_ids
+    ):
+        return
+    process_state = state.get("processState", {})
+    for collection_name in ("participants", "nodes", "edges", "interactions"):
+        for entity in process_state.get(collection_name, []):
+            if entity.get("lifecycle") != "superseded":
+                entity["confirmationStatus"] = "confirmed"
+
+
+def _process_is_present(state: Mapping[str, Any], profile: InterviewProfile) -> bool:
+    if profile == "business_process":
+        return True
+    if profile != "system_requirement":
+        return False
+    return state.get("applicabilityState", {}).get("process", {}).get("status") == "present"
+
+
+def _is_applicability_tracked(profile: InterviewProfile, topic: str) -> bool:
+    if profile == "fixed_form":
+        return False
+    if profile == "system_requirement" and topic not in APPLICABILITY_TOPICS:
+        return False
+    return topic != "process" or profile == "system_requirement"

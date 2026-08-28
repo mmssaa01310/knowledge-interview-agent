@@ -160,7 +160,7 @@ class AssistantReply:
 
 ### 4.1 回答確認と次質問
 
-確認待ちで受けた明示的な肯定は、保持中の候補に対する状態制御として`app/api`が確定する。肯定語を新しい回答候補にせず、意味が明確な「はい」「そうです」などをLLMの確率的判定へ委ねない。
+確認待ちの返答は、保持中の候補に対する専用の確認判定へ1回だけ渡す。判定器は固定キーワードではなく文脈から`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返し、`app/api`が候補の確定・訂正・再確認を状態機械として保証する。
 
 回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 
@@ -217,7 +217,8 @@ POST /api/voice-sessions/{voice_session_id}/stop
 WebRTCのシグナリングAPIは`app/voice`が提供する。
 
 v1初期実装では、認証付きHTTPによるSDP offer / answer方式を使用する。
-BrowserはICE gathering完了後にofferを送信し、`app/voice`はICE gathering完了後のanswerを返す。
+BrowserはICE gatheringを最大1秒待ってofferを送信し、`app/voice`も最大1秒待ってanswerを返す。時間内に完了しない場合は、その時点で取得済みの候補を使って接続を開始する。上限は`VITE_VOICE_ICE_GATHERING_TIMEOUT_MS`と`VOICE_WEBRTC_ICE_GATHERING_TIMEOUT_SECONDS`で変更できる。
+初回のVoice Session作成、ICE設定取得、Offer送信には8秒のクライアントタイムアウトを設定する。上限は`VITE_VOICE_SIGNALING_TIMEOUT_MS`で変更でき、タイムアウト時はエラー表示へ遷移する。
 
 ```http
 GET    /voice/webrtc/{voice_session_id}/ice-config
@@ -242,6 +243,16 @@ POST /internal/voice-sessions/{voice_session_id}/connection-events
 内部APIはALBの公開経路へ露出させてはいけない。
 
 内部APIはサービス間認証を必須とする。v1初期実装では共有internal API tokenを許容するが、本番ではIAM SigV4または同等のサービス間認証を優先する。
+
+### 6.3.1 音声ターンの低遅延判定
+
+Transcribe + Pollyの確定Transcriptは、音声サービスで先行意図分類せず、`app/api`へ1回だけ送る。
+通常ターンでは、`turnType`、Dialogue Act、回答評価を同一のAI判定へ統合する。確認待ちターンでは、
+`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返す専用判定を1回だけ行う。
+
+この判定はBedrock Converseの短いテキストJSONを受け、backendでPydantic検証してから既存の
+`InterviewAnswerProcessor`へ渡す。確認、必須項目、不足項目、状態更新、正式保存の保証はbackendが持ち、
+AI出力をそのまま正式回答として確定しない。音声ターンの低遅延経路では、tool-based structured outputを使わない。
 
 ## 7. WebRTCのv1基本方針
 
@@ -555,6 +566,11 @@ Runtime起動イベント、track受信イベント、Peer Connection状態変�
 
 本番のBrowserから`sendInitialReply`のような任意指定を送って初回質問を制御してはいけない。
 Voice Session作成結果とサーバ側の送信状態に基づき、`app/voice`が初回質問の送信可否を決める。
+
+Transcribe + Polly Runtimeでは、Offer受信後かつ初回発話の送信前に、`initial_reply_text`から実際に
+発話する固定挨拶と初回質問の先頭チャンクをPollyへ先行要求する。先行要求はWebRTCのOffer/Answer処理と
+並行して実行し、Runtimeが初回発話を送信するときに同じ音声を再利用する。先行要求が失敗した場合は、
+通常のPolly要求へフォールバックする。この先行要求は発話のclaim、保存状態、質問内容を変更しない。
 
 ## 14.1 質問定義と会話メッセージ
 
@@ -891,7 +907,8 @@ Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20ms�
 5フレームを100msにまとめてTranscribe Streamingへ送る。部分結果安定化は`medium`を既定とし、
 部分TranscriptはUI通知だけに使い、確定したTranscriptだけをInterview APIへ渡す。
 
-ターン確定、相槌、処理通知の既定タイミングは次のとおり。
+発話途中の相槌と処理中通知は、意図しない音声の割り込みを防ぐため既定で無効とする。
+`VOICE_ENABLE_BACKCHANNELS=true`を明示した場合だけ、次のタイミングで有効になる。
 
 * 350ms: soft endpoint
 * 500ms: 条件を満たす場合だけLISTEN_ACK
@@ -902,13 +919,17 @@ Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20ms�
 
 正式応答はInterview APIの`AssistantReply`を正本とし、句読点と文字数で分割してPolly
 `SynthesizeSpeech`へ最大2件先行要求する。音声は16kHz PCMとして受け、`audio_sequence`順に
-WebRTCへ渡す。LISTEN_ACKとPROCESSING_ACKはメモリキャッシュ済み音声だけを使い、正式会話履歴には保存しない。
+WebRTCへ渡す。相槌・処理中通知を有効にした場合も、メモリキャッシュ済み音声だけを使い、
+正式会話履歴には保存しない。
 
 正式回答、PROCESSING_ACK、LISTEN_ACK、長時間処理通知は単一の`AudioOutputCoordinator`へ渡す。
 優先度は順に100、50、40、30とし、高優先度出力は低優先度の生成・再生を即時キャンセルする。
-PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信する。
+PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信する。正式回答の送信要求は
+前の正式回答のBrowser再生完了を待って直列化し、未再生の正式回答を上書きしない。
 `AssistantSpeechEnded`は全frame送信完了時に発行する一方、入力再開はBrowserからの
-`assistant_playback_drained`後とし、Queue投入完了とスピーカー再生完了を区別する。
+`assistant_playback_drained`後とし、Queue投入完了とスピーカー再生完了を区別する。Browserは
+既知の音声長に1,000msの再生ガードを加えてdrainを通知する。既知の音声長は固定の5秒上限で
+切り捨てず、未知の場合だけ`VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS`を復旧待機時間に使う。
 
 ユーザー音声を120ms連続検出した場合はbarge-inとし、`generation`を更新する。古いLLM応答、
 未再生Polly音声、遅延通知はgeneration照合で破棄する。Transcribeは最大2回再接続し、その間の
@@ -958,3 +979,32 @@ v1では以下を実装しない。
 * `docs/spec.md`
 * `docs/architecture/agents/agent-architecture.md`
 * `docs/agents/interview-agent-strands.md`
+
+## 21. 構造化インタビューとの接続
+
+構造化インタビューを使用するVoice Sessionでは、音声Runtimeが確定transcriptを`app/api`へ渡し、`app/api`が共通Interpreterを実行する。
+
+```text
+WebRTC音声
+  ↓
+app/voiceの文字起こし
+  ↓ 確定transcriptのみ
+app/apiのInterview Coordinator
+  ↓
+StructuredInterviewProvider
+  ↓
+FieldState / RequirementState / ProcessState / ApplicabilityState
+```
+
+音声Runtimeは、次の処理を実行してはならない。
+
+* Profile別の完了判定
+* 次の質問対象の決定
+* Field、Requirement、Processの意味解釈
+* 矛盾の解消
+* ProcessPatchの適用
+* AI提案の正式承認
+
+`app/api`のInterview Coordinatorは、テキスト経路と音声経路で同じStructured Output Schema、状態遷移、完了条件、質問優先順位を使用する。
+
+Terraは音声入力モデルとして使用しない。音声は既存の音声入力Providerで文字起こしし、文字起こし済みテキストをTerraへ渡す。

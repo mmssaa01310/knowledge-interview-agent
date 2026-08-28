@@ -32,8 +32,12 @@ type AssistantPlaybackTrackerOptions = {
   onEvent: (event: VoiceDataChannelEvent) => void;
 };
 
-const PLAYBACK_DRAIN_GUARD_MS = 300;
+// The backend emits assistant_speech_ended when the last PCM frame is sent,
+// while the browser may still have RTP/jitter-buffered audio. Keep the input
+// gate closed for a short, conservative guard period after the known duration.
+const PLAYBACK_DRAIN_GUARD_MS = 1000;
 const PLAYBACK_DRAIN_FALLBACK_MS = 3000;
+const UNMATCHED_SPEECH_END_RECOVERY_MIN_MS = 4000;
 
 export class AssistantPlaybackTracker {
   private activeAssistantSegment: ActiveAssistantSegment | null = null;
@@ -52,6 +56,9 @@ export class AssistantPlaybackTracker {
     },
   ): void {
     if (event.type === "assistant_speech_started") {
+      if (this.isBackchannelResponse(event.responseId)) {
+        return;
+      }
       this.clearPendingDrain();
       const payload: AssistantPlaybackPayload = {
         responseId: event.responseId ?? null,
@@ -78,6 +85,20 @@ export class AssistantPlaybackTracker {
     }
 
     if (event.type !== "assistant_speech_ended") {
+      if (event.type === "assistant_interrupted") {
+        const interruptedKey = this.playbackKeyOf({
+          responseId: event.responseId ?? null,
+          generation: event.generation ?? null,
+        });
+        if (this.activeAssistantSegment?.key === interruptedKey) {
+          this.clearPendingDrain();
+          this.activeAssistantSegment = null;
+        }
+      }
+      return;
+    }
+
+    if (this.isBackchannelResponse(event.responseId)) {
       return;
     }
 
@@ -93,6 +114,10 @@ export class AssistantPlaybackTracker {
         response_id: payload.responseId ?? null,
         generation: payload.generation ?? null,
       });
+      const audioDurationMs = Number.isFinite(event.audioDurationMs) && event.audioDurationMs >= 0
+        ? event.audioDurationMs
+        : null;
+      this.scheduleUnmatchedSpeechEndRecovery(payload, audioDurationMs);
       this.options.onEvent(event);
       return;
     }
@@ -212,5 +237,46 @@ export class AssistantPlaybackTracker {
       this.activeAssistantSegment = null;
       this.pendingDrainTimer = null;
     }, drainDelayMs);
+  }
+
+  private scheduleUnmatchedSpeechEndRecovery(
+    payload: AssistantPlaybackPayload,
+    audioDurationMs: number | null,
+  ): void {
+    if (payload.responseId === null || payload.responseId === undefined) {
+      return;
+    }
+    const recoveryDelayMs = audioDurationMs !== null
+      ? Math.max(
+        UNMATCHED_SPEECH_END_RECOVERY_MIN_MS,
+        audioDurationMs + PLAYBACK_DRAIN_GUARD_MS,
+      )
+      : UNMATCHED_SPEECH_END_RECOVERY_MIN_MS;
+    this.clearPendingDrain();
+    console.info("realtime_voice_frontend_audio", {
+      event: "assistant_segment_unmatched_end_recovery_scheduled",
+      response_id: payload.responseId,
+      generation: payload.generation ?? null,
+      audio_duration_ms: audioDurationMs,
+      delay_ms: recoveryDelayMs,
+      at_ms: Math.round(performance.now()),
+    });
+    this.pendingDrainTimer = window.setTimeout(() => {
+      this.sendPlaybackEvent("assistant_playback_drained", payload);
+      console.info("realtime_voice_frontend_audio", {
+        event: "assistant_segment_unmatched_end_recovered",
+        response_id: payload.responseId ?? null,
+        generation: payload.generation ?? null,
+        at_ms: Math.round(performance.now()),
+      });
+      this.pendingDrainTimer = null;
+      if (this.activeAssistantSegment?.key === this.playbackKeyOf(payload)) {
+        this.activeAssistantSegment = null;
+      }
+    }, recoveryDelayMs);
+  }
+
+  private isBackchannelResponse(responseId: string | null | undefined): boolean {
+    return responseId?.startsWith("backchannel-") ?? false;
   }
 }

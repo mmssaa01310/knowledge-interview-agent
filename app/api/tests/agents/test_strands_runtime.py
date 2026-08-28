@@ -27,3 +27,26 @@ def test_voice_evaluation_bedrock_model_uses_short_timeouts_without_retry(
     assert config.retries["mode"] == "standard"
     assert settings.voice_answer_evaluation_deadline_seconds == 2.0
     assert settings.voice_answer_evaluation_deadline_seconds <= 2.0
+
+
+def test_invoke_voice_bedrock_text_uses_plain_converse_response(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class FakeClient:
+        def converse(self, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(kwargs)
+            return {"output": {"message": {"content": [{"text": '{"outcome":"CONFIRM"}'}]}}}
+
+    strands_runtime._voice_bedrock_runtime_client.cache_clear()
+    monkeypatch.setattr(strands_runtime.boto3, "client", lambda *args, **kwargs: FakeClient())
+
+    result = strands_runtime.invoke_voice_bedrock_text(
+        system_prompt="JSONのみ",
+        prompt="判定",
+        max_tokens=32,
+    )
+
+    assert result == '{"outcome":"CONFIRM"}'
+    assert calls[0]["modelId"] == settings.voice_bedrock_model_id
+    assert calls[0]["inferenceConfig"]["maxTokens"] == 32
+    strands_runtime._voice_bedrock_runtime_client.cache_clear()

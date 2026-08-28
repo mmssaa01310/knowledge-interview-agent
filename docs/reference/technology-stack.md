@@ -76,3 +76,36 @@ MVPでは以下を追加しない。
 * OpenSearchへの置き換え
 
 ただし、ファイル原本保存が明示された場合のみ、S3またはEFSの追加を検討してよい。
+
+## 7. 構造化インタビューのLLM
+
+### 7.1 適用範囲
+
+この節は、`docs/spec.md`の「インタビュー構造化拡張仕様」に対応する追加設計である。現行コードの全AI処理を直ちに構造化インタビューProviderへ移行することを意味しない。
+
+### 7.2 初期構成
+
+構造化インタビューのInterpreterとQuestion Generatorには、Amazon Bedrock RuntimeのOpenAI互換Responses APIとStructured Outputsを使用する。AWS SigV4で認証し、OpenAI APIキーを使用しない。
+
+| 設定 | 値 |
+|---|---|
+| 既定モデルID | `global.openai.gpt-5.6-terra` |
+| 選択可能モデルID | `global.openai.gpt-5.6-terra`、`global.openai.gpt-5.6-luna` |
+| 質問項目設計モデル設定 | Knowledgeの`defaultModelId`。未設定または旧モデル値は`QUESTION_DESIGN_MODEL_ID`へ解決 |
+| 質問項目設計モデル既定値 | `global.openai.gpt-5.6-terra` |
+| 初期`reasoning.effort` | `low` |
+| Question Generator出力上限 | `600` tokens |
+| 高難度時 | 選択済みモデルを`medium`で再実行 |
+| 画像生成モデル | 使用しない |
+| LLMによる図コード・座標生成 | 使用しない |
+
+初期実装では、TerraとLunaの自動ルーティングを行わない。Solは選択肢に含めない。Solを追加する場合、または自動ルーティングを追加する場合は、Terraとの比較評価、ルーティング条件、Provider障害時の挙動を別仕様で定義する。
+
+### 7.3 Provider境界
+
+Bedrock API呼び出しは、Backendの`StructuredInterviewProvider`アダプターへ限定する。
+
+* `app/api`のRouter、Repository、状態機械からBedrock APIを直接呼び出さない。
+* `app/voice`からBedrock APIを呼び出さない。
+* 音声データをGPT-5.6モデルへ直接送信しない。音声経路は確定transcriptを構造化インタビューへ渡す。
+* 既存のStrands/Bedrock経路を残す場合も、同じターンを構造化Providerと既存経路の両方で処理しない。

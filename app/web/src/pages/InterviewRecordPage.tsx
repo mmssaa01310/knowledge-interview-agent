@@ -6,10 +6,13 @@ import {
 import { VoiceConversationButton } from "../features/realtime-voice/components/VoiceConversationButton";
 import { VoiceConversationStatus } from "../features/realtime-voice/components/VoiceConversationStatus";
 import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
-import { resetDevVoiceDemo } from "../lib/api";
+import { ProcessModelPanel } from "../features/interviews/components/ProcessModelPanel";
+import { SystemRequirementProgressPanel } from "../features/interviews/components/SystemRequirementProgressPanel";
+import { resetDevSystemRequirementDemo, resetDevVoiceDemo } from "../lib/api";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
 const DEV_VOICE_DEMO_RECORD_ID = "dev-voice-demo-record";
+const DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID = "dev-system-requirement-demo-record";
 
 type InterviewSidebarItem = {
   id: string;
@@ -42,11 +45,17 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const [isResettingDemo, setIsResettingDemo] = useState(false);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
 
-  async function handleResetVoiceDemo() {
+  async function handleResetDemo() {
     if (isResettingDemo || realtimeVoice.isActive) return;
     setIsResettingDemo(true);
     try {
-      await resetDevVoiceDemo();
+      if (props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID) {
+        await resetDevVoiceDemo();
+      } else if (props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID) {
+        await resetDevSystemRequirementDemo();
+      } else {
+        return;
+      }
       window.location.reload();
     } finally {
       setIsResettingDemo(false);
@@ -58,7 +67,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     [props.interviewMessages],
   );
   const configuredQuestionMessages = useMemo(
-    () => assistantMessages.filter((message) => message.questionType === "configured_field" && message.fieldId),
+    () => assistantMessages.filter(
+      (message) => (message.questionType === "configured_field" || message.questionType === "structured") && message.fieldId,
+    ),
     [assistantMessages],
   );
 
@@ -89,7 +100,13 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     }),
     [configuredQuestionMessages, props.interviewState, props.sortedFields, props.structuredDraft],
   );
-  const hasVoiceQuestions = props.sortedFields.some((field) => field.askByAi);
+  const interviewProfile = props.interviewState?.interviewProfile
+    ?? props.selectedKnowledge?.interviewPlan?.profile;
+  const isChatOnlyInterview = interviewProfile === "system_requirement";
+  const hasVoiceQuestions = !isChatOnlyInterview && (
+    props.sortedFields.some((field) => field.askByAi)
+      || interviewProfile === "business_process"
+  );
 
   const realtimeVoice = useRealtimeVoiceInterview({
     recordId: props.selectedRecord?.id,
@@ -155,6 +172,8 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           questionId: currentQuestion.questionId,
           questionType: currentQuestion.questionType,
           fieldId: currentQuestion.fieldId,
+          targetType: currentQuestion.targetType,
+          targetId: currentQuestion.targetId,
         }
       : null;
   }
@@ -177,7 +196,13 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     && props.interviewMessages.length === 0
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
-  const isTextInputDisabled = isCompleted || realtimeVoice.isActive;
+  const isTextInputDisabled = isCompleted || (!isChatOnlyInterview && realtimeVoice.isActive);
+  const currentTargetLabel = props.interviewState?.nextQuestionTarget?.label;
+  const currentTargetMessage = currentTargetLabel
+    ? `いま確認していること：${currentTargetLabel}`
+    : props.interviewMessages.length > 0
+      ? "回答内容を整理しています。"
+      : "インタビューを開始すると、ここに質問が表示されます。";
 
   return (
     <section className="panel interview-page">
@@ -186,11 +211,12 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           <h2>AIインタビュー</h2>
           <p className="lede">{props.selectedRecord?.title ?? "記録"}</p>
         </div>
-        {props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID ? (
+        {props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID
+        || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID ? (
           <button
             type="button"
             className="ghost compact"
-            onClick={handleResetVoiceDemo}
+            onClick={handleResetDemo}
             disabled={isResettingDemo || realtimeVoice.isActive}
           >
             {isResettingDemo ? "リセット中" : "テスト状態をリセット"}
@@ -200,11 +226,14 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
 
       <div className="interview-shell">
         <aside className="interview-sidebar">
-          <div className="interview-sidebar-header">
-            <strong>質問リスト</strong>
-            <span>{configuredQuestionItems.length}</span>
-          </div>
-          {configuredQuestionItems.length ? (
+          {interviewProfile === "system_requirement" ? (
+            <SystemRequirementProgressPanel interviewState={props.interviewState} />
+          ) : <>
+            <div className="interview-sidebar-header">
+              <strong>質問リスト</strong>
+              <span>{configuredQuestionItems.length}</span>
+            </div>
+            {configuredQuestionItems.length ? (
               <div className="interview-question-list">
                 {configuredQuestionItems.map((item) => {
                   const fieldState = item.fieldId ? props.interviewState?.fieldStates?.[item.fieldId] : undefined;
@@ -245,77 +274,90 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   );
                 })}
               </div>
-            ) : (
-              <p className="empty">質問がありません</p>
-          )}
+              ) : (
+                <p className="empty">質問がありません</p>
+              )}
+          </>}
         </aside>
 
-        <div className="interview-chat-panel">
-          <div className="interview-chat-header">
-            <div>
-              <strong>チャット</strong>
-            </div>
-            <button className="ghost compact" type="button" onClick={props.onStartInterview} disabled={!canStartInterview}>
-              インタビュー開始
-            </button>
-          </div>
-          <div ref={chatLogRef} className="chat-log">
-            {props.interviewMessages.map((message, index) => (
-              <div key={message.id ?? `${message.role}-${index}`} className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}`}>
-                <p>{message.text}</p>
+        <div className="interview-main-column">
+          <div className="interview-chat-panel">
+            <div className="interview-chat-header">
+              <div>
+                <strong>会話</strong>
+                <p className="interview-current-target">{currentTargetMessage}</p>
               </div>
-            ))}
-            {props.streamingInterviewReply ? (
-              <div className="bubble ai">
-                <p>{props.streamingInterviewReply}</p>
+              <button className="ghost compact" type="button" onClick={props.onStartInterview} disabled={!canStartInterview}>
+                インタビュー開始
+              </button>
+            </div>
+            <div ref={chatLogRef} className="chat-log">
+              {props.interviewMessages.map((message, index) => (
+                <div key={message.id ?? `${message.role}-${index}`} className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}`}>
+                  {message.candidateSource === "assistant_proposal" ? <span className="proposal-message-label">AIの案</span> : null}
+                  <p>{message.text}</p>
+                </div>
+              ))}
+              {props.streamingInterviewReply ? (
+                <div className="bubble ai">
+                  <p>{props.streamingInterviewReply}</p>
+                </div>
+              ) : null}
+            </div>
+            {isCompleted ? (
+              <div className="interview-completed-banner">
+                <p>インタビューが完了しました。回答内容を確認してください。</p>
               </div>
             ) : null}
-          </div>
-          {isCompleted ? (
-            <div className="interview-completed-banner">
-              <p>以上で、設定されているすべての質問項目へのインタビューが完了しました。ご協力ありがとうございました。</p>
-            </div>
-          ) : null}
-          <div className="answer-composer">
-            <VoiceConversationStatus
-              status={realtimeVoice.status}
-              message={realtimeVoice.message}
-              partialTranscript={realtimeVoice.partialTranscript}
-            />
-            <textarea
-              value={props.chatInput}
-              onChange={(event) => props.setChatInput(event.target.value)}
-              onKeyDown={handleChatInputKeyDown}
-              placeholder={
-                isCompleted
-                  ? "インタビューは完了しています"
-                  : realtimeVoice.isActive
-                    ? "音声会話中はテキスト入力を利用できません"
-                    : "回答を入力"
-              }
-              disabled={isTextInputDisabled}
-            />
-            <audio ref={remoteAudioRef} className="voice-remote-audio" autoPlay playsInline />
-            {realtimeVoice.requiresManualPlayback ? (
-              <button className="secondary" type="button" onClick={() => void realtimeVoice.playRemoteAudio()}>
-                音声を再生
-              </button>
-            ) : null}
-            <div className="answer-composer-actions">
-              <button className="primary" onClick={handleSendInterviewMessage} disabled={props.isInterviewStreaming || isTextInputDisabled}>
-                {props.isInterviewStreaming ? "受信中..." : isCompleted ? "完了済み" : "送信"}
-              </button>
-              <div className="voice-controls">
-                <VoiceConversationButton
+            <div className="answer-composer">
+              {!isChatOnlyInterview ? (
+                <VoiceConversationStatus
                   status={realtimeVoice.status}
-                  disabled={!props.selectedRecord || isCompleted || realtimeVoice.status === "completed"}
-                  onStart={() => void realtimeVoice.start()}
-                  onStop={() => void realtimeVoice.stop()}
+                  message={realtimeVoice.message}
+                  partialTranscript={realtimeVoice.partialTranscript}
                 />
+              ) : null}
+              <textarea
+                value={props.chatInput}
+                onChange={(event) => props.setChatInput(event.target.value)}
+                onKeyDown={handleChatInputKeyDown}
+                placeholder={
+                  isCompleted
+                    ? "インタビューは完了しています"
+                    : realtimeVoice.isActive
+                      ? "音声会話中はテキスト入力を利用できません"
+                      : "回答を入力"
+                }
+                disabled={isTextInputDisabled}
+              />
+              {!isChatOnlyInterview ? (
+                <audio ref={remoteAudioRef} className="voice-remote-audio" autoPlay playsInline />
+              ) : null}
+              {!isChatOnlyInterview && realtimeVoice.requiresManualPlayback ? (
+                <button className="secondary" type="button" onClick={() => void realtimeVoice.playRemoteAudio()}>
+                  音声を再生
+                </button>
+              ) : null}
+              <div className="answer-composer-actions">
+                <button className="primary" onClick={handleSendInterviewMessage} disabled={props.isInterviewStreaming || isTextInputDisabled}>
+                  {props.isInterviewStreaming ? "受信中..." : isCompleted ? "完了済み" : "送信"}
+                </button>
+                {!isChatOnlyInterview ? (
+                  <div className="voice-controls">
+                    <VoiceConversationButton
+                      status={realtimeVoice.status}
+                      disabled={!props.selectedRecord || isCompleted || realtimeVoice.status === "completed"}
+                      onStart={() => void realtimeVoice.start()}
+                      onStop={() => void realtimeVoice.stop()}
+                    />
+                  </div>
+                ) : null}
               </div>
+              {props.recordNotice ? <p className="notice interview-inline-notice">{props.recordNotice}</p> : null}
             </div>
-            {props.recordNotice ? <p className="notice interview-inline-notice">{props.recordNotice}</p> : null}
           </div>
+
+          <ProcessModelPanel interviewState={props.interviewState} />
         </div>
       </div>
     </section>

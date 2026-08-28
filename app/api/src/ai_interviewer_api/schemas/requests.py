@@ -135,7 +135,11 @@ class BulkApproveRequest(BaseModel):
 
 class ChatMessageCreate(BaseModel):
     content: str
+    clientMessageId: str | None = None
+    stateVersion: int | None = None
     answerToQuestionId: str | None = None
+    targetType: str | None = None
+    targetId: str | None = None
     turnType: Literal["ANSWER", "CONTROL"] | None = None
     modelId: str | None = None
     referenceKnowledgeDbIds: list[str] = Field(default_factory=list)

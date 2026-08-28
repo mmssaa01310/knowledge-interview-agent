@@ -131,12 +131,16 @@ class VoicePeerConnection:
         self._audio_input_started = False
         self._runtime_closed = False
         self._initial_reply_sent = False
+        self._initial_reply_preload_task: asyncio.Task[None] | None = None
         self._closed = False
         self._start_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self._current_generation: int | None = None
         self._generation_metrics: dict[int, AssistantGenerationMetrics] = {}
         self._generation_finalize_tasks: dict[int, asyncio.Task[None]] = {}
+        self._playback_drain_tasks: dict[
+            tuple[str | None, int | None], asyncio.Task[None]
+        ] = {}
         self._first_enqueued_responses: set[str] = set()
         self._last_playback_log_at = monotonic()
         self._assistant_output_sample_rate_hz = runtime_output_rate_hz
@@ -162,6 +166,7 @@ class VoicePeerConnection:
 
     async def apply_offer(self, offer_sdp: str, offer_type: str) -> str:
         started_at = monotonic()
+        self._schedule_initial_reply_audio_preload()
         self._pc.addTrack(self._output_track)
         await self._pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
         answer = await self._pc.createAnswer()
@@ -175,6 +180,40 @@ class VoicePeerConnection:
             self._pc.iceGatheringState,
         )
         return self._pc.localDescription.sdp
+
+    def _schedule_initial_reply_audio_preload(self) -> None:
+        if self._initial_reply_preload_task is not None:
+            return
+        initial_reply_text = (self._session_state.initial_reply_text or "").strip()
+        if (
+            not initial_reply_text
+            or self._session_state.initial_reply_status == "sent"
+            or self._session_state.initial_question_id != self._session_state.current_question_id
+        ):
+            return
+        prepare = getattr(self._runtime, "prepare_initial_reply", None)
+        if not callable(prepare):
+            return
+        question_text = _extract_initial_question_text(initial_reply_text)
+        spoken_text = f"{INITIAL_VOICE_GREETING}{question_text}"
+        self._initial_reply_preload_task = asyncio.create_task(prepare(spoken_text))
+        self._initial_reply_preload_task.add_done_callback(
+            self._handle_initial_reply_preload_done
+        )
+
+    def _handle_initial_reply_preload_done(self, task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.warning(
+                "voice_initial_reply_audio_preload_failed voice_session_id=%s error_type=%s",
+                self.voice_session_id,
+                error.__class__.__name__,
+            )
 
     async def close(
         self,
@@ -229,10 +268,22 @@ class VoicePeerConnection:
                         )
                     )
                 elif event_type == "assistant_playback_drained" and hasattr(self._runtime, "notify_assistant_playback_drained"):
+                    response_id = payload.get("responseId")
+                    generation = payload.get("generation")
+                    self._cancel_playback_drain_watchdog(
+                        response_id=response_id,
+                        generation=generation,
+                    )
+                    logger.info(
+                        "assistant_playback_drain_received voice_session_id=%s response_id=%s generation=%s",
+                        self.voice_session_id,
+                        response_id,
+                        generation,
+                    )
                     asyncio.create_task(
                         getattr(self._runtime, "notify_assistant_playback_drained")(
-                            response_id=payload.get("responseId"),
-                            generation=payload.get("generation"),
+                            response_id=response_id,
+                            generation=generation,
                         )
                     )
 
@@ -568,6 +619,10 @@ class VoicePeerConnection:
                 )
             return
         elif isinstance(event, AssistantInterrupted):
+            self._cancel_playback_drain_watchdog(
+                response_id=event.response_id,
+                generation=event.generation,
+            )
             if event.generation is not None:
                 self._current_generation = event.generation
                 metrics = self._generation_metrics.setdefault(
@@ -653,6 +708,7 @@ class VoicePeerConnection:
                 self._data_channel.send_interview_completed(context=self._event_context())
                 await self._close(reason="interview_completed", source="assistant_speech_ended")
             else:
+                self._schedule_playback_drain_watchdog(event_to_send)
                 logger.info(
                     "voice_next_turn_ready voice_session_id=%s current_question_id=%s state_version=%s peer_connection_state=%s runtime_open=%s audio_input_open=%s browser_track_state=%s",
                     self.voice_session_id,
@@ -695,6 +751,122 @@ class VoicePeerConnection:
             connection_status=self.connection_state,
             detail={"timeoutSeconds": self._playback_drain_timeout_seconds},
         )
+
+    def _schedule_playback_drain_watchdog(self, event: AssistantSpeechEnded) -> None:
+        if event.response_id is None or event.generation is None or self._closed:
+            return
+        key = (event.response_id, event.generation)
+        self._cancel_playback_drain_watchdog(
+            response_id=event.response_id,
+            generation=event.generation,
+        )
+        delay_seconds = self._playback_drain_delay_seconds(event.audio_duration_ms)
+        task = asyncio.create_task(
+            self._playback_drain_watchdog(
+                response_id=event.response_id,
+                generation=event.generation,
+                delay_seconds=delay_seconds,
+            )
+        )
+        self._playback_drain_tasks[key] = task
+        task.add_done_callback(
+            lambda completed: self._playback_drain_task_done(key, completed)
+        )
+        logger.info(
+            "assistant_playback_drain_watchdog_scheduled voice_session_id=%s response_id=%s generation=%s delay_seconds=%s",
+            self.voice_session_id,
+            event.response_id,
+            event.generation,
+            round(delay_seconds, 2),
+        )
+
+    def _cancel_playback_drain_watchdog(
+        self,
+        *,
+        response_id: str | None,
+        generation: int | None,
+    ) -> None:
+        key = (response_id, generation)
+        task = self._playback_drain_tasks.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _playback_drain_watchdog(
+        self,
+        *,
+        response_id: str,
+        generation: int,
+        delay_seconds: float,
+    ) -> None:
+        try:
+            await asyncio.sleep(delay_seconds)
+        except asyncio.CancelledError:
+            return
+        if self._closed or not hasattr(self._runtime, "notify_assistant_playback_drained"):
+            return
+        logger.warning(
+            "assistant_playback_drain_fallback voice_session_id=%s response_id=%s generation=%s delay_seconds=%s",
+            self.voice_session_id,
+            response_id,
+            generation,
+            round(delay_seconds, 2),
+        )
+        try:
+            await getattr(self._runtime, "notify_assistant_playback_drained")(
+                response_id=response_id,
+                generation=generation,
+            )
+        except Exception:  # noqa: BLE001 - recovery must not close the peer
+            logger.exception(
+                "assistant_playback_drain_fallback_failed voice_session_id=%s response_id=%s generation=%s",
+                self.voice_session_id,
+                response_id,
+                generation,
+            )
+        try:
+            await self._voice_session_service.create_connection_event(
+                self.voice_session_id,
+                event_type="playback_drain_fallback",
+                connection_status=self.connection_state,
+                detail={
+                    "responseId": response_id,
+                    "generation": generation,
+                    "delaySeconds": delay_seconds,
+                },
+            )
+        except Exception:  # noqa: BLE001 - telemetry must not block recovery
+            logger.exception(
+                "assistant_playback_drain_fallback_event_failed voice_session_id=%s response_id=%s generation=%s",
+                self.voice_session_id,
+                response_id,
+                generation,
+            )
+
+    def _playback_drain_task_done(
+        self,
+        key: tuple[str | None, int | None],
+        task: asyncio.Task[None],
+    ) -> None:
+        if self._playback_drain_tasks.get(key) is task:
+            self._playback_drain_tasks.pop(key, None)
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            logger.warning(
+                "assistant_playback_drain_watchdog_failed voice_session_id=%s error_type=%s",
+                self.voice_session_id,
+                exception.__class__.__name__,
+            )
+
+    def _playback_drain_delay_seconds(self, audio_duration_ms: int | float | None) -> float:
+        configured = max(0.5, self._playback_drain_timeout_seconds)
+        if audio_duration_ms is None or audio_duration_ms <= 0:
+            return configured
+        # The configured timeout is the fallback for an unknown duration. A
+        # known duration must never be capped by it; otherwise a long reply
+        # can reopen the input gate while its audio is still playing.
+        return max(1.5, (float(audio_duration_ms) / 1000.0) + 1.0)
 
     def _handle_output_frame_emitted(self, metrics: OutputFrameMetrics) -> None:
         generation = self._current_generation
@@ -828,8 +1000,25 @@ class VoicePeerConnection:
             self._closed = True
             current_task = asyncio.current_task()
 
+            initial_reply_preload_task = self._initial_reply_preload_task
+            self._initial_reply_preload_task = None
+            if (
+                initial_reply_preload_task is not None
+                and initial_reply_preload_task is not current_task
+                and not initial_reply_preload_task.done()
+            ):
+                initial_reply_preload_task.cancel()
+                await asyncio.gather(initial_reply_preload_task, return_exceptions=True)
+
             if self._initial_reply_sent:
                 await self._voice_session_service.mark_initial_reply_failed(self.voice_session_id)
+            playback_drain_tasks = tuple(self._playback_drain_tasks.values())
+            self._playback_drain_tasks.clear()
+            for task in playback_drain_tasks:
+                if task is not current_task and not task.done():
+                    task.cancel()
+            if playback_drain_tasks:
+                await asyncio.gather(*playback_drain_tasks, return_exceptions=True)
             await self._playback_buffer.clear()
             await self._input_consumer.stop()
             if self._disconnect_task is not None:
@@ -843,7 +1032,10 @@ class VoicePeerConnection:
                     with suppress(asyncio.CancelledError):
                         await self._runtime_events_task
                 self._runtime_events_task = None
-            if self._runtime_started and not self._runtime_closed:
+            if (
+                (self._runtime_started or initial_reply_preload_task is not None)
+                and not self._runtime_closed
+            ):
                 logger.info("runtime_close_requested %s", self._close_log_context(reason=reason, source=source))
                 with suppress(Exception):
                     await self._runtime.close()

@@ -24,6 +24,7 @@ class InterviewBridgeResult:
     interview_status: str
     retrieval_policy: str | None = None
     retrieval_executed: bool = False
+    turn_type: str = "ANSWER"
 
 
 class InvalidInterviewResponseError(RuntimeError):
@@ -217,6 +218,7 @@ class InterviewBridge:
             interview_status=result.interview_status,
             retrieval_policy=result.retrieval_policy,
             retrieval_executed=result.retrieval_executed,
+            turn_type=result.turn_type,
         )
 
 

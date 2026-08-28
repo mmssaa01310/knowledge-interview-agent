@@ -5,11 +5,25 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+InterviewProfile = Literal["fixed_form", "business_process", "system_requirement"]
+StructuredInterviewModelId = Literal[
+    "global.openai.gpt-5.6-terra",
+    "global.openai.gpt-5.6-luna",
+]
+STRUCTURED_INTERVIEW_MODEL_IDS = frozenset(
+    {"global.openai.gpt-5.6-terra", "global.openai.gpt-5.6-luna"}
+)
+
+
 class InterviewPlan(BaseModel):
     """Interview-wide purpose kept separate from per-question requirements."""
 
     version: int = 1
     purpose: str | None = None
+    # Existing plans without a profile remain fixed-form interviews.
+    profile: InterviewProfile = "fixed_form"
+    # None keeps existing plans on the backend default model.
+    modelId: StructuredInterviewModelId | None = None
 
 
 class InterviewPlanItem(BaseModel):

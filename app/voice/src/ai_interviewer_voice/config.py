@@ -8,7 +8,7 @@ from ai_interviewer_voice.runtimes.nova_sonic.config import DEFAULT_SYSTEM_PROMP
 class Settings:
     app_name: str = os.getenv("APP_NAME", "AI Interviewer Voice")
     app_env: str = os.getenv("APP_ENV", "local")
-    api_base_url: str = os.getenv("VOICE_API_BASE_URL", "http://127.0.0.1:8000")
+    api_base_url: str = os.getenv("VOICE_API_BASE_URL", "http://127.0.0.1:8001")
     internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")
     runtime_provider: str = os.getenv("VOICE_RUNTIME_PROVIDER", "transcribe_polly")
     aws_region: str = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1"))
@@ -42,6 +42,9 @@ class Settings:
     polly_max_parallel_requests: int = int(
         os.getenv("POLLY_MAX_PARALLEL_REQUESTS", "2")
     )
+    voice_enable_backchannels: bool = os.getenv(
+        "VOICE_ENABLE_BACKCHANNELS", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
     interview_turn_save_timeout_seconds: float = float(os.getenv("VOICE_TURN_SAVE_TIMEOUT_SECONDS", "5"))
     interview_turn_process_timeout_seconds: float = float(os.getenv("VOICE_TURN_PROCESS_TIMEOUT_SECONDS", "5"))
     interview_timeout_reply_text: str = os.getenv(
@@ -60,7 +63,7 @@ class Settings:
     normal_turn_tool_result_target_ms: int = int(os.getenv("VOICE_NORMAL_TURN_TOOL_RESULT_TARGET_MS", "300"))
     normal_turn_tool_result_budget_ms: int = int(os.getenv("VOICE_NORMAL_TURN_TOOL_RESULT_BUDGET_MS", "400"))
     webrtc_ice_gathering_timeout_seconds: float = float(
-        os.getenv("VOICE_WEBRTC_ICE_GATHERING_TIMEOUT_SECONDS", "2")
+        os.getenv("VOICE_WEBRTC_ICE_GATHERING_TIMEOUT_SECONDS", "1")
     )
     webrtc_peer_disconnected_grace_seconds: float = float(
         os.getenv("VOICE_WEBRTC_PEER_DISCONNECTED_GRACE_SECONDS", "5")
@@ -82,6 +85,9 @@ class Settings:
     )
     webrtc_playback_short_underrun_ms: float = float(
         os.getenv("VOICE_WEBRTC_PLAYBACK_SHORT_UNDERRUN_MS", "40")
+    )
+    webrtc_playback_drain_timeout_seconds: float = float(
+        os.getenv("VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS", "5")
     )
     kvs_turn_channel_arn: str | None = os.getenv("VOICE_KVS_TURN_CHANNEL_ARN")
     kvs_turn_cache_ttl_seconds: float = float(os.getenv("VOICE_KVS_TURN_CACHE_TTL_SECONDS", "240"))

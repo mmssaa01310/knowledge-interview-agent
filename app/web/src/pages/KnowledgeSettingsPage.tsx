@@ -8,7 +8,19 @@ import {
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
 const modelOptions = [
-  { value: "apac.amazon.nova-pro-v1:0", label: "Amazon Nova Pro (APAC)" },
+  { value: "global.openai.gpt-5.6-terra", label: "OpenAI GPT-5.6 Terra（Global）" },
+  { value: "global.openai.gpt-5.6-luna", label: "OpenAI GPT-5.6 Luna（Global）" },
+] as const;
+
+const structuredInterviewModelOptions = [
+  { value: "global.openai.gpt-5.6-terra", label: "OpenAI GPT-5.6 Terra（Global）", description: "通常の構造化インタビューに使用します。" },
+  { value: "global.openai.gpt-5.6-luna", label: "OpenAI GPT-5.6 Luna（Global）", description: "低コスト・大量処理を優先する構造化インタビューに使用します。" },
+] as const;
+
+const interviewProfileOptions = [
+  { value: "fixed_form", label: "定型情報を聞き取る", description: "設定したヒアリング項目を順番に確認します。" },
+  { value: "business_process", label: "業務フローを整理する", description: "開始から終了までの業務フローと例外を整理します。" },
+  { value: "system_requirement", label: "システム要件を整理する", description: "目的・課題、要求内容、必要な処理の流れを整理します。" },
 ] as const;
 
 const noPromptProfileValue = "__none__";
@@ -98,6 +110,12 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     ? props.settingsDefaultModelId
     : modelOptions[0].value;
   const selectedPromptProfile = promptProfiles.find((profile) => profile.id === selectedPromptProfileId) ?? null;
+  const selectedInterviewProfile = props.settingsInterviewPlan?.profile ?? "fixed_form";
+  const configuredStructuredInterviewModel = props.settingsInterviewPlan?.modelId;
+  const selectedStructuredInterviewModel = configuredStructuredInterviewModel
+    && structuredInterviewModelOptions.some((option) => option.value === configuredStructuredInterviewModel)
+    ? configuredStructuredInterviewModel
+    : structuredInterviewModelOptions[0].value;
   const canSendAssistMessage = assistInput.trim().length > 0 && !isGenerating;
   const canSavePromptProfile = Boolean(props.onCreatePromptProfile)
     && props.settingsSystemPrompt.trim().length > 0
@@ -109,7 +127,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
       : "基本設定";
 
   function clearSettingsNotice() {
-    if (!props.settingsNotice) return;
+    if (!props.settingsNotice && props.settingsSaveState === "idle") return;
     props.onClearSettingsNotice();
   }
 
@@ -277,7 +295,11 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         setPendingSuggestions((items) => [...items, ...newlyProposed]);
       }
       if (result.interviewPlan) {
-        props.setSettingsInterviewPlan(result.interviewPlan);
+        props.setSettingsInterviewPlan({
+          ...result.interviewPlan,
+          profile: props.settingsInterviewPlan?.profile ?? result.interviewPlan.profile ?? "fixed_form",
+          modelId: props.settingsInterviewPlan?.modelId ?? result.interviewPlan.modelId ?? null,
+        });
       }
 
       setAssistMessages((messages) => [...messages, { role: "ai", text: result.reply }]);
@@ -335,37 +357,114 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               <div className="section-title-row">
                 <div>
                   <h3>AIインタビュー設定</h3>
-                  <p>実際のインタビューで使うモデルと、追加カスタマイズを設定します。</p>
+                  <p>回答処理に使うモデルと、質問項目の設計方法を設定します。</p>
                 </div>
               </div>
-              <div className="form-grid two-column">
-                <label>生成AIモデル
-                  <select value={selectedModelOption} onChange={(event) => { clearSettingsNotice(); props.setSettingsDefaultModelId(event.target.value); }}>
-                    {modelOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}
-                  </select>
-                </label>
-                <div className="template-picker-field">
-                  <span>保存済みテンプレート</span>
-                  <div className="inline-form">
-                    <select value={selectedPromptProfileId} onChange={(event) => setSelectedPromptProfileId(event.target.value)}>
-                      <option value={noPromptProfileValue}>未選択</option>
-                      {promptProfiles.map((profile) => (<option key={profile.id} value={profile.id}>{profile.name}</option>))}
-                    </select>
-                    <button
-                      className="ghost compact"
-                      type="button"
-                      onClick={() => {
-                        if (!selectedPromptProfile) return;
+              <p className="settings-notice">
+                用途と、それぞれのAI処理で使うモデルを設定します。質問項目の設計モデルとインタビュー実行モデルは別々に選択できます。
+              </p>
+              <div className="interview-settings">
+                <div className="interview-setting-grid">
+                  <section className="interview-setting-card">
+                    <div className="interview-setting-card-header">
+                      <span className="interview-setting-step">1</span>
+                      <div>
+                        <h4>インタビュー用途</h4>
+                        <p>何を整理したいかを選びます。</p>
+                      </div>
+                    </div>
+                    <label className="sr-only" htmlFor="interview-profile">インタビュー用途</label>
+                    <select
+                      id="interview-profile"
+                      value={selectedInterviewProfile}
+                      onChange={(event) => {
                         clearSettingsNotice();
-                        props.setSettingsSystemPrompt(selectedPromptProfile.prompt);
-                        setPromptProfileNotice("保存済みテンプレートを読み込みました");
+                        props.setSettingsInterviewPlan({
+                          ...(props.settingsInterviewPlan ?? {}),
+                          version: props.settingsInterviewPlan?.version ?? 1,
+                          profile: event.target.value as typeof selectedInterviewProfile,
+                        });
                       }}
-                      disabled={!selectedPromptProfile}
                     >
-                      読み込む
-                    </button>
-                  </div>
+                      {interviewProfileOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <p className="form-help">
+                      {interviewProfileOptions.find((option) => option.value === selectedInterviewProfile)?.description}
+                    </p>
+                  </section>
+                  <section className="interview-setting-card featured">
+                    <div className="interview-setting-card-header">
+                      <span className="interview-setting-step">2</span>
+                      <div>
+                        <h4>インタビュー実行モデル</h4>
+                        <p>回答の意味解釈と次の質問生成に使用します。</p>
+                      </div>
+                    </div>
+                    <label className="sr-only" htmlFor="structured-interview-model">インタビュー実行モデル</label>
+                    <select
+                      id="structured-interview-model"
+                      value={selectedStructuredInterviewModel}
+                      onChange={(event) => {
+                        clearSettingsNotice();
+                        props.setSettingsInterviewPlan({
+                          ...(props.settingsInterviewPlan ?? {}),
+                          version: props.settingsInterviewPlan?.version ?? 1,
+                          modelId: event.target.value as NonNullable<typeof selectedStructuredInterviewModel>,
+                        });
+                      }}
+                    >
+                      {structuredInterviewModelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <p className="form-help">
+                      {structuredInterviewModelOptions.find((option) => option.value === selectedStructuredInterviewModel)?.description} 保存値が未設定の場合はTerraを使用します。
+                    </p>
+                  </section>
                 </div>
+                <section className="interview-setting-group">
+                  <div className="interview-setting-group-header">
+                    <div>
+                      <h4>補助設定</h4>
+                      <p>質問項目の設計と、保存済みテンプレートを設定します。</p>
+                    </div>
+                  </div>
+                  <div className="interview-setting-grid">
+                    <section className="interview-setting-card compact">
+                      <h5>質問項目の設計モデル</h5>
+                      <label className="sr-only" htmlFor="question-design-model">質問項目の設計モデル</label>
+                      <select id="question-design-model" value={selectedModelOption} onChange={(event) => { clearSettingsNotice(); props.setSettingsDefaultModelId(event.target.value); }}>
+                        {modelOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}
+                      </select>
+                      <p className="form-help">ヒアリング項目の提案に使用します。実行モデルには影響しません。</p>
+                    </section>
+                    <section className="interview-setting-card compact">
+                      <h5>保存済みテンプレート</h5>
+                      <div className="inline-form">
+                        <select aria-label="保存済みテンプレート" value={selectedPromptProfileId} onChange={(event) => setSelectedPromptProfileId(event.target.value)}>
+                          <option value={noPromptProfileValue}>未選択</option>
+                          {promptProfiles.map((profile) => (<option key={profile.id} value={profile.id}>{profile.name}</option>))}
+                        </select>
+                        <button
+                          className="ghost compact"
+                          type="button"
+                          onClick={() => {
+                            if (!selectedPromptProfile) return;
+                            clearSettingsNotice();
+                            props.setSettingsSystemPrompt(selectedPromptProfile.prompt);
+                            setPromptProfileNotice("保存済みテンプレートを読み込みました");
+                          }}
+                          disabled={!selectedPromptProfile}
+                        >
+                          読み込む
+                        </button>
+                      </div>
+                      <p className="form-help">追加カスタマイズプロンプトに内容を読み込みます。</p>
+                    </section>
+                  </div>
+                </section>
               </div>
               <div className="section-title-row compact-row">
                 <div>
@@ -474,8 +573,25 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
           ) : null}
 
           <div className="actions sticky-actions">
-            <button className="primary" onClick={() => props.onSaveSettings(activeTab)}>{activeTabLabel}を保存</button>
-            {props.settingsNotice ? <span className="notice">{props.settingsNotice}</span> : null}
+            <button
+              type="button"
+              className="primary"
+              onClick={() => props.onSaveSettings(activeTab)}
+              disabled={props.settingsSaveState === "saving"}
+              aria-busy={props.settingsSaveState === "saving"}
+            >
+              {props.settingsSaveState === "saving" ? "保存中…" : `${activeTabLabel}を保存`}
+            </button>
+            {props.settingsNotice ? (
+              <span
+                className={`notice settings-save-status ${props.settingsSaveState}`}
+                role="status"
+                aria-live="polite"
+              >
+                {props.settingsSaveState === "saving" ? <span className="save-status-spinner" aria-hidden="true" /> : null}
+                {props.settingsNotice}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>

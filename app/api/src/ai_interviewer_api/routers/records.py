@@ -79,7 +79,38 @@ def create_record_message(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
+    if payload.clientMessageId:
+        existing_message = next(
+            (
+                row
+                for row in store.list("messages", user.tenant_id)
+                if row.get("recordId") == record_id
+                and row.get("clientMessageId") == payload.clientMessageId
+            ),
+            None,
+        )
+        if existing_message:
+            same_payload = (
+                existing_message.get("content") == payload.content
+                and existing_message.get("answerToQuestionId") == payload.answerToQuestionId
+                and (payload.turnType is None or existing_message.get("turnType") == payload.turnType)
+                and (payload.targetType is None or existing_message.get("targetType") == payload.targetType)
+                and (payload.targetId is None or existing_message.get("targetId") == payload.targetId)
+            )
+            if not same_payload:
+                raise HTTPException(status_code=409, detail="client_message_id_payload_mismatch")
+            return {
+                "message": "accepted",
+                "proposalId": None,
+                "recordMessage": existing_message,
+                "duplicate": True,
+            }
     interview_state = store.get("interview_states", f"interview-state-{record_id}") or {}
+    if (
+        payload.stateVersion is not None
+        and int(interview_state.get("stateVersion", 0) or 0) != payload.stateVersion
+    ):
+        raise HTTPException(status_code=409, detail="interview_state_version_conflict")
     current_question_id = payload.answerToQuestionId
     interview_is_active = bool(
         interview_state.get("currentQuestionId")
@@ -98,6 +129,12 @@ def create_record_message(
             turn_type = "ANSWER"
     if turn_type == "ANSWER" and interview_is_active and not current_question_id:
         raise HTTPException(status_code=422, detail="answer_turn_missing_question_id")
+    if (
+        turn_type == "ANSWER"
+        and interview_is_active
+        and current_question_id != interview_state.get("currentQuestionId")
+    ):
+        raise HTTPException(status_code=409, detail="answer_question_not_current")
     if turn_type == "CONTROL":
         current_question_id = None
 
@@ -108,14 +145,26 @@ def create_record_message(
 
     current_field_id = None
     question_type = None
+    target_type = None
+    target_id = None
     if current_question_id:
         for question in interview_state.get("askedQuestions", []):
             if question.get("questionId") == current_question_id:
                 question_type = question.get("questionType")
                 current_field_id = question.get("fieldId") or current_field_id
+                target_type = question.get("targetType")
+                target_id = question.get("targetId")
                 break
+    if payload.targetType and payload.targetType != target_type:
+        raise HTTPException(status_code=409, detail="answer_target_mismatch")
+    if payload.targetId and payload.targetId != target_id:
+        raise HTTPException(status_code=409, detail="answer_target_mismatch")
     message = {
-        "id": f"msg-{len(store.tables['messages']) + 1}",
+        "id": (
+            f"msg-client-{user.tenant_id}-{payload.clientMessageId}"
+            if payload.clientMessageId
+            else f"msg-{len(store.tables['messages']) + 1}"
+        ),
         "tenantId": user.tenant_id,
         "recordId": record_id,
         "content": payload.content,
@@ -127,6 +176,9 @@ def create_record_message(
         "answerToQuestionId": current_question_id,
         "answerToFieldId": current_field_id,
         "questionType": question_type,
+        "targetType": target_type,
+        "targetId": target_id,
+        "clientMessageId": payload.clientMessageId,
     }
     store.upsert(
         "messages",
@@ -136,6 +188,7 @@ def create_record_message(
         "message": "accepted",
         "proposalId": proposal.id if proposal else None,
         "recordMessage": message,
+        "duplicate": False,
     }
 
 
@@ -172,6 +225,7 @@ def update_record_interview_answer(
 
     field_state["recordAnswer"] = record_answer
     field_state["answerSummary"] = None
+    interview_state["stateVersion"] = int(interview_state.get("stateVersion", 0) or 0) + 1
     interview_state["updatedByUserId"] = user.user_id
     interview_state["updatedAt"] = utc_now()
     store.upsert("interview_states", interview_state)

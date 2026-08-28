@@ -16,6 +16,17 @@ interview agent のように会話を進める責務は持たない。
 * `reply` は提案導入文または補足文にする
 * DB保存や承認済み扱いはしない
 
+### 2.1 使用モデル
+
+質問項目設計モデルはKnowledgeの`defaultModelId`で選択する。利用者が選択できる値は次の2つだけである。
+
+* `global.openai.gpt-5.6-terra`
+* `global.openai.gpt-5.6-luna`
+
+選択したモデルは、候補生成とValidatorの両方に使用する。モデルを自動切り替えしてはならない。`defaultModelId`が未設定、または旧モデルの値である場合は、`QUESTION_DESIGN_MODEL_ID`へ解決する。`QUESTION_DESIGN_MODEL_ID`の既定値は`global.openai.gpt-5.6-terra`である。
+
+質問項目設計モデルはインタビュー実行モデル（`interviewPlan.modelId`）と独立して設定できる。質問項目設計に画像生成モデルを使用してはならない。
+
 `services/field_suggestions.py`:
 
 * 既存 router 互換の薄いラッパーとして残す
