@@ -34,6 +34,11 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
     return <p className="empty">ナレッジを作成または選択してください。</p>;
   }
 
+  const knowledgeBasePath = `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}`;
+  const activeKnowledgePath = props.route.name === "knowledge-record-detail"
+    ? `${knowledgeBasePath}/interview`
+    : window.location.pathname;
+
   return (
     <>
       <PageHeader
@@ -51,7 +56,7 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
       <KnowledgeSubNav
         knowledgeDbId={props.selectedKnowledgeDb.id}
         knowledgeId={props.selectedKnowledge.id}
-        activePath={window.location.pathname}
+        activePath={activeKnowledgePath}
         onNavigate={props.navigate}
       />
       {props.route.name === "knowledge-record-detail" ? (
