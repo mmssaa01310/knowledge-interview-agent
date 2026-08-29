@@ -42,12 +42,16 @@ export function WorkspaceNav({
   if (isCollapsed) {
     return (
       <aside className="app-sidebar collapsed" aria-label="メインナビゲーション">
+        <div className="sidebar-collapsed-brand">
+          <img src="/images/kikiori-icon.svg" alt="KIKIORI" />
+        </div>
         <button
           type="button"
           className="workspace-collapse-button"
           onClick={onToggleCollapsed}
           aria-label="左側ナビを開く"
           title="左側ナビを開く"
+          aria-expanded="false"
         >
           <span className="nav-toggle-icon open" aria-hidden="true" />
         </button>
@@ -59,10 +63,8 @@ export function WorkspaceNav({
     <aside className="app-sidebar" aria-label="メインナビゲーション">
       <div className="sidebar-header">
         <div className="brand">
-          <div className="brand-mark">KI</div>
-          <div>
-            <strong>KIKIORI</strong>
-          </div>
+          <img className="brand-logo-image" src="/images/kikiori-logo.svg" alt="KIKIORI" />
+          <span className="brand-tagline">AI Knowledge Interviewing</span>
         </div>
         <button
           type="button"
@@ -70,15 +72,17 @@ export function WorkspaceNav({
           onClick={onToggleCollapsed}
           aria-label="左側ナビを閉じる"
           title="左側ナビを閉じる"
+          aria-expanded="true"
         >
           <span className="nav-toggle-icon close" aria-hidden="true" />
         </button>
       </div>
 
-      <div className="sidebar-content">
+      <nav className="sidebar-content" aria-label="ワークスペースナビゲーション">
         {activeSection === "settings" ? (
-          <div className="sidebar-section">
-            <strong>設定</strong>
+          <div className="sidebar-section sidebar-settings-section">
+            <span className="sidebar-section-kicker">Workspace</span>
+            <strong className="sidebar-section-title"><span className="nav-section-icon" aria-hidden="true">⚙</span>設定</strong>
           </div>
         ) : (
           <KnowledgeWorkspaceNav
@@ -91,7 +95,7 @@ export function WorkspaceNav({
             knowledgeCreationError={knowledgeCreationError}
           />
         )}
-      </div>
+      </nav>
 
       <div className="sidebar-footer">
         {canManageSystem ? (

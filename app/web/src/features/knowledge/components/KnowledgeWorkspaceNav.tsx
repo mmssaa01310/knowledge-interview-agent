@@ -31,16 +31,20 @@ export function KnowledgeWorkspaceNav({
   return (
     <div className="sidebar-section">
       <div className="workspace-nav-header">
-        <strong>ナレッジ</strong>
+        <div className="sidebar-section-heading">
+          <span className="sidebar-section-kicker">Workspace</span>
+          <strong className="sidebar-section-title"><span className="nav-section-icon" aria-hidden="true">✦</span>ナレッジ</strong>
+        </div>
         {canManage ? (
           <button
             type="button"
-            className="workspace-create"
+            className="workspace-create icon-action"
             onClick={onOpenCreateKnowledge}
             disabled={isPreparingKnowledgeCreation}
             aria-label="ナレッジを作成"
+            title="ナレッジを作成"
           >
-            {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
+            {isPreparingKnowledgeCreation ? "…" : "+"}
           </button>
         ) : null}
       </div>

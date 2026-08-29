@@ -7,6 +7,7 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY app/web/package.json ./app/web/package.json
 COPY packages/shared-types/package.json ./packages/shared-types/package.json
+COPY public ./public
 
 RUN corepack enable \
     && corepack prepare pnpm@11.11.0 --activate \

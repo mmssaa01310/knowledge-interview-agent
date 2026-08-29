@@ -8,6 +8,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    // KIKIORIのブランド素材はリポジトリ直下のpublic/imagesを正本とする。
+    // React/Viteのアプリルートからも開発・本番ビルドで同じパスを参照できるようにする。
+    publicDir: "../../public",
     server: {
       port: 5173,
       strictPort: true,

@@ -438,6 +438,12 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             <div ref={chatLogRef} className="chat-log">
               {props.interviewMessages.map((message, index) => (
                 <div key={message.id ?? `${message.role}-${index}`} className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}`}>
+                  <div className="message-meta">
+                    <span className="message-avatar" aria-hidden="true">
+                      {message.role === "assistant" || message.role === "ai" ? "KI" : "私"}
+                    </span>
+                    <span>{message.role === "assistant" || message.role === "ai" ? "KIKIORI" : "あなた"}</span>
+                  </div>
                   {message.candidateSource === "assistant_proposal" ? <span className="proposal-message-label">AIの案</span> : null}
                   <p>{message.text}</p>
                   {isCurrentProposal(message) ? (
@@ -454,6 +460,10 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               ))}
               {props.streamingInterviewReply ? (
                 <div className="bubble ai">
+                  <div className="message-meta">
+                    <span className="message-avatar" aria-hidden="true">KI</span>
+                    <span>KIKIORI</span>
+                  </div>
                   <p>{props.streamingInterviewReply}</p>
                 </div>
               ) : null}
