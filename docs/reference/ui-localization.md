@@ -60,6 +60,8 @@ app/web/src/i18n/locales/<locale>/
 
 UIでは意味ベースのKeyを`t("common.save")`のように使用する。AIが返す本文や保存データを表示目的だけで翻訳しない。
 
+翻訳文へ値を埋め込む場合は、全Localeで単一波括弧の`{name}`形式を使用する。`i18next`の補間設定はこの形式に合わせて一元管理し、Locale間で補間変数の名前や数が異なる場合は`check:i18n`で失敗させる。
+
 ## 5. Locale決定と保存
 
 クライアントでの決定順は次のとおりである。
@@ -85,6 +87,7 @@ Fallback Localeは`ja-JP`とする。Fallbackは異常時の保険であり、�
 * Key不足
 * 余分なKey
 * 空文字または文字列以外のLeaf値
+* Locale間の補間変数の不一致
 
 `pnpm --dir app/web check:i18n`で実行し、Webの本番Build前にも自動実行する。新しいLocaleディレクトリはこの検査へ自動的に含まれる。
 

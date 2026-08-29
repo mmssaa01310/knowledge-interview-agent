@@ -42,7 +42,6 @@
   },
   "launch": {
     "title": "Interview",
-    "ready": "Ready to start",
     "needsSetup": "Setup required",
     "setupTitle": "Configure the interview before starting",
     "setupDescription": "Choose the purpose and execution model, then save.",

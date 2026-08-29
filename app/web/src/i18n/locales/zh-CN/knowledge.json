@@ -42,7 +42,6 @@
   },
   "launch": {
     "title": "访谈",
-    "ready": "可以开始",
     "needsSetup": "需要设置",
     "setupTitle": "开始前请配置访谈",
     "setupDescription": "选择用途和执行模型，然后保存。",

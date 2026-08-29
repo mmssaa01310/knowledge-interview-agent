@@ -29,6 +29,13 @@ function flatten(value, prefix = "") {
   return entries;
 }
 
+function interpolationVariables(value) {
+  if (typeof value !== "string") return [];
+  return [...value.matchAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/g)]
+    .map(([, variable]) => variable)
+    .sort();
+}
+
 async function readCatalog(locale) {
   const catalog = {};
   for (const file of files) {
@@ -56,13 +63,17 @@ for (const locale of locales) {
   const empty = Object.entries(catalog)
     .filter(([, value]) => typeof value !== "string" || value.trim() === "")
     .map(([key]) => key);
+  const placeholderMismatches = [...referenceKeys]
+    .filter((key) => JSON.stringify(interpolationVariables(reference[key])) !== JSON.stringify(interpolationVariables(catalog[key])))
+    .map((key) => `${key} (${interpolationVariables(reference[key]).join(", ")} -> ${interpolationVariables(catalog[key]).join(", ")})`);
 
-  if (missing.length || extra.length || empty.length) {
+  if (missing.length || extra.length || empty.length || placeholderMismatches.length) {
     failed = true;
     console.error(`${locale}: ${keys.size} keys`);
     if (missing.length) console.error(`  missing: ${missing.join(", ")}`);
     if (extra.length) console.error(`  extra: ${extra.join(", ")}`);
     if (empty.length) console.error(`  empty: ${empty.join(", ")}`);
+    if (placeholderMismatches.length) console.error(`  interpolation variables differ: ${placeholderMismatches.join(", ")}`);
   } else {
     console.log(`${locale}: ${keys.size} keys`);
   }

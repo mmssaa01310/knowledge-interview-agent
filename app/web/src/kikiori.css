@@ -517,6 +517,17 @@ small {
   margin-bottom: 18px;
 }
 
+.panel-header-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.panel-header-title .counter {
+  flex: 0 0 auto;
+}
+
 .panel-header h2,
 .panel h2 {
   margin: 0;
@@ -2116,22 +2127,35 @@ label {
 }
 
 .locale-switcher {
-  display: grid;
-  gap: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px 5px 9px;
+  border: 1px solid var(--ki-border);
+  border-radius: var(--ki-radius-sm);
+  background: var(--ki-surface-subtle);
   color: var(--ki-muted);
   font-size: 11px;
   font-weight: 700;
 }
 
+.locale-switcher > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .locale-switcher select {
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   min-width: 0;
-  min-height: 34px;
-  padding: 6px 9px;
-  border: 1px solid var(--ki-border-strong);
-  border-radius: var(--ki-radius-sm);
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 7px;
   color: var(--ki-text);
-  background: var(--ki-surface);
+  background: transparent;
+  box-shadow: none;
 }
 
 .login-panel .locale-switcher {

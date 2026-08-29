@@ -27,9 +27,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
         <div>
           <h2>{t("knowledge.launch.title")}</h2>
         </div>
-        <span className={isConfigured ? "status-pill" : "status-pill muted"}>
-          {isConfigured ? t("knowledge.launch.ready") : t("knowledge.launch.needsSetup")}
-        </span>
+        {!isConfigured ? <span className="status-pill muted">{t("knowledge.launch.needsSetup")}</span> : null}
       </div>
 
       {!isConfigured && canCreateRecord ? (

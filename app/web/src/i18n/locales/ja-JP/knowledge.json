@@ -42,7 +42,6 @@
   },
   "launch": {
     "title": "インタビュー",
-    "ready": "開始できます",
     "needsSetup": "設定が必要です",
     "setupTitle": "インタビューを開始する前に設定してください",
     "setupDescription": "用途と実行モデルを選択して保存します。",

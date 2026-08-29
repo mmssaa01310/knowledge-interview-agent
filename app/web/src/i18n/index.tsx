@@ -51,6 +51,10 @@ i18n.use(initReactI18next).init({
   defaultNS: "translation",
   ns: ["translation"],
   interpolation: {
+    // 翻訳リソースは `{value}` 形式で管理しているため、同じ形式で補間する。
+    // ここを変更する場合は、全Localeの翻訳リソースを同時に更新すること。
+    prefix: "{",
+    suffix: "}",
     escapeValue: false,
   },
   returnEmptyString: false,

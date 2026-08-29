@@ -11,6 +11,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
   const basePath = `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}`;
   const isAdmin = props.user?.role === "admin";
   const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
+  const recordCountLabel = t("common.itemCount", { count: formatNumber(props.records.length, locale) });
 
   function openRecord(recordId: string) {
     props.navigate(`${basePath}/records/${recordId}`);
@@ -32,10 +33,10 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
   return (
     <section className="panel page-stack">
       <div className="panel-header">
-        <div>
+        <div className="panel-header-title">
           <h2>{t("knowledge.records.title")}</h2>
+          <span className="counter" aria-label={recordCountLabel}>{recordCountLabel}</span>
         </div>
-        <span className="counter">{formatNumber(props.records.length, locale)}</span>
       </div>
 
       {props.recordNotice ? <p className="notice" role="status">{props.recordNotice}</p> : null}
