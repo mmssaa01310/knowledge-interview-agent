@@ -2125,6 +2125,7 @@ label {
 }
 
 .locale-switcher {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2138,28 +2139,126 @@ label {
   font-weight: 700;
 }
 
-.locale-switcher > span {
+.locale-switcher-label {
   flex: 0 0 auto;
   white-space: nowrap;
 }
 
-.locale-switcher select {
+.locale-switcher-control {
+  position: relative;
   flex: 1 1 auto;
-  width: auto;
   min-width: 0;
+}
+
+.locale-switcher-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
   min-height: 30px;
-  padding: 4px 6px;
-  border: 0;
+  gap: 8px;
+  padding: 4px 7px 4px 9px;
+  border: 1px solid var(--ki-border-strong);
   border-radius: 7px;
   color: var(--ki-text);
-  background: transparent;
-  box-shadow: none;
+  background: var(--ki-surface);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.locale-switcher-trigger:hover {
+  border-color: var(--ki-primary);
+  background: var(--ki-primary-wash);
+}
+
+.locale-switcher-current {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 6px;
+}
+
+.locale-switcher-current-name,
+.locale-switcher-option-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.locale-switcher-chevron {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--ki-muted);
+  border-bottom: 1.5px solid var(--ki-muted);
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.locale-switcher-chevron.open {
+  transform: translateY(2px) rotate(225deg);
+}
+
+.locale-switcher-options {
+  position: absolute;
+  z-index: 20;
+  inset-inline-end: 0;
+  bottom: calc(100% + 7px);
+  width: max-content;
+  min-width: 178px;
+  max-width: min(240px, 70vw);
+  display: grid;
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--ki-border);
+  border-radius: 11px;
+  background: var(--ki-surface);
+  box-shadow: var(--ki-shadow-lg);
+}
+
+.locale-switcher-option {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  padding: 8px 9px;
+  border-radius: 7px;
+  color: var(--ki-text);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.locale-switcher-option:hover,
+.locale-switcher-option.selected {
+  background: var(--ki-primary-wash);
+  color: var(--ki-primary-strong);
+}
+
+.locale-switcher-option:focus-visible {
+  outline: none;
+  box-shadow: var(--ki-focus-ring);
+}
+
+.locale-switcher-option-check {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  color: var(--ki-primary);
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .login-panel .locale-switcher {
   width: min(220px, 100%);
   margin: 0 auto 12px;
   text-align: left;
+}
+
+.login-panel .locale-switcher-options {
+  top: calc(100% + 7px);
+  bottom: auto;
 }
 
 html[dir="rtl"] {
