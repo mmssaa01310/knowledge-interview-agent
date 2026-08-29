@@ -46,14 +46,11 @@
 │   │   │   ├── features/
 │   │   │   │   ├── interviews/
 │   │   │   │   │   └── interviewConfiguration.ts
-│   │   │   │   └── records/
 │   │   │   ├── layouts/
-│   │   │   │   └── RecordsLayout.tsx
 │   │   │   ├── lib/
 │   │   │   ├── pages/
 │   │   │   │   ├── KnowledgeInterviewPage.tsx
-│   │   │   │   ├── KnowledgeRecordsPage.tsx
-│   │   │   │   └── RecordsPage.tsx
+│   │   │   │   └── KnowledgeRecordsPage.tsx
 │   │   │   ├── providers/
 │   │   │   ├── routes/
 │   │   │   ├── types/

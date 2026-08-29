@@ -1,8 +1,6 @@
 export const routePaths = {
   login: "/login",
   settings: "/settings",
-  records: "/records",
-  record: (recordId: string) => `/records/${recordId}`,
   knowledgeDbs: "/knowledge-dbs",
   knowledgeDb: (knowledgeDbId: string) => `/knowledge-dbs/${knowledgeDbId}`,
   knowledgeNew: (knowledgeDbId: string) => `/knowledge-dbs/${knowledgeDbId}/knowledges/new`,

@@ -93,6 +93,21 @@ function rememberKnowledge(knowledgeId: string) {
   }
 }
 
+function createAccessibleKnowledgeDb(knowledge: Knowledge, knowledgeCount: number): KnowledgeDb {
+  return {
+    id: knowledge.knowledgeDbId,
+    tenantId: knowledge.tenantId,
+    createdByUserId: knowledge.createdByUserId,
+    updatedByUserId: knowledge.updatedByUserId,
+    createdAt: knowledge.createdAt,
+    updatedAt: knowledge.updatedAt,
+    name: "ナレッジ領域",
+    language: knowledge.language,
+    status: "active",
+    knowledgeCount,
+  };
+}
+
 function getSettingsSaveErrorMessage(error: unknown, tabLabel: string) {
   if (error instanceof ApiError && error.status === 409) {
     if (error.detail === "interview_profile_change_not_allowed_after_start") {
@@ -150,7 +165,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [deletedExtraQuestionIds, setDeletedExtraQuestionIds] = useState<string[]>([]);
   const [recordNotice, setRecordNotice] = useState("");
   const [documentReadStates, setDocumentReadStates] = useState<Record<string, DocumentReadState>>({});
-  const [recordContext, setRecordContext] = useState<Awaited<ReturnType<typeof fetchRecordInterviewContext>> | null>(null);
   const pendingInterviewSubmissionRef = useRef<{
     content: string;
     target: InterviewAnswerTarget | null;
@@ -164,7 +178,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     : null;
   const selectedKnowledge = routeKnowledgeId
     ? knowledges.find((knowledge) => knowledge.id === routeKnowledgeId) ?? null
-    : recordContext?.knowledge ?? null;
+    : null;
   const selectedRecordId = "recordId" in args.route ? args.route.recordId : undefined;
   const selectedRecord = selectedRecordId ? records.find((record) => record.id === selectedRecordId) ?? null : null;
 
@@ -308,7 +322,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     knowledgeId?: string,
     knowledgeIndex?: Knowledge[],
   ) {
-    setRecordContext(null);
     const nextKnowledges = knowledgeIndex
       ? knowledgeIndex.filter((knowledge) => knowledge.knowledgeDbId === knowledgeDbId)
       : await fetchKnowledges(knowledgeDbId);
@@ -348,42 +361,98 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     return nextKnowledges;
   }
 
-  async function loadAccessibleRecordWorkspace(recordId?: string) {
-    const nextRecords = await fetchAccessibleRecords();
-    setRecords(nextRecords);
-    setKnowledgeDbs([]);
-    setKnowledges([]);
+  async function loadAccessibleKnowledgeWorkspace() {
+    const accessibleRecords = await fetchAccessibleRecords();
+    const contextEntries = await Promise.all(
+      accessibleRecords.map(async (record) => {
+        try {
+          return {
+            record,
+            context: await fetchRecordInterviewContext(record.id),
+          };
+        } catch (error) {
+          console.error(`Failed to load interview context for record ${record.id}`, error);
+          return null;
+        }
+      }),
+    );
+    const validEntries = contextEntries.filter(
+      (entry): entry is NonNullable<typeof entry> => entry !== null,
+    );
+    const recordsByKnowledge = new Map<string, InterviewRecord[]>();
+    const knowledgeById = new Map<string, Knowledge>();
+
+    validEntries.forEach(({ record, context }) => {
+      const knowledgeId = context.knowledge.id;
+      const currentRecords = recordsByKnowledge.get(knowledgeId) ?? [];
+      recordsByKnowledge.set(knowledgeId, [...currentRecords, record]);
+      if (!knowledgeById.has(knowledgeId)) {
+        knowledgeById.set(knowledgeId, context.knowledge);
+      }
+    });
+
+    const nextKnowledges = [...knowledgeById.values()].map((knowledge) => ({
+      ...knowledge,
+      recordCount: recordsByKnowledge.get(knowledge.id)?.length ?? 0,
+    }));
+    const recordsByDb = new Map<string, Knowledge[]>();
+    nextKnowledges.forEach((knowledge) => {
+      const currentKnowledges = recordsByDb.get(knowledge.knowledgeDbId) ?? [];
+      recordsByDb.set(knowledge.knowledgeDbId, [...currentKnowledges, knowledge]);
+    });
+    const nextKnowledgeDbs = [...recordsByDb.values()].map((dbKnowledges) => (
+      createAccessibleKnowledgeDb(dbKnowledges[0], dbKnowledges.length)
+    ));
+
+    setKnowledgeDbs(nextKnowledgeDbs);
+    setKnowledges(nextKnowledges);
+    if (nextKnowledges.length === 0) {
+      setRecords([]);
+      setDocuments([]);
+      setFields([]);
+      setDraftFields([]);
+      setSelectedRecordIds([]);
+      setProposals([]);
+      return;
+    }
+
+    const rememberedKnowledgeId = getLastKnowledgeId();
+    const selectedAccessibleKnowledge = nextKnowledges.find((knowledge) => knowledge.id === routeKnowledgeId)
+      ?? nextKnowledges.find((knowledge) => knowledge.id === rememberedKnowledgeId)
+      ?? nextKnowledges[0];
+    const selectedAccessibleRecords = recordsByKnowledge.get(selectedAccessibleKnowledge.id) ?? [];
+    const selectedContextEntry = validEntries.find(
+      (entry) => entry.context.knowledge.id === selectedAccessibleKnowledge.id,
+    );
+
+    rememberKnowledge(selectedAccessibleKnowledge.id);
+    setRecords(selectedAccessibleRecords);
     setDocuments([]);
-    setFields([]);
-    setDraftFields([]);
+    setFields(selectedContextEntry?.context.fields ?? []);
+    setDraftFields(selectedContextEntry?.context.fields ?? []);
     setSelectedRecordIds([]);
-    setRecordContext(null);
     setProposals([]);
 
-    if (!recordId) return;
-
-    const context = await fetchRecordInterviewContext(recordId);
-    setRecordContext(context);
-    setFields(context.fields);
-    setDraftFields(context.fields);
-    if (user && ["admin", "knowledge_manager"].includes(user.role)) {
-      setProposals(await fetchProposals(recordId));
+    const knowledgeBasePath = `/knowledge-dbs/${selectedAccessibleKnowledge.knowledgeDbId}/knowledges/${selectedAccessibleKnowledge.id}`;
+    if (args.route.name === "knowledge-settings" || args.route.name === "knowledge-documents" || args.route.name === "knowledge-new") {
+      args.navigate(`${knowledgeBasePath}/interview`);
+    } else if (!routeKnowledgeId && args.route.name !== "knowledge-db") {
+      args.navigate(`${knowledgeBasePath}/interview`);
+    } else if (routeKnowledgeId !== selectedAccessibleKnowledge.id && args.route.name !== "knowledge-db") {
+      args.navigate(`${knowledgeBasePath}/interview`);
     }
   }
 
   async function refresh() {
     const profile = await fetchMe();
     setUser(profile);
-    const isRecordOnlyUser = profile.role === "interviewer" || profile.role === "viewer";
-    const isRecordsRoute = args.route.name === "records" || args.route.name === "record-detail";
+    if (args.route.name === "login") {
+      return;
+    }
 
-    if (isRecordsRoute || isRecordOnlyUser) {
-      await loadAccessibleRecordWorkspace(
-        args.route.name === "record-detail" ? args.route.recordId : undefined,
-      );
-      if (!isRecordsRoute) {
-        args.navigate("/records");
-      }
+    const isRecordOnlyUser = profile.role === "interviewer" || profile.role === "viewer";
+    if (isRecordOnlyUser) {
+      await loadAccessibleKnowledgeWorkspace();
       return;
     }
 
@@ -441,7 +510,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
       args.navigate(`/knowledge-dbs/${nextKnowledgeDbId}/knowledges/${openedKnowledge.id}/interview`);
     } else {
-      setRecordContext(null);
       setKnowledges([]);
       setRecords([]);
       setDocuments([]);
@@ -632,9 +700,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     if (!selectedRecord) return;
     try {
       await updateRecord(selectedRecord.id, { status, reviewNote });
-      if (args.route.name === "record-detail") {
-        await loadAccessibleRecordWorkspace(selectedRecord.id);
-      } else if (selectedKnowledgeDb && selectedKnowledge) {
+      if (selectedKnowledgeDb && selectedKnowledge) {
         await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
       }
       setRecordNotice(

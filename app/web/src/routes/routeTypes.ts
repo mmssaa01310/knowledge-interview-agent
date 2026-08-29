@@ -8,6 +8,4 @@ export type Route =
   | { name: "knowledge-record-detail"; knowledgeDbId: string; knowledgeId: string; recordId: string }
   | { name: "knowledge-settings"; knowledgeDbId: string; knowledgeId: string }
   | { name: "knowledge-documents"; knowledgeDbId: string; knowledgeId: string }
-  | { name: "records" }
-  | { name: "record-detail"; recordId: string }
   | { name: "settings" };

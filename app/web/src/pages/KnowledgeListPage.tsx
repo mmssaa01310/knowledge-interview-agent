@@ -5,6 +5,7 @@ type KnowledgeListPageProps = {
   knowledges: Knowledge[];
   onNavigate: (path: string) => void;
   onOpenCreateKnowledge: () => void;
+  canManage?: boolean;
   isPreparingKnowledgeCreation?: boolean;
   knowledgeCreationError?: string;
 };
@@ -13,6 +14,7 @@ export function KnowledgeListPage({
   knowledges,
   onNavigate,
   onOpenCreateKnowledge,
+  canManage = true,
   isPreparingKnowledgeCreation = false,
   knowledgeCreationError = ""
 }: KnowledgeListPageProps) {
@@ -22,14 +24,16 @@ export function KnowledgeListPage({
         <div>
           <h2>ナレッジ一覧</h2>
         </div>
-        <button
-          type="button"
-          className="primary"
-          onClick={onOpenCreateKnowledge}
-          disabled={isPreparingKnowledgeCreation}
-        >
-          {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
-        </button>
+        {canManage ? (
+          <button
+            type="button"
+            className="primary"
+            onClick={onOpenCreateKnowledge}
+            disabled={isPreparingKnowledgeCreation}
+          >
+            {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
+          </button>
+        ) : null}
       </div>
       {knowledgeCreationError && <p className="notice error">{knowledgeCreationError}</p>}
       <div className="table-list">
@@ -40,7 +44,7 @@ export function KnowledgeListPage({
           <span>更新日時</span>
         </div>
         {knowledges.length === 0 ? (
-          <p className="empty">ナレッジがありません。「+ ナレッジを作成」から登録してください。</p>
+          <p className="empty">{canManage ? "ナレッジがありません。「+ ナレッジを作成」から登録してください。" : "利用できるナレッジがありません。"}</p>
         ) : knowledges.map((knowledge) => (
           <button
             type="button"

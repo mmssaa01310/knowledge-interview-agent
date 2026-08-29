@@ -1325,6 +1325,17 @@ label {
   min-height: auto;
 }
 
+.interview-page-title {
+  min-width: 0;
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+
+.interview-back-button {
+  color: #245f9f;
+}
+
 .interview-launch-page {
   gap: 14px;
 }

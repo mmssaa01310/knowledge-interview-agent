@@ -16,6 +16,7 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
         knowledges={props.knowledges}
         onNavigate={props.navigate}
         onOpenCreateKnowledge={props.onOpenCreateKnowledge}
+        canManage={props.user?.role === "admin" || props.user?.role === "knowledge_manager"}
         isPreparingKnowledgeCreation={props.isPreparingKnowledgeCreation}
         knowledgeCreationError={props.knowledgeCreationError}
       />
@@ -26,12 +27,18 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
     return <p className="empty">ナレッジを作成または選択してください。</p>;
   }
 
+  const canManageKnowledge = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
+
   if (props.route.name === "knowledge-db" || props.route.name === "knowledge-new") {
     return <KnowledgeCollectionPage {...props} />;
   }
 
   if (!props.selectedKnowledge) {
     return <p className="empty">ナレッジを作成または選択してください。</p>;
+  }
+
+  if (!canManageKnowledge && (props.route.name === "knowledge-settings" || props.route.name === "knowledge-documents")) {
+    return <p className="empty">この画面を表示する権限がありません。</p>;
   }
 
   const knowledgeBasePath = `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}`;
@@ -43,7 +50,7 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
     <>
       <PageHeader
         title={props.selectedKnowledge.name}
-        actions={props.route.name === "knowledge-settings" ? undefined : (
+        actions={canManageKnowledge && props.route.name !== "knowledge-settings" ? (
           <button
             type="button"
             className="primary"
@@ -51,7 +58,7 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
           >
             インタビュー設定
           </button>
-        )}
+        ) : undefined}
       />
       <KnowledgeSubNav
         knowledgeDbId={props.selectedKnowledgeDb.id}

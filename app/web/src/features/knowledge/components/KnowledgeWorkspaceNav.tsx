@@ -5,6 +5,7 @@ type KnowledgeWorkspaceNavProps = {
   selectedKnowledgeId?: string | null;
   onNavigate: (path: string) => void;
   onOpenCreateKnowledge: () => void;
+  canManage?: boolean;
   isPreparingKnowledgeCreation?: boolean;
   knowledgeCreationError?: string;
 };
@@ -21,6 +22,7 @@ export function KnowledgeWorkspaceNav({
   selectedKnowledgeId,
   onNavigate,
   onOpenCreateKnowledge,
+  canManage = true,
   isPreparingKnowledgeCreation = false,
   knowledgeCreationError = ""
 }: KnowledgeWorkspaceNavProps) {
@@ -30,19 +32,21 @@ export function KnowledgeWorkspaceNav({
     <div className="sidebar-section">
       <div className="workspace-nav-header">
         <strong>ナレッジ</strong>
-        <button
-          type="button"
-          className="workspace-create"
-          onClick={onOpenCreateKnowledge}
-          disabled={isPreparingKnowledgeCreation}
-          aria-label="ナレッジを作成"
-        >
-          {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
-        </button>
+        {canManage ? (
+          <button
+            type="button"
+            className="workspace-create"
+            onClick={onOpenCreateKnowledge}
+            disabled={isPreparingKnowledgeCreation}
+            aria-label="ナレッジを作成"
+          >
+            {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
+          </button>
+        ) : null}
       </div>
       {knowledgeCreationError && <p className="workspace-error">{knowledgeCreationError}</p>}
       {orderedKnowledges.length === 0 ? (
-        <p className="workspace-empty">ナレッジがありません。</p>
+        <p className="workspace-empty">{canManage ? "ナレッジがありません。" : "利用できるナレッジがありません。"}</p>
       ) : orderedKnowledges.map((knowledge) => (
         <button
           type="button"

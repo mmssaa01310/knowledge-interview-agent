@@ -219,6 +219,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
   const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && realtimeVoice.isActive);
+  const interviewLaunchPath = props.selectedKnowledgeDb && props.selectedKnowledge
+    ? `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}/interview`
+    : null;
   const currentTargetLabel = props.interviewState?.nextQuestionTarget?.label;
   const currentTargetMessage = currentTargetLabel
     ? `いま確認していること：${currentTargetLabel}`
@@ -229,7 +232,16 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   return (
     <section className="panel interview-page">
       <div className="panel-header interview-page-header">
-        <div>
+        <div className="interview-page-title">
+          {interviewLaunchPath ? (
+            <button
+              type="button"
+              className="ghost compact interview-back-button"
+              onClick={() => props.navigate(interviewLaunchPath)}
+            >
+              ← インタビュー開始画面に戻る
+            </button>
+          ) : null}
           <h2>AIインタビュー</h2>
           <span className="interview-model-badge">実行モデル：{getInterviewModelLabel(props.selectedKnowledge)}</span>
           {props.selectedRecord ? (

@@ -7,7 +7,8 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
   const [purpose, setPurpose] = useState("");
   const [description, setDescription] = useState("");
   const [createKnowledgeDbId, setCreateKnowledgeDbId] = useState(props.selectedKnowledgeDb?.id ?? "");
-  const isCreateDialogOpen = props.route.name === "knowledge-new";
+  const canManage = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
+  const isCreateDialogOpen = canManage && props.route.name === "knowledge-new";
 
   useEffect(() => {
     if (!isCreateDialogOpen || !props.selectedKnowledgeDb) return;
@@ -47,13 +48,15 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
         <div>
           <h2>ナレッジ一覧</h2>
         </div>
-        <button
-          type="button"
-          className="primary"
-          onClick={() => props.navigate(`/knowledge-dbs/${props.selectedKnowledgeDb?.id}/knowledges/new`)}
-        >
-          + ナレッジを作成
-        </button>
+        {canManage ? (
+          <button
+            type="button"
+            className="primary"
+            onClick={() => props.navigate(`/knowledge-dbs/${props.selectedKnowledgeDb?.id}/knowledges/new`)}
+          >
+            + ナレッジを作成
+          </button>
+        ) : null}
       </div>
       {props.knowledgeCreationError ? <p className="notice error">{props.knowledgeCreationError}</p> : null}
 
@@ -95,7 +98,7 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
           <span>更新日時</span>
         </div>
         {currentKnowledges.length === 0 ? (
-          <p className="empty">ナレッジがありません。「+ ナレッジを作成」から登録してください。</p>
+          <p className="empty">{canManage ? "ナレッジがありません。「+ ナレッジを作成」から登録してください。" : "利用できるナレッジがありません。"}</p>
         ) : currentKnowledges.map((knowledge) => (
           <button
             type="button"

@@ -2,15 +2,12 @@ import { useState } from "react";
 import type { Knowledge } from "@ai-interviewer/shared-types";
 import { getDevelopmentToken, setDevelopmentToken, type UserProfile } from "../lib/api";
 import { KnowledgeWorkspaceNav } from "../features/knowledge/components/KnowledgeWorkspaceNav";
-import { RecordsWorkspaceNav } from "../features/records/components/RecordsWorkspaceNav";
 import type { AppSection } from "../types/app";
 
 type WorkspaceNavProps = {
   activeSection: AppSection;
-  activePath: string;
   user: UserProfile | null;
   knowledges: Knowledge[];
-  recordCount: number;
   selectedKnowledgeId?: string | null;
   onNavigate: (path: string) => void;
   onOpenCreateKnowledge: () => void;
@@ -22,10 +19,8 @@ type WorkspaceNavProps = {
 
 export function WorkspaceNav({
   activeSection,
-  activePath,
   user,
   knowledges,
-  recordCount,
   selectedKnowledgeId,
   onNavigate,
   onOpenCreateKnowledge,
@@ -36,6 +31,7 @@ export function WorkspaceNav({
 }: WorkspaceNavProps) {
   const [developmentToken, setDevelopmentTokenState] = useState(getDevelopmentToken);
   const canManageSystem = user?.role === "admin";
+  const canManageKnowledge = user?.role === "admin" || user?.role === "knowledge_manager";
 
   function handleDevelopmentUserChange(token: string) {
     setDevelopmentToken(token);
@@ -84,18 +80,13 @@ export function WorkspaceNav({
           <div className="sidebar-section">
             <strong>設定</strong>
           </div>
-        ) : activeSection === "records" ? (
-          <RecordsWorkspaceNav
-            activePath={activePath}
-            recordCount={recordCount}
-            onNavigate={onNavigate}
-          />
         ) : (
           <KnowledgeWorkspaceNav
             knowledges={knowledges}
             selectedKnowledgeId={selectedKnowledgeId}
             onNavigate={onNavigate}
             onOpenCreateKnowledge={onOpenCreateKnowledge}
+            canManage={canManageKnowledge}
             isPreparingKnowledgeCreation={isPreparingKnowledgeCreation}
             knowledgeCreationError={knowledgeCreationError}
           />

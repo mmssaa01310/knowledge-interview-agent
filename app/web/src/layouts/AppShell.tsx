@@ -9,7 +9,6 @@ type AppShellProps = {
   activePath: string;
   user: UserProfile | null;
   knowledges: Knowledge[];
-  recordCount: number;
   selectedKnowledgeId?: string | null;
   children: React.ReactNode;
   onNavigate: (path: string) => void;
@@ -23,7 +22,6 @@ export function AppShell({
   activePath,
   user,
   knowledges,
-  recordCount,
   selectedKnowledgeId,
   children,
   onNavigate,
@@ -37,10 +35,8 @@ export function AppShell({
     <div className={isWorkspaceNavCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
       <WorkspaceNav
         activeSection={activeSection}
-        activePath={activePath}
         user={user}
         knowledges={knowledges}
-        recordCount={recordCount}
         selectedKnowledgeId={selectedKnowledgeId}
         onNavigate={onNavigate}
         onOpenCreateKnowledge={onOpenCreateKnowledge}

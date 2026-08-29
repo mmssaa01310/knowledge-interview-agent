@@ -17,6 +17,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
   if (!selectedKnowledgeDb || !selectedKnowledge) return null;
 
   const isConfigured = isInterviewConfigurationComplete(selectedKnowledge);
+  const canCreateRecord = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const basePath = `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}`;
   const resumableRecords = props.records.filter((record) => resumableStatuses.has(record.status));
 
@@ -35,7 +36,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
         </span>
       </div>
 
-      {!isConfigured ? (
+      {!isConfigured && canCreateRecord ? (
         <div className="interview-launch-notice">
           <div>
             <strong>インタビューを開始する前に設定してください</strong>
@@ -47,7 +48,11 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
         </div>
       ) : null}
 
-      {isConfigured ? (
+      {!isConfigured && !canCreateRecord ? (
+        <p className="empty">このナレッジは現在インタビューを開始できません。</p>
+      ) : null}
+
+      {isConfigured && canCreateRecord ? (
         <section className="interview-launch-card">
           <div className="new-interview-form">
             <label className="sr-only" htmlFor="new-record-title">記録タイトル</label>
@@ -63,6 +68,10 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
           </div>
           {props.recordNotice ? <p className="notice" role="status">{props.recordNotice}</p> : null}
         </section>
+      ) : null}
+
+      {!canCreateRecord && resumableRecords.length === 0 ? (
+        <p className="empty">「記録」から担当または閲覧を許可された記録を選択してください。</p>
       ) : null}
 
       {resumableRecords.length > 0 ? (

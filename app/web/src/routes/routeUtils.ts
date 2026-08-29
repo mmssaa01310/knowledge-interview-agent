@@ -4,9 +4,6 @@ import type { Route } from "./routeTypes";
 export function parseRoute(pathname: string): Route {
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0] === "login") return { name: "login" };
-  if (segments[0] === "records") {
-    return segments[1] ? { name: "record-detail", recordId: segments[1] } : { name: "records" };
-  }
   if (segments[0] === "settings") return { name: "settings" };
   if (segments[0] === "knowledge" && !segments[1]) return { name: "knowledge-dbs" };
   if (segments[0] === "knowledge-dbs" || segments[0] === "knowledge") {
@@ -43,7 +40,6 @@ export function parseRoute(pathname: string): Route {
 }
 
 export function routeSection(route: Route): AppSection {
-  if (route.name === "records" || route.name === "record-detail") return "records";
   if (route.name === "settings") return "settings";
   return "knowledge";
 }

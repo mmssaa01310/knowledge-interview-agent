@@ -16,6 +16,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
 
   const basePath = `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}`;
   const isAdmin = props.user?.role === "admin";
+  const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
 
   function openRecord(recordId: string) {
     props.navigate(`${basePath}/records/${recordId}`);
@@ -70,14 +71,14 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
             <span>{formatDate(record.updatedAt)}</span>
             <span className="inline-actions">
               <button className="ghost compact" type="button" onClick={() => openRecord(record.id)}>
-                編集
+                {props.user?.role === "viewer" ? "確認" : "編集"}
               </button>
               {isAdmin ? (
                 <button className="danger compact" type="button" onClick={() => void props.onDeleteRecord(record.id)}>
                   削除
                 </button>
               ) : null}
-              {record.status === "submitted" ? (
+              {isManagementUser && record.status === "submitted" ? (
                 <>
                   <button className="ghost compact" type="button" onClick={() => returnRecord(record.id)}>
                     差し戻す

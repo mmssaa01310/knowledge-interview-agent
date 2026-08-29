@@ -1,4 +1,4 @@
-export type AppSection = "records" | "knowledge" | "settings";
+export type AppSection = "knowledge" | "settings";
 
 export type ChatMessageEvidence = {
   type: "knowledge" | "document";
