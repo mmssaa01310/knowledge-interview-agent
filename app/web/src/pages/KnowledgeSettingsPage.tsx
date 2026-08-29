@@ -61,6 +61,12 @@ function uniqueFields(fields: KnowledgeField[]) {
   });
 }
 
+function summarizeFieldDetail(field: KnowledgeField) {
+  const detail = (field.description ?? "").trim().replace(/\s+/g, " ");
+  if (!detail) return "詳細項目未設定";
+  return detail.length > 72 ? `${detail.slice(0, 72)}…` : detail;
+}
+
 function toRecentAssistMessages(messages: AssistMessage[]): FieldSuggestionChatMessage[] {
   return messages
     .map((message) => ({ role: message.role, content: message.text.trim() }))
@@ -112,6 +118,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const [promptProfileNotice, setPromptProfileNotice] = useState("");
   const [isSavePromptDialogOpen, setIsSavePromptDialogOpen] = useState(false);
   const [savePromptTemplateName, setSavePromptTemplateName] = useState("");
+  const [expandedFieldIndex, setExpandedFieldIndex] = useState<number | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const assistInputRef = useRef<HTMLTextAreaElement | null>(null);
   const initializedKnowledgeIdRef = useRef(props.selectedKnowledge?.id ?? null);
@@ -164,6 +171,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
       ? "execution"
       : getStoredSettingsTab();
     setActiveTab(nextTab);
+    setExpandedFieldIndex(null);
   }, [props.selectedKnowledge?.id, requiresInterviewConfiguration]);
 
   function selectTab(tab: SettingsTab) {
@@ -179,6 +187,32 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     const next = [...props.draftFields];
     next[index] = { ...props.draftFields[index], ...patch };
     props.setDraftFields(next);
+  }
+
+  function addField() {
+    clearSettingsNotice();
+    const nextIndex = props.draftFields.length;
+    props.setDraftFields([
+      ...props.draftFields,
+      {
+        name: "新規項目",
+        inputType: "short_text",
+        required: false,
+        askByAi: true,
+        aiQuestionExamples: [],
+        displayOrder: nextIndex + 1
+      }
+    ]);
+    setExpandedFieldIndex(nextIndex);
+  }
+
+  function deleteField(index: number) {
+    clearSettingsNotice();
+    props.setDraftFields(props.draftFields.filter((_, currentIndex) => currentIndex !== index));
+    setExpandedFieldIndex((currentIndex) => {
+      if (currentIndex === null || currentIndex === index) return null;
+      return currentIndex > index ? currentIndex - 1 : currentIndex;
+    });
   }
 
   function toPendingSuggestions(fields: KnowledgeField[]) {
@@ -518,36 +552,55 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
           {activeTab === "fields" ? (
             <div id="settings-panel-fields" className="settings-split" role="tabpanel" aria-labelledby="settings-tab-fields">
               <section className="settings-section">
-                <div className="section-title-row">
-                  <div>
+                <div className="section-title-row compact-row">
+                  <div className="question-list-title">
                     <h3>質問項目</h3>
+                    <span className="counter">{props.draftFields.length}件</span>
                   </div>
-                  <button className="ghost compact" onClick={() => {
-                    clearSettingsNotice();
-                    props.setDraftFields([...props.draftFields, { name: "新規項目", inputType: "short_text", required: false, askByAi: true, aiQuestionExamples: [], displayOrder: props.draftFields.length + 1 }]);
-                  }}>項目追加</button>
+                  <button className="ghost compact" type="button" onClick={addField}>項目追加</button>
                 </div>
                 <div className="field-list">
-                  {props.draftFields.length === 0 ? <p className="empty">質問項目はありません。</p> : props.draftFields.map((field, index) => (
-                    <div className="field-card readable-field-card" key={`${field.id ?? "new"}-${index}`}>
-                      <div className="field-name-row">
-                        <label className="sr-only" htmlFor={`knowledge-field-name-${index}`}>質問項目{index + 1}の名前</label>
-                        <input
-                          id={`knowledge-field-name-${index}`}
-                          value={field.name}
-                          onChange={(event) => updateField(index, { name: event.target.value })}
-                          placeholder="質問項目名"
-                        />
-                        <button className="danger compact" onClick={() => { clearSettingsNotice(); props.setDraftFields(props.draftFields.filter((_, i) => i !== index)); }}>削除</button>
-                      </div>
-                      <label className="field-detail-field">詳細項目
-                        <textarea value={field.description ?? ""} onChange={(event) => updateField(index, { description: event.target.value })} placeholder="例: 名前、年齢、性別、出身地" />
-                      </label>
-                      <div className="toolbar">
-                        <label className="check-row"><input type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />必須項目</label>
-                      </div>
-                    </div>
-                  ))}
+                  {props.draftFields.length === 0 ? <p className="empty">質問項目はありません。</p> : props.draftFields.map((field, index) => {
+                    const isExpanded = expandedFieldIndex === index;
+                    const editorId = `knowledge-field-editor-${index}`;
+                    return (
+                      <article className={isExpanded ? "field-card expanded" : "field-card"} key={`${field.id ?? "new"}-${index}`}>
+                        <button
+                          type="button"
+                          className="field-card-summary"
+                          aria-expanded={isExpanded}
+                          aria-controls={isExpanded ? editorId : undefined}
+                          onClick={() => setExpandedFieldIndex(isExpanded ? null : index)}
+                        >
+                          <span className="field-index">{String(index + 1).padStart(2, "0")}</span>
+                          <span className="field-summary-content">
+                            <strong>{field.name.trim() || "未入力の質問項目"}</strong>
+                            <span>{summarizeFieldDetail(field)}</span>
+                          </span>
+                          {field.required ? <span className="field-required-badge">必須</span> : null}
+                          <span className={isExpanded ? "field-chevron open" : "field-chevron"} aria-hidden="true" />
+                        </button>
+                        {isExpanded ? (
+                          <div id={editorId} className="field-card-editor">
+                            <label className="sr-only" htmlFor={`knowledge-field-name-${index}`}>質問項目名</label>
+                            <input
+                              id={`knowledge-field-name-${index}`}
+                              value={field.name}
+                              onChange={(event) => updateField(index, { name: event.target.value })}
+                              placeholder="質問項目名"
+                            />
+                            <label className="field-detail-field">詳細項目
+                              <textarea value={field.description ?? ""} onChange={(event) => updateField(index, { description: event.target.value })} placeholder="例: 名前、年齢、性別、出身地" />
+                            </label>
+                            <div className="toolbar field-card-editor-actions">
+                              <label className="check-row"><input type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />必須項目</label>
+                              <button className="danger compact" type="button" onClick={() => deleteField(index)}>削除</button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
                 </div>
               </section>
 
