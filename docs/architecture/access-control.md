@@ -23,8 +23,10 @@ InterviewRecord
 
 ```text
 質問ごとの回答: UNANSWERED → CANDIDATE_PENDING → AWAITING_CONFIRMATION → CONFIRMED
-記録のレビュー: draft → in_progress → submitted → returned → in_progress → submitted → approved
+記録のレビュー: in_progress → submitted → returned → in_progress → submitted → approved
 ```
+
+`draft`は旧データ互換用の状態であり、現在の画面から新規作成しない。Backendには旧`draft`を`in_progress`へ移行する処理を残すが、利用者向けの状態変更操作として表示してはいけない。
 
 ## 3. Frontendの責務
 
@@ -49,7 +51,7 @@ Frontendは`GET /api/me`で取得したロールを使用し、ワークスペ�
 | `/records/{record_id}` | 記録の回答、レビュー、または閲覧 |
 | `/knowledge-dbs` | ナレッジ管理の一覧 |
 | `/knowledge-dbs/{knowledge_db_id}/knowledges/{knowledge_id}/interview` | 設定状態を確認し、記録を作成するインタビュー画面 |
-| `/knowledge-dbs/{knowledge_db_id}/knowledges/{knowledge_id}/records` | ナレッジ単位の記録一覧、公開、差し戻し、承認 |
+| `/knowledge-dbs/{knowledge_db_id}/knowledges/{knowledge_id}/records` | 全記録の一覧、インタビュー結果の確認・編集、差し戻し、承認 |
 | `/knowledge-dbs/{knowledge_db_id}/knowledges/{knowledge_id}/settings` | 主タブ外のナレッジ情報、質問項目、実行設定、事前知識 |
 | `/settings` | システム設定 |
 
@@ -57,7 +59,7 @@ Frontendは`GET /api/me`で取得したロールを使用し、ワークスペ�
 
 `KnowledgeDb`は`Knowledge`をまとめる内部の管理単位であり、ナレッジ管理の主一覧には表示しない。複数の`KnowledgeDb`がある場合だけ、ナレッジ作成時に「業務領域」として保存先を選択できる。
 
-インタビュー設定の完了条件は、保存済みの`Knowledge.interviewPlan.profile`と`Knowledge.interviewPlan.modelId`である。両方が有効な値でなければ、Frontendは記録作成・公開・開始操作を表示または有効化してはいけない。
+インタビュー設定の完了条件は、保存済みの`Knowledge.interviewPlan.profile`と`Knowledge.interviewPlan.modelId`である。両方が有効な値でなければ、Frontendは記録作成・開始操作を表示または有効化してはいけない。
 
 Frontendは権限のないナビゲーションやボタンを表示してはいけない。Frontendの表示制御だけを根拠に操作を許可してはいけない。
 
@@ -71,7 +73,7 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 4. `InterviewRecord`操作では、ロールに応じた担当または閲覧許可の範囲に入ること。
 5. 記録状態で許可された操作であること。
 
-記録作成、`draft`から`in_progress`への公開、テキストの開始・回答、音声セッションの開始では、対象`Knowledge`のインタビュー設定完了も確認する。設定未完了時は`409 interview_configuration_required`を返す。
+記録作成、旧`draft`から`in_progress`への互換移行、テキストの開始・回答、音声セッションの開始では、対象`Knowledge`のインタビュー設定完了も確認する。インタビュー状態が`completed`になった場合、Backendは記録状態を`submitted`へ変更する。設定未完了時は`409 interview_configuration_required`を返す。
 
 `interviewer`が記録へアクセスする場合、`ownerUserId`が認証ユーザーIDと一致しなければならない。`admin`と`knowledge_manager`はテナント内の管理対象記録にアクセスできる。`viewer`は明示的に閲覧を許可された`approved`状態の記録だけを取得できる。
 
@@ -83,13 +85,15 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 
 | 遷移 | 実行ロール | Backendが確認する条件 |
 |---|---|---|
-| `draft` → `in_progress` | `admin`、`knowledge_manager` | 担当者が設定済みである。対象者への公開操作である。 |
+| `draft` → `in_progress` | `admin`、`knowledge_manager` | 旧データ互換処理。現在の画面から利用者向け操作として実行しない。 |
 | `in_progress` → `submitted` | 担当`interviewer`、`admin`、`knowledge_manager` | Profileの完了条件を満たしている。 |
 | `submitted` → `returned` | `admin`、`knowledge_manager` | 差し戻し理由が空でない。 |
 | `submitted` → `approved` | `admin`、`knowledge_manager` | 承認対象の必須情報と承認条件を満たしている。 |
 | `returned` → `in_progress` | 担当`interviewer`、`admin`、`knowledge_manager` | 差し戻し後の再開操作である。 |
 
 `approved`は終端状態である。再編集が必要な場合は、承認済み記録を直接書き換えず、管理者が新しい記録を作成する。
+
+インタビュー状態が`completed`になった場合の`in_progress` → `submitted`は、Backendが自動実行する。Frontendに提出操作を残してはいけない。記録の削除は`admin`だけに許可する。
 
 ## 6. 実装上の分離
 
