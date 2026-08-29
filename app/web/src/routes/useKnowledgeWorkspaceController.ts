@@ -460,9 +460,13 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     const knowledgeBasePath = `/knowledge-dbs/${selectedAccessibleKnowledge.knowledgeDbId}/knowledges/${selectedAccessibleKnowledge.id}`;
     if (args.route.name === "knowledge-settings" || args.route.name === "knowledge-documents" || args.route.name === "knowledge-new") {
       args.navigate(`${knowledgeBasePath}/interview`);
-    } else if (!routeKnowledgeId && args.route.name !== "knowledge-db") {
+    } else if (!routeKnowledgeId && args.route.name !== "knowledge-db" && args.route.name !== "knowledge-dbs") {
       args.navigate(`${knowledgeBasePath}/interview`);
-    } else if (routeKnowledgeId !== selectedAccessibleKnowledge.id && args.route.name !== "knowledge-db") {
+    } else if (
+      routeKnowledgeId !== selectedAccessibleKnowledge.id
+      && args.route.name !== "knowledge-db"
+      && args.route.name !== "knowledge-dbs"
+    ) {
       args.navigate(`${knowledgeBasePath}/interview`);
     }
   }
@@ -519,13 +523,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       if (!openedKnowledge) {
         return;
       }
-      if (args.route.name === "knowledge-dbs") {
-        args.navigate(`/knowledge-dbs/${nextKnowledgeDbId}/knowledges/${openedKnowledge.id}/interview`);
-        return;
-      }
       if (
         args.route.name === "knowledge-db"
         || args.route.name === "knowledge-new"
+        || args.route.name === "knowledge-dbs"
         || routeKnowledgeForDb
         || nextKnowledges.length === 0
       ) {

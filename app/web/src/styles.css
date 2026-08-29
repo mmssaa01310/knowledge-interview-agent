@@ -323,9 +323,25 @@ input:disabled {
   min-width: 0;
 }
 
-.sub-nav-return {
-  margin-left: auto;
-  flex: 0 0 auto;
+.page-header-copy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.page-header-back {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #245f9f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.page-header-back:hover {
+  color: #173f6b;
+  text-decoration: underline;
 }
 
 .sub-nav-item {

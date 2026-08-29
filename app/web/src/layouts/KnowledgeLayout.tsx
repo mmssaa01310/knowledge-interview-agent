@@ -50,6 +50,15 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
     <>
       <PageHeader
         title={props.selectedKnowledge.name}
+        backAction={
+          <button
+            type="button"
+            className="page-header-back"
+            onClick={() => props.navigate("/knowledge-dbs")}
+          >
+            ← ナレッジ一覧
+          </button>
+        }
         actions={canManageKnowledge && props.route.name !== "knowledge-settings" ? (
           <button
             type="button"

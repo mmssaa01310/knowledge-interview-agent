@@ -33,13 +33,6 @@ export function KnowledgeSubNav({ knowledgeDbId, knowledgeId, activePath, onNavi
           );
         })}
       </div>
-      <button
-        type="button"
-        className="sub-nav-item sub-nav-return"
-        onClick={() => onNavigate(`/knowledge-dbs/${knowledgeDbId}`)}
-      >
-        ナレッジ一覧に戻る
-      </button>
     </nav>
   );
 }
