@@ -1,0 +1,30 @@
+{
+  "mainNavigation": "การนำทางหลัก",
+  "workspaceNavigation": "การนำทางพื้นที่ทำงาน",
+  "workspace": "พื้นที่ทำงาน",
+  "knowledge": "คลังความรู้",
+  "settings": "การตั้งค่า",
+  "systemSettings": "การตั้งค่าระบบ",
+  "knowledgeList": "รายการคลังความรู้",
+  "interview": "การสัมภาษณ์",
+  "records": "บันทึก",
+  "knowledgeMenu": "เมนูคลังความรู้",
+  "navOpen": "เปิดแถบด้านข้าง",
+  "navClose": "ปิดแถบด้านข้าง",
+  "developmentUser": "ผู้ใช้สำหรับการพัฒนา",
+  "loggedIn": "เข้าสู่ระบบแล้ว",
+  "disconnected": "ยังไม่เชื่อมต่อ",
+  "roles": {
+    "admin": "ผู้ดูแลระบบ",
+    "knowledge_manager": "ผู้ดูแลคลังความรู้",
+    "interviewer": "ผู้ให้สัมภาษณ์",
+    "viewer": "ผู้ดู"
+  },
+  "backToKnowledgeList": "กลับไปยังรายการคลังความรู้",
+  "knowledgeArea": "คลังความรู้",
+  "knowledgeAreaDescription": "จัดระเบียบข้อมูลที่ได้จากบทสนทนา",
+  "knowledgeRequired": "สร้างหรือเลือกคลังความรู้",
+  "newKnowledge": "คลังความรู้ใหม่",
+  "createKnowledge": "สร้างคลังความรู้",
+  "knowledgeSelected": "คลังความรู้ที่เลือก"
+}

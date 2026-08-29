@@ -1,4 +1,6 @@
 import type { AiProposal } from "../../../lib/api";
+import { useI18n } from "../../../i18n";
+import { formatPercent } from "../../../lib/date";
 
 type AiProposalCardProps = {
   proposal: AiProposal;
@@ -9,12 +11,17 @@ type AiProposalCardProps = {
 };
 
 export function AiProposalCard({ proposal, onApply, onApprove, onReject, onRemove }: AiProposalCardProps) {
+  const { t, locale } = useI18n();
+  const statusLabel = t(`interview.proposal.status.${proposal.status}`);
+  const approvalMethodLabel = proposal.approvalMethod
+    ? t(`interview.proposal.approvalMethods.${proposal.approvalMethod}`)
+    : "";
   return (
     <article className="proposal-card">
       <div className="proposal-meta">
-        <span className="status-pill muted">{proposal.status}</span>
-        <span>信頼度 {Math.round(proposal.confidence * 100)}%</span>
-        {proposal.approvalMethod ? <span>承認方式 {proposal.approvalMethod}</span> : null}
+        <span className="status-pill muted">{statusLabel === `interview.proposal.status.${proposal.status}` ? proposal.status : statusLabel}</span>
+        <span>{t("interview.proposal.confidence", { value: formatPercent(proposal.confidence, locale) })}</span>
+        {approvalMethodLabel ? <span>{t("interview.proposal.approvalMethod", { method: approvalMethodLabel })}</span> : null}
       </div>
       <div className="proposal-fields">
         {Object.entries(proposal.structuredData).map(([key, value]) => (
@@ -25,12 +32,12 @@ export function AiProposalCard({ proposal, onApply, onApprove, onReject, onRemov
         ))}
       </div>
       <div className="actions">
-        <button className="ghost compact" onClick={() => onApply(proposal)}>修正して反映</button>
+        <button className="ghost compact" onClick={() => onApply(proposal)}>{t("interview.proposal.apply")}</button>
         <button className="primary compact" onClick={() => onApprove(proposal.id)} disabled={proposal.status === "approved"}>
-          個別承認
+          {t("interview.proposal.approve")}
         </button>
-        <button className="ghost compact" onClick={() => onReject(proposal.id)} disabled={proposal.status === "rejected"}>差し戻し</button>
-        <button className="danger compact" onClick={() => onRemove(proposal.id)}>削除</button>
+        <button className="ghost compact" onClick={() => onReject(proposal.id)} disabled={proposal.status === "rejected"}>{t("interview.proposal.reject")}</button>
+        <button className="danger compact" onClick={() => onRemove(proposal.id)}>{t("interview.proposal.delete")}</button>
       </div>
     </article>
   );

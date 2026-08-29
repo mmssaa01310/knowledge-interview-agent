@@ -1,12 +1,15 @@
+import { useI18n } from "../i18n";
+
 export function SettingsPage() {
+  const { t } = useI18n();
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2>設定</h2>
+          <h2>{t("common.settings")}</h2>
         </div>
       </div>
-      <p className="empty">設定項目は準備中です。</p>
+      <p className="empty">{t("common.preparing")}</p>
     </section>
   );
 }

@@ -22,6 +22,7 @@ import {
   type DocumentSummary
 } from "../features/documents/api/documentApi";
 import { ApiError } from "../lib/api";
+import { useI18n, type Translate } from "../i18n";
 import {
   approveAllProposals,
   approveProposal,
@@ -97,7 +98,6 @@ function isSameInterviewAnswerTarget(
     && (left.targetId ?? null) === (right.targetId ?? null);
 }
 
-const INTERVIEW_ERROR_REPLY = "一時的にAI応答を生成できませんでした。少し時間をおいて再度送信してください。";
 const LAST_KNOWLEDGE_ID_STORAGE_KEY = "ai-interviewer.last-knowledge-id";
 
 function getLastKnowledgeId() {
@@ -116,7 +116,7 @@ function rememberKnowledge(knowledgeId: string) {
   }
 }
 
-function createAccessibleKnowledgeDb(knowledge: Knowledge, knowledgeCount: number): KnowledgeDb {
+function createAccessibleKnowledgeDb(knowledge: Knowledge, knowledgeCount: number, t: Translate): KnowledgeDb {
   return {
     id: knowledge.knowledgeDbId,
     tenantId: knowledge.tenantId,
@@ -124,33 +124,35 @@ function createAccessibleKnowledgeDb(knowledge: Knowledge, knowledgeCount: numbe
     updatedByUserId: knowledge.updatedByUserId,
     createdAt: knowledge.createdAt,
     updatedAt: knowledge.updatedAt,
-    name: "ナレッジ領域",
+    name: t("navigation.knowledgeArea"),
     language: knowledge.language,
     status: "active",
     knowledgeCount,
   };
 }
 
-function getSettingsSaveErrorMessage(error: unknown, tabLabel: string) {
+function getSettingsSaveErrorMessage(error: unknown, tabLabel: string, t: Translate) {
   if (error instanceof ApiError && error.status === 409) {
     if (error.detail === "interview_profile_change_not_allowed_after_start") {
-      return `${tabLabel}を保存できませんでした。既に開始済みのインタビューがあるため、インタビュー用途は変更できません。用途を元に戻すか、新しいナレッジで設定してください。`;
+      return t("errors.settingsLocked", { tab: tabLabel });
     }
   }
 
-  return `${tabLabel}を保存できませんでした。通信状態を確認して、もう一度お試しください。`;
+  return t("errors.settingsSave", { tab: tabLabel });
 }
 
 export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceControllerArgs) {
+  const { t, locale } = useI18n();
+
   function buildDefaultRecordTitle() {
-    const base = selectedKnowledge?.targetEquipment || selectedKnowledge?.name || "新規インタビュー記録";
-    const timestamp = new Date().toLocaleString("ja-JP", {
+    const base = selectedKnowledge?.targetEquipment || selectedKnowledge?.name || t("navigation.newKnowledge");
+    const timestamp = new Date().toLocaleString(locale, {
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit"
     });
-    return `${base} インタビュー ${timestamp}`;
+    return `${base} ${t("navigation.interview")} ${timestamp}`;
   }
 
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -269,11 +271,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
           id: `interview-error-${pending?.clientMessageId ?? Date.now()}`,
           recordId: selectedRecordId,
           role: "assistant",
-          text: INTERVIEW_ERROR_REPLY,
+          text: t("errors.interviewReplyFailed"),
         }]));
         setStreamingInterviewReply("");
         setIsInterviewStreaming(false);
-        setRecordNotice("回答処理に失敗しました。内容を確認して、もう一度送信してください。");
+        setRecordNotice(t("errors.interviewReplyFailed"));
         if (pending) {
           setChatInput(pending.content);
         }
@@ -320,7 +322,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       const pending = pendingInterviewSubmissionRef.current;
       setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
-      setRecordNotice("AI応答の受信に失敗しました");
+      setRecordNotice(t("errors.interviewResponseReceiveFailed"));
       if (pending) {
         setChatInput(pending.content);
       }
@@ -425,7 +427,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       recordsByDb.set(knowledge.knowledgeDbId, [...currentKnowledges, knowledge]);
     });
     const nextKnowledgeDbs = [...recordsByDb.values()].map((dbKnowledges) => (
-      createAccessibleKnowledgeDb(dbKnowledges[0], dbKnowledges.length)
+      createAccessibleKnowledgeDb(dbKnowledges[0], dbKnowledges.length, t)
     ));
 
     setKnowledgeDbs(nextKnowledgeDbs);
@@ -556,8 +558,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       }
       if (dbs.length === 0) {
         const defaultDb = await createKnowledgeDb({
-          name: "ナレッジ領域",
-          description: "ナレッジを管理する内部領域",
+          name: t("navigation.knowledgeArea"),
+          description: t("navigation.knowledgeAreaDescription"),
           category: "knowledge",
           language: "ja"
         });
@@ -567,7 +569,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       args.navigate(`/knowledge-dbs/${dbs[0].id}/knowledges/new`);
     } catch (error) {
       console.error("Failed to prepare knowledge creation", error);
-      setKnowledgeCreationError("ナレッジ作成の準備に失敗しました。もう一度お試しください。");
+      setKnowledgeCreationError(t("errors.knowledgePrepareFailed"));
     } finally {
       setIsPreparingKnowledgeCreation(false);
     }
@@ -582,7 +584,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       ? knowledgeDbs.find((db) => db.id === knowledgeDbId) ?? null
       : selectedKnowledgeDb;
     if (!targetKnowledgeDb) {
-      setKnowledgeCreationError("ナレッジの保存先を確認できませんでした。");
+      setKnowledgeCreationError(t("errors.knowledgeTargetMissing"));
       return;
     }
 
@@ -601,13 +603,13 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       args.navigate(`/knowledge-dbs/${targetKnowledgeDb.id}/knowledges/${knowledge.id}/settings`);
     }).catch((error) => {
       console.error("Failed to create knowledge", error);
-      setKnowledgeCreationError("ナレッジを作成できませんでした。もう一度お試しください。");
+      setKnowledgeCreationError(t("errors.knowledgeCreateFailed"));
     });
   }
 
   async function handleDeleteKnowledge(knowledgeId: string) {
     if (!selectedKnowledgeDb) return;
-    if (!window.confirm("このナレッジを削除します。関連する記録・文書の参照に注意してください。")) return;
+    if (!window.confirm(t("errors.knowledgeDeleteConfirm"))) return;
     await deleteKnowledge(knowledgeId);
     const nextKnowledges = await loadKnowledgeWorkspace(selectedKnowledgeDb.id);
     const nextKnowledgeId = nextKnowledges[0]?.id;
@@ -616,12 +618,12 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
   async function handleSaveSettings(activeTab: "fields" | "execution") {
     const tabLabel = activeTab === "execution"
-      ? "インタビュー設定"
-      : "質問項目";
+      ? t("settings.title")
+      : t("settings.tabs.fields");
     if (!selectedKnowledgeDb || !selectedKnowledge || settingsSaveState === "saving") return;
 
     setSettingsSaveState("saving");
-    setSettingsNotice(`${tabLabel}を保存しています…`);
+    setSettingsNotice(t("settings.messages.saving", { tab: tabLabel }));
     try {
       const interviewPlan = activeTab === "execution"
         ? {
@@ -661,11 +663,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       await loadKnowledgeDbs();
       await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
       setSettingsSaveState("success");
-      setSettingsNotice(`${tabLabel}を保存しました`);
+      setSettingsNotice(t("settings.messages.saved", { tab: tabLabel }));
     } catch (error) {
       console.error("Failed to save knowledge settings", error);
       setSettingsSaveState("error");
-      setSettingsNotice(getSettingsSaveErrorMessage(error, tabLabel));
+      setSettingsNotice(getSettingsSaveErrorMessage(error, tabLabel, t));
     }
   }
 
@@ -682,7 +684,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   async function handleCreateRecord() {
     if (!selectedKnowledgeDb || !selectedKnowledge) return;
     if (!isInterviewConfigurationComplete(selectedKnowledge)) {
-      setRecordNotice("インタビュー設定で用途と実行モデルを保存してから、記録を作成してください。");
+      setRecordNotice(t("errors.configurationRequired"));
       args.navigate(`/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}/settings`);
       return;
     }
@@ -700,22 +702,22 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       console.error("Failed to create interview record", error);
       setRecordNotice(
         error instanceof ApiError && error.detail === "interview_configuration_required"
-          ? "インタビュー設定で用途と実行モデルを保存してから、記録を作成してください。"
-          : "記録を作成できませんでした。通信状態を確認して、もう一度お試しください。",
+          ? t("errors.configurationRequired")
+          : t("errors.recordCreate"),
       );
     }
   }
 
   async function handleDeleteRecord(recordId: string) {
     if (!selectedKnowledgeDb || !selectedKnowledge) return;
-    if (!window.confirm("この記録を削除します。")) return;
+    if (!window.confirm(t("errors.recordDeleteConfirm"))) return;
     try {
       await deleteRecord(recordId);
       await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
-      setRecordNotice("記録を削除しました");
+      setRecordNotice(t("errors.recordDeleted"));
     } catch (error) {
       console.error("Failed to delete interview record", error);
-      setRecordNotice("記録を削除できませんでした。権限と通信状態を確認してください。");
+      setRecordNotice(t("errors.recordDeleteFailed"));
     }
   }
 
@@ -731,16 +733,16 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       }
       setRecordNotice(
         status === "submitted"
-          ? "記録を確認待ちにしました"
+          ? t("errors.recordStatusSubmitted")
           : status === "approved"
-            ? "記録を承認しました"
+            ? t("errors.recordStatusApproved")
             : status === "returned"
-              ? "記録を修正依頼にしました"
-              : "記録を更新しました",
+              ? t("errors.recordStatusReturned")
+              : t("errors.recordStatusUpdated"),
       );
     } catch (error) {
       console.error("Failed to change record status", error);
-      setRecordNotice("記録の状態を変更できませんでした");
+      setRecordNotice(t("errors.recordStatusFailed"));
     }
   }
 
@@ -755,21 +757,21 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
       setRecordNotice(
         status === "approved"
-          ? "記録を承認しました"
+          ? t("errors.recordStatusApproved")
           : status === "returned"
-            ? "記録を修正依頼にしました"
-            : "記録を更新しました",
+            ? t("errors.recordStatusReturned")
+            : t("errors.recordStatusUpdated"),
       );
     } catch (error) {
       console.error("Failed to change record status", error);
-      setRecordNotice("記録の状態を変更できませんでした");
+      setRecordNotice(t("errors.recordStatusFailed"));
     }
   }
 
   async function handleBulkApproveRecords() {
     if (!selectedRecordIds.length) return;
     confirmApproveAll({
-      message: `${selectedRecordIds.length}件の記録で承認可能なAI提案のみ一括承認します。対象外条件は自動で除外されます。`,
+      message: t("errors.bulkApproveConfirm", { count: selectedRecordIds.length }),
       onConfirm: () => {
         bulkApproveRecords(selectedRecordIds).then(async () => {
           setSelectedRecordIds([]);
@@ -783,7 +785,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
   function handleSaveInterviewDraft() {
     if (!selectedRecord?.id) return;
-    setRecordNotice("インタビュー状態は自動保存されています");
+    setRecordNotice(t("errors.interviewAutosaved"));
   }
 
   async function handleSaveProcessModel(
@@ -828,25 +830,25 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     try {
       await updateInterviewAnswer(selectedRecord.id, fieldId, recordAnswer);
       await loadInterviewSnapshot(selectedRecord.id);
-      setRecordNotice("回答を保存しました");
+      setRecordNotice(t("errors.answerSaved"));
     } catch (error) {
       console.error("Failed to save interview answer", error);
-      setRecordNotice("回答を保存できませんでした");
+      setRecordNotice(t("errors.answerSaveFailed"));
     }
   }
 
   function handleDeleteInterviewAnswers() {
     if (!selectedRecord?.id) return;
-    if (!window.confirm("この質問と回答の入力内容を削除します。")) return;
+    if (!window.confirm(t("errors.answersDeleteConfirm"))) return;
 
     setStructuredDraft({});
     setInterviewAnswerOverrides({});
-    setRecordNotice("質問と回答を削除しました");
+    setRecordNotice(t("errors.answersDeleted"));
   }
 
   function handleDeleteInterviewChat() {
     if (!selectedRecord?.id) return;
-    if (!window.confirm("このチャット履歴を削除します。")) return;
+    if (!window.confirm(t("errors.chatDeleteConfirm"))) return;
 
     setChatInput("");
     setInterviewMessages([]);
@@ -857,7 +859,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setDeletedExtraQuestionIds([]);
     pendingInterviewSubmissionRef.current = null;
     setIsInterviewStreaming(false);
-    setRecordNotice("チャットを削除しました");
+    setRecordNotice(t("errors.chatDeleted"));
   }
 
   function handleStartInterview() {
@@ -923,7 +925,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       console.error("Failed to send interview message", error);
       setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
-      setRecordNotice("メッセージを送信できませんでした");
+      setRecordNotice(t("errors.messageSendFailed"));
       setChatInput(content);
     }
   }
@@ -952,7 +954,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       return;
     }
     loadInterviewSnapshot(selectedRecord.id).catch(() => {
-      setRecordNotice("インタビュー状態の取得に失敗しました");
+      setRecordNotice(t("errors.interviewStateLoadFailed"));
     });
   }
 
@@ -964,7 +966,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   async function handleApproveAllForRecord() {
     if (!selectedRecord) return;
     confirmApproveAll({
-      message: "承認可能なAI提案のみ全承認します。必須項目未入力、信頼度不足、権限なし、差し戻し済み、エラー、承認済みは対象外です。",
+      message: t("errors.recordApproveAllConfirm"),
       onConfirm: () => {
         approveAllProposals(selectedRecord.id).then(() => refreshSelectedRecord(selectedRecord.id));
       }
@@ -1047,7 +1049,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setInterviewStreamMetadata(null);
     pendingInterviewSubmissionRef.current = null;
     loadInterviewSnapshot(selectedRecord.id).catch(() => {
-      setRecordNotice("インタビュー状態の取得に失敗しました");
+      setRecordNotice(t("errors.interviewStateLoadFailed"));
     });
   }, [selectedKnowledge?.id, selectedRecord?.id]);
 

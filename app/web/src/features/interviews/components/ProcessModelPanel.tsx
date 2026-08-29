@@ -13,6 +13,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ApiError } from "../../../lib/api";
+import { useI18n, type Translate } from "../../../i18n";
+import { formatNumber } from "../../../lib/date";
 import type { InterviewState, ProcessModelState } from "../../../types/app";
 
 type ProcessCollection = "participants" | "nodes" | "edges" | "interactions";
@@ -70,7 +72,7 @@ function FlowchartNode({ data }: NodeProps<FlowchartNodeType>) {
   return (
     <div className={`flowchart-node flowchart-node-${shape}${data.candidate ? " is-candidate" : ""}`}>
       <Handle type="target" position={Position.Top} />
-      <span>{text(data.label, "未命名処理")}</span>
+      <span>{text(data.label, "")}</span>
       <Handle type="source" position={Position.Bottom} />
     </div>
   );
@@ -78,7 +80,7 @@ function FlowchartNode({ data }: NodeProps<FlowchartNodeType>) {
 
 const flowchartNodeTypes: NodeTypes = { flowchart: FlowchartNode };
 
-function buildFlowchart(processState: ProcessModelState): Graph {
+function buildFlowchart(processState: ProcessModelState, t: Translate): Graph {
   const nodes = (processState.nodes ?? [])
     .filter((node) => node.lifecycle !== "superseded")
     .map((node, index): Node => {
@@ -88,7 +90,7 @@ function buildFlowchart(processState: ProcessModelState): Graph {
         id: text(node.nodeId, `node-${index}`),
         type: "flowchart",
         position: { x: (index % 3) * 230, y: Math.floor(index / 3) * 110 },
-        data: { label: text(node.label, "未命名処理"), nodeType, candidate: isCandidate },
+        data: { label: text(node.label, t("interview.process.unnamedProcess")), nodeType, candidate: isCandidate },
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
         style: {
@@ -119,7 +121,7 @@ function buildFlowchart(processState: ProcessModelState): Graph {
   return { nodes, edges };
 }
 
-function buildSequence(processState: ProcessModelState): Graph {
+function buildSequence(processState: ProcessModelState, t: Translate): Graph {
   const participants = (processState.participants ?? []).filter(
     (participant) => participant.lifecycle !== "superseded",
   );
@@ -128,7 +130,7 @@ function buildSequence(processState: ProcessModelState): Graph {
     return {
       id: text(participant.participantId, `participant-${index}`),
       position: { x: index * 210, y: 20 },
-      data: { label: text(participant.name, "関係者") },
+      data: { label: text(participant.name, t("interview.process.participant")) },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       style: {
@@ -155,7 +157,7 @@ function buildSequence(processState: ProcessModelState): Graph {
       id: text(interaction.interactionId, `interaction-${index}`),
       source: text(interaction.sourceParticipantId, ""),
       target: text(interaction.targetParticipantId, ""),
-      label: text(interaction.action, "やり取り"),
+      label: text(interaction.action, t("interview.process.interaction")),
       type: "smoothstep",
       markerEnd: { type: MarkerType.ArrowClosed },
       style: interaction.confirmationStatus === "confirmed" ? undefined : { strokeDasharray: "5 4" },
@@ -163,7 +165,7 @@ function buildSequence(processState: ProcessModelState): Graph {
   return { nodes, edges };
 }
 
-function SequenceDiagram({ graph }: { graph: Graph }) {
+function SequenceDiagram({ graph, t }: { graph: Graph; t: Translate }) {
   const participants = graph.nodes;
   const messages = graph.edges;
   const marginX = 100;
@@ -179,7 +181,7 @@ function SequenceDiagram({ graph }: { graph: Graph }) {
   );
 
   return (
-    <div className="sequence-diagram-scroll" role="img" aria-label="UMLシーケンス図">
+    <div className="sequence-diagram-scroll" role="img" aria-label={t("interview.process.umlAria")}>
       <svg className="sequence-diagram" viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
         <defs>
           <marker id="sequence-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
@@ -188,7 +190,7 @@ function SequenceDiagram({ graph }: { graph: Graph }) {
         </defs>
         {participants.map((participant) => {
           const x = participantPositions.get(participant.id) ?? marginX;
-          const label = text(participant.data?.label, "関係者");
+          const label = text(participant.data?.label, t("interview.process.participant"));
           return (
             <g key={participant.id}>
               <rect x={x - 85} y={headerY} width="170" height={headerHeight} rx="4" className="sequence-participant-box" />
@@ -203,7 +205,7 @@ function SequenceDiagram({ graph }: { graph: Graph }) {
           const sourceX = participantPositions.get(message.source) ?? marginX;
           const targetX = participantPositions.get(message.target) ?? marginX;
           const y = messageStartY + index * messageRowHeight;
-          const label = text(message.label, "やり取り");
+          const label = text(message.label, t("interview.process.interaction"));
           const isCandidate = message.style?.strokeDasharray;
           const isSelfMessage = sourceX === targetX;
           const messagePath = isSelfMessage
@@ -233,9 +235,9 @@ function SequenceDiagram({ graph }: { graph: Graph }) {
   );
 }
 
-function ProcessGraph({ graph, view }: { graph: Graph; view: "flowchart" | "sequence" }) {
+function ProcessGraph({ graph, view, t }: { graph: Graph; view: "flowchart" | "sequence"; t: Translate }) {
   if (view === "sequence") {
-    return <SequenceDiagram graph={graph} />;
+    return <SequenceDiagram graph={graph} t={t} />;
   }
 
   return (
@@ -276,37 +278,39 @@ function ProcessEditor({
   view,
   processState,
   onChange,
+  t,
 }: {
   view: "flowchart" | "sequence";
   processState: ProcessModelState;
   onChange: (collection: ProcessCollection, index: number, changes: ProcessEntity) => void;
+  t: Translate;
 }) {
   if (view === "flowchart") {
     return (
-      <div className="process-editor-panel" aria-label="フローチャート編集">
+      <div className="process-editor-panel" aria-label={t("interview.process.editorFlowchartAria")}>
         <div className="process-editor-section">
-          <strong>処理</strong>
+          <strong>{t("interview.process.unnamedProcess")}</strong>
           {(processState.nodes ?? []).map((node, index) => (
             <label className="process-editor-row" key={text(node.nodeId, `node-${index}`)}>
-              <span>{text(node.nodeType, "activity") === "decision" ? "分岐" : "処理"}</span>
+              <span>{text(node.nodeType, "activity") === "decision" ? t("interview.process.decision") : t("interview.process.unnamedProcess")}</span>
               <input
                 value={text(node.label, "")}
                 onChange={(event) => onChange("nodes", index, { label: event.target.value })}
-                aria-label={`処理 ${index + 1} の名称`}
+                aria-label={t("interview.process.nodeNameAria", { index: index + 1 })}
               />
             </label>
           ))}
         </div>
         <div className="process-editor-section">
-          <strong>つながり・条件</strong>
+          <strong>{t("interview.process.connection")}</strong>
           {(processState.edges ?? []).map((edge, index) => (
             <label className="process-editor-row" key={text(edge.edgeId, `edge-${index}`)}>
-              <span>{`${text(edge.sourceNodeId, "開始")} → ${text(edge.targetNodeId, "終了")}`}</span>
+              <span>{`${text(edge.sourceNodeId, t("interview.process.start"))} → ${text(edge.targetNodeId, t("interview.process.end"))}`}</span>
               <input
                 value={text(edge.label ?? edge.condition, "")}
                 onChange={(event) => onChange("edges", index, { label: event.target.value })}
-                aria-label={`つながり ${index + 1} の条件`}
-                placeholder="条件（任意）"
+                aria-label={t("interview.process.edgeConditionAria", { index: index + 1 })}
+                placeholder={t("interview.process.optionalCondition")}
               />
             </label>
           ))}
@@ -316,22 +320,22 @@ function ProcessEditor({
   }
 
   return (
-    <div className="process-editor-panel" aria-label="シーケンス図編集">
+    <div className="process-editor-panel" aria-label={t("interview.process.editorSequenceAria")}>
       <div className="process-editor-section">
-        <strong>関係者</strong>
+        <strong>{t("interview.process.participantSection")}</strong>
         {(processState.participants ?? []).map((participant, index) => (
           <label className="process-editor-row" key={text(participant.participantId, `participant-${index}`)}>
-            <span>関係者 {index + 1}</span>
+            <span>{t("interview.process.participantName", { index: index + 1 })}</span>
             <input
               value={text(participant.name, "")}
               onChange={(event) => onChange("participants", index, { name: event.target.value })}
-              aria-label={`関係者 ${index + 1} の名称`}
+              aria-label={t("interview.process.participantNameAria", { index: index + 1 })}
             />
           </label>
         ))}
       </div>
       <div className="process-editor-section">
-        <strong>やり取り</strong>
+        <strong>{t("interview.process.interactionSection")}</strong>
         {[...(processState.interactions ?? [])]
           .sort((left, right) => number(left.sequence, 0) - number(right.sequence, 0))
           .map((interaction, index) => {
@@ -340,11 +344,11 @@ function ProcessEditor({
             );
             return (
               <label className="process-editor-row" key={text(interaction.interactionId, `interaction-${index}`)}>
-                <span>{`${number(interaction.sequence, index + 1)}. ${text(interaction.action, "やり取り")}`}</span>
+                <span>{t("interview.process.numberedInteraction", { index: number(interaction.sequence, index + 1), action: text(interaction.action, t("interview.process.interaction")) })}</span>
                 <input
                   value={text(interaction.action, "")}
                   onChange={(event) => onChange("interactions", sourceIndex, { action: event.target.value })}
-                  aria-label={`やり取り ${index + 1} の内容`}
+                  aria-label={t("interview.process.interactionContentAria", { index: index + 1 })}
                 />
               </label>
             );
@@ -354,45 +358,45 @@ function ProcessEditor({
   );
 }
 
-function processModelErrorMessage(error: unknown, action: "save" | "command") {
+function processModelErrorMessage(error: unknown, action: "save" | "command", t: Translate) {
   if (error instanceof ApiError) {
     if (error.status === 409 || error.detail === "process_model_version_conflict") {
-      return "別の更新が反映されています。画面を更新してから、もう一度お試しください。";
+      return t("errors.processVersionConflict");
     }
     if (error.detail === "process_model_not_available") {
-      return "このインタビューには、まだ編集できる処理モデルがありません。";
+      return t("errors.processUnavailable");
     }
     if (error.detail === "process_model_edit_not_allowed_after_approval") {
-      return "承認済みの記録は直接編集できません。新しい記録を作成してください。";
+      return t("errors.processEditAfterApproval");
     }
     if (error.detail === "process_model_edit_failed") {
-      return "指示を処理できませんでした。内容を短くして、もう一度お試しください。";
+      return t("errors.processCommandFailed");
     }
     if (error.detail === "interview_state_version_conflict") {
-      return "インタビューの状態が更新されています。画面を更新してから、もう一度お試しください。";
+      return t("errors.interviewVersionConflict");
     }
     if (error.detail === "requirement_entity_not_found") {
-      return "更新対象の要件を特定できませんでした。要件名を含めて、もう一度指示してください。";
+      return t("errors.processTargetNotFound");
     }
     if (error.detail === "requirement_state_not_available") {
-      return "この記録には編集できる要件情報がありません。";
+      return t("errors.requirementUnavailable");
     }
     if (error.detail === "requirement_value_required") {
-      return "要件の変更内容を指定してください。";
+      return t("errors.requirementValueRequired");
     }
     if (error.detail === "invalid_interview_state_version") {
-      return "インタビュー状態を読み込めませんでした。画面を更新してください。";
+      return t("errors.invalidInterviewState");
     }
     if (error.status === 422) {
-      return "要件または処理モデルの変更対象を特定できませんでした。要件名や処理名を含めて指示してください。";
+      return t("errors.processTargetNotFound");
     }
     if (error.detail === "network_error") {
-      return "接続に失敗しました。通信状態を確認して、もう一度お試しください。";
+      return t("errors.connectionFailed");
     }
   }
   return action === "save"
-    ? "処理モデルを保存できませんでした。もう一度お試しください。"
-    : "指示を反映できませんでした。もう一度お試しください。";
+    ? t("errors.processSaveFailed")
+    : t("errors.processCommandFailed");
 }
 
 export function ProcessModelPanel({
@@ -401,6 +405,7 @@ export function ProcessModelPanel({
   onSaveProcessModel,
   onEditProcessModel,
 }: ProcessModelPanelProps) {
+  const { t, locale } = useI18n();
   const [view, setView] = useState<"flowchart" | "sequence">("flowchart");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -412,8 +417,8 @@ export function ProcessModelPanel({
   const [notice, setNotice] = useState("");
   const processState = interviewState?.processState;
   const editableProcessState = draftProcessState ?? processState ?? {};
-  const flowchart = useMemo(() => buildFlowchart(editableProcessState), [editableProcessState]);
-  const sequence = useMemo(() => buildSequence(editableProcessState), [editableProcessState]);
+  const flowchart = useMemo(() => buildFlowchart(editableProcessState, t), [editableProcessState, t]);
+  const sequence = useMemo(() => buildSequence(editableProcessState, t), [editableProcessState, t]);
   const isStructuredProfile = interviewState?.interviewProfile === "business_process"
     || interviewState?.interviewProfile === "system_requirement";
   const processStatus = interviewState?.interviewProfile === "business_process"
@@ -490,9 +495,9 @@ export function ProcessModelPanel({
       await onSaveProcessModel(draftProcessState, baseProcessVersion, baseStateVersion);
       setDraftProcessState(null);
       setIsEditing(false);
-      setNotice("修正を保存しました。");
+      setNotice(t("interview.process.saved"));
     } catch (error) {
-      setNotice(processModelErrorMessage(error, "save"));
+      setNotice(processModelErrorMessage(error, "save", t));
     } finally {
       setIsSaving(false);
     }
@@ -502,7 +507,7 @@ export function ProcessModelPanel({
     const instruction = commandInput.trim();
     if (!instruction || isSendingCommand) return;
     if (hasUnsavedChanges) {
-      setNotice("手動修正を先に保存してから、指示を送信してください。");
+      setNotice(t("interview.process.manualSaveFirst"));
       return;
     }
     setCommandInput("");
@@ -515,7 +520,7 @@ export function ProcessModelPanel({
     } catch (error) {
       setCommandMessages((current) => [
         ...current,
-        { role: "error" as const, text: processModelErrorMessage(error, "command") },
+        { role: "error" as const, text: processModelErrorMessage(error, "command", t) },
       ].slice(-4));
     } finally {
       setIsSendingCommand(false);
@@ -527,6 +532,7 @@ export function ProcessModelPanel({
       view={view}
       processState={draftProcessState}
       onChange={handleDraftChange}
+      t={t}
     />
   ) : null;
 
@@ -536,7 +542,7 @@ export function ProcessModelPanel({
         <div className="process-command-history" aria-live="polite">
           {commandMessages.slice(-3).map((message, index) => (
             <p className={`process-command-message ${message.role}`} key={`${message.role}-${index}-${message.text}`}>
-              <span>{message.role === "user" ? "あなた" : message.role === "assistant" ? "AI" : "通知"}</span>
+              <span>{message.role === "user" ? t("common.user") : message.role === "assistant" ? t("common.ai") : t("common.notification")}</span>
               {message.text}
             </p>
           ))}
@@ -553,8 +559,8 @@ export function ProcessModelPanel({
             }
           }}
           disabled={isSendingCommand || hasUnsavedChanges}
-          placeholder="例：検索結果に一致度スコアを表示し、高い順に並べる"
-          aria-label="要件・処理モデルへの編集指示"
+          placeholder={t("interview.process.commandPlaceholder")}
+          aria-label={t("interview.process.commandAria")}
         />
         <button
           type="button"
@@ -562,46 +568,46 @@ export function ProcessModelPanel({
           onClick={() => void handleSendCommand()}
           disabled={!commandInput.trim() || isSendingCommand || hasUnsavedChanges}
         >
-          {isSendingCommand ? "反映中…" : "送信"}
+          {isSendingCommand ? t("interview.process.applying") : t("common.send")}
         </button>
       </div>
     </>
   ) : null;
 
   return (
-    <section className="process-model-panel" aria-label="業務フローとシーケンス図">
+    <section className="process-model-panel" aria-label={t("interview.process.ariaLabel")}>
       {processStatus === "unknown" ? (
         <p className="empty process-model-empty">
-          この要望に業務フローがあるか確認しています。
+          {t("interview.process.unknown")}
         </p>
       ) : processStatus === "not_applicable" ? (
         <p className="empty process-model-empty">
-          この要望は、処理フローなしで要件を整理します。
+          {t("interview.process.notApplicable")}
         </p>
       ) : <>
         <div className="process-model-header">
           <div>
-            <strong>処理の流れ</strong>
-            <p>会話から整理した内容です。点線の要素は確認前です。</p>
+            <strong>{t("interview.process.title")}</strong>
+            <p>{t("interview.process.description")}</p>
           </div>
           <div className="process-model-header-actions">
-            <span className="status-pill muted">会話から整理</span>
+            <span className="status-pill muted">{t("interview.process.fromConversation")}</span>
             {hasRenderableGraph ? (
               <button type="button" className="ghost compact" onClick={() => setIsFullscreen(true)}>
-                全画面
+                {t("interview.process.fullscreen")}
               </button>
             ) : null}
           </div>
         </div>
-        <div className="process-model-tabs" role="tablist" aria-label="処理モデル表示切替">
-          <button type="button" role="tab" aria-selected={view === "flowchart"} className={view === "flowchart" ? "active" : ""} onClick={() => setView("flowchart")}>フローチャート</button>
-          <button type="button" role="tab" aria-selected={view === "sequence"} className={view === "sequence" ? "active" : ""} onClick={() => setView("sequence")}>シーケンス図</button>
+        <div className="process-model-tabs" role="tablist" aria-label={t("interview.process.tabAria")}>
+          <button type="button" role="tab" aria-selected={view === "flowchart"} className={view === "flowchart" ? "active" : ""} onClick={() => setView("flowchart")}>{t("interview.process.flowchart")}</button>
+          <button type="button" role="tab" aria-selected={view === "sequence"} className={view === "sequence" ? "active" : ""} onClick={() => setView("sequence")}>{t("interview.process.sequence")}</button>
         </div>
-        {graphReady ? <ProcessGraph graph={activeGraph} view={view} /> : (
+        {graphReady ? <ProcessGraph graph={activeGraph} view={view} t={t} /> : (
           <p className="empty process-model-empty">
             {view === "flowchart"
-              ? "処理の流れを整理しています。情報が集まると、ここにフローチャートが表示されます。"
-              : "関係者間のやり取りを整理しています。情報が集まると、ここにシーケンス図が表示されます。"}
+              ? t("interview.process.flowchartEmpty")
+              : t("interview.process.sequenceEmpty")}
           </p>
         )}
         {view === "sequence" && sequence.edges.length > 0 ? (
@@ -611,9 +617,8 @@ export function ProcessModelPanel({
               .sort((left, right) => number(left.sequence, 0) - number(right.sequence, 0))
               .map((interaction, index) => (
                 <li key={text(interaction.interactionId, `interaction-${index}`)}>
-                  <span>{number(interaction.sequence, index + 1)}</span>
-                  {text(interaction.action, "やり取り")}
-                  {interaction.data ? `（${text(interaction.data, "")}）` : ""}
+                  <span>{formatNumber(number(interaction.sequence, index + 1), locale)}</span>
+                  {interaction.data ? t("interview.process.dataWithValue", { action: text(interaction.action, t("interview.process.interaction")), data: text(interaction.data, "") }) : text(interaction.action, t("interview.process.interaction"))}
                 </li>
               ))}
           </ol>
@@ -622,35 +627,35 @@ export function ProcessModelPanel({
 
       {isFullscreen ? (
         <div className="process-model-backdrop">
-          <section className="process-model-fullscreen" role="dialog" aria-modal="true" aria-label="処理モデル全画面表示">
+          <section className="process-model-fullscreen" role="dialog" aria-modal="true" aria-label={t("interview.process.fullscreenAria")}>
             <div className="process-fullscreen-header">
               <div>
-                <strong>要件・処理モデル</strong>
-                <span>要件、フローチャート、シーケンス図</span>
+                <strong>{t("interview.process.fullscreenTitle")}</strong>
+                <span>{t("interview.process.fullscreenDescription")}</span>
               </div>
               <div className="process-fullscreen-actions">
                 {canEdit && !isEditing ? (
-                  <button type="button" className="ghost" onClick={openEditor}>編集</button>
+                  <button type="button" className="ghost" onClick={openEditor}>{t("interview.process.edit")}</button>
                 ) : null}
                 {canEdit && isEditing ? (
                   <button type="button" className="primary" onClick={() => void handleSave()} disabled={isSaving}>
-                    {isSaving ? "保存中…" : "保存"}
+                    {isSaving ? t("common.saving") : t("interview.process.save")}
                   </button>
                 ) : null}
-                <button type="button" className="ghost" onClick={closeFullscreen} disabled={isSaving}>閉じる</button>
+                <button type="button" className="ghost" onClick={closeFullscreen} disabled={isSaving}>{t("interview.process.close")}</button>
               </div>
             </div>
-            <div className="process-model-tabs" role="tablist" aria-label="全画面の処理モデル表示切替">
-              <button type="button" role="tab" aria-selected={view === "flowchart"} className={view === "flowchart" ? "active" : ""} onClick={() => setView("flowchart")}>フローチャート</button>
-              <button type="button" role="tab" aria-selected={view === "sequence"} className={view === "sequence" ? "active" : ""} onClick={() => setView("sequence")}>シーケンス図</button>
+            <div className="process-model-tabs" role="tablist" aria-label={t("interview.process.fullscreenTabAria")}>
+              <button type="button" role="tab" aria-selected={view === "flowchart"} className={view === "flowchart" ? "active" : ""} onClick={() => setView("flowchart")}>{t("interview.process.flowchart")}</button>
+              <button type="button" role="tab" aria-selected={view === "sequence"} className={view === "sequence" ? "active" : ""} onClick={() => setView("sequence")}>{t("interview.process.sequence")}</button>
             </div>
             <div className={`process-fullscreen-content ${isEditing ? "editing" : ""}`}>
               <div className="process-fullscreen-canvas">
-                {graphReady ? <ProcessGraph graph={activeGraph} view={view} /> : (
+                {graphReady ? <ProcessGraph graph={activeGraph} view={view} t={t} /> : (
                   <p className="empty process-model-empty">
                     {view === "flowchart"
-                      ? "フローチャートの表示に必要な処理とつながりを整理しています。"
-                      : "シーケンス図の表示に必要な関係者とやり取りを整理しています。"}
+                      ? t("interview.process.fullscreenFlowchartEmpty")
+                      : t("interview.process.fullscreenSequenceEmpty")}
                   </p>
                 )}
               </div>

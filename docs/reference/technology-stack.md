@@ -5,6 +5,8 @@
 * React
 * Vite
 * TypeScript
+* i18next
+* react-i18next
 * Tailwind CSS
 * shadcn/ui
 * Radix UI

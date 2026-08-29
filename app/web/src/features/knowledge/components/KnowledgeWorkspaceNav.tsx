@@ -1,4 +1,5 @@
 import type { Knowledge } from "@ai-interviewer/shared-types";
+import { useI18n } from "../../../i18n";
 
 type KnowledgeWorkspaceNavProps = {
   knowledges: Knowledge[];
@@ -26,14 +27,15 @@ export function KnowledgeWorkspaceNav({
   isPreparingKnowledgeCreation = false,
   knowledgeCreationError = ""
 }: KnowledgeWorkspaceNavProps) {
+  const { t } = useI18n();
   const orderedKnowledges = sortKnowledges(knowledges);
 
   return (
     <div className="sidebar-section">
       <div className="workspace-nav-header">
         <div className="sidebar-section-heading">
-          <span className="sidebar-section-kicker">Workspace</span>
-          <strong className="sidebar-section-title"><span className="nav-section-icon" aria-hidden="true">✦</span>ナレッジ</strong>
+          <span className="sidebar-section-kicker">{t("navigation.workspace")}</span>
+          <strong className="sidebar-section-title"><span className="nav-section-icon" aria-hidden="true">✦</span>{t("navigation.knowledge")}</strong>
         </div>
         {canManage ? (
           <button
@@ -41,8 +43,8 @@ export function KnowledgeWorkspaceNav({
             className="workspace-create icon-action"
             onClick={onOpenCreateKnowledge}
             disabled={isPreparingKnowledgeCreation}
-            aria-label="ナレッジを作成"
-            title="ナレッジを作成"
+            aria-label={t("navigation.createKnowledge")}
+            title={t("navigation.createKnowledge")}
           >
             {isPreparingKnowledgeCreation ? "…" : "+"}
           </button>
@@ -50,7 +52,7 @@ export function KnowledgeWorkspaceNav({
       </div>
       {knowledgeCreationError && <p className="workspace-error">{knowledgeCreationError}</p>}
       {orderedKnowledges.length === 0 ? (
-        <p className="workspace-empty">{canManage ? "ナレッジがありません。" : "利用できるナレッジがありません。"}</p>
+        <p className="workspace-empty">{canManage ? t("knowledge.emptyManage") : t("knowledge.emptyView")}</p>
       ) : orderedKnowledges.map((knowledge) => (
         <button
           type="button"
@@ -59,7 +61,7 @@ export function KnowledgeWorkspaceNav({
           onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
         >
           <strong>{knowledge.name}</strong>
-          <span>{knowledge.purpose ?? "用途未設定"}</span>
+          <span>{knowledge.purpose ?? t("knowledge.purposeNotSet")}</span>
         </button>
       ))}
     </div>

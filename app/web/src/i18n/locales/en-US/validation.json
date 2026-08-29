@@ -1,0 +1,5 @@
+{
+  "requiredField": "Enter {field}.",
+  "nameRequired": "Enter a knowledge name.",
+  "promptRequired": "Enter a prompt."
+}

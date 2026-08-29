@@ -1,18 +1,19 @@
 import type { Knowledge } from "@ai-interviewer/shared-types";
+import type { Translate } from "../../i18n";
 
 type InterviewProfile = NonNullable<NonNullable<Knowledge["interviewPlan"]>["profile"]>;
 
 export const DEFAULT_INTERVIEW_MODEL_ID = "global.openai.gpt-5.6-luna" as const;
 
-const profileLabels: Record<InterviewProfile, string> = {
-  fixed_form: "定型情報を聞き取る",
-  business_process: "業務フローを整理する",
-  system_requirement: "システム要件を整理する",
+const profileLabelKeys: Record<InterviewProfile, string> = {
+  fixed_form: "interview.profile.fixed_form",
+  business_process: "interview.profile.business_process",
+  system_requirement: "interview.profile.system_requirement",
 };
 
-const modelLabels: Record<string, string> = {
-  "global.openai.gpt-5.6-terra": "GPT-5.6 Terra",
-  "global.openai.gpt-5.6-luna": "GPT-5.6 Luna",
+const modelLabelKeys: Record<string, string> = {
+  "global.openai.gpt-5.6-terra": "interview.model.terra",
+  "global.openai.gpt-5.6-luna": "interview.model.luna",
 };
 
 export function isInterviewConfigurationComplete(knowledge: Knowledge | null) {
@@ -24,12 +25,14 @@ export function isInterviewConfigurationComplete(knowledge: Knowledge | null) {
   );
 }
 
-export function getInterviewProfileLabel(knowledge: Knowledge | null) {
+export function getInterviewProfileLabel(knowledge: Knowledge | null, translate?: Translate) {
   const profile = knowledge?.interviewPlan?.profile;
-  return profile ? profileLabels[profile] : "未設定";
+  if (!profile) return translate ? translate("interview.profile.notSet") : "";
+  return translate ? translate(profileLabelKeys[profile]) : profile;
 }
 
-export function getInterviewModelLabel(knowledge: Knowledge | null) {
+export function getInterviewModelLabel(knowledge: Knowledge | null, translate?: Translate) {
   const modelId = knowledge?.interviewPlan?.modelId;
-  return modelId ? modelLabels[modelId] ?? modelId : "未設定";
+  if (!modelId) return translate ? translate("common.notSet") : "";
+  return translate ? translate(modelLabelKeys[modelId] ?? "common.unknown") : modelId;
 }

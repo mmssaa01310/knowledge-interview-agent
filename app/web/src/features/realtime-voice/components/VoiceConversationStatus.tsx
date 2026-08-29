@@ -1,4 +1,5 @@
 import type { VoiceConversationStatus } from "../types";
+import { useI18n, type Translate } from "../../../i18n";
 
 type VoiceConversationStatusProps = {
   status: VoiceConversationStatus;
@@ -7,6 +8,7 @@ type VoiceConversationStatusProps = {
 };
 
 export function VoiceConversationStatus(props: VoiceConversationStatusProps) {
+  const { t } = useI18n();
   if (props.status === "idle" && !props.message && !props.partialTranscript) {
     return null;
   }
@@ -14,7 +16,7 @@ export function VoiceConversationStatus(props: VoiceConversationStatusProps) {
   return (
     <div className={`voice-conversation-status ${props.status}`} role={props.status === "error" ? "alert" : "status"}>
       <span className="voice-status-icon">{statusIcon(props.status)}</span>
-      <span>{props.message || statusText(props.status)}</span>
+      <span>{props.message || statusText(props.status, t)}</span>
       {props.partialTranscript ? (
         <span className="voice-partial-transcript">{props.partialTranscript}</span>
       ) : null}
@@ -22,34 +24,34 @@ export function VoiceConversationStatus(props: VoiceConversationStatusProps) {
   );
 }
 
-function statusText(status: VoiceConversationStatus): string {
+function statusText(status: VoiceConversationStatus, t: Translate): string {
   switch (status) {
     case "checking":
-      return "準備を確認しています…";
+      return t("interview.voice.checking");
     case "requesting_microphone":
-      return "マイクを準備しています…";
+      return t("interview.voice.requestingMicrophone");
     case "connecting":
-      return "接続しています…";
+      return t("interview.voice.connecting");
     case "preparing_initial_reply":
-      return "初回質問を準備しています…";
+      return t("interview.voice.initialQuestion");
     case "listening":
-      return "聞いています";
+      return t("interview.voice.listening");
     case "finalizing_transcript":
-      return "発話を確認しています…";
+      return t("interview.voice.finalizingTranscript");
     case "processing_interview":
-      return "回答を考えています…";
+      return t("interview.voice.processingAnswer");
     case "preparing_audio":
-      return "音声を準備しています…";
+      return t("interview.voice.preparingAudio");
     case "processing":
-      return "回答を考えています…";
+      return t("interview.voice.processingAnswer");
     case "speaking":
-      return "インタビュアーが話しています";
+      return t("interview.voice.speaking");
     case "stopping":
-      return "終了しています…";
+      return t("interview.voice.stopping");
     case "completed":
-      return "インタビューが完了しました";
+      return t("interview.voice.completed");
     case "error":
-      return "音声インタビューでエラーが発生しました。";
+      return t("interview.voice.error");
     case "idle":
     default:
       return "";

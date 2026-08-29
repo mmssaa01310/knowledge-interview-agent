@@ -1,4 +1,6 @@
 import type { InterviewState } from "../../../types/app";
+import { useI18n, type Translate } from "../../../i18n";
+import { formatNumber } from "../../../lib/date";
 
 type SystemRequirementProgressPanelProps = {
   interviewState: InterviewState | null;
@@ -34,27 +36,27 @@ const PROCESS_OPTIONAL_IDS = [
 
 const MAX_INLINE_VALUE_LENGTH = 96;
 
-function statusForEntry(entry: RequirementEntry | undefined) {
+function statusForEntry(entry: RequirementEntry | undefined, t: Translate) {
   if (entry?.status === "CONFIRMED") {
-    return { label: "確定", className: "confirmed", symbol: "✓" };
+    return { label: t("interview.system.statusConfirmed"), className: "confirmed", symbol: "✓" };
   }
   if (entry?.status === "AWAITING_CONFIRMATION") {
-    return { label: "確認中", className: "active", symbol: "●" };
+    return { label: t("interview.system.statusChecking"), className: "active", symbol: "●" };
   }
   if (entry?.status === "CANDIDATE_PENDING") {
-    return { label: "候補", className: "candidate", symbol: "△" };
+    return { label: t("interview.system.statusCandidate"), className: "candidate", symbol: "△" };
   }
-  return { label: "未確認", className: "pending", symbol: "○" };
+  return { label: t("interview.system.statusPending"), className: "pending", symbol: "○" };
 }
 
-function processApplicabilityStatus(status: ProcessStatus) {
+function processApplicabilityStatus(status: ProcessStatus, t: Translate) {
   if (status === "present") {
-    return { label: "あり", className: "confirmed", symbol: "✓" };
+    return { label: t("interview.system.statusPresent"), className: "confirmed", symbol: "✓" };
   }
   if (status === "not_applicable") {
-    return { label: "対象外", className: "not-applicable", symbol: "–" };
+    return { label: t("interview.system.statusNotApplicable"), className: "not-applicable", symbol: "–" };
   }
-  return { label: "未確認", className: "pending", symbol: "○" };
+  return { label: t("interview.system.statusPending"), className: "pending", symbol: "○" };
 }
 
 function valueForEntry(entry: RequirementEntry | undefined) {
@@ -73,7 +75,7 @@ function isCurrentTarget(
   return target?.targetType === targetType && target.targetId === targetId;
 }
 
-function RequirementValue({ value }: { value: string }) {
+function RequirementValue({ value, t }: { value: string; t: Translate }) {
   if (!value) return null;
   if (value.length <= MAX_INLINE_VALUE_LENGTH) {
     return <p>{value}</p>;
@@ -81,7 +83,7 @@ function RequirementValue({ value }: { value: string }) {
 
   return (
     <details className="system-progress-value-details">
-      <summary>{value.slice(0, MAX_INLINE_VALUE_LENGTH).trimEnd()}… 全文を表示</summary>
+      <summary>{value.slice(0, MAX_INLINE_VALUE_LENGTH).trimEnd()}… {t("common.fullText")}</summary>
       <p>{value}</p>
     </details>
   );
@@ -90,12 +92,14 @@ function RequirementValue({ value }: { value: string }) {
 function RequirementProgressItem({
   entry,
   current,
+  t,
 }: {
   entry: RequirementEntry | undefined;
   current: boolean;
+  t: Translate;
 }) {
   if (!entry) return null;
-  const status = statusForEntry(entry);
+  const status = statusForEntry(entry, t);
   const value = valueForEntry(entry);
   return (
     <div className={`system-progress-item ${status.className}${current ? " current" : ""}`}>
@@ -106,13 +110,14 @@ function RequirementProgressItem({
         </div>
         <span className={`status-pill ${status.className}`}>{status.label}</span>
       </div>
-      <RequirementValue value={value} />
-      {current ? <span className="system-progress-current">現在の確認対象</span> : null}
+      <RequirementValue value={value} t={t} />
+      {current ? <span className="system-progress-current">{t("interview.system.currentTarget")}</span> : null}
     </div>
   );
 }
 
 export function SystemRequirementProgressPanel({ interviewState }: SystemRequirementProgressPanelProps) {
+  const { t, locale } = useI18n();
   if (!interviewState || interviewState.interviewProfile !== "system_requirement") {
     return null;
   }
@@ -122,26 +127,26 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
     .map((id) => requirementStates[id])
     .filter((entry): entry is RequirementEntry => Boolean(entry));
   const processStatus: ProcessStatus = interviewState.applicabilityState?.process?.status ?? "unknown";
-  const processStateStatus = processApplicabilityStatus(processStatus);
+  const processStateStatus = processApplicabilityStatus(processStatus, t);
   const confirmedRequirementCount = requirementEntries.filter((entry) => entry.status === "CONFIRMED").length;
   const nextTarget = interviewState.nextQuestionTarget;
   const isProcessApplicabilityCurrent = nextTarget?.targetType === "applicability"
     && nextTarget.targetId === "process";
 
   return (
-    <div className="system-requirement-progress" aria-label="システム要件の確認状況">
+    <div className="system-requirement-progress" aria-label={t("interview.system.ariaLabel")}>
       <div className="system-progress-header">
         <div>
-          <strong>要件整理</strong>
-          <p>会話から整理した内容です。候補は確認前です。</p>
+          <strong>{t("interview.system.title")}</strong>
+          <p>{t("interview.system.description")}</p>
         </div>
-        <span className="status-pill muted">{confirmedRequirementCount}/{requirementEntries.length} 確定</span>
+        <span className="status-pill muted">{t("interview.system.confirmedCount", { confirmed: formatNumber(confirmedRequirementCount, locale), total: formatNumber(requirementEntries.length, locale) })}</span>
       </div>
 
       <section className="system-progress-section" aria-labelledby="system-requirement-items-title">
         <div className="system-progress-section-title">
-          <strong id="system-requirement-items-title">システム要件</strong>
-          <span>必須</span>
+          <strong id="system-requirement-items-title">{t("interview.system.requirements")}</strong>
+          <span>{t("interview.system.required")}</span>
         </div>
         <div className="system-progress-list">
           {REQUIREMENT_IDS.map((id) => (
@@ -149,6 +154,7 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
               key={id}
               entry={requirementStates[id]}
               current={isCurrentTarget(interviewState, "requirement", id)}
+              t={t}
             />
           ))}
         </div>
@@ -156,40 +162,42 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
 
       <section className="system-progress-section" aria-labelledby="system-process-title">
         <div className="system-progress-section-title">
-          <strong id="system-process-title">業務フロー</strong>
-          <span>処理の有無と内容</span>
+          <strong id="system-process-title">{t("interview.system.process")}</strong>
+          <span>{t("interview.system.processDescription")}</span>
         </div>
         <div className={`system-progress-applicability ${processStateStatus.className}${isProcessApplicabilityCurrent ? " current" : ""}`}>
           <div className="system-progress-item-header">
             <div className="system-progress-item-title">
               <span className={`system-progress-symbol ${processStateStatus.className}`} aria-hidden="true">{processStateStatus.symbol}</span>
-              <strong>業務フローの有無</strong>
+              <strong>{t("interview.system.processPresence")}</strong>
             </div>
             <span className={`status-pill ${processStateStatus.className}`}>{processStateStatus.label}</span>
           </div>
-          {isProcessApplicabilityCurrent ? <span className="system-progress-current">現在の確認対象</span> : null}
+          {isProcessApplicabilityCurrent ? <span className="system-progress-current">{t("interview.system.currentTarget")}</span> : null}
         </div>
 
         {processStatus === "present" ? (
           <>
-            <div className="system-progress-subsection-title">処理内容</div>
+            <div className="system-progress-subsection-title">{t("interview.system.processContent")}</div>
             <div className="system-progress-list">
               {PROCESS_REQUIRED_IDS.map((id) => (
                 <RequirementProgressItem
                   key={id}
                   entry={requirementStates[id]}
                   current={isCurrentTarget(interviewState, "process", id)}
+                  t={t}
                 />
               ))}
             </div>
             <details className="system-progress-optional" open={PROCESS_OPTIONAL_IDS.some((id) => isCurrentTarget(interviewState, "process", id))}>
-              <summary>追加確認（分岐・例外など）</summary>
+              <summary>{t("interview.system.additionalCheck")}</summary>
               <div className="system-progress-list">
                 {PROCESS_OPTIONAL_IDS.map((id) => (
                   <RequirementProgressItem
                     key={id}
                     entry={requirementStates[id]}
                     current={isCurrentTarget(interviewState, "process", id)}
+                    t={t}
                   />
                 ))}
               </div>
@@ -200,7 +208,7 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
 
       {nextTarget ? (
         <div className="system-progress-next">
-          <span>次に確認すること</span>
+          <span>{t("interview.system.nextTarget")}</span>
           <strong>{nextTarget.label}</strong>
         </div>
       ) : null}

@@ -1,0 +1,96 @@
+{
+  "title": "インタビュー設定",
+  "returnToInterview": "インタビューに戻る",
+  "save": "設定を保存",
+  "saving": "保存中…",
+  "setupNotice": "インタビューを開始するには、用途と実行モデルの保存が必要です。",
+  "knowledgeInfo": "ナレッジ情報",
+  "tabs": {
+    "fields": "質問項目",
+    "execution": "実行設定",
+    "knowledge": "事前知識"
+  },
+  "menuAria": "インタビュー設定メニュー",
+  "execution": {
+    "title": "実行設定",
+    "purpose": "用途",
+    "purposeAria": "インタビュー用途",
+    "model": "インタビュー実行モデル",
+    "modelAria": "インタビュー実行モデル",
+    "assistant": "補助設定",
+    "questionDesignModel": "質問項目の設計モデル",
+    "questionDesignModelAria": "質問項目の設計モデル",
+    "template": "保存済みテンプレート",
+    "templateAria": "保存済みテンプレート",
+    "unselected": "未選択",
+    "load": "読み込む",
+    "additionalPrompt": "追加カスタマイズプロンプト",
+    "saveAsTemplate": "テンプレートとして保存",
+    "promptPlaceholder": "必要なら、このナレッジ専用の深掘り観点や聞き方だけを追加してください。"
+  },
+  "profiles": {
+    "fixed_form": "定型情報を聞き取る",
+    "business_process": "業務フローを整理する",
+    "system_requirement": "システム要件を整理する"
+  },
+  "profileDescriptions": {
+    "fixed_form": "決められた質問項目を順番に確認します。",
+    "business_process": "関係者、処理、分岐を整理して業務フローを作ります。",
+    "system_requirement": "目的、要求、制約を確認し、必要に応じて処理の流れを整理します。"
+  },
+  "models": {
+    "luna": "GPT-5.6 Luna",
+    "terra": "GPT-5.6 Terra",
+    "standard": "標準・低コスト",
+    "accuracyPriority": "意味理解・精度優先"
+  },
+  "fields": {
+    "title": "質問項目",
+    "description": "AIが聞き取る項目と、確認する情報の枠を定義します。",
+    "count": "{count}件",
+    "add": "項目追加",
+    "empty": "質問項目はありません。",
+    "unnamed": "未入力の質問項目",
+    "nameAria": "質問項目名",
+    "namePlaceholder": "質問項目名",
+    "detail": "詳細項目",
+    "detailPlaceholder": "例: 名前、年齢、性別、出身地",
+    "required": "必須項目",
+    "delete": "削除",
+    "assistantAria": "AI質問項目提案チャット",
+    "assistantTitle": "AI質問項目設計チャット",
+    "proposalField": "項目名",
+    "proposalDetail": "詳細項目",
+    "noDetail": "詳細なし",
+    "approve": "反映",
+    "reject": "差し戻し",
+    "approveAll": "候補をすべて反映",
+    "inputPlaceholder": "質問項目を作りたい業務や場面を入力してください。",
+    "generating": "生成中…",
+    "send": "送信"
+  },
+  "assistant": {
+    "initialMessage": "質問項目を作りたい業務や場面を入力してください。"
+  },
+  "knowledge": {
+    "title": "事前知識",
+    "description": "インタビュー前に参照するドキュメントを登録します。",
+    "count": "{count}件"
+  },
+  "template": {
+    "saveAria": "テンプレート名を入力して保存",
+    "title": "テンプレートとして保存",
+    "description": "現在の追加カスタマイズプロンプトを保存します。",
+    "name": "テンプレート名",
+    "namePlaceholder": "例: 保全担当向け",
+    "cancel": "キャンセル",
+    "save": "保存"
+  },
+  "messages": {
+    "saving": "{tab}を保存しています…",
+    "saved": "{tab}を保存しました",
+    "templateSaved": "追加カスタマイズを登録しました",
+    "templateLoaded": "保存済みテンプレートを読み込みました",
+    "selectKnowledge": "先にナレッジを選択してください。"
+  }
+}

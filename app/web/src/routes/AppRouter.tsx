@@ -1,10 +1,13 @@
+import { useEffect } from "react";
 import { AppShell } from "../layouts/AppShell";
 import { KnowledgeLayout } from "../layouts/KnowledgeLayout";
 import { LoginPage } from "../pages/LoginPage";
 import { SettingsPage } from "../pages/SettingsPage";
+import { useI18n } from "../i18n";
 import { useAppRouterController } from "./useAppRouterController";
 
 export function AppRouter() {
+  const { setProfileLocale } = useI18n();
   const {
     route,
     currentSection,
@@ -12,6 +15,10 @@ export function AppRouter() {
     navigate,
     knowledgeLayoutProps,
   } = useAppRouterController();
+
+  useEffect(() => {
+    setProfileLocale(user?.uiLocale);
+  }, [setProfileLocale, user?.uiLocale]);
 
   if (route.name === "login") {
     return <LoginPage onLogin={() => navigate("/knowledge-dbs")} />;

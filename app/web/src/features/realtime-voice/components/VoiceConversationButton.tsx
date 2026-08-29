@@ -1,4 +1,5 @@
 import type { VoiceConversationStatus } from "../types";
+import { useI18n, type Translate } from "../../../i18n";
 
 type VoiceConversationButtonProps = {
   status: VoiceConversationStatus;
@@ -8,8 +9,9 @@ type VoiceConversationButtonProps = {
 };
 
 export function VoiceConversationButton(props: VoiceConversationButtonProps) {
+  const { t } = useI18n();
   const isActive = !["idle", "completed", "error"].includes(props.status);
-  const label = buttonLabel(props.status);
+  const label = buttonLabel(props.status, t);
   const icon = buttonIcon(props.status);
 
   return (
@@ -27,14 +29,14 @@ export function VoiceConversationButton(props: VoiceConversationButtonProps) {
   );
 }
 
-function buttonLabel(status: VoiceConversationStatus): string {
+function buttonLabel(status: VoiceConversationStatus, t: Translate): string {
   switch (status) {
     case "checking":
-      return "準備を確認しています…";
+      return t("interview.voice.checking");
     case "requesting_microphone":
-      return "マイクを準備しています…";
+      return t("interview.voice.requestingMicrophone");
     case "connecting":
-      return "接続しています…";
+      return t("interview.voice.connecting");
     case "listening":
     case "processing":
     case "finalizing_transcript":
@@ -42,16 +44,16 @@ function buttonLabel(status: VoiceConversationStatus): string {
     case "preparing_initial_reply":
     case "preparing_audio":
     case "speaking":
-      return "会話を終了";
+      return t("interview.voice.endConversation");
     case "stopping":
-      return "終了しています…";
+      return t("interview.voice.stopping");
     case "completed":
-      return "インタビューが完了しました";
+      return t("interview.voice.completed");
     case "error":
-      return "再接続する";
+      return t("interview.voice.reconnect");
     case "idle":
     default:
-      return "インタビュアーと会話する";
+      return t("interview.voice.startConversation");
   }
 }
 

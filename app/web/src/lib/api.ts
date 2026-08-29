@@ -61,6 +61,12 @@ export type UserProfile = {
   tenantId: string;
   role: UserRole;
   displayName: string;
+  /** UI表示言語。AIインタビューの言語とは独立して扱う。 */
+  uiLocale?: string | null;
+  /** 将来のAIインタビュー言語設定。uiLocale変更では更新しない。 */
+  interviewLocale?: string | null;
+  /** Localeとは独立した表示タイムゾーン。 */
+  timezone?: string | null;
 };
 
 export function getDevelopmentToken() {

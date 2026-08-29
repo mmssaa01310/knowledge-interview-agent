@@ -37,7 +37,7 @@
   --ki-shadow-md: 0 8px 24px rgba(19, 42, 56, 0.06);
   --ki-shadow-lg: 0 20px 60px rgba(19, 42, 56, 0.14);
   --ki-focus-ring: 0 0 0 3px rgba(25, 87, 215, 0.2);
-  font-family: "Inter", "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif;
+  font-family: "Inter", "Noto Sans JP", "Noto Sans SC", "Noto Sans Thai", "Hiragino Sans", "Yu Gothic UI", "Tahoma", "Segoe UI", sans-serif;
   color: var(--ki-text);
   background: var(--ki-background);
   line-height: 1.55;
@@ -2088,4 +2088,38 @@ label {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.locale-switcher {
+  display: grid;
+  gap: 5px;
+  color: var(--ki-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.locale-switcher select {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--ki-border-strong);
+  border-radius: var(--ki-radius-sm);
+  color: var(--ki-text);
+  background: var(--ki-surface);
+}
+
+.login-panel .locale-switcher {
+  width: min(220px, 100%);
+  margin: 0 auto 12px;
+  text-align: left;
+}
+
+html[dir="rtl"] {
+  direction: rtl;
+}
+
+html[dir="rtl"] .page-header-copy,
+html[dir="rtl"] .interview-page-title {
+  text-align: right;
 }

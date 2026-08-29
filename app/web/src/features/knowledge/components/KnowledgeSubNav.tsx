@@ -1,3 +1,5 @@
+import { useI18n } from "../../../i18n";
+
 type KnowledgeSubNavProps = {
   knowledgeDbId: string;
   knowledgeId: string;
@@ -10,14 +12,15 @@ function isBranchPath(activePath: string, targetPath: string) {
 }
 
 export function KnowledgeSubNav({ knowledgeDbId, knowledgeId, activePath, onNavigate }: KnowledgeSubNavProps) {
+  const { t } = useI18n();
   const basePath = `/knowledge-dbs/${knowledgeDbId}/knowledges/${knowledgeId}`;
   const items = [
-    { label: "インタビュー", path: `${basePath}/interview`, exact: true },
-    { label: "記録", path: `${basePath}/records`, exact: false }
+    { key: "interview", path: `${basePath}/interview`, exact: true },
+    { key: "records", path: `${basePath}/records`, exact: false }
   ];
 
   return (
-    <nav className="sub-nav" aria-label="ナレッジ内メニュー" role="tablist">
+    <nav className="sub-nav" aria-label={t("navigation.knowledgeMenu")} role="tablist">
       <div className="sub-nav-items">
         {items.map((item) => {
           const active = item.exact ? activePath === item.path : isBranchPath(activePath, item.path);
@@ -30,8 +33,8 @@ export function KnowledgeSubNav({ knowledgeDbId, knowledgeId, activePath, onNavi
               className={active ? "sub-nav-item active" : "sub-nav-item"}
               onClick={() => onNavigate(item.path)}
             >
-              <span className={`sub-nav-icon ${item.label === "インタビュー" ? "conversation" : "records"}`} aria-hidden="true" />
-              {item.label}
+              <span className={`sub-nav-icon ${item.key === "interview" ? "conversation" : "records"}`} aria-hidden="true" />
+              {t(`navigation.${item.key}`)}
             </button>
           );
         })}

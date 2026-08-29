@@ -1,5 +1,6 @@
-import { formatDate } from "../lib/date";
+import { formatDate, formatNumber } from "../lib/date";
 import type { Knowledge } from "@ai-interviewer/shared-types";
+import { useI18n } from "../i18n";
 
 type KnowledgeListPageProps = {
   knowledges: Knowledge[];
@@ -18,11 +19,12 @@ export function KnowledgeListPage({
   isPreparingKnowledgeCreation = false,
   knowledgeCreationError = ""
 }: KnowledgeListPageProps) {
+  const { t, locale } = useI18n();
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2>ナレッジ一覧</h2>
+          <h2>{t("knowledge.listTitle")}</h2>
         </div>
         {canManage ? (
           <button
@@ -31,20 +33,20 @@ export function KnowledgeListPage({
             onClick={onOpenCreateKnowledge}
             disabled={isPreparingKnowledgeCreation}
           >
-            {isPreparingKnowledgeCreation ? "準備中" : "+ ナレッジを作成"}
+            {isPreparingKnowledgeCreation ? t("knowledge.preparingCreate") : t("knowledge.createButton")}
           </button>
         ) : null}
       </div>
       {knowledgeCreationError && <p className="notice error">{knowledgeCreationError}</p>}
       <div className="table-list">
         <div className="table-row table-head">
-          <span>ナレッジ名</span>
-          <span>用途</span>
-          <span>記録数</span>
-          <span>更新日時</span>
+          <span>{t("knowledge.table.name")}</span>
+          <span>{t("knowledge.table.purpose")}</span>
+          <span>{t("knowledge.table.recordCount")}</span>
+          <span>{t("knowledge.table.updatedAt")}</span>
         </div>
         {knowledges.length === 0 ? (
-          <p className="empty">{canManage ? "ナレッジがありません。「+ ナレッジを作成」から登録してください。" : "利用できるナレッジがありません。"}</p>
+          <p className="empty">{canManage ? t("knowledge.emptyManage") : t("knowledge.emptyView")}</p>
         ) : knowledges.map((knowledge) => (
           <button
             type="button"
@@ -53,9 +55,9 @@ export function KnowledgeListPage({
             onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
           >
             <span><strong>{knowledge.name}</strong>{knowledge.description && <small>{knowledge.description}</small>}</span>
-            <span>{knowledge.purpose ?? knowledge.category ?? "用途未設定"}</span>
-            <span>{knowledge.recordCount ?? 0}</span>
-            <span>{formatDate(knowledge.updatedAt)}</span>
+            <span>{knowledge.purpose ?? knowledge.category ?? t("knowledge.purposeNotSet")}</span>
+            <span>{formatNumber(knowledge.recordCount ?? 0, locale)}</span>
+            <span>{formatDate(knowledge.updatedAt, locale)}</span>
           </button>
         ))}
       </div>

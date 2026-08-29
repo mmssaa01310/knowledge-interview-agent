@@ -2,6 +2,8 @@ import { useState } from "react";
 import type { Knowledge } from "@ai-interviewer/shared-types";
 import { getDevelopmentToken, setDevelopmentToken, type UserProfile } from "../lib/api";
 import { KnowledgeWorkspaceNav } from "../features/knowledge/components/KnowledgeWorkspaceNav";
+import { LocaleSwitcher } from "../components/ui/LocaleSwitcher";
+import { useI18n } from "../i18n";
 import type { AppSection } from "../types/app";
 
 type WorkspaceNavProps = {
@@ -29,6 +31,7 @@ export function WorkspaceNav({
   isCollapsed,
   onToggleCollapsed
 }: WorkspaceNavProps) {
+  const { t } = useI18n();
   const [developmentToken, setDevelopmentTokenState] = useState(getDevelopmentToken);
   const canManageSystem = user?.role === "admin";
   const canManageKnowledge = user?.role === "admin" || user?.role === "knowledge_manager";
@@ -41,7 +44,7 @@ export function WorkspaceNav({
 
   if (isCollapsed) {
     return (
-      <aside className="app-sidebar collapsed" aria-label="メインナビゲーション">
+      <aside className="app-sidebar collapsed" aria-label={t("navigation.mainNavigation")}>
         <div className="sidebar-collapsed-brand">
           <img src="/images/kikiori-icon.svg" alt="KIKIORI" />
         </div>
@@ -49,8 +52,8 @@ export function WorkspaceNav({
           type="button"
           className="workspace-collapse-button"
           onClick={onToggleCollapsed}
-          aria-label="左側ナビを開く"
-          title="左側ナビを開く"
+          aria-label={t("navigation.navOpen")}
+          title={t("navigation.navOpen")}
           aria-expanded="false"
         >
           <span className="nav-toggle-icon open" aria-hidden="true" />
@@ -60,29 +63,29 @@ export function WorkspaceNav({
   }
 
   return (
-    <aside className="app-sidebar" aria-label="メインナビゲーション">
+    <aside className="app-sidebar" aria-label={t("navigation.mainNavigation")}>
       <div className="sidebar-header">
         <div className="brand">
           <img className="brand-logo-image" src="/images/kikiori-logo.svg" alt="KIKIORI" />
-          <span className="brand-tagline">AI Knowledge Interviewing</span>
+          <span className="brand-tagline">{t("common.tagline")}</span>
         </div>
         <button
           type="button"
           className="workspace-collapse-button"
           onClick={onToggleCollapsed}
-          aria-label="左側ナビを閉じる"
-          title="左側ナビを閉じる"
+          aria-label={t("navigation.navClose")}
+          title={t("navigation.navClose")}
           aria-expanded="true"
         >
           <span className="nav-toggle-icon close" aria-hidden="true" />
         </button>
       </div>
 
-      <nav className="sidebar-content" aria-label="ワークスペースナビゲーション">
+      <nav className="sidebar-content" aria-label={t("navigation.workspaceNavigation")}>
         {activeSection === "settings" ? (
           <div className="sidebar-section sidebar-settings-section">
-            <span className="sidebar-section-kicker">Workspace</span>
-            <strong className="sidebar-section-title"><span className="nav-section-icon" aria-hidden="true">⚙</span>設定</strong>
+            <span className="sidebar-section-kicker">{t("navigation.workspace")}</span>
+            <strong className="sidebar-section-title"><span className="nav-section-icon" aria-hidden="true">⚙</span>{t("navigation.settings")}</strong>
           </div>
         ) : (
           <KnowledgeWorkspaceNav
@@ -98,41 +101,35 @@ export function WorkspaceNav({
       </nav>
 
       <div className="sidebar-footer">
+        <LocaleSwitcher />
         {canManageSystem ? (
           <button
             type="button"
             className={activeSection === "settings" ? "sidebar-system-link active" : "sidebar-system-link"}
             onClick={() => onNavigate("/settings")}
           >
-            システム設定
+            {t("navigation.systemSettings")}
           </button>
         ) : null}
         {import.meta.env.DEV ? (
           <label className="dev-user-switcher">
-            <span>開発用ユーザー</span>
+            <span>{t("navigation.developmentUser")}</span>
             <select
               value={developmentToken}
               onChange={(event) => handleDevelopmentUserChange(event.target.value)}
             >
-              <option value="dev-admin">システム管理者</option>
-              <option value="dev-manager">ナレッジ管理者</option>
-              <option value="dev-interviewer">インタビュー対象者</option>
-              <option value="dev-viewer">閲覧者</option>
+              <option value="dev-admin">{t("navigation.roles.admin")}</option>
+              <option value="dev-manager">{t("navigation.roles.knowledge_manager")}</option>
+              <option value="dev-interviewer">{t("navigation.roles.interviewer")}</option>
+              <option value="dev-viewer">{t("navigation.roles.viewer")}</option>
             </select>
           </label>
         ) : null}
         <div className="sidebar-user">
-          <p>ログイン中</p>
-          <strong>{user ? `${user.displayName} / ${roleLabels[user.role]}` : "未接続"}</strong>
+          <p>{t("navigation.loggedIn")}</p>
+          <strong>{user ? `${user.displayName} / ${t(`navigation.roles.${user.role}`)}` : t("navigation.disconnected")}</strong>
         </div>
       </div>
     </aside>
   );
 }
-
-const roleLabels: Record<UserProfile["role"], string> = {
-  admin: "システム管理者",
-  knowledge_manager: "ナレッジ管理者",
-  interviewer: "インタビュー対象者",
-  viewer: "閲覧者",
-};

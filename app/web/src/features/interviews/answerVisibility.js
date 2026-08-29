@@ -25,7 +25,16 @@ export function getInterviewDisplayAnswer(fieldState, editedValue) {
   return editedValue ?? getInterviewAnswerValue(fieldState);
 }
 
-export function getInterviewAnswerStatusLabel(fieldState) {
+export function getInterviewAnswerStatusLabel(fieldState, translate) {
+  const keyByState = {
+    CANDIDATE_PENDING: "interview.answerStatus.candidate",
+    AWAITING_CONFIRMATION: "interview.answerStatus.awaiting",
+    CONFIRMED: "interview.answerStatus.confirmed",
+  };
+  const key = keyByState[fieldState?.answerState] ?? "interview.answerStatus.pending";
+  if (translate) {
+    return translate(key);
+  }
   switch (fieldState?.answerState) {
     case "CANDIDATE_PENDING":
       return "追加確認中";

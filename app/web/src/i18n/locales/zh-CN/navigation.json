@@ -1,0 +1,30 @@
+{
+  "mainNavigation": "主导航",
+  "workspaceNavigation": "工作区导航",
+  "workspace": "工作区",
+  "knowledge": "知识库",
+  "settings": "设置",
+  "systemSettings": "系统设置",
+  "knowledgeList": "知识库列表",
+  "interview": "访谈",
+  "records": "记录",
+  "knowledgeMenu": "知识库菜单",
+  "navOpen": "打开侧边栏",
+  "navClose": "关闭侧边栏",
+  "developmentUser": "开发用户",
+  "loggedIn": "已登录",
+  "disconnected": "未连接",
+  "roles": {
+    "admin": "系统管理员",
+    "knowledge_manager": "知识库管理员",
+    "interviewer": "访谈对象",
+    "viewer": "查看者"
+  },
+  "backToKnowledgeList": "返回知识库列表",
+  "knowledgeArea": "知识库",
+  "knowledgeAreaDescription": "整理从对话中获得的信息。",
+  "knowledgeRequired": "请创建或选择知识库。",
+  "newKnowledge": "新建知识库",
+  "createKnowledge": "创建知识库",
+  "knowledgeSelected": "当前知识库"
+}

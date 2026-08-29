@@ -25,4 +25,4 @@ export function getInterviewDisplayAnswer(
 
 export function getInterviewAnswerStatusLabel(fieldState: {
   answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
-} | null | undefined): "未回答" | "追加確認中" | "確認中" | "回答済み";
+} | null | undefined, translate?: (key: string) => string): string;

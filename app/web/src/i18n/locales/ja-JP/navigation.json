@@ -1,0 +1,30 @@
+{
+  "mainNavigation": "メインナビゲーション",
+  "workspaceNavigation": "ワークスペースナビゲーション",
+  "workspace": "ワークスペース",
+  "knowledge": "ナレッジ",
+  "settings": "設定",
+  "systemSettings": "システム設定",
+  "knowledgeList": "ナレッジ一覧",
+  "interview": "インタビュー",
+  "records": "記録",
+  "knowledgeMenu": "ナレッジ内メニュー",
+  "navOpen": "左側ナビを開く",
+  "navClose": "左側ナビを閉じる",
+  "developmentUser": "開発用ユーザー",
+  "loggedIn": "ログイン中",
+  "disconnected": "未接続",
+  "roles": {
+    "admin": "システム管理者",
+    "knowledge_manager": "ナレッジ管理者",
+    "interviewer": "インタビュー対象者",
+    "viewer": "閲覧者"
+  },
+  "backToKnowledgeList": "ナレッジ一覧に戻る",
+  "knowledgeArea": "ナレッジ",
+  "knowledgeAreaDescription": "会話から得た情報を整理します。",
+  "knowledgeRequired": "ナレッジを作成または選択してください。",
+  "newKnowledge": "新規ナレッジ",
+  "createKnowledge": "ナレッジを作成",
+  "knowledgeSelected": "選択中のナレッジ"
+}

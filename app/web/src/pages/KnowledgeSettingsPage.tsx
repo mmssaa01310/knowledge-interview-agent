@@ -10,22 +10,24 @@ import {
   isInterviewConfigurationComplete,
 } from "../features/interviews/interviewConfiguration";
 import { KnowledgeDocumentsContent } from "./KnowledgeDocumentsPage";
+import { useI18n, type Translate } from "../i18n";
+import { formatNumber } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
 const modelOptions = [
-  { value: "global.openai.gpt-5.6-luna", label: "GPT-5.6 Luna（標準）" },
-  { value: "global.openai.gpt-5.6-terra", label: "GPT-5.6 Terra（高精度）" },
+  { value: "global.openai.gpt-5.6-luna", labelKey: "interview.model.lunaStandard" },
+  { value: "global.openai.gpt-5.6-terra", labelKey: "interview.model.terraAccurate" },
 ] as const;
 
 const structuredInterviewModelOptions = [
-  { value: "global.openai.gpt-5.6-luna", label: "GPT-5.6 Luna（標準）", description: "標準" },
-  { value: "global.openai.gpt-5.6-terra", label: "GPT-5.6 Terra（高精度）", description: "高精度優先" },
+  { value: "global.openai.gpt-5.6-luna", labelKey: "settings.models.luna", descriptionKey: "settings.models.standard" },
+  { value: "global.openai.gpt-5.6-terra", labelKey: "settings.models.terra", descriptionKey: "settings.models.accuracyPriority" },
 ] as const;
 
 const interviewProfileOptions = [
-  { value: "fixed_form", label: "定型情報を聞き取る", description: "設定した質問項目を順番に確認します。" },
-  { value: "business_process", label: "業務フローを整理する", description: "開始から終了までの業務フローと例外を整理します。" },
-  { value: "system_requirement", label: "システム要件を整理する", description: "目的・課題、要求内容、必要な処理の流れを整理します。" },
+  { value: "fixed_form", labelKey: "settings.profiles.fixed_form", descriptionKey: "settings.profileDescriptions.fixed_form" },
+  { value: "business_process", labelKey: "settings.profiles.business_process", descriptionKey: "settings.profileDescriptions.business_process" },
+  { value: "system_requirement", labelKey: "settings.profiles.system_requirement", descriptionKey: "settings.profileDescriptions.system_requirement" },
 ] as const;
 
 const noPromptProfileValue = "__none__";
@@ -64,9 +66,9 @@ function uniqueFields(fields: KnowledgeField[]) {
   });
 }
 
-function summarizeFieldDetail(field: KnowledgeField) {
+function summarizeFieldDetail(field: KnowledgeField, t: Translate) {
   const detail = (field.description ?? "").trim().replace(/\s+/g, " ");
-  if (!detail) return "詳細項目未設定";
+  if (!detail) return t("settings.fields.noDetail");
   return detail.length > 72 ? `${detail.slice(0, 72)}…` : detail;
 }
 
@@ -81,39 +83,40 @@ function isStatusCodeError(error: unknown): error is { status?: number; detail?:
   return typeof error === "object" && error !== null && "status" in error;
 }
 
-function toFieldSuggestionErrorMessage(error: unknown) {
+function toFieldSuggestionErrorMessage(error: unknown, t: Translate) {
   if (isStatusCodeError(error)) {
     if (!error.status || [408, 503, 504].includes(error.status)) {
-      return "通信エラーが発生しました。接続を確認して、もう一度お試しください。";
+      return t("errors.network");
     }
     if (error.status === 429) {
-      return "AIサービスが混雑しています。少し待ってから、もう一度お試しください。";
+      return t("errors.aiBusy");
     }
     if (error.detail === "question_design_output_invalid" || error.detail === "question_design_empty_suggestions") {
-      return "AIの質問項目出力を正しく読み取れませんでした。もう一度お試しください。";
+      return t("errors.invalidAiOutput");
     }
     if (error.detail === "question_design_validation_output_invalid" || error.detail === "question_design_validation_failed") {
-      return "AIが作成した質問項目の検証に失敗しました。内容を少し具体化して、もう一度お試しください。";
+      return t("errors.validationFailed");
     }
     if (error.status === 502) {
-      return "AIサービスから有効な回答を取得できませんでした。もう一度お試しください。";
+      return t("errors.invalidAiResponse");
     }
     if (error.status === 500) {
-      return "質問項目の生成中に内部エラーが発生しました。もう一度お試しください。";
+      return t("errors.generationInternal");
     }
-    return `エラー（コード:${error.status}） 管理者にお問い合わせください。`;
+    return t("errors.statusWithCode", { code: error.status });
   }
-  return "通信エラーが発生しました。接続を確認して、もう一度お試しください。";
+  return t("errors.network");
 }
 
 export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
+  const { t, locale } = useI18n();
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     if (!isInterviewConfigurationComplete(props.selectedKnowledge)) return "execution";
     return getStoredSettingsTab();
   });
   const [assistInput, setAssistInput] = useState("");
   const [assistMessages, setAssistMessages] = useState<AssistMessage[]>([
-    { role: "ai", text: "質問項目を作りたい業務や場面を入力してください。" }
+    { role: "ai", text: t("settings.assistant.initialMessage") }
   ]);
   const [pendingSuggestions, setPendingSuggestions] = useState<PendingSuggestedField[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -153,6 +156,12 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
       chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight, behavior: "smooth" });
     });
   }, [activeTab, assistMessages, pendingSuggestions, isGenerating]);
+
+  useEffect(() => {
+    if (assistMessages.length === 1 && assistMessages[0]?.role === "ai") {
+      setAssistMessages([{ role: "ai", text: t("settings.assistant.initialMessage") }]);
+    }
+  }, [locale]);
 
   useEffect(() => {
     if (!promptProfileNotice) return;
@@ -198,7 +207,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     props.setDraftFields([
       ...props.draftFields,
       {
-        name: "新規項目",
+        name: t("settings.fields.unnamed"),
         inputType: "short_text",
         required: false,
         askByAi: true,
@@ -288,13 +297,13 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     setSelectedPromptProfileId(created.id);
     setIsSavePromptDialogOpen(false);
     setSavePromptTemplateName("");
-    setPromptProfileNotice("追加カスタマイズを登録しました");
+    setPromptProfileNotice(t("settings.messages.templateSaved"));
   }
 
   async function handleSendAssistMessage() {
     if (!canSendAssistMessage) return;
     if (!props.selectedKnowledge) {
-      setAssistMessages((messages) => [...messages, { role: "ai", text: "先にナレッジを選択してください。" }]);
+      setAssistMessages((messages) => [...messages, { role: "ai", text: t("settings.messages.selectKnowledge") }]);
       return;
     }
 
@@ -358,7 +367,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
 
       setAssistMessages((messages) => [...messages, { role: "ai", text: result.reply }]);
     } catch (error) {
-      setAssistMessages((messages) => [...messages, { role: "ai", text: toFieldSuggestionErrorMessage(error) }]);
+      setAssistMessages((messages) => [...messages, { role: "ai", text: toFieldSuggestionErrorMessage(error, t) }]);
     } finally {
       setIsGenerating(false);
       window.requestAnimationFrame(() => {
@@ -377,7 +386,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     <section className="panel">
       <div className="panel-header">
         <div>
-          <h2>インタビュー設定</h2>
+          <h2>{t("settings.title")}</h2>
         </div>
         <div className="actions">
           <button
@@ -385,7 +394,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             type="button"
             onClick={() => props.navigate(`/knowledge-dbs/${props.selectedKnowledgeDb?.id}/knowledges/${props.selectedKnowledge?.id}/interview`)}
           >
-            インタビューに戻る
+            {t("settings.returnToInterview")}
           </button>
           <button
             className="primary"
@@ -393,29 +402,29 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             onClick={() => props.onSaveSettings(getSettingsSaveTab(activeTab))}
             disabled={props.settingsSaveState === "saving"}
           >
-            {props.settingsSaveState === "saving" ? "保存中…" : "設定を保存"}
+            {props.settingsSaveState === "saving" ? t("settings.saving") : t("settings.save")}
           </button>
         </div>
       </div>
 
       {requiresInterviewConfiguration ? (
         <div className="settings-setup-notice">
-          <strong>インタビューを開始するには、用途と実行モデルの保存が必要です。</strong>
+          <strong>{t("settings.setupNotice")}</strong>
         </div>
       ) : null}
 
-      <section className="settings-section knowledge-info-section" aria-label="ナレッジ情報">
+      <section className="settings-section knowledge-info-section" aria-label={t("settings.knowledgeInfo")}>
         <div className="knowledge-info-fields">
-          <label>ナレッジ名<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
-          <label>説明<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
+          <label>{t("common.name")}<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
+          <label>{t("common.description")}<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
         </div>
       </section>
 
       <div className="settings-tabs-row">
-        <div className="settings-tabs" role="tablist" aria-label="インタビュー設定メニュー">
-          <button id="settings-tab-fields" type="button" role="tab" aria-controls="settings-panel-fields" aria-selected={activeTab === "fields"} className={activeTab === "fields" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("fields")}>質問項目</button>
-          <button id="settings-tab-execution" type="button" role="tab" aria-controls="settings-panel-execution" aria-selected={activeTab === "execution"} className={activeTab === "execution" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("execution")}>実行設定</button>
-          <button id="settings-tab-knowledge" type="button" role="tab" aria-controls="settings-panel-knowledge" aria-selected={activeTab === "knowledge"} className={activeTab === "knowledge" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("knowledge")}>事前知識</button>
+        <div className="settings-tabs" role="tablist" aria-label={t("settings.menuAria")}>
+          <button id="settings-tab-fields" type="button" role="tab" aria-controls="settings-panel-fields" aria-selected={activeTab === "fields"} className={activeTab === "fields" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("fields")}>{t("settings.tabs.fields")}</button>
+          <button id="settings-tab-execution" type="button" role="tab" aria-controls="settings-panel-execution" aria-selected={activeTab === "execution"} className={activeTab === "execution" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("execution")}>{t("settings.tabs.execution")}</button>
+          <button id="settings-tab-knowledge" type="button" role="tab" aria-controls="settings-panel-knowledge" aria-selected={activeTab === "knowledge"} className={activeTab === "knowledge" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("knowledge")}>{t("settings.tabs.knowledge")}</button>
         </div>
       </div>
 
@@ -425,7 +434,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             <section id="settings-panel-execution" className="settings-section" role="tabpanel" aria-labelledby="settings-tab-execution">
               <div className="section-title-row">
                 <div>
-                  <h3>実行設定</h3>
+                  <h3>{t("settings.execution.title")}</h3>
                 </div>
               </div>
               <div className="interview-settings">
@@ -433,10 +442,10 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   <section className="interview-setting-card">
                     <div className="interview-setting-card-header">
                       <div>
-                        <h4>用途</h4>
+                        <h4>{t("settings.execution.purpose")}</h4>
                       </div>
                     </div>
-                    <label className="sr-only" htmlFor="interview-profile">インタビュー用途</label>
+                    <label className="sr-only" htmlFor="interview-profile">{t("settings.execution.purposeAria")}</label>
                     <select
                       id="interview-profile"
                       value={selectedInterviewProfile}
@@ -450,20 +459,20 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                       }}
                     >
                       {interviewProfileOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
+                        <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
                       ))}
                     </select>
                     <p className="form-help">
-                      {interviewProfileOptions.find((option) => option.value === selectedInterviewProfile)?.description}
+                      {(() => { const option = interviewProfileOptions.find((item) => item.value === selectedInterviewProfile); return option ? t(option.descriptionKey) : ""; })()}
                     </p>
                   </section>
                   <section className="interview-setting-card featured">
                     <div className="interview-setting-card-header">
                       <div>
-                        <h4>インタビュー実行モデル</h4>
+                        <h4>{t("settings.execution.model")}</h4>
                       </div>
                     </div>
-                    <label className="sr-only" htmlFor="structured-interview-model">インタビュー実行モデル</label>
+                    <label className="sr-only" htmlFor="structured-interview-model">{t("settings.execution.modelAria")}</label>
                     <select
                       id="structured-interview-model"
                       value={selectedStructuredInterviewModel}
@@ -477,33 +486,33 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                       }}
                     >
                       {structuredInterviewModelOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
+                        <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
                       ))}
                     </select>
                     <p className="form-help">
-                      {structuredInterviewModelOptions.find((option) => option.value === selectedStructuredInterviewModel)?.description}
+                      {(() => { const option = structuredInterviewModelOptions.find((item) => item.value === selectedStructuredInterviewModel); return option ? t(option.descriptionKey) : ""; })()}
                     </p>
                   </section>
                 </div>
                 <section className="interview-setting-group">
                   <div className="interview-setting-group-header">
                     <div>
-                      <h4>補助設定</h4>
+                      <h4>{t("settings.execution.assistant")}</h4>
                     </div>
                   </div>
                   <div className="interview-setting-grid">
                     <section className="interview-setting-card compact">
-                      <h5>質問項目の設計モデル</h5>
-                      <label className="sr-only" htmlFor="question-design-model">質問項目の設計モデル</label>
+                      <h5>{t("settings.execution.questionDesignModel")}</h5>
+                      <label className="sr-only" htmlFor="question-design-model">{t("settings.execution.questionDesignModelAria")}</label>
                       <select id="question-design-model" value={selectedModelOption} onChange={(event) => { clearSettingsNotice(); props.setSettingsDefaultModelId(event.target.value); }}>
-                        {modelOptions.map((option) => (<option key={option.value} value={option.value}>{option.label}</option>))}
+                        {modelOptions.map((option) => (<option key={option.value} value={option.value}>{t(option.labelKey)}</option>))}
                       </select>
                     </section>
                     <section className="interview-setting-card compact">
-                      <h5>保存済みテンプレート</h5>
+                      <h5>{t("settings.execution.template")}</h5>
                       <div className="inline-form">
-                        <select aria-label="保存済みテンプレート" value={selectedPromptProfileId} onChange={(event) => setSelectedPromptProfileId(event.target.value)}>
-                          <option value={noPromptProfileValue}>未選択</option>
+                        <select aria-label={t("settings.execution.templateAria")} value={selectedPromptProfileId} onChange={(event) => setSelectedPromptProfileId(event.target.value)}>
+                          <option value={noPromptProfileValue}>{t("settings.execution.unselected")}</option>
                           {promptProfiles.map((profile) => (<option key={profile.id} value={profile.id}>{profile.name}</option>))}
                         </select>
                         <button
@@ -513,11 +522,11 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                             if (!selectedPromptProfile) return;
                             clearSettingsNotice();
                             props.setSettingsSystemPrompt(selectedPromptProfile.prompt);
-                            setPromptProfileNotice("保存済みテンプレートを読み込みました");
+                            setPromptProfileNotice(t("settings.messages.templateLoaded"));
                           }}
                           disabled={!selectedPromptProfile}
                         >
-                          読み込む
+                          {t("settings.execution.load")}
                         </button>
                       </div>
                     </section>
@@ -526,7 +535,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               </div>
               <div className="section-title-row compact-row">
                 <div>
-                  <h3>追加カスタマイズプロンプト</h3>
+                  <h3>{t("settings.execution.additionalPrompt")}</h3>
                 </div>
                 <button
                   className="ghost compact"
@@ -538,14 +547,14 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   }}
                   disabled={!props.settingsSystemPrompt.trim() || !props.onCreatePromptProfile}
                 >
-                  テンプレートとして保存
+                  {t("settings.execution.saveAsTemplate")}
                 </button>
               </div>
               <label className="system-prompt-field">
                 <textarea
                   value={props.settingsSystemPrompt}
                   onChange={(event) => { clearSettingsNotice(); props.setSettingsSystemPrompt(event.target.value); }}
-                  placeholder="必要なら、このナレッジ専用の深掘り観点や聞き方だけを追加してください。"
+                  placeholder={t("settings.execution.promptPlaceholder")}
                 />
               </label>
               {promptProfileNotice ? <span className="notice">{promptProfileNotice}</span> : null}
@@ -557,13 +566,13 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               <section className="settings-section">
                 <div className="section-title-row compact-row">
                   <div className="question-list-title">
-                    <h3>質問項目</h3>
-                    <span className="counter">{props.draftFields.length}件</span>
+                    <h3>{t("settings.fields.title")}</h3>
+                    <span className="counter">{t("settings.fields.count", { count: formatNumber(props.draftFields.length, locale) })}</span>
                   </div>
-                  <button className="ghost compact" type="button" onClick={addField}>項目追加</button>
+                  <button className="ghost compact" type="button" onClick={addField}>{t("settings.fields.add")}</button>
                 </div>
                 <div className="field-list">
-                  {props.draftFields.length === 0 ? <p className="empty">質問項目はありません。</p> : props.draftFields.map((field, index) => {
+                  {props.draftFields.length === 0 ? <p className="empty">{t("settings.fields.empty")}</p> : props.draftFields.map((field, index) => {
                     const isExpanded = expandedFieldIndex === index;
                     const editorId = `knowledge-field-editor-${index}`;
                     return (
@@ -577,27 +586,27 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                         >
                           <span className="field-index">{String(index + 1).padStart(2, "0")}</span>
                           <span className="field-summary-content">
-                            <strong>{field.name.trim() || "未入力の質問項目"}</strong>
-                            <span>{summarizeFieldDetail(field)}</span>
+                            <strong>{field.name.trim() || t("settings.fields.unnamed")}</strong>
+                            <span>{summarizeFieldDetail(field, t)}</span>
                           </span>
-                          {field.required ? <span className="field-required-badge">必須</span> : null}
+                          {field.required ? <span className="field-required-badge">{t("common.required")}</span> : null}
                           <span className={isExpanded ? "field-chevron open" : "field-chevron"} aria-hidden="true" />
                         </button>
                         {isExpanded ? (
                           <div id={editorId} className="field-card-editor">
-                            <label className="sr-only" htmlFor={`knowledge-field-name-${index}`}>質問項目名</label>
+                            <label className="sr-only" htmlFor={`knowledge-field-name-${index}`}>{t("settings.fields.nameAria")}</label>
                             <input
                               id={`knowledge-field-name-${index}`}
                               value={field.name}
                               onChange={(event) => updateField(index, { name: event.target.value })}
-                              placeholder="質問項目名"
+                              placeholder={t("settings.fields.namePlaceholder")}
                             />
-                            <label className="field-detail-field">詳細項目
-                              <textarea value={field.description ?? ""} onChange={(event) => updateField(index, { description: event.target.value })} placeholder="例: 名前、年齢、性別、出身地" />
+                            <label className="field-detail-field">{t("settings.fields.detail")}
+                              <textarea value={field.description ?? ""} onChange={(event) => updateField(index, { description: event.target.value })} placeholder={t("settings.fields.detailPlaceholder")} />
                             </label>
                             <div className="toolbar field-card-editor-actions">
-                              <label className="check-row"><input type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />必須項目</label>
-                              <button className="danger compact" type="button" onClick={() => deleteField(index)}>削除</button>
+                              <label className="check-row"><input type="checkbox" checked={field.required} onChange={(event) => updateField(index, { required: event.target.checked })} />{t("settings.fields.required")}</label>
+                              <button className="danger compact" type="button" onClick={() => deleteField(index)}>{t("settings.fields.delete")}</button>
                             </div>
                           </div>
                         ) : null}
@@ -608,10 +617,10 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               </section>
 
               <aside className="settings-side">
-                <div className="settings-ai-chat" aria-label="AI質問項目提案チャット">
+                <div className="settings-ai-chat" aria-label={t("settings.fields.assistantAria")}>
                   <div className="ai-chat-header">
                     <div>
-                      <strong>AI質問項目設計チャット</strong>
+                      <strong>{t("settings.fields.assistantTitle")}</strong>
                     </div>
                   </div>
                   <div className="settings-chat-log" ref={chatLogRef}>
@@ -623,22 +632,22 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                     {pendingSuggestions.filter((item) => item.status === "pending").map((field) => (
                       <article key={field.proposalId} className="proposal-card settings-suggestion-card">
                         <div className="proposal-fields">
-                          <div className="proposal-field"><strong>項目</strong><p>{field.name}</p></div>
-                          <div className="proposal-field"><strong>詳細項目</strong><p>{field.description || "詳細項目はまだありません。"}</p></div>
+                          <div className="proposal-field"><strong>{t("settings.fields.proposalField")}</strong><p>{field.name}</p></div>
+                          <div className="proposal-field"><strong>{t("settings.fields.proposalDetail")}</strong><p>{field.description || t("settings.fields.noDetail")}</p></div>
                         </div>
                         <div className="actions">
-                          <button className="primary compact" onClick={() => approveSuggestion(field.proposalId)}>承認</button>
-                          <button className="ghost compact" onClick={() => rejectSuggestion(field.proposalId)}>拒否</button>
+                          <button className="primary compact" onClick={() => approveSuggestion(field.proposalId)}>{t("settings.fields.approve")}</button>
+                          <button className="ghost compact" onClick={() => rejectSuggestion(field.proposalId)}>{t("settings.fields.reject")}</button>
                         </div>
                       </article>
                     ))}
-                    {isGenerating ? <div className="bubble ai typing-bubble"><p>thinking...</p></div> : null}
+                    {isGenerating ? <div className="bubble ai typing-bubble"><p>{t("common.loading")}</p></div> : null}
                   </div>
                   <div className="settings-chat-input">
-                    <textarea ref={assistInputRef} value={assistInput} onChange={(event) => setAssistInput(event.target.value)} onKeyDown={handleAssistKeyDown} disabled={isGenerating} placeholder="例: 故障原因の切り分けを聞き出す質問を設計したい" />
+                    <textarea ref={assistInputRef} value={assistInput} onChange={(event) => setAssistInput(event.target.value)} onKeyDown={handleAssistKeyDown} disabled={isGenerating} placeholder={t("settings.fields.inputPlaceholder")} />
                     <div className="toolbar">
-                      <button className="ghost compact" onClick={approveAllSuggestions} disabled={pendingSuggestions.every((item) => item.status !== "pending")}>一括承認</button>
-                      <button className="primary compact" onClick={handleSendAssistMessage} disabled={!canSendAssistMessage}>{isGenerating ? "生成中" : "送信"}</button>
+                      <button className="ghost compact" onClick={approveAllSuggestions} disabled={pendingSuggestions.every((item) => item.status !== "pending")}>{t("settings.fields.approveAll")}</button>
+                      <button className="primary compact" onClick={handleSendAssistMessage} disabled={!canSendAssistMessage}>{isGenerating ? t("settings.fields.generating") : t("settings.fields.send")}</button>
                     </div>
                   </div>
                 </div>
@@ -650,10 +659,10 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             <section id="settings-panel-knowledge" className="settings-section knowledge-documents-settings" role="tabpanel" aria-labelledby="settings-tab-knowledge">
               <div className="section-title-row">
                 <div>
-                  <h3>事前知識</h3>
-                  <p className="form-help">登録した文書は、質問項目の設計やインタビュー内容の整理で参照されます。</p>
+                  <h3>{t("settings.knowledge.title")}</h3>
+                  <p className="form-help">{t("settings.knowledge.description")}</p>
                 </div>
-                <span className="status-pill muted">{props.documents.length}件</span>
+                <span className="status-pill muted">{t("settings.knowledge.count", { count: formatNumber(props.documents.length, locale) })}</span>
               </div>
               <KnowledgeDocumentsContent {...props} />
             </section>
@@ -667,7 +676,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               disabled={props.settingsSaveState === "saving"}
               aria-busy={props.settingsSaveState === "saving"}
             >
-              {props.settingsSaveState === "saving" ? "保存中…" : "設定を保存"}
+              {props.settingsSaveState === "saving" ? t("settings.saving") : t("settings.save")}
             </button>
             {props.settingsNotice ? (
               <span
@@ -689,7 +698,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             className="dialog-panel"
             role="dialog"
             aria-modal="true"
-            aria-label="テンプレート保存確認"
+            aria-label={t("settings.template.saveAria")}
             onSubmit={(event) => {
               event.preventDefault();
               handleCreatePromptProfile().catch(() => undefined);
@@ -697,22 +706,22 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
           >
             <div className="dialog-header">
               <div>
-                <h2>テンプレート保存</h2>
-                <p>現在の追加カスタマイズプロンプトを保存しますか。</p>
+                <h2>{t("settings.template.title")}</h2>
+                <p>{t("settings.template.description")}</p>
               </div>
             </div>
             <label className="field-group">
-              <span>テンプレート名</span>
+              <span>{t("settings.template.name")}</span>
               <input
                 autoFocus
                 value={savePromptTemplateName}
                 onChange={(event) => setSavePromptTemplateName(event.target.value)}
-                placeholder="例: 深掘り重視"
+                placeholder={t("settings.template.namePlaceholder")}
               />
             </label>
             <div className="dialog-actions">
-              <button type="button" className="ghost" onClick={() => setIsSavePromptDialogOpen(false)}>キャンセル</button>
-              <button type="submit" className="primary" disabled={!canSavePromptProfile}>保存する</button>
+              <button type="button" className="ghost" onClick={() => setIsSavePromptDialogOpen(false)}>{t("settings.template.cancel")}</button>
+              <button type="submit" className="primary" disabled={!canSavePromptProfile}>{t("settings.template.save")}</button>
             </div>
           </form>
         </div>

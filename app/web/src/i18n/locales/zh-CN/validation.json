@@ -1,0 +1,5 @@
+{
+  "requiredField": "请输入{field}。",
+  "nameRequired": "请输入知识库名称。",
+  "promptRequired": "请输入提示词。"
+}

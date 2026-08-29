@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { ApiError } from "../../../lib/api";
+import { useI18n, type Translate } from "../../../i18n";
 import type { ChatMessage } from "../../../types/app";
 import {
   createVoiceSession,
@@ -38,6 +39,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     onInterviewStateChanged,
     onCompleted,
   } = args;
+  const { t } = useI18n();
   const [status, setStatus] = useState<VoiceConversationStatus>("idle");
   const [message, setMessage] = useState("");
   const [partialTranscript, setPartialTranscript] = useState("");
@@ -116,7 +118,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
           setStatus((current) => current === "connecting" ? "listening" : current);
         }
         if (event.state === "failed" || event.state === "closed") {
-          setMessage(event.state === "failed" ? "webrtc_connection_failed" : "webrtc_connection_closed");
+            setMessage(event.state === "failed" ? t("errors.webrtcFailed") : t("errors.connectionFailed"));
           setStatus((current) => current === "completed" ? current : "error");
         }
         return;
@@ -125,7 +127,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         return;
       case "runtime_reconnecting":
         setStatus("connecting");
-        setMessage("音声認識へ再接続しています。");
+        setMessage(t("interview.voice.reconnecting"));
         return;
       case "input_state_changed":
         switch (event.inputState) {
@@ -146,7 +148,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             onCompletedRef.current();
             break;
           case "INPUT_UNAVAILABLE":
-            setMessage("音声認識を継続できません。テキスト入力をご利用ください。");
+            setMessage(t("interview.voice.continueText"));
             setStatus("error");
             void cleanupVoiceTransport("transcribe_unavailable");
             break;
@@ -244,20 +246,20 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       case "error":
         if (event.message === "audio_playback_failed") {
           setRequiresManualPlayback(true);
-          setMessage(toUserFacingError(event.message));
+          setMessage(toUserFacingError(event.message, t));
           return;
         }
         if (event.fatal === false) {
-          setMessage(toUserFacingError(event.message));
+          setMessage(toUserFacingError(event.message, t));
           return;
         }
         setStatus("error");
-        setMessage(toUserFacingError(event.message));
+        setMessage(toUserFacingError(event.message, t));
         return;
       default:
         return;
     }
-  }, [cleanupVoiceTransport]);
+  }, [cleanupVoiceTransport, hasQuestions, t]);
 
   const start = useCallback(async () => {
     if (startingRef.current || peerRef.current) {
@@ -265,12 +267,12 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     }
     if (!recordId) {
       setStatus("error");
-      setMessage("記録が選択されていません。");
+      setMessage(t("interview.selectedRecordNone"));
       return;
     }
     if (!hasQuestions) {
       setStatus("error");
-      setMessage("音声インタビューを開始するには、先に質問項目を作成してください。");
+      setMessage(t("errors.voiceMissingQuestions"));
       return;
     }
 
@@ -367,7 +369,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             setStatus((current) => current === "connecting" ? "listening" : current);
           }
           if (state === "failed" || state === "closed") {
-            setMessage(state === "failed" ? "webrtc_connection_failed" : "webrtc_connection_closed");
+            setMessage(state === "failed" ? t("errors.webrtcFailed") : t("errors.connectionFailed"));
             setStatus((current) => current === "completed" ? current : "error");
           }
         },
@@ -414,11 +416,11 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         ).catch(() => undefined);
       }
       setStatus("error");
-      setMessage(toStartErrorMessage(error, failedStage));
+      setMessage(toStartErrorMessage(error, failedStage, t));
     } finally {
       startingRef.current = false;
     }
-  }, [recordId, hasQuestions, handleEvent, remoteAudioRef]);
+  }, [recordId, hasQuestions, handleEvent, remoteAudioRef, t]);
 
   useEffect(() => {
     const onBeforeUnload = () => {
@@ -455,61 +457,61 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
   };
 }
 
-function toStartErrorMessage(error: unknown, stage: string): string {
+function toStartErrorMessage(error: unknown, stage: string, t: Translate): string {
   if (error instanceof DOMException && error.name === "NotAllowedError") {
-    return "マイクの使用が許可されていません。ブラウザの設定からマイクを許可してください。";
+    return t("errors.microphoneDenied");
   }
   if (error instanceof DOMException && error.name === "NotFoundError") {
-    return "利用できるマイクが見つかりません。マイクの接続とブラウザ設定を確認してください。";
+    return t("errors.microphoneNotFound");
   }
   if (error instanceof ApiError && error.status === 401) {
-    return "音声インタビューの認証に失敗しました。";
+    return t("errors.voiceUnauthorized");
   }
   if (error instanceof ApiError && error.status === 403) {
-    return "この音声インタビューへ接続する権限がありません。";
+    return t("errors.voiceForbidden");
   }
   if (error instanceof ApiError && error.status === 409 && error.detail === "voice_session_missing_questions") {
-    return "音声インタビューを開始するには、先に質問項目を作成してください。";
+    return t("errors.voiceMissingQuestions");
   }
   if (
     error instanceof ApiError
     && error.status === 409
     && (error.detail === "voice_session_missing_current_question" || error.detail === "voice_session_completed")
   ) {
-    return "音声インタビューを開始できる質問がありません。質問項目を確認するか、新しい記録で開始してください。";
+    return t("errors.voiceNoQuestion");
   }
   if (error instanceof ApiError && error.status === 409 && error.detail === "voice_session_already_connected") {
-    return "既存の音声接続が残っています。少し待ってから再度お試しください。";
+    return t("errors.voiceAlreadyConnected");
   }
   if (stage === "voice_session") {
-    return "Voice Sessionを作成できませんでした。Recordの権限とapp/apiの起動状態を確認してください。";
+    return t("errors.voiceSessionFailed");
   }
   if (stage === "microphone" || stage === "microphone_or_ice_config") {
-    return "マイクを準備できませんでした。ブラウザのマイク設定を確認してください。";
+    return t("errors.microphonePrepareFailed");
   }
   if (stage === "ice_config") {
-    return "音声サーバーのICE設定を取得できませんでした。app/voiceの起動状態とWeb dev serverのproxy設定を確認してください。";
+    return t("errors.iceConfigFailed");
   }
   if (stage === "offer" || stage === "answer" || stage === "peer_connection") {
-    return "WebRTC接続を開始できませんでした。app/voiceのログとブラウザの接続状態を確認してください。";
+    return t("errors.webrtcFailed");
   }
-  return "音声インタビューへ接続できませんでした。時間を置いて、もう一度お試しください。";
+  return t("errors.voiceConnectFailed");
 }
 
-function toUserFacingError(message?: string): string {
+function toUserFacingError(message: string | undefined, t: Translate): string {
   if (message === "audio_playback_failed") {
-    return "音声を自動再生できませんでした。ブラウザの再生ボタンを押してください。";
+    return t("errors.audioPlaybackFailed");
   }
   if (message === "transcribe_stream_failed") {
-    return "音声認識へ接続できませんでした。テキスト入力で会話を続けてください。";
+    return t("errors.transcribeFailed");
   }
   if (message === "polly_synthesis_failed") {
-    return "音声を生成できなかったため、回答をテキストで表示しています。";
+    return t("errors.pollyFailed");
   }
   if (message) {
-    return `音声インタビューでエラーが発生しました: ${message}`;
+    return t("errors.voiceErrorWithMessage", { message });
   }
-  return "音声インタビューでエラーが発生しました。";
+  return t("errors.voiceError");
 }
 
 function hasPendingInitialReply(session: VoiceSessionResponse | null) {

@@ -1,0 +1,30 @@
+{
+  "mainNavigation": "Main navigation",
+  "workspaceNavigation": "Workspace navigation",
+  "workspace": "Workspace",
+  "knowledge": "Knowledge",
+  "settings": "Settings",
+  "systemSettings": "System settings",
+  "knowledgeList": "Knowledge list",
+  "interview": "Interview",
+  "records": "Records",
+  "knowledgeMenu": "Knowledge menu",
+  "navOpen": "Open sidebar",
+  "navClose": "Close sidebar",
+  "developmentUser": "Development user",
+  "loggedIn": "Signed in",
+  "disconnected": "Not connected",
+  "roles": {
+    "admin": "System administrator",
+    "knowledge_manager": "Knowledge manager",
+    "interviewer": "Interviewer",
+    "viewer": "Viewer"
+  },
+  "backToKnowledgeList": "Back to knowledge list",
+  "knowledgeArea": "Knowledge",
+  "knowledgeAreaDescription": "Organize information gathered through conversation.",
+  "knowledgeRequired": "Create or select a knowledge item.",
+  "newKnowledge": "New knowledge",
+  "createKnowledge": "Create knowledge",
+  "knowledgeSelected": "Selected knowledge"
+}

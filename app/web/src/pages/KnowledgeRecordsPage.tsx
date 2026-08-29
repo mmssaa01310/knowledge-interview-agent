@@ -1,16 +1,10 @@
 import type { InterviewRecord } from "@ai-interviewer/shared-types";
-import { formatDate } from "../lib/date";
+import { formatDate, formatNumber } from "../lib/date";
+import { useI18n } from "../i18n";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
-const statusLabels: Record<InterviewRecord["status"], string> = {
-  draft: "準備中",
-  in_progress: "回答中",
-  submitted: "確認待ち",
-  returned: "修正依頼",
-  approved: "承認済み",
-};
-
 export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
+  const { t, locale } = useI18n();
   const { selectedKnowledgeDb, selectedKnowledge } = props;
   if (!selectedKnowledgeDb || !selectedKnowledge) return null;
 
@@ -23,14 +17,14 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
   }
 
   function returnRecord(recordId: string) {
-    const reviewNote = window.prompt("修正してほしい内容を入力してください。", "");
+    const reviewNote = window.prompt(t("knowledge.records.reviewPrompt"), "");
     if (reviewNote?.trim()) {
       void props.onChangeRecordStatusForRecord(recordId, "returned", reviewNote.trim());
     }
   }
 
   function approveRecord(recordId: string) {
-    if (window.confirm("この記録を承認しますか？")) {
+    if (window.confirm(t("knowledge.records.approvePrompt"))) {
       void props.onChangeRecordStatusForRecord(recordId, "approved");
     }
   }
@@ -39,52 +33,52 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
     <section className="panel page-stack">
       <div className="panel-header">
         <div>
-          <h2>記録</h2>
+          <h2>{t("knowledge.records.title")}</h2>
         </div>
-        <span className="counter">{props.records.length}</span>
+        <span className="counter">{formatNumber(props.records.length, locale)}</span>
       </div>
 
       {props.recordNotice ? <p className="notice" role="status">{props.recordNotice}</p> : null}
 
       <div className="table-list">
         <div className="table-row table-head records-workspace-row knowledge-records-row">
-          <span>記録</span>
-          <span>担当者</span>
-          <span>状態</span>
-          <span>更新日</span>
-          <span>操作</span>
+          <span>{t("knowledge.records.record")}</span>
+          <span>{t("knowledge.records.assignee")}</span>
+          <span>{t("knowledge.records.status")}</span>
+          <span>{t("knowledge.records.updatedAt")}</span>
+          <span>{t("knowledge.records.operation")}</span>
         </div>
         {props.records.length === 0 ? (
-          <p className="empty">記録はありません。</p>
+          <p className="empty">{t("knowledge.records.empty")}</p>
         ) : props.records.map((record) => (
           <div className="table-row records-workspace-row knowledge-records-row" key={record.id}>
             <span>
               <strong>{record.title}</strong>
               <small>{record.targetEquipment || record.targetProcess || "-"}</small>
             </span>
-            <span>{record.ownerUserId || "未設定"}</span>
+            <span>{record.ownerUserId || t("common.notSet")}</span>
             <span>
               <span className={record.status === "approved" ? "status-pill" : "status-pill muted"}>
-                {statusLabels[record.status]}
+                {t(`interview.status.${record.status}`)}
               </span>
             </span>
-            <span>{formatDate(record.updatedAt)}</span>
+            <span>{formatDate(record.updatedAt, locale)}</span>
             <span className="inline-actions">
               <button className="ghost compact" type="button" onClick={() => openRecord(record.id)}>
-                {props.user?.role === "viewer" ? "確認" : "編集"}
+                {props.user?.role === "viewer" ? t("knowledge.records.viewerAction") : t("knowledge.records.editAction")}
               </button>
               {isAdmin ? (
                 <button className="danger compact" type="button" onClick={() => void props.onDeleteRecord(record.id)}>
-                  削除
+                  {t("knowledge.records.delete")}
                 </button>
               ) : null}
               {isManagementUser && record.status === "submitted" ? (
                 <>
                   <button className="ghost compact" type="button" onClick={() => returnRecord(record.id)}>
-                    差し戻す
+                    {t("knowledge.records.return")}
                   </button>
                   <button className="primary compact" type="button" onClick={() => approveRecord(record.id)}>
-                    承認
+                    {t("knowledge.records.approve")}
                   </button>
                 </>
               ) : null}

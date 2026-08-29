@@ -38,6 +38,8 @@ export type InterviewPlan = {
   purpose?: string | null;
   profile?: "fixed_form" | "business_process" | "system_requirement";
   modelId?: "global.openai.gpt-5.6-terra" | "global.openai.gpt-5.6-luna" | null;
+  /** AIインタビューの言語。Web UIのuiLocaleとは独立して扱う。 */
+  interviewLocale?: string | null;
 };
 
 export type Knowledge = BaseEntity & {

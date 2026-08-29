@@ -1,0 +1,5 @@
+{
+  "requiredField": "{field}を入力してください。",
+  "nameRequired": "ナレッジ名を入力してください。",
+  "promptRequired": "プロンプトを入力してください。"
+}

@@ -1,0 +1,96 @@
+{
+  "title": "访谈设置",
+  "returnToInterview": "返回访谈",
+  "save": "保存设置",
+  "saving": "保存中…",
+  "setupNotice": "开始访谈前，请保存用途和执行模型。",
+  "knowledgeInfo": "知识库详情",
+  "tabs": {
+    "fields": "问题项目",
+    "execution": "执行设置",
+    "knowledge": "参考知识"
+  },
+  "menuAria": "访谈设置菜单",
+  "execution": {
+    "title": "执行设置",
+    "purpose": "用途",
+    "purposeAria": "访谈用途",
+    "model": "访谈执行模型",
+    "modelAria": "访谈执行模型",
+    "assistant": "辅助设置",
+    "questionDesignModel": "问题设计模型",
+    "questionDesignModelAria": "问题设计模型",
+    "template": "已保存模板",
+    "templateAria": "已保存模板",
+    "unselected": "未选择",
+    "load": "加载",
+    "additionalPrompt": "附加定制提示词",
+    "saveAsTemplate": "另存为模板",
+    "promptPlaceholder": "只添加此知识库需要的补充视角或提问方式。"
+  },
+  "profiles": {
+    "fixed_form": "采集标准信息",
+    "business_process": "整理业务流程",
+    "system_requirement": "整理系统需求"
+  },
+  "profileDescriptions": {
+    "fixed_form": "按顺序确认已配置的问题项目。",
+    "business_process": "将参与者、步骤和分支整理为业务流程。",
+    "system_requirement": "确认目的、需求和限制，并在需要时整理处理流程。"
+  },
+  "models": {
+    "luna": "GPT-5.6 Luna",
+    "terra": "GPT-5.6 Terra",
+    "standard": "标准 · 成本较低",
+    "accuracyPriority": "优先语义理解和准确性"
+  },
+  "fields": {
+    "title": "问题项目",
+    "description": "定义AI需要询问的信息和审核结构。",
+    "count": "{count}项",
+    "add": "添加项目",
+    "empty": "还没有问题项目。",
+    "unnamed": "未命名的问题项目",
+    "nameAria": "问题项目名称",
+    "namePlaceholder": "问题项目名称",
+    "detail": "详情",
+    "detailPlaceholder": "例如：姓名、年龄、部门、地点",
+    "required": "必填项目",
+    "delete": "删除",
+    "assistantAria": "AI问题设计聊天",
+    "assistantTitle": "AI问题设计聊天",
+    "proposalField": "项目名称",
+    "proposalDetail": "详情",
+    "noDetail": "无详情",
+    "approve": "应用",
+    "reject": "退回",
+    "approveAll": "应用所有建议",
+    "inputPlaceholder": "请输入要创建问题的业务或场景。",
+    "generating": "生成中…",
+    "send": "发送"
+  },
+  "assistant": {
+    "initialMessage": "请输入要创建问题的业务或场景。"
+  },
+  "knowledge": {
+    "title": "参考知识",
+    "description": "登记访谈前要参考的文档。",
+    "count": "{count}项"
+  },
+  "template": {
+    "saveAria": "输入模板名称并保存",
+    "title": "另存为模板",
+    "description": "保存当前的附加定制提示词。",
+    "name": "模板名称",
+    "namePlaceholder": "例如：面向维护人员",
+    "cancel": "取消",
+    "save": "保存"
+  },
+  "messages": {
+    "saving": "正在保存{tab}…",
+    "saved": "{tab}已保存",
+    "templateSaved": "附加定制已保存",
+    "templateLoaded": "已加载保存的模板",
+    "selectKnowledge": "请先选择知识库。"
+  }
+}

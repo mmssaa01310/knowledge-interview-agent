@@ -1,5 +1,7 @@
 import type { InterviewRecord } from "@ai-interviewer/shared-types";
 import type { AiProposal } from "../../lib/api";
+import { useI18n } from "../../i18n";
+import { formatNumber, formatPercent } from "../../lib/date";
 
 type InterviewSectionProps = {
   selectedRecord: InterviewRecord | null;
@@ -10,12 +12,6 @@ type InterviewSectionProps = {
   onApproveProposal: (proposalId: string) => void;
 };
 
-const initialMessages = [
-  { role: "AI", text: "まず、今回整理したい内容を教えてください。" },
-  { role: "User", text: "朝一と段取り替え直後に起きやすい事象を整理したいです。" },
-  { role: "AI", text: "ありがとうございます。状況を確認しながら、構造化提案の下書きを作成します。" }
-];
-
 export function InterviewSection({
   selectedRecord,
   proposals,
@@ -24,17 +20,23 @@ export function InterviewSection({
   onSendMessage,
   onApproveProposal
 }: InterviewSectionProps) {
+  const { t, locale } = useI18n();
+  const initialMessages = [
+    { role: "AI", text: t("interview.demoMessages.first") },
+    { role: "User", text: t("interview.demoMessages.second") },
+    { role: "AI", text: t("interview.demoMessages.third") },
+  ];
   return (
     <section className="panel">
       <div className="panel-header">
         <div>
-          <p className="eyebrow">Interview</p>
-          <h2>AIインタビュー</h2>
+          <p className="eyebrow">{t("navigation.interview")}</p>
+          <h2>{t("interview.title")}</h2>
           <p className="lede">
-            会話で不足情報を聞き取り、AI提案は承認前の下書きとして保存します。
+            {t("interview.chatDescription")}
           </p>
         </div>
-        <span className="status-pill">{selectedRecord ? selectedRecord.title : "記録未選択"}</span>
+        <span className="status-pill">{selectedRecord ? selectedRecord.title : t("interview.selectedRecordNone")}</span>
       </div>
       <div className="interview-layout">
         <div className="chat-panel">
@@ -49,26 +51,26 @@ export function InterviewSection({
             <textarea
               value={messageText}
               onChange={(event) => onChangeMessage(event.target.value)}
-              placeholder="熟練者の回答や追加情報を入力"
+              placeholder={t("interview.answerPlaceholder")}
               disabled={!selectedRecord}
             />
             <button className="primary" onClick={onSendMessage} disabled={!selectedRecord || !messageText.trim()}>
-              送信して提案生成
+              {t("interview.send")}
             </button>
           </div>
         </div>
         <div className="proposal-panel">
           <div className="subheader">
-            <strong>構造化提案</strong>
-            <span className="counter">{proposals.length}</span>
+            <strong>{t("interview.proposal.title")}</strong>
+            <span className="counter">{formatNumber(proposals.length, locale)}</span>
           </div>
           {proposals.length === 0 ? (
-            <p className="empty">選択中の記録にはAI提案がありません。</p>
+            <p className="empty">{t("interview.proposal.empty")}</p>
           ) : proposals.map((proposal) => (
             <article key={proposal.id} className="proposal-card">
               <div className="proposal-meta">
-                <span className="status-pill muted">{proposal.status}</span>
-                <span>信頼度 {Math.round(proposal.confidence * 100)}%</span>
+                <span className="status-pill muted">{t(`interview.proposal.status.${proposal.status}`)}</span>
+                <span>{t("interview.proposal.confidence", { value: formatPercent(proposal.confidence, locale) })}</span>
               </div>
               <pre>{JSON.stringify(proposal.structuredData, null, 2)}</pre>
               <div className="actions">
@@ -77,10 +79,10 @@ export function InterviewSection({
                   onClick={() => onApproveProposal(proposal.id)}
                   disabled={proposal.status === "approved"}
                 >
-                  個別承認
+                  {t("interview.proposal.approve")}
                 </button>
-                <button className="ghost">修正</button>
-                <button className="ghost">差し戻し</button>
+                <button className="ghost">{t("common.edit")}</button>
+                <button className="ghost">{t("interview.proposal.reject")}</button>
               </div>
             </article>
           ))}

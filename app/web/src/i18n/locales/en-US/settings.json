@@ -1,0 +1,96 @@
+{
+  "title": "Interview settings",
+  "returnToInterview": "Back to interview",
+  "save": "Save settings",
+  "saving": "Saving…",
+  "setupNotice": "Save the purpose and execution model before starting an interview.",
+  "knowledgeInfo": "Knowledge details",
+  "tabs": {
+    "fields": "Question items",
+    "execution": "Execution",
+    "knowledge": "Reference knowledge"
+  },
+  "menuAria": "Interview settings menu",
+  "execution": {
+    "title": "Execution settings",
+    "purpose": "Purpose",
+    "purposeAria": "Interview purpose",
+    "model": "Interview execution model",
+    "modelAria": "Interview execution model",
+    "assistant": "Additional settings",
+    "questionDesignModel": "Question design model",
+    "questionDesignModelAria": "Question design model",
+    "template": "Saved template",
+    "templateAria": "Saved template",
+    "unselected": "Not selected",
+    "load": "Load",
+    "additionalPrompt": "Additional customization prompt",
+    "saveAsTemplate": "Save as template",
+    "promptPlaceholder": "Add only the extra perspectives or interview style needed for this knowledge."
+  },
+  "profiles": {
+    "fixed_form": "Capture standard information",
+    "business_process": "Organize a business process",
+    "system_requirement": "Organize system requirements"
+  },
+  "profileDescriptions": {
+    "fixed_form": "Confirm the configured question items in order.",
+    "business_process": "Organize participants, steps, and branches into a business process.",
+    "system_requirement": "Confirm the purpose, request, and constraints, then organize a process when needed."
+  },
+  "models": {
+    "luna": "GPT-5.6 Luna",
+    "terra": "GPT-5.6 Terra",
+    "standard": "Standard · lower cost",
+    "accuracyPriority": "Meaning and accuracy first"
+  },
+  "fields": {
+    "title": "Question items",
+    "description": "Define the information AI should ask about and the structure to review.",
+    "count": "{count} items",
+    "add": "Add item",
+    "empty": "No question items yet.",
+    "unnamed": "Unnamed question item",
+    "nameAria": "Question item name",
+    "namePlaceholder": "Question item name",
+    "detail": "Details",
+    "detailPlaceholder": "Example: name, age, department, location",
+    "required": "Required item",
+    "delete": "Delete",
+    "assistantAria": "AI question design chat",
+    "assistantTitle": "AI question design chat",
+    "proposalField": "Item name",
+    "proposalDetail": "Details",
+    "noDetail": "No details",
+    "approve": "Apply",
+    "reject": "Return",
+    "approveAll": "Apply all suggestions",
+    "inputPlaceholder": "Describe the work or situation for which you want to create questions.",
+    "generating": "Generating…",
+    "send": "Send"
+  },
+  "assistant": {
+    "initialMessage": "Describe the work or situation for which you want to create questions."
+  },
+  "knowledge": {
+    "title": "Reference knowledge",
+    "description": "Register documents to reference before an interview.",
+    "count": "{count} items"
+  },
+  "template": {
+    "saveAria": "Enter a template name and save",
+    "title": "Save as template",
+    "description": "Save the current additional customization prompt.",
+    "name": "Template name",
+    "namePlaceholder": "Example: For maintenance staff",
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "messages": {
+    "saving": "Saving {tab}…",
+    "saved": "{tab} saved",
+    "templateSaved": "Additional customization was saved",
+    "templateLoaded": "Saved template loaded",
+    "selectKnowledge": "Select a knowledge item first."
+  }
+}

@@ -1,3 +1,4 @@
+import { useI18n } from "../i18n";
 import { KnowledgeSubNav } from "../features/knowledge/components/KnowledgeSubNav";
 import { PageHeader } from "./PageHeader";
 import { InterviewRecordPage } from "../pages/InterviewRecordPage";
@@ -10,6 +11,7 @@ import { KnowledgeSettingsPage } from "../pages/KnowledgeSettingsPage";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
 export function KnowledgeLayout(props: KnowledgeLayoutProps) {
+  const { t } = useI18n();
   if (props.route.name === "knowledge-dbs") {
     return (
       <KnowledgeListPage
@@ -24,7 +26,7 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
   }
 
   if (!props.selectedKnowledgeDb) {
-    return <p className="empty">ナレッジを作成または選択してください。</p>;
+    return <p className="empty">{t("navigation.knowledgeRequired")}</p>;
   }
 
   const canManageKnowledge = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
@@ -34,11 +36,11 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
   }
 
   if (!props.selectedKnowledge) {
-    return <p className="empty">ナレッジを作成または選択してください。</p>;
+    return <p className="empty">{t("navigation.knowledgeRequired")}</p>;
   }
 
   if (!canManageKnowledge && (props.route.name === "knowledge-settings" || props.route.name === "knowledge-documents")) {
-    return <p className="empty">この画面を表示する権限がありません。</p>;
+    return <p className="empty">{t("errors.permissionDenied")}</p>;
   }
 
   const knowledgeBasePath = `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}`;
@@ -56,7 +58,7 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
             className="page-header-back"
             onClick={() => props.navigate("/knowledge-dbs")}
           >
-            ← ナレッジ一覧
+            ← {t("navigation.backToKnowledgeList")}
           </button>
         }
         actions={canManageKnowledge && props.route.name !== "knowledge-settings" ? (
@@ -65,7 +67,7 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
             className="primary"
             onClick={() => props.navigate(`/knowledge-dbs/${props.selectedKnowledgeDb?.id}/knowledges/${props.selectedKnowledge?.id}/settings`)}
           >
-            インタビュー設定
+            {t("settings.title")}
           </button>
         ) : undefined}
       />
