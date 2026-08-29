@@ -905,6 +905,13 @@ label {
   font-size: 14px;
 }
 
+.interview-sidebar-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
 .interview-summary-tabs,
 .process-model-tabs {
   gap: 3px;
@@ -934,15 +941,6 @@ label {
 .interview-sidebar > .process-model-panel {
   border: 0;
   box-shadow: none;
-}
-
-.interview-sidebar-header > span {
-  width: 26px;
-  height: 26px;
-  border: 1px solid var(--ki-border);
-  background: var(--ki-surface-tint);
-  color: var(--ki-primary-strong);
-  font-size: 11px;
 }
 
 .interview-question-list {

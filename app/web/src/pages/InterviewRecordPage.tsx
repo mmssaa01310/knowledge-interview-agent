@@ -386,8 +386,12 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             />
           ) : <>
             <div className="interview-sidebar-header">
-              <strong>{t("interview.questionList")}</strong>
-              <span>{formatNumber(configuredQuestionItems.length, locale)}</span>
+              <div className="interview-sidebar-title">
+                <strong>{t("interview.questionList")}</strong>
+                <span className="counter">
+                  {t("common.itemCount", { count: formatNumber(configuredQuestionItems.length, locale) })}
+                </span>
+              </div>
             </div>
             {configuredQuestionItems.length ? (
               <div className="interview-question-list">
