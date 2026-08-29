@@ -168,6 +168,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const selectedRecordId = "recordId" in args.route ? args.route.recordId : undefined;
   const selectedRecord = selectedRecordId ? records.find((record) => record.id === selectedRecordId) ?? null : null;
 
+  function markRecordAsSubmitted(recordId: string) {
+    setRecords((currentRecords) => currentRecords.map((record) => (
+      record.id === recordId && record.status === "in_progress"
+        ? { ...record, status: "submitted" }
+        : record
+    )));
+  }
+
   const sortedFields = useMemo(
     () => [...fields].sort((a, b) => a.displayOrder - b.displayOrder),
     [fields]
@@ -184,6 +192,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   async function loadInterviewSnapshot(recordId: string) {
     const snapshot = await fetchInterviewState(recordId);
     setInterviewState(snapshot.interviewState);
+    if (snapshot.interviewState.status === "completed") {
+      markRecordAsSubmitted(recordId);
+    }
     const snapshotMessages = snapshot.messages
       .filter((message) => message.isActualUtterance !== false)
       .map((message) => ({
@@ -249,6 +260,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       }
       if (metadata?.interviewState) {
         setInterviewState(metadata.interviewState);
+      }
+      if (metadata?.status === "completed" || metadata?.interviewState?.status === "completed") {
+        if (selectedRecordId) {
+          markRecordAsSubmitted(selectedRecordId);
+        }
       }
       if (metadata?.structuredDraft) {
         setStructuredDraft(metadata.structuredDraft);
@@ -599,8 +615,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   async function handleDeleteRecord(recordId: string) {
     if (!selectedKnowledgeDb || !selectedKnowledge) return;
     if (!window.confirm("この記録を削除します。")) return;
-    await deleteRecord(recordId);
-    await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+    try {
+      await deleteRecord(recordId);
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      setRecordNotice("記録を削除しました");
+    } catch (error) {
+      console.error("Failed to delete interview record", error);
+      setRecordNotice("記録を削除できませんでした。権限と通信状態を確認してください。");
+    }
   }
 
   async function handleChangeRecordStatus(
@@ -622,7 +644,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
             ? "記録を承認しました"
             : status === "returned"
               ? "記録を修正依頼にしました"
-              : "記録を公開しました",
+              : "記録を更新しました",
       );
     } catch (error) {
       console.error("Failed to change record status", error);
@@ -644,7 +666,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
           ? "記録を承認しました"
           : status === "returned"
             ? "記録を修正依頼にしました"
-            : "記録を対象者へ公開しました",
+            : "記録を更新しました",
       );
     } catch (error) {
       console.error("Failed to change record status", error);

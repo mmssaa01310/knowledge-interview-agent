@@ -15,6 +15,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
   if (!selectedKnowledgeDb || !selectedKnowledge) return null;
 
   const basePath = `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}`;
+  const isAdmin = props.user?.role === "admin";
 
   function openRecord(recordId: string) {
     props.navigate(`${basePath}/records/${recordId}`);
@@ -39,9 +40,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
         <div>
           <h2>記録</h2>
         </div>
-        <button className="primary" type="button" onClick={() => props.navigate(`${basePath}/interview`)}>
-          新しい記録
-        </button>
+        <span className="counter">{props.records.length}</span>
       </div>
 
       {props.recordNotice ? <p className="notice" role="status">{props.recordNotice}</p> : null}
@@ -71,11 +70,11 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
             <span>{formatDate(record.updatedAt)}</span>
             <span className="inline-actions">
               <button className="ghost compact" type="button" onClick={() => openRecord(record.id)}>
-                詳細
+                編集
               </button>
-              {record.status === "draft" ? (
-                <button className="primary compact" type="button" onClick={() => void props.onChangeRecordStatusForRecord(record.id, "in_progress")}>
-                  公開
+              {isAdmin ? (
+                <button className="danger compact" type="button" onClick={() => void props.onDeleteRecord(record.id)}>
+                  削除
                 </button>
               ) : null}
               {record.status === "submitted" ? (

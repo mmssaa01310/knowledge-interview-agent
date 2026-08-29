@@ -75,7 +75,13 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
           </div>
           <div className="interview-resume-list">
             {resumableRecords.map((record) => (
-              <div className="interview-resume-card" key={record.id}>
+              <button
+                className="interview-resume-card"
+                key={record.id}
+                type="button"
+                onClick={() => openRecord(record.id)}
+                aria-label={`${record.title}を再開`}
+              >
                 <div className="interview-resume-card-main">
                   <strong>{record.title}</strong>
                   <span>{record.targetEquipment || record.targetProcess || selectedKnowledge.name}</span>
@@ -85,11 +91,8 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
                   <span className={record.status === "in_progress" ? "status-pill active" : "status-pill muted"}>
                     {statusLabels[record.status]}
                   </span>
-                  <button className="ghost compact" type="button" onClick={() => openRecord(record.id)}>
-                    {record.status === "draft" ? "開く" : "再開"}
-                  </button>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </section>

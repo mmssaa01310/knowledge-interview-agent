@@ -1402,6 +1402,18 @@ label {
   border: 1px solid #d7e0e8;
   border-radius: 8px;
   background: #ffffff;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+}
+
+.interview-resume-card:hover,
+.interview-resume-card:focus-visible {
+  border-color: #8fb8df;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.12);
 }
 
 .interview-resume-card-main,
@@ -1413,17 +1425,34 @@ label {
 }
 
 .interview-resume-card-main {
-  flex-wrap: wrap;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .interview-resume-card-main strong {
-  flex-basis: 100%;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .interview-resume-card-main span,
 .interview-resume-card-main small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #6b7d90;
   font-size: 12px;
+}
+
+.interview-resume-card-main span {
+  flex: 0 1 28%;
+}
+
+.interview-resume-card-main small {
+  flex: 0 0 auto;
 }
 
 .interview-resume-card-actions {
@@ -2456,8 +2485,7 @@ textarea {
     flex-direction: column;
   }
 
-  .interview-launch-notice,
-  .interview-resume-card {
+  .interview-launch-notice {
     align-items: stretch;
     flex-direction: column;
   }

@@ -64,9 +64,6 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       && (isManagementUser
         || (props.user?.role === "interviewer" && ["in_progress", "returned"].includes(props.selectedRecord?.status ?? ""))),
   );
-  const canSubmitRecord = isInterviewConfigured
-    && props.user?.role === "interviewer"
-    && ["in_progress", "returned"].includes(props.selectedRecord?.status ?? "");
 
   async function handleResetDemo() {
     if (!isManagementUser || isResettingDemo || realtimeVoice.isActive) return;
@@ -255,15 +252,6 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             {isResettingDemo ? "リセット中" : "テスト状態をリセット"}
           </button>
         ) : null}
-        {isManagementUser && props.selectedRecord?.status === "draft" ? (
-          <button
-            type="button"
-            className="primary compact"
-            onClick={() => void props.onChangeRecordStatus("in_progress")}
-          >
-            対象者へ公開
-          </button>
-        ) : null}
         {isManagementUser && props.selectedRecord?.status === "submitted" ? (
           <>
             <button
@@ -284,17 +272,6 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               記録を承認
             </button>
           </>
-        ) : null}
-        {canSubmitRecord ? (
-          <button
-            type="button"
-            className="primary compact"
-            onClick={() => void props.onChangeRecordStatus("submitted")}
-            disabled={props.interviewState?.status !== "completed"}
-            title={props.interviewState?.status === "completed" ? "管理者へ提出します" : "インタビュー完了後に提出できます"}
-          >
-            管理者へ提出
-          </button>
         ) : null}
       </div>
 
