@@ -60,6 +60,7 @@ from ai_interviewer_api.services.dialogue_interpreter import (
     DialogueInterpretation,
     should_route_to_answer_processor,
 )
+from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
     ConfirmationEvaluation,
@@ -934,6 +935,7 @@ def _process_structured_voice_turn(
             user,
             persist_assistant_messages=False,
         )
+        sync_record_status_after_interview(record, result.get("status"), user)
         reply_text = str(result.get("reply") or "").strip()
         action = str(result.get("action") or "ask_structured").strip() or "ask_structured"
         question = result.get("question") if isinstance(result.get("question"), dict) else None

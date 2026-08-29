@@ -22,6 +22,10 @@ def require_management_role(user: UserContext) -> None:
     require_roles(user, MANAGEMENT_ROLES)
 
 
+def require_admin_role(user: UserContext) -> None:
+    require_roles(user, {"admin"})
+
+
 def ensure_record_access(record: dict, user: UserContext, *, operation: str = "read") -> None:
     ensure_tenant_scope(user, record["tenantId"])
 

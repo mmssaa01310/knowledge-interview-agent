@@ -10,6 +10,7 @@ from ai_interviewer_api.routers.knowledges import create_knowledge
 from ai_interviewer_api.routers.records import (
     create_record,
     create_record_message,
+    delete_record,
     get_record,
     get_record_interview_state,
     list_accessible_records,
@@ -60,12 +61,7 @@ def _create_record(
     )
 
 
-def _publish_record(record: dict, user: UserContext) -> dict:
-    return update_record(record["id"], RecordUpdate(status="in_progress"), user)
-
-
 def _approve_record(record: dict, user: UserContext) -> dict:
-    _publish_record(record, user)
     update_record(record["id"], RecordUpdate(status="submitted"), user)
     return update_record(record["id"], RecordUpdate(status="approved"), user)
 
@@ -96,20 +92,40 @@ def test_record_creation_requires_saved_interview_configuration() -> None:
     ).model_dump()
     store.upsert("records", legacy_record)
 
-    with pytest.raises(HTTPException) as publish_exc_info:
+    with pytest.raises(HTTPException) as transition_exc_info:
         update_record(legacy_record["id"], RecordUpdate(status="in_progress"), manager)
 
-    assert publish_exc_info.value.status_code == 409
-    assert publish_exc_info.value.detail == "interview_configuration_required"
+    assert transition_exc_info.value.status_code == 409
+    assert transition_exc_info.value.detail == "interview_configuration_required"
 
 
-def test_interviewer_can_only_access_assigned_published_records() -> None:
+def test_completed_interview_is_submitted_automatically() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    record = _create_record(manager)
+    store.upsert(
+        "interview_states",
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": manager.tenant_id,
+            "recordId": record["id"],
+            "status": "completed",
+            "fieldStates": {},
+        },
+    )
+
+    snapshot = get_record_interview_state(record["id"], manager)
+
+    assert snapshot["status"] == "completed"
+    assert store.get("records", record["id"])["status"] == "submitted"
+    assert store.list("audit_logs", manager.tenant_id)[-1]["action"] == "record_status_change"
+
+
+def test_new_record_is_immediately_answerable_by_assigned_interviewer() -> None:
     manager = DEV_TOKENS["dev-manager"]
     interviewer = DEV_TOKENS["dev-interviewer"]
     assigned = _create_record(manager, owner_user_id=interviewer.user_id)
-    _publish_record(assigned, manager)
+    assert assigned["status"] == "in_progress"
     manager_owned = _create_record(manager)
-    _publish_record(manager_owned, manager)
 
     records = list_accessible_records(interviewer)
 
@@ -122,6 +138,19 @@ def test_interviewer_can_only_access_assigned_published_records() -> None:
     with pytest.raises(HTTPException) as knowledge_exc_info:
         list_knowledge_dbs(interviewer)
     assert knowledge_exc_info.value.status_code == 403
+
+
+def test_only_admin_can_delete_record() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    admin = DEV_TOKENS["dev-admin"]
+    record = _create_record(manager)
+
+    with pytest.raises(HTTPException) as manager_exc_info:
+        delete_record(record["id"], manager)
+
+    assert manager_exc_info.value.status_code == 403
+    assert delete_record(record["id"], admin) == {"deleted": True}
+    assert store.get("records", record["id"]) is None
 
 
 def test_viewer_can_only_read_explicitly_shared_approved_records() -> None:
@@ -137,7 +166,6 @@ def test_viewer_can_only_read_explicitly_shared_approved_records() -> None:
         manager,
         owner_user_id=DEV_TOKENS["dev-interviewer"].user_id,
     )
-    _publish_record(not_shared, manager)
 
     records = list_accessible_records(viewer)
 
@@ -158,7 +186,6 @@ def test_interviewer_can_submit_returned_record_and_manager_can_review() -> None
     manager = DEV_TOKENS["dev-manager"]
     interviewer = DEV_TOKENS["dev-interviewer"]
     record = _create_record(manager, owner_user_id=interviewer.user_id)
-    _publish_record(record, manager)
     store.upsert(
         "interview_states",
         {"id": f"interview-state-{record['id']}", "recordId": record["id"], "status": "completed"},
@@ -184,7 +211,6 @@ def test_interviewer_cannot_manage_or_answer_another_users_record() -> None:
     manager = DEV_TOKENS["dev-manager"]
     interviewer = DEV_TOKENS["dev-interviewer"]
     record = _create_record(manager, owner_user_id=manager.user_id)
-    _publish_record(record, manager)
 
     with pytest.raises(HTTPException) as message_exc_info:
         create_record_message(

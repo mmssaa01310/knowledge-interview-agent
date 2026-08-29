@@ -8,6 +8,7 @@ from ai_interviewer_api.auth.deps import UserContext, get_current_user
 from ai_interviewer_api.core.interview_configuration import require_interview_configuration
 from ai_interviewer_api.core.permissions import (
     accessible_records,
+    require_admin_role,
     require_management_role,
     require_record_action,
 )
@@ -22,6 +23,7 @@ from ai_interviewer_api.services.ai_interview import (
     generate_interview_reply,
     get_interview_state_snapshot,
 )
+from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 
 router = APIRouter(prefix="/api")
 
@@ -44,6 +46,7 @@ def create_record(
         knowledgeId=knowledge_id,
         knowledgeName=knowledge["name"],
         ownerUserId=owner_user_id,
+        status="in_progress",
         **payload_data,
     )
     store.upsert("records", item.model_dump())
@@ -128,9 +131,16 @@ def update_record(
 
 @router.delete("/records/{record_id}")
 def delete_record(record_id: str, user: UserContext = Depends(get_current_user)) -> dict:
-    require_management_role(user)
-    get_record(record_id, user)
+    require_admin_role(user)
+    record = get_record(record_id, user)
     store.delete("records", record_id)
+    write_audit_log(
+        user,
+        "delete",
+        "record",
+        record_id,
+        {"title": record.get("title"), "knowledgeId": record.get("knowledgeId")},
+    )
     return {"deleted": True}
 
 
@@ -263,7 +273,9 @@ def get_record_interview_state(
 ) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
     require_record_action(record, user, "interview_read")
-    return get_interview_state_snapshot(record, user, persist=user.role != "viewer")
+    snapshot = get_interview_state_snapshot(record, user, persist=user.role != "viewer")
+    sync_record_status_after_interview(record, snapshot.get("status"), user)
+    return snapshot
 
 
 @router.patch("/records/{record_id}/interview-answers/{field_id}")

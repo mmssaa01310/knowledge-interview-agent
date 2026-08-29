@@ -31,6 +31,7 @@ from ai_interviewer_api.services.interview_answer_processor import (
 from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
 )
+from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 
 
 logger = logging.getLogger(__name__)
@@ -113,6 +114,7 @@ def generate_interview_reply(
                 user,
                 persist_assistant_messages=persist_assistant_messages,
             )
+            sync_record_status_after_interview(record, result.get("status"), user)
             return InterviewStreamResult(
                 reply_chunks=_split_reply_chunks(str(result.get("reply") or "")),
                 metadata=result,
@@ -122,12 +124,18 @@ def generate_interview_reply(
             record["id"],
             record["knowledgeId"],
         )
-        return _generate_interview_stream_result_with_strands(
+        result = _generate_interview_stream_result_with_strands(
             record,
             knowledge,
             user,
             persist_assistant_messages=persist_assistant_messages,
         )
+        sync_record_status_after_interview(
+            record,
+            result.metadata.get("status") if result.metadata else None,
+            user,
+        )
+        return result
     except Exception:
         engine_name = "Structured Interview" if structured_enabled else "Strands interview agent"
         logger.exception("%s failed; returning safe error response", engine_name)
