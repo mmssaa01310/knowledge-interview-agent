@@ -6,7 +6,7 @@ from ai_interviewer_voice.runtimes.nova_sonic.config import DEFAULT_SYSTEM_PROMP
 
 @dataclass(frozen=True)
 class Settings:
-    app_name: str = os.getenv("APP_NAME", "AI Interviewer Voice")
+    app_name: str = os.getenv("APP_NAME", "KIKIORI Voice")
     app_env: str = os.getenv("APP_ENV", "local")
     api_base_url: str = os.getenv("VOICE_API_BASE_URL", "http://127.0.0.1:8001")
     internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")

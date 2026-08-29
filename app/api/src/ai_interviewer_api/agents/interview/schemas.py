@@ -59,7 +59,7 @@ class InterviewFieldState(BaseModel):
     candidateAnswer: str | None = None
     candidateSource: Literal["user_statement", "assistant_proposal"] | None = None
     candidateProposalMessageId: str | None = None
-    confirmedSource: Literal["user_statement", "assistant_proposal"] | None = None
+    confirmedSource: Literal["user_statement", "assistant_proposal", "management_edit"] | None = None
     confirmedProposalMessageId: str | None = None
     confirmationEvidenceTranscriptIds: list[str] = Field(default_factory=list)
     rawAnswer: str | None = None

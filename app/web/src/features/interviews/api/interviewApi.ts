@@ -6,6 +6,8 @@ export {
   createRecordMessage,
   deleteRecord,
   fetchInterviewState,
+  saveProcessModel,
+  editProcessModel,
   fetchProposals,
   fetchRecords,
   fetchAccessibleRecords,

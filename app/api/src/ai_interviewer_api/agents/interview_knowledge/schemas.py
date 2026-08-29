@@ -45,6 +45,19 @@ class RequirementUpdate(StrictModel):
     candidateSource: CandidateSource = "user_statement"
 
 
+class RequirementEdit(StrictModel):
+    """A management edit to an existing requirement value."""
+
+    requirementId: str
+    value: str
+
+
+class RequirementPatch(StrictModel):
+    """Structured updates for the requirement side of a full-screen edit."""
+
+    updateRequirements: list[RequirementEdit] = Field(default_factory=list)
+
+
 class ProcessParticipant(StrictModel):
     participantId: str
     name: str
@@ -59,7 +72,16 @@ class ProcessParticipant(StrictModel):
 class ProcessNode(StrictModel):
     nodeId: str
     label: str
-    nodeType: Literal["start", "activity", "decision", "end", "system", "unknown"] = "activity"
+    nodeType: Literal[
+        "start",
+        "activity",
+        "decision",
+        "end",
+        "system",
+        "data",
+        "subprocess",
+        "unknown",
+    ] = "activity"
     participantIds: list[str] = Field(default_factory=list)
     evidenceTranscriptIds: list[str] = Field(default_factory=list)
     lifecycle: Literal["active", "superseded"] = "active"
@@ -147,6 +169,14 @@ class StructuredInterviewOutput(StrictModel):
     resolvedContradictionIds: list[str] = Field(default_factory=list)
     applicability: list[ApplicabilityUpdate] = Field(default_factory=list)
     openIssues: list[OpenIssue] = Field(default_factory=list)
+
+
+class ProcessModelEditOutput(StrictModel):
+    """Structured contract for a management user's full-screen edit command."""
+
+    reply: str
+    requirementPatch: RequirementPatch = Field(default_factory=RequirementPatch)
+    processPatch: ProcessPatch = Field(default_factory=ProcessPatch)
 
 
 class QuestionGenerationOutput(StrictModel):

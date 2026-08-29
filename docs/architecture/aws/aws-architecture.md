@@ -1,4 +1,4 @@
-# aws-architecture.md
+# KIKIORI AWSアーキテクチャ
 
 ## 1. 全体方針
 

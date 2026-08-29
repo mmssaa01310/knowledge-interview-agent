@@ -38,7 +38,7 @@ export type InterviewFieldState = {
   candidateAnswer?: string | null;
   candidateSource?: "user_statement" | "assistant_proposal" | null;
   candidateProposalMessageId?: string | null;
-  confirmedSource?: "user_statement" | "assistant_proposal" | null;
+  confirmedSource?: "user_statement" | "assistant_proposal" | "management_edit" | null;
   confirmedProposalMessageId?: string | null;
   confirmationEvidenceTranscriptIds?: string[];
   rawAnswer?: string | null;
@@ -68,6 +68,7 @@ export type InterviewState = {
     priority: number;
     candidateSource?: "user_statement" | "assistant_proposal" | null;
   } | null;
+  deferredProposalTarget?: string | null;
   requirementStates?: Record<string, {
     requirementId: string;
     label: string;
@@ -76,7 +77,7 @@ export type InterviewState = {
     candidateValue?: string | null;
     candidateSource?: "user_statement" | "assistant_proposal" | null;
     candidateProposalMessageId?: string | null;
-    confirmedSource?: "user_statement" | "assistant_proposal" | null;
+    confirmedSource?: "user_statement" | "assistant_proposal" | "management_edit" | null;
     confirmedProposalMessageId?: string | null;
     confirmationEvidenceTranscriptIds?: string[];
     value?: string | null;
@@ -84,6 +85,7 @@ export type InterviewState = {
   }>;
   processState?: {
     version?: number;
+    sourceMessageIds?: string[];
     participants?: Array<Record<string, unknown>>;
     nodes?: Array<Record<string, unknown>>;
     edges?: Array<Record<string, unknown>>;
@@ -100,6 +102,8 @@ export type InterviewState = {
   processVersion?: number;
   stateVersion?: number;
 };
+
+export type ProcessModelState = NonNullable<InterviewState["processState"]>;
 
 export type ChatMessage = {
   id?: string;

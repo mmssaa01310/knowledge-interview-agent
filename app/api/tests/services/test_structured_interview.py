@@ -157,6 +157,31 @@ def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
     assert request_body["text"]["format"]["strict"] is True
 
 
+def test_bedrock_responses_provider_uses_process_model_edit_schema() -> None:
+    captured: list[dict[str, object]] = []
+    provider = BedrockResponsesStructuredProvider(
+        model_id="global.openai.gpt-5.6-terra",
+        region_name="us-east-1",
+        session=FakeBedrockSession(),
+        http_client_factory=SequenceHttpClientFactory(
+            [SequenceHttpResponse({"output_text": '{"reply":"名称を変更しました。","processPatch":{}}'})],
+            captured,
+        ),
+    )
+
+    result = provider.edit_process_model(
+        context={"instruction": "最初の処理名を変更する", "processModel": {"version": 0}},
+        reasoning_effort="low",
+    )
+
+    request_body = captured[0]
+    assert result.reply == "名称を変更しました。"
+    assert request_body["model"] == "global.openai.gpt-5.6-terra"
+    assert request_body["reasoning"] == {"effort": "low"}
+    assert request_body["text"]["format"]["name"] == "process_model_edit_output"
+    assert request_body["text"]["format"]["strict"] is True
+
+
 def test_bedrock_responses_provider_retries_invalid_json_with_larger_budget() -> None:
     captured: list[dict[str, object]] = []
     provider = BedrockResponsesStructuredProvider(
@@ -560,6 +585,99 @@ def test_proposal_request_can_use_conversational_dialogue_act_and_labels_questio
     assert result["assistantMessage"]["candidateSource"] == "assistant_proposal"
     assert candidate["candidateSource"] == "assistant_proposal"
     assert candidate["candidateProposalMessageId"] == result["assistantMessage"]["id"]
+
+
+def test_purpose_proposal_waits_for_users_and_request_context() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {"id": "record-purpose-context", "knowledgeId": "knowledge-purpose-context", "title": "CSV出力"}
+    knowledge = {
+        "id": "knowledge-purpose-context",
+        "name": "CSV出力要件",
+        "interviewPlan": {
+            "profile": "system_requirement",
+            "modelId": "global.openai.gpt-5.6-luna",
+        },
+    }
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    state = build_initial_structured_state("system_requirement", [])
+    question = {
+        "questionId": "q-purpose",
+        "questionType": "structured",
+        "fieldId": None,
+        "text": "この機能で解決したい目的・課題は何ですか？",
+        "targetType": "requirement",
+        "targetId": "requirement.purpose_problem",
+    }
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "currentQuestionId": question["questionId"],
+            "nextQuestionTarget": {
+                "targetType": "requirement",
+                "targetId": "requirement.purpose_problem",
+                "label": "目的・課題",
+                "priority": 3,
+            },
+            "askedQuestions": [question],
+        }
+    )
+    store.upsert("interview_states", state)
+    store.upsert(
+        "messages",
+        {
+            "id": "purpose-proposal-request",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "考えて",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+        },
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                dialogueAct="QUESTION_TO_ASSISTANT",
+                requirementUpdates=[
+                    RequirementUpdate(
+                        requirementId="requirement.purpose_problem",
+                        value="営業担当が受注実績を検索し、CSVで取得できるようにする",
+                        candidateSource="assistant_proposal",
+                        evidenceTranscriptIds=["purpose-proposal-request"],
+                    )
+                ],
+            )
+        ]
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    purpose = result["interviewState"]["requirementStates"]["requirement.purpose_problem"]
+    assert purpose["status"] == "UNANSWERED"
+    assert purpose["candidateValue"] is None
+    assert result["interviewState"]["deferredProposalTarget"] == "requirement.purpose_problem"
+    assert result["question"]["targetId"] == "requirement.users"
+    assert result["question"]["targetType"] == "requirement"
+
+    deferred_state = result["interviewState"]
+    deferred_state["requirementStates"]["requirement.users"]["status"] = "CONFIRMED"
+    assert select_next_question_target(deferred_state, "system_requirement", []) == {
+        "targetType": "requirement",
+        "targetId": "requirement.request",
+        "label": "要求内容",
+        "priority": 3,
+    }
+    deferred_state["requirementStates"]["requirement.request"]["status"] = "CONFIRMED"
+    assert select_next_question_target(deferred_state, "system_requirement", []) == {
+        "targetType": "requirement",
+        "targetId": "requirement.purpose_problem",
+        "label": "目的・課題",
+        "priority": 3,
+    }
 
 
 def test_strict_schema_forbids_extra_properties_and_requires_object_properties() -> None:

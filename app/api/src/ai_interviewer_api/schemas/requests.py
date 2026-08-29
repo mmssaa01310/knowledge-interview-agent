@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -143,6 +143,18 @@ class ChatMessageCreate(BaseModel):
     targetType: str | None = None
     targetId: str | None = None
     turnType: Literal["ANSWER", "CONTROL"] | None = None
+
+
+class ProcessModelUpdate(BaseModel):
+    baseProcessVersion: int = Field(default=0, ge=0)
+    baseStateVersion: int | None = Field(default=None, ge=0)
+    processState: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcessModelCommand(BaseModel):
+    instruction: str = Field(min_length=1, max_length=2000)
+    baseProcessVersion: int = Field(default=0, ge=0)
+    baseStateVersion: int | None = Field(default=None, ge=0)
 
 
 class DocumentCreate(BaseModel):

@@ -2,6 +2,8 @@ import type { Knowledge } from "@ai-interviewer/shared-types";
 
 type InterviewProfile = NonNullable<NonNullable<Knowledge["interviewPlan"]>["profile"]>;
 
+export const DEFAULT_INTERVIEW_MODEL_ID = "global.openai.gpt-5.6-luna" as const;
+
 const profileLabels: Record<InterviewProfile, string> = {
   fixed_form: "定型情報を聞き取る",
   business_process: "業務フローを整理する",

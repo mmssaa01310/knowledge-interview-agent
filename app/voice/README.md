@@ -1,4 +1,4 @@
-# AI Interviewer Voice
+# KIKIORI Voice
 
 `app/voice` is the realtime voice gateway for the AI interviewer.
 

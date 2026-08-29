@@ -84,6 +84,11 @@ OPTIONAL_TARGETS: dict[InterviewProfile, tuple[tuple[str, str], ...]] = {
     ),
 }
 
+PURPOSE_PROPOSAL_PREREQUISITES: tuple[tuple[str, str], ...] = (
+    ("requirement.users", "利用者"),
+    ("requirement.request", "要求内容"),
+)
+
 
 def resolve_profile(knowledge: Mapping[str, Any]) -> InterviewProfile:
     plan = knowledge.get("interviewPlan")
@@ -143,6 +148,7 @@ def build_initial_structured_state(
         "fieldStates": field_states,
         "lastProcessedUserMessageId": None,
         "nextQuestionTarget": None,
+        "deferredProposalTarget": None,
         "requirementStates": requirement_states,
         "processState": process_state,
         "applicabilityState": applicability_state,
@@ -192,6 +198,8 @@ def apply_structured_output(
         confirmation_message_id=latest_message_id,
     )
     state["lastConfirmationApplied"] = confirmation_applied
+    if _should_defer_purpose_proposal_request(state, output, profile, current_target):
+        state["deferredProposalTarget"] = "requirement.purpose_problem"
     process_present_in_output = any(
         update.topic == "process"
         and update.status == "present"
@@ -226,6 +234,9 @@ def apply_structured_output(
         changed_topics.append(f"field:{update.fieldId}")
 
     for update in output.requirementUpdates:
+        if _should_defer_purpose_proposal_update(state, update, profile):
+            state["deferredProposalTarget"] = "requirement.purpose_problem"
+            continue
         if (
             update.requirementId not in state.setdefault("requirementStates", {})
             or not update.value.strip()
@@ -356,6 +367,10 @@ def select_next_question_target(
     pending_confirmations = list_pending_confirmation_targets(state)
     if pending_confirmations:
         return pending_confirmations[0]
+
+    deferred_context = _select_deferred_proposal_context(state, profile)
+    if deferred_context:
+        return deferred_context
 
     missing_required = list_missing_required_targets(state, profile, fields)
     if missing_required:
@@ -593,6 +608,41 @@ def _target_matches(
         return False
     current_type = target.get("targetType") or target.get("kind")
     return current_type == target_type and str(target.get("targetId") or "") == target_id
+
+
+def _should_defer_purpose_proposal_request(
+    state: Mapping[str, Any],
+    output: StructuredInterviewOutput,
+    profile: InterviewProfile,
+    current_target: Mapping[str, Any] | None,
+) -> bool:
+    if profile != "system_requirement" or output.dialogueAct != "QUESTION_TO_ASSISTANT":
+        return False
+    return _target_matches(current_target, "requirement", "requirement.purpose_problem") and _purpose_proposal_context_is_incomplete(state)
+
+
+def _should_defer_purpose_proposal_update(
+    state: Mapping[str, Any],
+    update: RequirementUpdate,
+    profile: InterviewProfile,
+) -> bool:
+    return bool(
+        profile == "system_requirement"
+        and update.requirementId == "requirement.purpose_problem"
+        and update.candidateSource == "assistant_proposal"
+        and _purpose_proposal_context_is_incomplete(state)
+    )
+
+
+def _purpose_proposal_context_is_incomplete(state: Mapping[str, Any]) -> bool:
+    requirement_states = state.get("requirementStates", {})
+    if not isinstance(requirement_states, Mapping):
+        return True
+    for requirement_id, _ in PURPOSE_PROPOSAL_PREREQUISITES:
+        requirement_state = requirement_states.get(requirement_id)
+        if not isinstance(requirement_state, Mapping) or requirement_state.get("status") != "CONFIRMED":
+            return True
+    return False
 
 
 def is_current_question_confirmation_target(
@@ -1121,6 +1171,37 @@ def _select_optional_target(state: Mapping[str, Any], profile: InterviewProfile)
             target_state = state.get("requirementStates", {}).get(target_id, {})
             if target_state.get("status") != "CONFIRMED":
                 return _target("process", target_id, label, 5)
+    return None
+
+
+def _select_deferred_proposal_context(
+    state: dict[str, Any],
+    profile: InterviewProfile,
+) -> dict[str, Any] | None:
+    """Collect minimum context before proposing a system purpose."""
+
+    if (
+        profile != "system_requirement"
+        or state.get("deferredProposalTarget") != "requirement.purpose_problem"
+    ):
+        return None
+
+    requirement_states = state.get("requirementStates", {})
+    if not isinstance(requirement_states, Mapping):
+        requirement_id, label = PURPOSE_PROPOSAL_PREREQUISITES[0]
+        return _target("requirement", requirement_id, label, 3)
+
+    purpose_state = requirement_states.get("requirement.purpose_problem")
+    if isinstance(purpose_state, Mapping) and purpose_state.get("status") == "CONFIRMED":
+        state["deferredProposalTarget"] = None
+        return None
+
+    for requirement_id, label in PURPOSE_PROPOSAL_PREREQUISITES:
+        requirement_state = requirement_states.get(requirement_id)
+        if not isinstance(requirement_state, Mapping) or requirement_state.get("status") != "CONFIRMED":
+            return _target("requirement", requirement_id, label, 3)
+
+    state["deferredProposalTarget"] = None
     return None
 
 

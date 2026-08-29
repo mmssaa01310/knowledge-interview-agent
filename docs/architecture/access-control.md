@@ -77,6 +77,8 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 
 記録一覧APIは、Frontendで一覧を取得してから絞り込んではいけない。Backendがロールごとの対象記録だけを返す。
 
+ProcessModelの手動保存と編集指示は、`admin`と`knowledge_manager`だけに許可する。Backendは通常のRecord参照に加えて`manage`認可を確認し、`approved`状態のRecordを編集対象から除外する。`interviewer`と`viewer`はProcessModelを全画面で閲覧できるが、編集APIを実行できない。編集APIは`baseProcessVersion`を検証し、変更した要素、実行ユーザー、使用モデル、指示内容を監査ログへ保存する。
+
 音声セッションの作成・取得・停止・WebRTC接続では、Record APIと同じ記録アクセス判定を再利用する。`VoiceSession.ownerUserId`だけでRecordへのアクセスを許可してはいけない。
 
 ## 5. 記録状態の遷移責務
@@ -113,3 +115,5 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 * `viewer`が許可されていない記録と、`approved`以外の記録を取得できない。
 * 権限のない画面ルートを直接開いた場合も、操作可能なデータを取得できない。
 * `approved`状態の記録を対象者が変更できない。
+* `interviewer`と`viewer`がProcessModelの手動保存・編集指示を実行できない。
+* 管理者系ロールがProcessModelを保存でき、古いバージョンは409で拒否される。

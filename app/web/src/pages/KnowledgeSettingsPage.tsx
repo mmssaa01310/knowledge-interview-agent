@@ -5,7 +5,10 @@ import {
   type FieldSuggestionChatMessage,
   type KnowledgeField
 } from "../lib/api";
-import { isInterviewConfigurationComplete } from "../features/interviews/interviewConfiguration";
+import {
+  DEFAULT_INTERVIEW_MODEL_ID,
+  isInterviewConfigurationComplete,
+} from "../features/interviews/interviewConfiguration";
 import { KnowledgeDocumentsContent } from "./KnowledgeDocumentsPage";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
@@ -134,7 +137,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const selectedStructuredInterviewModel = configuredStructuredInterviewModel
     && structuredInterviewModelOptions.some((option) => option.value === configuredStructuredInterviewModel)
     ? configuredStructuredInterviewModel
-    : structuredInterviewModelOptions[0].value;
+    : DEFAULT_INTERVIEW_MODEL_ID;
   const canSendAssistMessage = assistInput.trim().length > 0 && !isGenerating;
   const canSavePromptProfile = Boolean(props.onCreatePromptProfile)
     && props.settingsSystemPrompt.trim().length > 0
@@ -349,7 +352,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         props.setSettingsInterviewPlan({
           ...result.interviewPlan,
           profile: props.settingsInterviewPlan?.profile ?? result.interviewPlan.profile ?? "fixed_form",
-          modelId: props.settingsInterviewPlan?.modelId ?? result.interviewPlan.modelId ?? null,
+          modelId: props.settingsInterviewPlan?.modelId ?? DEFAULT_INTERVIEW_MODEL_ID,
         });
       }
 

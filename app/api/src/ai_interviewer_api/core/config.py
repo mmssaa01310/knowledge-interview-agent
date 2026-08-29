@@ -4,7 +4,7 @@ import os
 
 @dataclass(frozen=True)
 class Settings:
-    app_name: str = os.getenv("APP_NAME", "AI Interviewer API")
+    app_name: str = os.getenv("APP_NAME", "KIKIORI API")
     app_env: str = os.getenv("APP_ENV", "local")
     dev_auto_seed_voice_demo: bool = (
         os.getenv("DEV_AUTO_SEED_VOICE_DEMO", "false").lower() == "true"

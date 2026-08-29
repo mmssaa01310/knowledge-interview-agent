@@ -6,7 +6,8 @@ import type {
   DocumentReadState,
   InterviewAnswerTarget,
   InterviewState,
-  InterviewStreamMetadata
+  InterviewStreamMetadata,
+  ProcessModelState
 } from "./app";
 
 export type PromptProfile = {
@@ -107,9 +108,19 @@ export type KnowledgeLayoutProps = {
   onDeleteInterviewAnswers: () => void;
   onDeleteInterviewChat: () => void;
   onStartInterview: () => void;
-  onSendInterviewMessage: (target?: InterviewAnswerTarget | null) => void;
+  onSendInterviewMessage: (target?: InterviewAnswerTarget | null, content?: string) => void;
   onAppendInterviewMessage: (message: ChatMessage) => void;
   onRefreshInterviewSnapshot: () => void;
+  onSaveProcessModel: (
+    processState: ProcessModelState,
+    baseProcessVersion: number,
+    baseStateVersion: number,
+  ) => Promise<InterviewState>;
+  onEditProcessModel: (
+    instruction: string,
+    baseProcessVersion: number,
+    baseStateVersion: number,
+  ) => Promise<{ interviewState: InterviewState; reply: string }>;
   onApproveOne: (proposalId: string) => void;
   onRejectProposal: (proposalId: string) => void;
   onRemoveProposal: (proposalId: string) => void;

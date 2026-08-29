@@ -75,7 +75,7 @@ async def lifespan(_: FastAPI):
             await asyncio.gather(warmup_task, return_exceptions=True)
 
 
-app = FastAPI(title="AI Interviewer API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="KIKIORI API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

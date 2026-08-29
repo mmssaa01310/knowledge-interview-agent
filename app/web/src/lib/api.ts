@@ -1,5 +1,5 @@
 import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb, UserRole } from "@ai-interviewer/shared-types";
-import type { ChatMessage, InterviewState } from "../types/app";
+import type { ChatMessage, InterviewState, ProcessModelState } from "../types/app";
 
 export const API_BASE_URL = "";
 export const DEV_TOKEN_STORAGE_KEY = "ai-interviewer-dev-token";
@@ -357,6 +357,29 @@ export async function createRecordMessage(
 
 export async function fetchInterviewState(recordId: string) {
   return apiRequest<InterviewStateResponse>(`/api/records/${recordId}/interview-state`);
+}
+
+export async function saveProcessModel(
+  recordId: string,
+  payload: { baseProcessVersion: number; baseStateVersion?: number; processState: ProcessModelState },
+) {
+  return apiRequest<InterviewStateResponse>(`/api/records/${recordId}/process-model`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export async function editProcessModel(
+  recordId: string,
+  payload: { instruction: string; baseProcessVersion: number; baseStateVersion?: number },
+) {
+  return apiRequest<InterviewStateResponse & { reply: string }>(
+    `/api/records/${recordId}/process-model/commands`,
+    {
+      method: "POST",
+      body: payload,
+    },
+  );
 }
 
 export async function suggestKnowledgeFields(

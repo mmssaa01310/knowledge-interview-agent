@@ -59,9 +59,9 @@ export function WorkspaceNav({
     <aside className="app-sidebar" aria-label="メインナビゲーション">
       <div className="sidebar-header">
         <div className="brand">
-          <div className="brand-mark">AI</div>
+          <div className="brand-mark">KI</div>
           <div>
-            <strong>AI Interviewer</strong>
+            <strong>KIKIORI</strong>
           </div>
         </div>
         <button

@@ -1,4 +1,10 @@
-# AIインタビュー / ナレッジ構造化アプリ仕様
+# KIKIORI 仕様
+
+## アプリ名
+
+正式名称は`KIKIORI`とする。
+
+`KIKIORI`は「聞く＋織る」を表す。会話から知識を引き出し、構造化された知識として織り上げるという意味である。
 
 ## 1. アプリの目的
 
@@ -519,9 +525,29 @@ InterviewState
 
 `ProcessModel`は`ProcessState`から生成する派生ビューである。フローチャートとシーケンス図は、`ProcessModel`から生成する。
 
-ProcessStateの要素は、インタビュー確認状態`candidate`または`confirmed`と、履歴状態`active`または`superseded`を持つ。ProcessPatchで追加・変更した要素は`candidate`で保存し、Processの必須項目がすべて確認済みになった時だけBackendが`confirmed`へ更新する。`confirmed`は正式承認を意味しない。
+ProcessStateの要素は、インタビュー確認状態`candidate`または`confirmed`と、履歴状態`active`または`superseded`を持つ。Interpreterがインタビュー発話から生成したProcessPatchで追加・変更した要素は`candidate`で保存し、Processの必須項目がすべて確認済みになった時だけBackendが`confirmed`へ更新する。管理者の手動修正または編集指示で変更した要素は、明示的な管理操作として`confirmed`で保存する。`confirmed`は正式承認を意味しない。
 
 `business_process`では、インタビュー画面に「フローチャート」と「シーケンス図」の表示を用意する。検証済みのProcessStateが更新されるたびに、両方の表示を更新する。候補状態の要素は確定済み要素と区別して表示し、正式承認前の図を正式ナレッジの図として扱わない。`fixed_form`では図を表示しない。`system_requirement`では`process=present`が確定した場合だけ図を表示する。
+
+フローチャートは、システム仕様書に記載しやすい基本記号に限定する。採用する`ProcessNode.nodeType`と表示記号の対応は次のとおりとする。
+
+| `nodeType` | 表示記号 | 用途 |
+|---|---|---|
+| `start`、`end` | 端子（楕円） | 処理の開始、終了 |
+| `activity` | 処理（長方形） | 通常の処理 |
+| `decision` | 判断（ひし形） | 条件による分岐 |
+| `data` | 入出力（平行四辺形） | 入力、出力、受け渡すデータ |
+| `subprocess` | サブプロセス（二重枠の長方形） | 詳細化された処理 |
+| `system` | システム処理（二重枠の長方形） | システムが実行する処理 |
+| `unknown` | 処理（長方形） | 種別が未確定の処理 |
+
+フローチャートの遷移は、処理方向を示す矢印付き線で表示する。`condition`または`label`がある遷移は線の近くに条件を表示する。図形、座標、線の経路はProcessStateからFrontendが生成し、LLMに生成させない。
+
+シーケンス図はUMLの基本形式で表示する。参加者を上部の長方形に表示し、参加者ごとに下方向の破線ライフラインを引く。`ProcessInteraction.sequence`の昇順で上から下へメッセージを配置し、送信元から送信先へ向かう横向きの矢印とメッセージ名を表示する。候補状態のメッセージは破線矢印で表示する。シーケンス図の座標とSVG等の表示データはProcessStateからFrontendが生成し、保存しない。
+
+図の表示条件を満たした場合、処理モデル画面に「全画面」を表示する。全画面ではフローチャートとシーケンス図を切り替えて表示できる。`admin`または`knowledge_manager`は、全画面で既存要素の名称・条件・関係者・やり取りを手動修正し、「保存」でProcessStateへ反映できる。手動修正はBackendで検証し、Process要素を変更した場合だけProcessStateのバージョンを1つ進める。RequirementStateだけを変更した場合はProcessStateのバージョンを変更しない。承認済みRecordは直接編集できない。
+
+管理者系ロールには、全画面下部に要件・処理モデルへの指示入力を表示する。指示はBackendが現在の`RequirementState`と`ProcessState`とともにGPT-5.6 LunaまたはTerraへ渡し、`ProcessModelEditOutput`のStructured Outputとして受け取る。`requirementPatch`は既存RequirementStateの値だけを更新し、`processPatch`はProcessStateの意味構造だけを更新する。Backendは要件ID、ProcessPatchのバージョン、要素ID、参照関係、`baseStateVersion`を検証してから適用する。要件だけを変更した場合はProcessStateのバージョンを変更しない。管理者編集で変更した要件とProcess要素は`confirmed`として保存するが、Recordの正式承認状態は変更しない。Mermaid、React Flowの座標、HTML、SVG、画像を保存してはならない。指示履歴と変更結果は監査用メッセージおよび監査ログへ保存する。
 
 LLMに次の情報を生成させてはならない。
 
@@ -721,6 +747,8 @@ Backendの責務は次のとおりである。
 * 次の質問対象の決定
 * 質問の重複防止
 * 候補、確認済み、正式承認済みの境界保証
+* ProcessModel手動保存の認可、入力検証、バージョン競合検出
+* 全画面編集指示のStructured Output検証、RequirementPatchとProcessPatchの適用、監査ログ保存
 
 ### 9.10 テキストと音声
 
@@ -753,9 +781,19 @@ Interpreterの出力は、Backendの検証後も候補またはAI提案として
 
 利用者が「提案して」「例を出して」など、値の提案を求めた場合、AIが示す値は`assistant_proposal`由来の候補として扱う。利用者の発話から抽出した事実として保存してはならない。提案には「AIの案」であることを表示し、利用者の明示的な採用または修正を受けてから確定候補として扱う。提案を採用しても正式承認にはならない。
 
+`system_requirement`で`requirement.purpose_problem`の提案を求められた場合、提案前に最低限の文脈として`requirement.users`と`requirement.request`をこの順序で確認する。いずれかが未確認の状態で利用者が「考えて」「提案して」と依頼しても、Backendは目的・課題の`assistant_proposal`を保存せず、確認質問も発行しない。その代わり、`deferredProposalTarget=requirement.purpose_problem`を設定し、未確認の利用者、次に要求内容を1項目ずつ質問する。両方が`CONFIRMED`になった後に目的・課題を質問し、提案要求を受けた場合だけ目的・課題の`assistant_proposal`を発行する。これにより、AIが情報不足のまま目的・課題を推測することを防ぐ。
+
+`assistant_proposal`の確認質問には、テキスト入力を代替する`OK`ボタンを表示する。ボタンは画面に表示中の現在の提案にだけ表示し、過去の提案には表示しない。押下時は表示中の質問の`questionId`、`targetType`、`targetId`に紐付けて明示的な肯定としてBackendへ送信し、通常の候補確認と同じ状態遷移を行う。送信中、完了後、音声入力中、または現在の質問と一致しない提案ではボタンを無効化する。候補確認は正式承認ではない。
+
+ProcessModelとRequirementStateの直接編集は、インタビュー回答の候補確認とは別の管理操作である。手動保存または管理者の編集指示で変更したProcess要素は、管理者が明示的に修正した事実として`confirmationStatus=confirmed`にする。編集指示で変更したRequirementStateは`status=CONFIRMED`、`confirmedSource=management_edit`にする。ただし、Recordの正式承認状態を変更せず、正式ナレッジ化には既存の承認操作を必要とする。
+
 `system_requirement`で`process=unknown`の間は、業務フローがないと表示してはならない。`process=present`になった時点で、要件整理パネルに処理モデルの収集中であることと、現在不足している情報を表示する。`process=not_applicable`になった場合だけ、業務フローを作成しないことを表示する。
 
-フローチャートは、activeな処理ノードが2件以上、かつ遷移が1件以上ある場合に有効化する。シーケンス図は、activeな参加者が2件以上、かつ根拠付きの相互作用が1件以上ある場合に有効化する。条件を満たさない場合は空の図を表示せず、次に必要な情報を表示する。条件を満たした図は、ProcessStateの検証済み更新ごとに更新する。
+フローチャートは、activeな処理ノードが2件以上、かつ遷移が1件以上ある場合に有効化する。シーケンス図は、activeな参加者が2件以上、かつ相互作用が1件以上ある場合に有効化する。インタビューから自動抽出した相互作用には根拠メッセージを要求し、管理者の編集で追加した相互作用には監査用編集メッセージを要求する。条件を満たさない場合は空の図を表示せず、次に必要な情報を表示する。条件を満たした図は、ProcessStateの検証済み更新ごとに更新する。
+
+フローチャートまたはシーケンス図の有効化条件を満たした場合、処理モデル画面に「全画面」を表示する。全画面では、2種類の図の切り替え、図の拡大確認、管理者系ロールによる編集・保存を行える。編集対象は既存要素の名称、条件、関係者、やり取りなどの意味属性とする。保存時はBackendが要素ID、参照関係、Record状態、`baseProcessVersion`、`baseStateVersion`を検証する。
+
+`admin`または`knowledge_manager`には、全画面下部に要件・処理モデルへの指示入力を表示する。指示は現在の`RequirementState`と`ProcessState`とともにGPT-5.6 LunaまたはTerraへ渡し、`ProcessModelEditOutput`のStructured Outputとして受け取る。Backendは`requirementPatch`と`processPatch`を検証してから各状態へ適用し、指示内容、変更内容、実行ユーザー、使用モデルを監査する。`baseStateVersion`が古い指示は状態競合として拒否する。Mermaid、React Flowの座標、HTML、SVG、画像は生成・保存しない。`interviewer`と`viewer`は全画面で閲覧だけを行う。承認済みRecordは直接編集できない。
 
 テキスト経路の同一回答の再送、SSE再接続、音声経路の再送によって、同じ回答を二重に処理したり、同じ質問を二重発行したりしてはならない。
 

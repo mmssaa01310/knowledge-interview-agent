@@ -122,6 +122,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   );
   const interviewProfile = props.interviewState?.interviewProfile
     ?? props.selectedKnowledge?.interviewPlan?.profile;
+  const usesProcessModel = interviewProfile === "business_process" || interviewProfile === "system_requirement";
   const isChatOnlyInterview = interviewProfile === "system_requirement";
   const hasVoiceQuestions = !isChatOnlyInterview && (
     props.sortedFields.some((field) => field.name.trim())
@@ -211,6 +212,42 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     props.onSendInterviewMessage(resolveInterviewAnswerTarget());
   }
 
+  function proposalTarget(message: KnowledgeLayoutProps["interviewMessages"][number]) {
+    if (!message.questionId) return null;
+    return {
+      questionId: message.questionId,
+      questionType: message.questionType ?? "structured",
+      fieldId: message.fieldId ?? null,
+      targetType: message.targetType,
+      targetId: message.targetId,
+    };
+  }
+
+  function isCurrentProposal(message: KnowledgeLayoutProps["interviewMessages"][number]) {
+    return Boolean(
+      message.candidateSource === "assistant_proposal"
+      && message.questionId
+      && message.questionId === props.interviewState?.currentQuestionId
+      && props.interviewState?.nextQuestionTarget?.candidateSource === "assistant_proposal"
+      && message.targetType === props.interviewState?.nextQuestionTarget?.targetType
+      && message.targetId === props.interviewState?.nextQuestionTarget?.targetId,
+    );
+  }
+
+  function handleConfirmProposal(message: KnowledgeLayoutProps["interviewMessages"][number]) {
+    if (
+      !isCurrentProposal(message)
+      || !canAnswerRecord
+      || isCompleted
+      || props.isInterviewStreaming
+      || realtimeVoice.isActive
+    ) {
+      return;
+    }
+    const target = proposalTarget(message);
+    if (target) props.onSendInterviewMessage(target, "はい");
+  }
+
   const canStartInterview = Boolean(props.selectedRecord)
     && canAnswerRecord
     && !props.isInterviewStreaming
@@ -242,13 +279,15 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               ← インタビュー開始画面に戻る
             </button>
           ) : null}
-          <h2>AIインタビュー</h2>
-          <span className="interview-model-badge">実行モデル：{getInterviewModelLabel(props.selectedKnowledge)}</span>
-          {props.selectedRecord ? (
-            <span className={props.selectedRecord.status === "approved" ? "status-pill" : "status-pill muted"}>
-              {recordStatusLabels[props.selectedRecord.status]}
-            </span>
-          ) : null}
+          <div className="interview-title-status">
+            <h2>AIインタビュー</h2>
+            <span className="interview-model-badge">実行モデル：{getInterviewModelLabel(props.selectedKnowledge)}</span>
+            {props.selectedRecord ? (
+              <span className={props.selectedRecord.status === "approved" ? "status-pill" : "status-pill muted"}>
+                {recordStatusLabels[props.selectedRecord.status]}
+              </span>
+            ) : null}
+          </div>
           {!isInterviewConfigured ? (
             <p className="notice">用途と実行モデルを設定してください。</p>
           ) : null}
@@ -287,7 +326,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
         ) : null}
       </div>
 
-      <div className="interview-shell">
+      <div className={usesProcessModel ? "interview-shell process-interview-shell" : "interview-shell"}>
         <aside className="interview-sidebar">
           {interviewProfile === "system_requirement" ? (
             <>
@@ -317,11 +356,21 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               {summaryView === "requirements" ? (
                 <SystemRequirementProgressPanel interviewState={props.interviewState} />
               ) : (
-                <ProcessModelPanel interviewState={props.interviewState} />
+                <ProcessModelPanel
+                  interviewState={props.interviewState}
+                  canEdit={isManagementUser}
+                  onSaveProcessModel={props.onSaveProcessModel}
+                  onEditProcessModel={props.onEditProcessModel}
+                />
               )}
             </>
           ) : interviewProfile === "business_process" ? (
-            <ProcessModelPanel interviewState={props.interviewState} />
+            <ProcessModelPanel
+              interviewState={props.interviewState}
+              canEdit={isManagementUser}
+              onSaveProcessModel={props.onSaveProcessModel}
+              onEditProcessModel={props.onEditProcessModel}
+            />
           ) : <>
             <div className="interview-sidebar-header">
               <strong>質問リスト</strong>
@@ -391,6 +440,16 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 <div key={message.id ?? `${message.role}-${index}`} className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}`}>
                   {message.candidateSource === "assistant_proposal" ? <span className="proposal-message-label">AIの案</span> : null}
                   <p>{message.text}</p>
+                  {isCurrentProposal(message) ? (
+                    <button
+                      type="button"
+                      className="proposal-confirm-button"
+                      onClick={() => handleConfirmProposal(message)}
+                      disabled={!canAnswerRecord || isCompleted || props.isInterviewStreaming || realtimeVoice.isActive}
+                    >
+                      OK
+                    </button>
+                  ) : null}
                 </div>
               ))}
               {props.streamingInterviewReply ? (

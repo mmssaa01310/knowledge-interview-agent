@@ -16,7 +16,14 @@ from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import InterviewRecord
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
-from ai_interviewer_api.schemas.requests import ChatMessageCreate, InterviewAnswerUpdate, RecordCreate, RecordUpdate
+from ai_interviewer_api.schemas.requests import (
+    ChatMessageCreate,
+    InterviewAnswerUpdate,
+    ProcessModelCommand,
+    ProcessModelUpdate,
+    RecordCreate,
+    RecordUpdate,
+)
 from ai_interviewer_api.services.audit import write_audit_log
 from ai_interviewer_api.services.ai_interview import (
     build_mock_proposal,
@@ -24,6 +31,7 @@ from ai_interviewer_api.services.ai_interview import (
     get_interview_state_snapshot,
 )
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
+from ai_interviewer_api.services.process_model import edit_process_model, save_process_model
 
 router = APIRouter(prefix="/api")
 
@@ -84,6 +92,26 @@ def get_record_interview_context(record_id: str, user: UserContext = Depends(get
 @router.get("/records/{record_id}")
 def get_record(record_id: str, user: UserContext = Depends(get_current_user)) -> dict:
     return get_scoped_item("records", record_id, user, "record_not_found")
+
+
+@router.patch("/records/{record_id}/process-model")
+def update_record_process_model(
+    record_id: str,
+    payload: ProcessModelUpdate,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    record = get_scoped_item("records", record_id, user, "record_not_found")
+    return save_process_model(record, payload, user)
+
+
+@router.post("/records/{record_id}/process-model/commands")
+def command_record_process_model(
+    record_id: str,
+    payload: ProcessModelCommand,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    record = get_scoped_item("records", record_id, user, "record_not_found")
+    return edit_process_model(record, payload, user)
 
 
 @router.patch("/records/{record_id}")

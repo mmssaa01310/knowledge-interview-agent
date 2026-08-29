@@ -1,4 +1,4 @@
-# AIインタビュー構造化キャプチャ設計
+# KIKIORI — AIインタビュー構造化キャプチャ設計
 
 ## 1. 文書の位置づけ
 
@@ -317,6 +317,23 @@ Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistan
 
 `requirementId`はProfileが定義する要求項目IDでなければならない。入力にない要求をLLMが作成してはならない。新しい要求項目が必要な場合は、質問設計機能で別途提案する。
 
+#### 管理者編集の`requirementPatch`
+
+全画面の管理者編集では、既存RequirementStateの値を次の形式で更新できる。
+
+```json
+{
+  "updateRequirements": [
+    {
+      "requirementId": "requirement.request",
+      "value": "検索結果に一致度スコアを表示し、スコアの高い順に一覧表示する"
+    }
+  ]
+}
+```
+
+`requirementPatch`は既存の`requirementId`だけを対象とする。更新したRequirementStateは`status=CONFIRMED`、`confirmedSource=management_edit`として保存する。これは管理者が編集内容を確認した状態であり、Recordの正式承認ではない。新しいRequirementStateの追加、RequirementStateの削除、transcript根拠の捏造は許可しない。
+
 ### 7.5 `processPatch`
 
 `processPatch`は、現在の`ProcessState`に対する意味構造の差分である。ProcessModel、Mermaid、レイアウト情報ではない。
@@ -353,7 +370,7 @@ Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistan
 }
 ```
 
-`nodeType`は`start`、`activity`、`decision`、`end`、`system`、`unknown`のいずれかとする。
+`nodeType`は`start`、`activity`、`decision`、`end`、`system`、`data`、`subprocess`、`unknown`のいずれかとする。
 
 #### エッジ
 
@@ -399,10 +416,43 @@ Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistan
 5. `removeEdges`と`removeInteractions`は、既存要素を履歴付きで無効化する。物理削除をしてはならない。
 6. ノードの削除はLLMに許可しない。不要になったノードは`updateNodes`で`superseded`状態へ変更し、根拠を保存する。
 7. Patch内の1要素でも検証に失敗した場合、ProcessPatch全体を適用しない。
-8. 各ノード、エッジ、参加者、相互作用は、少なくとも1件の根拠transcript IDを持つ。
-9. 追加または変更した要素の`confirmationStatus`は`candidate`でなければならない。`confirmed`はBackendだけが設定する。
+8. Interpreterが自動抽出する各ノード、エッジ、参加者、相互作用は、少なくとも1件の根拠transcript IDを持つ。管理者の編集で追加した要素は、根拠transcript IDの代わりに編集コマンドIDをProcessStateの変更履歴と監査ログへ保存する。
+9. Interpreterが追加または変更した要素の`confirmationStatus`は`candidate`でなければならない。管理者の手動修正または編集指示で変更した要素だけは、Backendが`confirmed`を設定する。
 10. LLMは座標、幅、高さ、色、表示順、React Flow固有プロパティを返してはならない。
 11. `system_requirement`のProcessPatchは、`applicability.process=present`が確認済み、または同じStructured Outputで根拠付きの`process=present`が返った場合だけ適用する。それ以外は破棄する。
+
+#### 管理者編集のStructured Output
+
+管理者の自然言語指示は、通常のインタビュー発話用`StructuredInterviewOutput`と別の`ProcessModelEditOutput`で処理する。入力状態には`RequirementState`と`ProcessState`の両方を含める。
+
+```json
+{
+  "reply": "要求内容と処理の名称を更新しました。",
+  "requirementPatch": {
+    "updateRequirements": [
+      {
+        "requirementId": "requirement.request",
+        "value": "検索結果に一致度スコアを表示し、スコアの高い順に一覧表示する"
+      }
+    ]
+  },
+  "processPatch": {
+    "baseProcessVersion": 3,
+    "addParticipants": [],
+    "updateParticipants": [],
+    "addNodes": [],
+    "updateNodes": [],
+    "addEdges": [],
+    "updateEdges": [],
+    "removeEdges": [],
+    "addInteractions": [],
+    "updateInteractions": [],
+    "removeInteractions": []
+  }
+}
+```
+
+`reply`は画面表示用の短い説明であり、状態更新の根拠ではない。Backendは`requirementPatch`の既存要件ID、`processPatch`の`baseProcessVersion`、ID、参照先、操作対象の存在、リクエストの`baseStateVersion`を検証する。RequirementStateの更新とProcessStateの更新は同じ状態更新として保存する。要件だけを変更した場合はProcessStateのバージョンを増やさない。Process要素を変更した場合は追加・変更要素を管理操作として`confirmed`で保存し、`sourceMessageIds`に編集コマンドIDを追加する。編集指示のLLM処理またはPatch検証に失敗した場合は両方の状態を変更しない。
 
 ### 7.6 `contradictions`
 
@@ -564,7 +614,7 @@ ProcessStateは、次の情報を保持する。
 * 各要素の根拠transcript ID
 * ProcessStateのバージョン
 
-ProcessPatchで追加または変更した要素は`candidate`で保存する。Processの必須RequirementStateがすべて`CONFIRMED`になった時点で、activeなProcess要素をインタビュー確認済みの`confirmed`へ更新する。これは正式承認ではない。候補またはインタビュー確認済みのProcessStateを正式ナレッジとして扱ってはならない。
+Interpreterがインタビュー発話から生成したProcessPatchで追加または変更した要素は`candidate`で保存する。Processの必須RequirementStateがすべて`CONFIRMED`になった時点で、activeなProcess要素をインタビュー確認済みの`confirmed`へ更新する。管理者の手動修正または編集指示で変更した要素は、明示的な管理操作として`confirmed`で保存する。これは正式承認ではない。候補またはインタビュー確認済みのProcessStateを正式ナレッジとして扱ってはならない。
 
 ### 8.5 ApplicabilityState
 
@@ -763,7 +813,7 @@ ProcessModelをインタビューの正本として保存してはならない�
 
 ### 12.2 フローチャート
 
-フローチャートは、`ProcessNode`と`ProcessEdge`から生成する。`ProcessNode.nodeType`は`start`、`activity`、`decision`、`end`、`system`、`unknown`のいずれかとする。`ProcessEdge.label`は経路名、`ProcessEdge.condition`は分岐条件に使用する。
+フローチャートは、`ProcessNode`と`ProcessEdge`から生成する。`ProcessNode.nodeType`は`start`、`activity`、`decision`、`end`、`data`、`subprocess`、`system`、`unknown`のいずれかとする。`ProcessEdge.label`は経路名、`ProcessEdge.condition`は分岐条件に使用する。
 
 分岐、例外、引き渡し、入出力の分類は専用のEdge種別を追加せず、次の規則で表現する。
 
@@ -782,7 +832,10 @@ ProcessModelをインタビューの正本として保存してはならない�
 * `person`、`organization`、`system`をライフラインとして表示する。
 * `sourceParticipantId`から`targetParticipantId`へのinteractionを時系列に並べる。
 * `sequence`はProcessStateの相互作用順序である。
-* 相互作用に根拠がない場合は表示対象にしない。
+* インタビューから自動抽出した相互作用は、根拠メッセージがある場合だけ表示対象にする。
+* 管理者が全画面の編集または編集指示で追加した相互作用は、監査用の編集メッセージを変更履歴として持つため、インタビュー発話の根拠がなくても表示対象にする。
+
+シーケンス図はUMLの基本形式で描画する。参加者を上部の長方形で表示し、参加者ごとに下方向の破線ライフラインを引く。相互作用は`sequence`の昇順で上から下へ配置し、送信元から送信先へ向かう横向きの矢印とメッセージ名を表示する。候補状態の相互作用は破線矢印で表示する。
 
 ### 12.4 レイアウトとFrontend
 
@@ -793,6 +846,34 @@ ProcessModelをインタビューの正本として保存してはならない�
 5. `lifecycle=superseded`の要素は表示しない。
 6. 正式承認前の図を正式ナレッジの図として扱ってはならない。
 7. ELKを導入する場合は、レイアウト処理の変更仕様と依存関係を別途定義する。
+
+### 12.4.1 全画面表示と編集
+
+* フローチャートまたはシーケンス図の有効化条件を満たした場合だけ、処理モデルの「全画面」操作を表示する。
+* 全画面では、図の拡大表示、フローチャートとシーケンス図の切り替え、要件・処理モデルへの指示入力を提供する。
+* `admin`と`knowledge_manager`だけが全画面の「編集」と「保存」を使用できる。`interviewer`と`viewer`は全画面で閲覧だけを行う。
+* 手動編集は既存要素の意味属性を変更する。FrontendはProcessStateのID、ライフサイクル、根拠を直接変更してはならない。
+* 手動保存は`PATCH /api/records/{record_id}/process-model`を使用する。BackendはRecord認可、Record状態、ProcessModelのSchema、要素ID集合、参照関係、`baseProcessVersion`、`baseStateVersion`を検証する。
+* 編集指示は`POST /api/records/{record_id}/process-model/commands`を使用する。LLMは`ProcessModelEditOutput`として`requirementPatch`と`processPatch`を返し、Backendが両方を検証して適用する。
+* `requirementPatch`は既存RequirementStateの値だけを更新する。更新したRequirementStateは`status=CONFIRMED`、`confirmedSource=management_edit`として保存する。
+* 手動修正または編集指示で変更したProcess要素は`confirmationStatus=confirmed`とする。これは管理者によるProcess要素の確認を示すだけであり、Recordまたはナレッジの正式承認を示さない。
+* 承認済みRecordへのProcessModel編集は許可しない。再編集が必要な場合は新しいRecordを作成する。
+* 保存対象はRequirementState、ProcessState、編集履歴であり、Mermaidコード、React Flow座標、画像、表示用HTMLを保存しない。
+
+### 12.4.2 フローチャートの標準記号
+
+フローチャートは、`ProcessNode.nodeType`を次の標準記号へ変換する。
+
+| `nodeType` | 表示 |
+|---|---|
+| `start`、`end` | 端子（楕円） |
+| `activity` | 処理（長方形） |
+| `decision` | 判断（ひし形） |
+| `data` | 入出力（平行四辺形） |
+| `subprocess`、`system` | 二重枠の長方形 |
+| `unknown` | 処理（長方形） |
+
+遷移には処理方向を示す矢印を付け、`condition`または`label`がある場合は線の近くに表示する。記号、座標、線の経路はFrontendがProcessStateから生成する。
 
 ### 12.5 図の表示状態
 
@@ -805,9 +886,11 @@ ProcessModelをインタビューの正本として保存してはならない�
 | `process=present`、フローチャート条件未達 | 処理モデルの収集中であることと、ノードまたは遷移の不足を表示する。 |
 | activeな`ProcessNode`が2件以上、activeな`ProcessEdge`が1件以上 | フローチャートを有効化する。 |
 | `process=present`、シーケンス図条件未達 | 参加者または相互作用の不足を表示する。 |
-| activeな`ProcessParticipant`が2件以上、根拠付きactiveな`ProcessInteraction`が1件以上 | シーケンス図を有効化する。 |
+| activeな`ProcessParticipant`が2件以上、activeな`ProcessInteraction`が1件以上 | シーケンス図を有効化する。自動抽出の相互作用には根拠メッセージ、管理者追加の相互作用には編集メッセージを要求する。 |
 
 `process=present`が確認された直後から、画面は処理モデルの収集状態を表示する。処理ノード、遷移、参加者、相互作用が検証済みで更新されるたびに、利用可能な図を更新する。候補要素は確定済み要素と視覚的に区別する。
+
+フローチャートまたはシーケンス図のどちらかが有効化された場合、全画面表示を有効化する。全画面での手動編集と編集指示はRequirementStateまたはProcessStateを更新し、更新後の要件と図へ反映する。手動編集で追加された相互作用はインタビュー発話の根拠を持たない場合があるため、監査用編集メッセージを変更履歴として扱う。
 
 ### 12.6 インタビュー進捗パネル
 
@@ -975,6 +1058,10 @@ Interpreterの出力は、Backendの検証後に候補状態へ反映する。�
 
 既存の`AiProposal`は、構造化インタビューの候補をレビュー画面へ公開する場合に使用する。インタビュー中の正本は`InterviewState`であり、`ProcessState`または`RequirementState`を`AiProposal`の承認だけで正式ナレッジへ反映してはならない。正式反映処理は、対象データごとの承認API仕様で定義する。
 
+`system_requirement`で`requirement.purpose_problem`の提案を求められた場合は、提案前に`requirement.users`、`requirement.request`の順で確認する。どちらかが`CONFIRMED`でない場合、Interpreterは目的・課題の`assistant_proposal`を返してはならない。Coordinatorは`deferredProposalTarget=requirement.purpose_problem`を状態へ保存し、未確認の対象を1件ずつ質問する。両方が確定した後だけ、利用者の提案要求に対して目的・課題の候補を生成する。この制御は、LLMのプロンプトだけでなくBackendの状態更新と次質問選択で保証する。
+
+`assistant_proposal`の確認質問には、現在の提案に対する`OK`ボタンを表示する。Frontendはボタン押下時に現在の質問対象へ紐付いた明示的肯定を送信し、Backendは通常の確認処理を実行する。過去の提案、別の質問対象、送信中または完了済みの状態ではボタンを表示または有効化しない。
+
 提案種別を使用する場合は、少なくとも次の値で区別する。
 
 ```text
@@ -1020,7 +1107,7 @@ contradiction
 ### 16.3 部分適用
 
 * トップレベルSchemaが不正な場合、出力全体を破棄する。
-* `processPatch`だけがBackend検証に失敗した場合、ProcessPatch全体を破棄する。
+* `requirementPatch`または`processPatch`がBackend検証に失敗した場合、全画面編集コマンドの状態更新全体を破棄する。
 * 検証に成功したField更新とRequirement更新は、各領域のトランザクション境界内で適用してよい。
 * 破棄したPatchはエラー理由とともに監査用に記録する。
 * 状態更新の途中で失敗した場合、同一ターンを再適用して二重登録してはならない。
@@ -1044,6 +1131,7 @@ contradiction
 | `models/interview_plan.py` | InterviewPlan、Field単位のQuestionPlan | `interviewPlan.profile`と`interviewPlan.modelId`を保持する |
 | `agents/interview_knowledge/schemas.py` | Structured OutputのPydantic Schema | Interpreter、ProcessPatch、Question Generatorの契約を保持する |
 | `agents/interview_knowledge/provider.py` | Bedrock Runtime OpenAI互換Responses APIアダプター | AWS SigV4署名、Structured Outputsの送受信、Schema再実行を担当する |
+| `services/process_model.py` | ProcessModel編集サービス | 管理者認可、手動保存、編集指示のStructured Output適用、バージョン競合、監査を担当する |
 | `agents/interview_knowledge/coordinator.py` | 共通Coordinator | 状態更新、Patch検証、完了判定、質問対象決定を担当する |
 | `agents/interview_knowledge/service.py` | 構造化インタビューサービス | テキスト・音声から共通Coordinatorを呼び出す |
 | `agents/interview/schemas.py` | 既存Field中心のInterviewStateと評価出力 | 互換経路の型にProfile、Requirement、Processの状態を追加する |
@@ -1103,8 +1191,13 @@ contradiction
 * 座標はレイアウト処理が生成し、LLMは生成しない。
 * Processが存在しないシステム要求に図を強制しない。
 * `process=unknown`を業務フローなしとして表示しない。
-* フローチャートはactiveなノード2件と遷移1件、シーケンス図はactiveな参加者2件と根拠付き相互作用1件を満たした場合だけ有効化する。
+* フローチャートはactiveなノード2件と遷移1件、シーケンス図はactiveな参加者2件と相互作用1件を満たした場合だけ有効化する。自動抽出された相互作用には根拠メッセージを要求し、管理者の編集で追加された相互作用には編集メッセージを変更履歴として要求する。
 * 図の条件を満たさない場合は、空の図ではなく不足情報を表示する。
+* 図の条件を満たした場合は全画面表示へ遷移できる。
+* 管理者系ロールは全画面で既存Process要素を手動修正して保存できる。
+* 管理者系ロールは全画面の指示入力からRequirementPatchまたはProcessPatchを適用できる。
+* `interviewer`と`viewer`はProcessModelを編集できない。
+* 古いProcessModelバージョンの保存または指示は409で拒否される。
 
 ### モデル
 

@@ -12,6 +12,7 @@ from botocore.awsrequest import AWSRequest
 from botocore.exceptions import BotoCoreError
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
+    ProcessModelEditOutput,
     QuestionGenerationOutput,
     StructuredInterviewOutput,
 )
@@ -42,6 +43,15 @@ class StructuredInterviewProvider(Protocol):
         target: Mapping[str, Any],
         reasoning_effort: str,
     ) -> QuestionGenerationOutput: ...
+
+
+class ProcessModelEditProvider(Protocol):
+    def edit_process_model(
+        self,
+        *,
+        context: Mapping[str, Any],
+        reasoning_effort: str,
+    ) -> ProcessModelEditOutput: ...
 
 
 class BedrockResponsesStructuredProvider:
@@ -132,6 +142,37 @@ class BedrockResponsesStructuredProvider:
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
         raise StructuredInterviewProviderError("question output validation failed after retry") from error
+
+    def edit_process_model(
+        self,
+        *,
+        context: Mapping[str, Any],
+        reasoning_effort: str,
+    ) -> ProcessModelEditOutput:
+        error: Exception | None = None
+        max_output_tokens = settings.structured_interview_max_output_tokens
+        for attempt in range(2):
+            try:
+                payload = self._request(
+                    model=self.model_id,
+                    reasoning_effort=reasoning_effort,
+                    schema_name="process_model_edit_output",
+                    schema=ProcessModelEditOutput.model_json_schema(),
+                    system_prompt=_process_model_edit_system_prompt(),
+                    user_payload=context,
+                    max_output_tokens=max_output_tokens,
+                )
+                output = ProcessModelEditOutput.model_validate(payload)
+                if not output.reply.strip():
+                    raise StructuredInterviewProviderError("process model edit reply is empty")
+                return output
+            except (StructuredInterviewProviderError, ValueError) as exc:
+                error = exc
+                if attempt == 0:
+                    max_output_tokens = _retry_max_output_tokens(max_output_tokens)
+        raise StructuredInterviewProviderError(
+            "process model edit output validation failed after retry"
+        ) from error
 
     def request_structured_output(
         self,
@@ -340,6 +381,7 @@ def _interpreter_system_prompt(profile: str) -> str:
 - assistant_proposalの値は利用者の事実として確定していません。候補として返し、確認質問で採用・修正・拒否を促します。
 - assistant_proposalを返す場合も、候補を作るきっかけになった最新発話のevidenceTranscriptIdsを設定します。値そのものの根拠が利用者発話にあるとは扱いません。
 - 利用者が案を求めた発話では、dialogueActがQUESTION_TO_ASSISTANTでも、提案できる値をassistant_proposalの候補として返してください。提案できない場合は値を推測せず、更新を空にしてください。
+- profileがsystem_requirementで、requirement.purpose_problemの提案を求められた場合は、requirement.usersとrequirement.requestがCONFIRMEDのときだけassistant_proposalを返します。どちらかが未確認の場合、目的・課題の候補を作らず、requirementUpdatesを空にします。
 - 情報が見つからないことを、存在しないこととして返しません。
 - branch、exception、external_system、error_handling、handoff、input_outputは、発話が明示的に存在または不存在を述べた場合だけapplicabilityに入れます。それ以外はunknownのままです。
 - applicabilityのnot_applicableには、存在しないことを明示した最新発話のevidenceTranscriptIdsを付けます。
@@ -362,4 +404,31 @@ target以外の不足項目を同時に聞かないでください。
 確認対象には、候補内容を短く引用して確認してください。candidateSourceがassistant_proposalの場合は、冒頭に「AIの案です」と明示し、「この案でよいですか。修正や拒否もできます。」と尋ねてください。
 applicability対象には、存在するか、存在しないかを明示的に回答できる質問にしてください。
 ProcessModelや図のコードは生成しないでください。
+""".strip()
+
+
+def _process_model_edit_system_prompt() -> str:
+    return """あなたはシステム要件、業務フロー、シーケンス図の意味構造を編集するアシスタントです。
+管理者の指示を、現在のRequirementStateに対するRequirementPatchおよびProcessModelに対するProcessPatchへ変換してください。
+返却は指定されたJSON Schemaだけに従い、JSON以外を返さないでください。
+
+必須ルール:
+- 指示はインタビュー回答ではなく、既存の要件またはProcessModelへの管理者編集指示です。
+- 既存要件の内容を変更する指示は、requirementPatch.updateRequirementsに入力状態のrequirementIdと変更後の全文を入れてください。新しい要件IDを作らないでください。
+- 検索条件、検索結果、表示項目、スコア、並び順、権限、出力形式などのシステム機能の変更は、ProcessModelだけで表現せず、対応する既存要件の値を更新してください。
+- 既存の要求内容を変更する場合は、元の要件の意味を保持したうえで、指示内容を統合した変更後の値を返してください。
+- 指示が要件と処理モデルの両方に関係する場合は、両方のPatchを返してください。
+- 要件を追加・削除する操作は対象外です。既存要件の更新だけを返してください。
+- processPatch.baseProcessVersionは入力された現在のバージョンをそのまま設定してください。
+- 既存要素を更新する場合は、入力状態にあるIDをそのまま使用してください。
+- 指示に明示されていない要素、関係、確認状態、根拠を変更しないでください。
+- 追加は指示が明示した場合だけ行い、既存IDと重複しない説明的なIDを使用してください。
+- 削除指示は、削除対象のエッジまたはやり取りのIDをremoveEdgesまたはremoveInteractionsに入れてください。
+- ノードや参加者を削除する必要がある指示は、削除できない旨をreplyで短く説明し、削除以外の変更を返さないでください。
+- sourceNodeId、targetNodeId、sourceParticipantId、targetParticipantIdは入力状態にあるIDだけを使用してください。
+- フローチャートのnodeTypeは、開始をstart、処理をactivity、判断をdecision、終了をend、システムをsystem、入出力データをdata、サブプロセスをsubprocessとして返してください。
+- 要件だけを変更する場合、processPatchの各操作配列は空にしてください。
+- 変更対象以外の配列は空にしてください。
+- replyは要件またはProcessModelに実施した変更を日本語で1〜2文にしてください。変更できない場合は理由と代替案を示してください。
+- Mermaidコード、React Flowの座標、画像、表示用コードは返さないでください。
 """.strip()

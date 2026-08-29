@@ -29,19 +29,31 @@ import {
   createRecord,
   createRecordMessage,
   deleteRecord,
+  editProcessModel,
   fetchInterviewState,
   fetchAccessibleRecords,
   fetchRecordInterviewContext,
   fetchProposals,
   fetchRecords,
+  saveProcessModel,
   updateInterviewAnswer,
   updateRecord,
   type AiProposal
 } from "../features/interviews/api/interviewApi";
 import { useInterviewStream } from "../features/interviews/hooks/useInterviewStream";
-import { isInterviewConfigurationComplete } from "../features/interviews/interviewConfiguration";
+import {
+  DEFAULT_INTERVIEW_MODEL_ID,
+  isInterviewConfigurationComplete,
+} from "../features/interviews/interviewConfiguration";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
-import type { ChatMessage, DocumentReadState, InterviewAnswerTarget, InterviewState, InterviewStreamMetadata } from "../types/app";
+import type {
+  ChatMessage,
+  DocumentReadState,
+  InterviewAnswerTarget,
+  InterviewState,
+  InterviewStreamMetadata,
+  ProcessModelState,
+} from "../types/app";
 import { getRouteKnowledgeDbId, getRouteKnowledgeId } from "./routeUtils";
 import type { Route } from "./routeTypes";
 
@@ -72,6 +84,17 @@ function createInterviewClientMessageId() {
     return globalThis.crypto.randomUUID();
   }
   return `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isSameInterviewAnswerTarget(
+  left: InterviewAnswerTarget | null | undefined,
+  right: InterviewAnswerTarget | null | undefined,
+) {
+  if (!left || !right) return left === right;
+  return left.questionId === right.questionId
+    && (left.fieldId ?? null) === (right.fieldId ?? null)
+    && (left.targetType ?? null) === (right.targetType ?? null)
+    && (left.targetId ?? null) === (right.targetId ?? null);
 }
 
 const INTERVIEW_ERROR_REPLY = "一時的にAI応答を生成できませんでした。少し時間をおいて再度送信してください。";
@@ -233,6 +256,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       }));
     setInterviewMessages((messages) => mergeVoiceMessages(messages, snapshotMessages));
     setStructuredDraft(snapshot.structuredDraft ?? {});
+    return snapshot.interviewState;
   }
 
   const interviewStream = useInterviewStream({
@@ -599,10 +623,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsNotice(`${tabLabel}を保存しています…`);
     try {
       const interviewPlan = activeTab === "execution"
-        ? settingsInterviewPlan ?? {
-            version: 1,
-            profile: "fixed_form" as const,
-            modelId: "global.openai.gpt-5.6-luna" as const,
+        ? {
+            ...(settingsInterviewPlan ?? {}),
+            version: settingsInterviewPlan?.version ?? 1,
+            profile: settingsInterviewPlan?.profile ?? "fixed_form",
+            modelId: settingsInterviewPlan?.modelId ?? DEFAULT_INTERVIEW_MODEL_ID,
           }
         : settingsInterviewPlan ?? null;
       await updateKnowledge(selectedKnowledge.id, {
@@ -760,6 +785,43 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setRecordNotice("インタビュー状態は自動保存されています");
   }
 
+  async function handleSaveProcessModel(
+    processState: ProcessModelState,
+    baseProcessVersion: number,
+    baseStateVersion: number,
+  ) {
+    if (!selectedRecord?.id) {
+      throw new Error("record_not_selected");
+    }
+    const response = await saveProcessModel(selectedRecord.id, {
+      processState,
+      baseProcessVersion,
+      baseStateVersion,
+    });
+    await loadInterviewSnapshot(selectedRecord.id);
+    return response.interviewState;
+  }
+
+  async function handleEditProcessModel(
+    instruction: string,
+    baseProcessVersion: number,
+    baseStateVersion: number,
+  ) {
+    if (!selectedRecord?.id) {
+      throw new Error("record_not_selected");
+    }
+    const response = await editProcessModel(selectedRecord.id, {
+      instruction,
+      baseProcessVersion,
+      baseStateVersion,
+    });
+    await loadInterviewSnapshot(selectedRecord.id);
+    return {
+      interviewState: response.interviewState,
+      reply: response.reply,
+    };
+  }
+
   async function handleSaveInterviewAnswer(fieldId: string, recordAnswer: string) {
     if (!selectedRecord?.id) return;
     try {
@@ -807,11 +869,15 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     interviewStream.start(selectedRecord.id);
   }
 
-  async function handleSendInterviewMessage(target?: InterviewAnswerTarget | null) {
-    if (!selectedRecord || !chatInput.trim() || isInterviewStreaming) return;
-    const content = chatInput.trim();
+  async function handleSendInterviewMessage(
+    target?: InterviewAnswerTarget | null,
+    contentOverride?: string,
+  ) {
+    const content = (contentOverride ?? chatInput).trim();
+    if (!selectedRecord || !content || isInterviewStreaming) return;
     const previousPending = pendingInterviewSubmissionRef.current;
-    const isRetry = previousPending?.content === content;
+    const isRetry = previousPending?.content === content
+      && (!target || isSameInterviewAnswerTarget(previousPending.target, target));
     const effectiveTarget = isRetry ? previousPending?.target ?? null : target ?? null;
     const clientMessageId = isRetry && previousPending
       ? previousPending.clientMessageId
@@ -1083,6 +1149,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onSendInterviewMessage: handleSendInterviewMessage,
     onAppendInterviewMessage: appendRealtimeVoiceInterviewMessage,
     onRefreshInterviewSnapshot: refreshInterviewSnapshotForSelectedRecord,
+    onSaveProcessModel: handleSaveProcessModel,
+    onEditProcessModel: handleEditProcessModel,
     onApproveOne: handleApproveOne,
     onRejectProposal: handleRejectProposal,
     onRemoveProposal: handleRemoveProposal,
