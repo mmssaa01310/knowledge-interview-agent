@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">KIKO Waiting</title>
+  <desc id="desc">KIKO in waiting state, orbit-type mascot with calm expression, floating orbit rings, and small surrounding nodes.</desc>
+
+  <defs>
+    <radialGradient id="coreFill" cx="42%" cy="35%" r="72%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="70%" stop-color="#F2FBFF"/>
+      <stop offset="100%" stop-color="#D9F1FF"/>
+    </radialGradient>
+
+    <linearGradient id="shellFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2D8CFF"/>
+      <stop offset="48%" stop-color="#3CB6F8"/>
+      <stop offset="100%" stop-color="#66E7B7"/>
+    </linearGradient>
+
+    <linearGradient id="orbit1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#66E7B7"/>
+      <stop offset="55%" stop-color="#3CB6F8"/>
+      <stop offset="100%" stop-color="#7B83F7"/>
+    </linearGradient>
+
+    <linearGradient id="orbit2" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9AE8FF"/>
+      <stop offset="45%" stop-color="#52AEFF"/>
+      <stop offset="100%" stop-color="#7EE3C0"/>
+    </linearGradient>
+
+    <radialGradient id="nodeBlue" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#7DE2FF"/>
+      <stop offset="48%" stop-color="#35A7FF"/>
+      <stop offset="100%" stop-color="#1D6EEA"/>
+    </radialGradient>
+
+    <radialGradient id="nodeMint" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#D0FFF0"/>
+      <stop offset="45%" stop-color="#74E8C8"/>
+      <stop offset="100%" stop-color="#2FBE95"/>
+    </radialGradient>
+
+    <radialGradient id="nodeViolet" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#D7D5FF"/>
+      <stop offset="50%" stop-color="#9A90FF"/>
+      <stop offset="100%" stop-color="#6E62E8"/>
+    </radialGradient>
+
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dy="16"/>
+      <feColorMatrix type="matrix"
+        values="0 0 0 0 0.08
+                0 0 0 0 0.26
+                0 0 0 0 0.46
+                0 0 0 0.18 0"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <filter id="nodeShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5"/>
+      <feOffset dy="4"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.18"/>
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- shadow -->
+  <ellipse cx="512" cy="795" rx="185" ry="34" fill="#1C6BE8" opacity="0.10"/>
+
+  <!-- rear orbital rings -->
+  <ellipse cx="512" cy="485" rx="310" ry="160"
+           transform="rotate(-18 512 485)"
+           fill="none" stroke="url(#orbit1)" stroke-width="24" stroke-linecap="round" opacity="0.88"/>
+
+  <ellipse cx="512" cy="490" rx="268" ry="108"
+           transform="rotate(38 512 490)"
+           fill="none" stroke="url(#orbit2)" stroke-width="16" stroke-linecap="round" opacity="0.55"/>
+
+  <!-- back nodes -->
+  <g filter="url(#nodeShadow)">
+    <circle cx="285" cy="356" r="31" fill="url(#nodeBlue)"/>
+    <circle cx="699" cy="322" r="24" fill="url(#nodeViolet)"/>
+    <circle cx="767" cy="558" r="34" fill="url(#nodeMint)"/>
+    <circle cx="326" cy="614" r="22" fill="url(#nodeMint)"/>
+  </g>
+
+  <!-- body -->
+  <g filter="url(#shadow)">
+    <circle cx="512" cy="495" r="210" fill="url(#shellFill)"/>
+    <circle cx="512" cy="495" r="175" fill="url(#coreFill)"/>
+  </g>
+
+  <!-- shell highlight -->
+  <path d="M392 346 C452 306 563 298 626 330"
+        fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" opacity="0.34"/>
+
+  <!-- eyes: calm waiting state -->
+  <ellipse cx="456" cy="506" rx="20" ry="33" fill="#0A3268"/>
+  <ellipse cx="568" cy="506" rx="20" ry="33" fill="#0A3268"/>
+  <ellipse cx="450" cy="495" rx="6" ry="10" fill="#FFFFFF" opacity="0.50"/>
+  <ellipse cx="562" cy="495" rx="6" ry="10" fill="#FFFFFF" opacity="0.50"/>
+
+  <!-- front orbital ring -->
+  <path d="M230 547 C351 676 582 715 770 622 C830 592 857 558 868 525"
+        fill="none" stroke="url(#orbit1)" stroke-width="28" stroke-linecap="round"/>
+
+  <!-- front nodes -->
+  <g filter="url(#nodeShadow)">
+    <circle cx="226" cy="543" r="27" fill="url(#nodeMint)"/>
+    <circle cx="855" cy="515" r="28" fill="url(#nodeBlue)"/>
+    <circle cx="616" cy="733" r="18" fill="url(#nodeBlue)"/>
+  </g>
+
+  <!-- small waiting dots / sparks -->
+  <circle cx="355" cy="274" r="10" fill="#6FE6C0" opacity="0.9"/>
+  <circle cx="694" cy="694" r="8" fill="#7B83F7" opacity="0.72"/>
+  <circle cx="186" cy="466" r="8" fill="#3CA8FF" opacity="0.72"/>
+</svg>

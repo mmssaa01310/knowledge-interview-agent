@@ -542,7 +542,9 @@ export function ProcessModelPanel({
         <div className="process-command-history" aria-live="polite">
           {commandMessages.slice(-3).map((message, index) => (
             <p className={`process-command-message ${message.role}`} key={`${message.role}-${index}-${message.text}`}>
-              <span>{message.role === "user" ? t("common.user") : message.role === "assistant" ? t("common.ai") : t("common.notification")}</span>
+              {message.role !== "user" ? (
+                <span>{message.role === "assistant" ? t("common.ai") : t("common.notification")}</span>
+              ) : null}
               {message.text}
             </p>
           ))}

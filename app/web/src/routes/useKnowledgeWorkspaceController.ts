@@ -185,6 +185,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [interviewStreamMetadata, setInterviewStreamMetadata] = useState<InterviewStreamMetadata | null>(null);
   const [streamingInterviewReply, setStreamingInterviewReply] = useState("");
   const [isInterviewStreaming, setIsInterviewStreaming] = useState(false);
+  const [interviewError, setInterviewError] = useState(false);
   const [structuredDraft, setStructuredDraft] = useState<Record<string, string>>({});
   const [interviewAnswerOverrides, setInterviewAnswerOverrides] = useState<Record<string, string>>({});
   const [deletedExtraQuestionIds, setDeletedExtraQuestionIds] = useState<string[]>([]);
@@ -258,6 +259,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       }));
     setInterviewMessages((messages) => mergeVoiceMessages(messages, snapshotMessages));
     setStructuredDraft(snapshot.structuredDraft ?? {});
+    setInterviewError(false);
     return snapshot.interviewState;
   }
 
@@ -266,6 +268,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onStreamEnd: (metadata) => {
       setInterviewStreamMetadata(metadata);
       if (metadata?.error) {
+        setInterviewError(true);
         const pending = pendingInterviewSubmissionRef.current;
         setInterviewMessages((messages) => mergeVoiceMessages(messages, [{
           id: `interview-error-${pending?.clientMessageId ?? Date.now()}`,
@@ -312,6 +315,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       setStreamingInterviewReply("");
       pendingInterviewSubmissionRef.current = null;
       setIsInterviewStreaming(false);
+      setInterviewError(false);
     },
     onProposalCreated: () => {
       if ("recordId" in args.route) {
@@ -322,6 +326,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       const pending = pendingInterviewSubmissionRef.current;
       setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
+      setInterviewError(true);
       setRecordNotice(t("errors.interviewResponseReceiveFailed"));
       if (pending) {
         setChatInput(pending.content);
@@ -859,6 +864,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setDeletedExtraQuestionIds([]);
     pendingInterviewSubmissionRef.current = null;
     setIsInterviewStreaming(false);
+    setInterviewError(false);
     setRecordNotice(t("errors.chatDeleted"));
   }
 
@@ -867,6 +873,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     pendingInterviewSubmissionRef.current = null;
     setStreamingInterviewReply("");
     setInterviewStreamMetadata(null);
+    setInterviewError(false);
     setIsInterviewStreaming(true);
     setRecordNotice("");
     interviewStream.start(selectedRecord.id);
@@ -893,6 +900,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setChatInput("");
     setStreamingInterviewReply("");
     setInterviewStreamMetadata(null);
+    setInterviewError(false);
     setIsInterviewStreaming(true);
     try {
       const response = await createRecordMessage(selectedRecord.id, {
@@ -925,6 +933,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       console.error("Failed to send interview message", error);
       setStreamingInterviewReply("");
       setIsInterviewStreaming(false);
+      setInterviewError(true);
       setRecordNotice(t("errors.messageSendFailed"));
       setChatInput(content);
     }
@@ -954,6 +963,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       return;
     }
     loadInterviewSnapshot(selectedRecord.id).catch(() => {
+      setInterviewError(true);
       setRecordNotice(t("errors.interviewStateLoadFailed"));
     });
   }
@@ -1030,6 +1040,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setChatInput("");
     setIsInterviewStreaming(false);
     setStreamingInterviewReply("");
+    setInterviewError(false);
     if (!selectedRecord?.id) {
       setInterviewState(null);
       setStructuredDraft({});
@@ -1119,6 +1130,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     interviewStreamMetadata,
     streamingInterviewReply,
     isInterviewStreaming,
+    interviewError,
     structuredDraft,
     setStructuredDraft,
     interviewAnswerOverrides,

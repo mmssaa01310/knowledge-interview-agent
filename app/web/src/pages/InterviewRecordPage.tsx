@@ -6,6 +6,7 @@ import {
 import { VoiceConversationButton } from "../features/realtime-voice/components/VoiceConversationButton";
 import { VoiceConversationStatus } from "../features/realtime-voice/components/VoiceConversationStatus";
 import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
+import { KikoAvatar, type KikoAvatarState } from "../features/interview-chat/components/KikoAvatar";
 import { ProcessModelPanel } from "../features/interviews/components/ProcessModelPanel";
 import { SystemRequirementProgressPanel } from "../features/interviews/components/SystemRequirementProgressPanel";
 import {
@@ -131,6 +132,23 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     onInterviewStateChanged: props.onRefreshInterviewSnapshot,
     onCompleted: props.onRefreshInterviewSnapshot,
   });
+
+  const isKikoError = props.interviewError || realtimeVoice.status === "error";
+  const isKikoThinking = props.isInterviewStreaming || [
+    "preparing_initial_reply",
+    "processing_interview",
+    "preparing_audio",
+    "processing",
+    "speaking",
+  ].includes(realtimeVoice.status);
+  const currentKikoState: KikoAvatarState = isKikoError
+    ? "error"
+    : isKikoThinking
+      ? "thinking"
+      : "waiting";
+  const hasInterviewErrorMessage = props.interviewMessages.some(
+    (message) => message.id?.startsWith("interview-error-"),
+  );
 
   useEffect(() => {
     const container = chatLogRef.current;
@@ -433,12 +451,14 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             <div ref={chatLogRef} className="chat-log">
               {props.interviewMessages.map((message, index) => (
                 <div key={message.id ?? `${message.role}-${index}`} className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}`}>
-                  <div className="message-meta">
-                    <span className="message-avatar" aria-hidden="true">
-                      {message.role === "assistant" || message.role === "ai" ? "KI" : t("common.user")}
-                    </span>
-                    <span>{message.role === "assistant" || message.role === "ai" ? t("common.appName") : t("common.user")}</span>
-                  </div>
+                  {message.role === "assistant" || message.role === "ai" ? (
+                    <div className="message-meta">
+                      <KikoAvatar
+                        state={message.id?.startsWith("interview-error-") ? "error" : "waiting"}
+                        label={t("common.appName")}
+                      />
+                    </div>
+                  ) : null}
                   {message.candidateSource === "assistant_proposal" ? <span className="proposal-message-label">{t("interview.proposalLabel")}</span> : null}
                   <p>{message.text}</p>
                   {isCurrentProposal(message) ? (
@@ -456,10 +476,21 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               {props.streamingInterviewReply ? (
                 <div className="bubble ai">
                   <div className="message-meta">
-                    <span className="message-avatar" aria-hidden="true">KI</span>
-                    <span>{t("common.appName")}</span>
+                    <KikoAvatar state={currentKikoState} label={t("common.appName")} />
                   </div>
                   <p>{props.streamingInterviewReply}</p>
+                </div>
+              ) : null}
+              {isKikoThinking && !props.streamingInterviewReply ? (
+                <div className="kiko-chat-status thinking" role="status">
+                  <KikoAvatar state="thinking" label={t("common.appName")} />
+                  <span>{t("interview.receiving")}</span>
+                </div>
+              ) : null}
+              {isKikoError && !hasInterviewErrorMessage ? (
+                <div className="kiko-chat-status error" role="alert">
+                  <KikoAvatar state="error" label={t("common.appName")} />
+                  <span>{props.recordNotice || t("errors.interviewResponseReceiveFailed")}</span>
                 </div>
               ) : null}
             </div>

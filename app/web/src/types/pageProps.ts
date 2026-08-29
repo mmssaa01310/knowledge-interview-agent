@@ -69,6 +69,7 @@ export type KnowledgeLayoutProps = {
   interviewStreamMetadata: InterviewStreamMetadata | null;
   streamingInterviewReply: string;
   isInterviewStreaming: boolean;
+  interviewError: boolean;
   structuredDraft: Record<string, string>;
   setStructuredDraft: (value: Record<string, string>) => void;
   interviewAnswerOverrides: Record<string, string>;

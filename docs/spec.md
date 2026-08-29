@@ -105,6 +105,8 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 
 右列の会話には、次の質問対象を1件だけ「いま確認していること」として表示する。質問対象がない場合は、インタビュー開始前、回答整理中、完了後の状態に応じた案内を表示する。
 
+会話中のユーザー発言には表示名「あなた」を表示しない。ユーザー側の吹き出しの配置・配色で発言者を区別する。AI発言にはKIKOアバターを表示し、通常の待機状態は`public/images/kiko-waiting.svg`、AI処理中は`public/images/kiko-thinking.svg`、インタビュー処理エラー時は`public/images/kiko-error.svg`を使用する。
+
 `system_requirement`では、左列に「要件整理」パネルを1つだけ表示する。要件整理パネルには、システム要件、業務フローの有無、業務フローの詳細の確認状況を表示する。別の要件ドラフト一覧と質問リストを同時に表示してはならない。
 
 処理の流れは、会話から抽出したProcessStateを表示用に変換したビューである。LLMが生成したMermaidコード、React Flowの座標、または会話本文を直接表示してはならない。`process=unknown`では業務フローの確認中であることだけを表示し、`process=not_applicable`では処理フローなしで要件を整理することを表示する。`process=present`では情報の収集状況に応じてフローチャートとシーケンス図を表示する。
