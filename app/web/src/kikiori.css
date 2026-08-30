@@ -1550,7 +1550,18 @@ label {
 }
 
 .interview-page-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 7px;
+}
+
+.interview-page-title > .interview-title-status {
+  flex: 1 1 auto;
+}
+
+.interview-page-title > .notice {
+  flex-basis: 100%;
 }
 
 .interview-title-status {
@@ -1574,7 +1585,21 @@ label {
 }
 
 .interview-back-button {
+  display: inline-grid;
+  width: 32px;
+  height: 26px;
+  min-width: 32px;
+  min-height: 26px;
+  flex: 0 0 32px;
+  place-items: center;
+  padding: 0;
   color: var(--ki-primary-strong);
+}
+
+.interview-back-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
 }
 
 .interview-shell {
@@ -1800,6 +1825,20 @@ label {
   border-radius: 9px;
   background: var(--ki-primary-soft);
   box-shadow: var(--ki-shadow-sm);
+}
+
+.kiko-avatar-identity {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+}
+
+.kiko-avatar-name {
+  color: var(--ki-muted);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1;
 }
 
 .kiko-avatar img {
@@ -5430,15 +5469,56 @@ html[dir="rtl"] .interview-page-title {
 /* Keep the active interview usable within the mobile viewport. The page shell
    owns the viewport height; only the conversation log is allowed to scroll. */
 .interview-more-actions {
-  display: contents;
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  flex: 0 0 44px;
 }
 
 .interview-more-actions-trigger {
-  display: none;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  place-items: center;
+  border: 1px solid var(--ki-border);
+  border-radius: 10px;
+  background: var(--ki-surface);
+  color: var(--ki-muted);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  list-style: none;
 }
 
 .interview-more-actions-menu {
-  display: contents;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 150;
+  display: none;
+  min-width: min(250px, calc(100vw - 28px));
+  gap: 3px;
+  padding: 6px;
+  border: 1px solid var(--ki-border);
+  border-radius: 12px;
+  background: var(--ki-surface);
+  box-shadow: var(--ki-shadow-lg);
+}
+
+.interview-more-actions-menu.open {
+  display: grid;
+}
+
+.interview-more-actions-menu button {
+  width: 100%;
+  min-height: 44px;
+  justify-content: flex-start;
+  padding-inline: 10px;
+  text-align: start;
+  white-space: normal;
 }
 
 @media (max-width: 767px), (max-height: 520px) and (max-width: 1199px) {
@@ -5603,11 +5683,11 @@ html[dir="rtl"] .interview-page-title {
 
   .interview-record-main-content .interview-back-button {
     display: inline-flex;
-    width: 44px;
-    height: 44px;
-    min-width: 44px;
-    min-height: 44px;
-    flex: 0 0 44px;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    flex: 0 0 36px;
     align-items: center;
     justify-content: center;
     padding: 0;
@@ -5615,9 +5695,10 @@ html[dir="rtl"] .interview-page-title {
   }
 
   .interview-record-main-content .interview-back-icon {
+    display: block;
+    width: 20px;
+    height: 20px;
     color: var(--ki-primary-strong);
-    font-size: 20px;
-    line-height: 1;
   }
 
   .interview-record-main-content .interview-back-label {
@@ -5628,7 +5709,7 @@ html[dir="rtl"] .interview-page-title {
     display: grid;
     min-width: 0;
     flex: 1 1 auto;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 0 6px;
   }
@@ -5649,6 +5730,11 @@ html[dir="rtl"] .interview-page-title {
     grid-row: 1;
     min-width: 0;
     white-space: nowrap;
+  }
+
+  .interview-record-main-content .interview-title-status > .interview-back-button {
+    grid-column: 3;
+    grid-row: 1;
   }
 
   .interview-record-main-content .interview-model-badge {
@@ -6039,6 +6125,52 @@ html[dir="rtl"] .interview-page-title {
   .interview-record-main-content .answer-composer textarea {
     min-height: 48px;
     max-height: 20dvh;
+  }
+}
+
+/* Keep tablet interview controls on one compact row. The legacy tablet rules
+   stack panel headers, which pushes the conversation area down unnecessarily. */
+@media (min-width: 768px) and (max-width: 980px) {
+  .interview-record-main-content > .page-header {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .interview-record-main-content > .page-header > .primary {
+    width: auto;
+    min-width: 0;
+    flex: 0 0 auto;
+  }
+
+  .interview-record-main-content > .interview-page > .interview-page-header {
+    flex-direction: row;
+    align-items: center;
+    min-height: 40px;
+    height: auto;
+    gap: 4px;
+    margin-bottom: 0;
+  }
+
+  .interview-record-main-content .interview-page-title {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .interview-record-main-content .interview-more-actions,
+  .interview-record-main-content .interview-more-actions-trigger {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    flex: 0 0 36px;
+  }
+
+  .interview-record-main-content .interview-more-actions-trigger {
+    font-size: 20px;
   }
 }
 

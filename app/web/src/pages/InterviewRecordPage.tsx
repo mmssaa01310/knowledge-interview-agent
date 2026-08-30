@@ -63,7 +63,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   );
 
   async function handleResetDemo() {
-    if (!isManagementUser || isResettingDemo || realtimeVoice.isActive) return;
+    if (!import.meta.env.DEV || !isManagementUser || isResettingDemo || realtimeVoice.isActive) return;
     setIsResettingDemo(true);
     try {
       if (props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID) {
@@ -275,16 +275,16 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     && props.interviewMessages.length === 0
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
-  const hasDemoResetAction = isManagementUser && (
+  const hasDemoResetAction = import.meta.env.DEV && isManagementUser && (
     props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID
       || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID
   );
   const hasReviewActions = isManagementUser && props.selectedRecord?.status === "submitted";
-  const hasInterviewActions = hasDemoResetAction || hasReviewActions;
   const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && realtimeVoice.isActive);
   const interviewLaunchPath = props.selectedKnowledgeDb && props.selectedKnowledge
     ? `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}/interview`
     : null;
+  const hasInterviewActions = hasDemoResetAction || hasReviewActions;
   const currentTargetLabel = props.interviewState?.nextQuestionTarget?.label;
   const currentTargetMessage = currentTargetLabel
     ? t("interview.targetNow", { target: currentTargetLabel })
@@ -299,18 +299,6 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     <section className="panel interview-page" data-guide="interview-pane">
       <div className="panel-header interview-page-header">
         <div className="interview-page-title">
-          {interviewLaunchPath ? (
-            <button
-              type="button"
-              className="ghost compact interview-back-button"
-              onClick={() => props.navigate(interviewLaunchPath)}
-              aria-label={t("interview.returnToStart")}
-              title={t("interview.returnToStart")}
-            >
-              <span className="interview-back-icon" aria-hidden="true">←</span>
-              <span className="interview-back-label">{t("interview.returnToStart")}</span>
-            </button>
-          ) : null}
           <div className="interview-title-status">
             <h2>{t("interview.title")}</h2>
             <span className="interview-model-badge">{t("interview.modelLabel", { model: props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-terra" ? t("interview.model.terra") : props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-luna" ? t("interview.model.luna") : t("interview.profile.notSet") })}</span>
@@ -318,6 +306,24 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               <span className={props.selectedRecord.status === "approved" ? "status-pill" : "status-pill muted"}>
                 {t(`interview.status.${props.selectedRecord.status}`)}
               </span>
+            ) : null}
+            {interviewLaunchPath ? (
+              <button
+                type="button"
+                className="ghost compact interview-back-button"
+                onClick={() => props.navigate(interviewLaunchPath)}
+                aria-label={t("interview.returnToStart")}
+                title={t("interview.returnToStart")}
+              >
+                <svg
+                  className="interview-back-icon"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path fillRule="evenodd" clipRule="evenodd" d="M7.79252 2.23214C8.07852 2.53177 8.06748 3.00651 7.76786 3.29252L3.62192 7.25H13.625C16.5935 7.25 19 9.65647 19 12.625C19 15.5935 16.5935 18 13.625 18H10.75C10.3358 18 10 17.6642 10 17.25C10 16.8358 10.3358 16.5 10.75 16.5H13.625C15.7651 16.5 17.5 14.7651 17.5 12.625C17.5 10.4849 15.7651 8.75 13.625 8.75H3.62192L7.76786 12.7075C8.06748 12.9935 8.07852 13.4682 7.79252 13.7679C7.50651 14.0675 7.03177 14.0785 6.73214 13.7925L1.23214 8.54252C1.08388 8.401 1 8.20496 1 8C1 7.79504 1.08388 7.59901 1.23214 7.45748L6.73214 2.20748C7.03177 1.92148 7.50651 1.93252 7.79252 2.23214Z" />
+                </svg>
+              </button>
             ) : null}
           </div>
           {!isInterviewConfigured ? (
@@ -522,7 +528,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                     <div className="message-meta">
                       <KikoAvatar
                         state={message.id?.startsWith("interview-error-") ? "error" : "waiting"}
-                        label={t("common.appName")}
+                        label={t("interview.kikoName")}
                       />
                     </div>
                   ) : null}
@@ -544,20 +550,20 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               {props.streamingInterviewReply ? (
                 <div className="bubble ai">
                   <div className="message-meta">
-                    <KikoAvatar state={currentKikoState} label={t("common.appName")} />
+                    <KikoAvatar state={currentKikoState} label={t("interview.kikoName")} />
                   </div>
                   <p>{props.streamingInterviewReply}</p>
                 </div>
               ) : null}
               {isKikoThinking && !props.streamingInterviewReply ? (
                 <div className="kiko-chat-status thinking" role="status">
-                  <KikoAvatar state="thinking" label={t("common.appName")} />
+                  <KikoAvatar state="thinking" label={t("interview.kikoName")} />
                   <span>{t("interview.receiving")}</span>
                 </div>
               ) : null}
               {isKikoError && !hasInterviewErrorMessage ? (
                 <div className="kiko-chat-status error" role="alert">
-                  <KikoAvatar state="error" label={t("common.appName")} />
+                  <KikoAvatar state="error" label={t("interview.kikoName")} />
                   <span>{props.recordNotice || t("errors.interviewResponseReceiveFailed")}</span>
                 </div>
               ) : null}

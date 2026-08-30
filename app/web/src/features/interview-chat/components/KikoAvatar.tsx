@@ -13,8 +13,11 @@ type KikoAvatarProps = {
 
 export function KikoAvatar({ state, label }: KikoAvatarProps) {
   return (
-    <span className={`kiko-avatar ${state}`} role="img" aria-label={label}>
-      <img src={avatarSources[state]} alt="" aria-hidden="true" />
+    <span className="kiko-avatar-identity">
+      <span className={`kiko-avatar ${state}`} role="img" aria-label={label}>
+        <img src={avatarSources[state]} alt="" aria-hidden="true" />
+      </span>
+      <span className="kiko-avatar-name" aria-hidden="true">{label}</span>
     </span>
   );
 }
