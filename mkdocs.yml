@@ -1,0 +1,62 @@
+site_name: KIKIORI Documentation
+site_description: KIKIORIの仕様、現行実装、開発・運用ガイド
+
+# docs/を唯一の公開ソースにする。docs/codebase/は実装調査用の詳細資料として
+# 同じサイトから参照できる。
+docs_dir: docs
+site_dir: site/docs
+
+theme:
+  name: material
+
+nav:
+  - ホーム: index.md
+  - プロダクト:
+      - 仕様: spec.md
+      - 現行実装: reference/current-implementation.md
+      - UI多言語: reference/ui-localization.md
+  - アーキテクチャ:
+      - 全体構成と実装状況: architecture/aws/aws-architecture.md
+      - 認可: architecture/access-control.md
+      - AIエージェント: architecture/agents/agent-architecture.md
+      - AIインタビュー構造化: architecture/agents/interview-knowledge-capture.md
+      - Agentの振る舞い: agents/agent-behavior-policy.md
+      - インタビューAgent: agents/interview-agent-strands.md
+      - 質問設計Agent: agents/question-design-agent-strands.md
+      - リアルタイム音声: architecture/voice/realtime-voice.md
+  - 開発ガイド:
+      - ローカルAWS開発: guides/aws-local-development.md
+      - 開発ワークフロー: guides/development-workflow.md
+      - パッケージ管理: guides/package-management.md
+      - リファクタリング: guides/refactoring.md
+      - 検証: guides/verification.md
+      - ドキュメント運用: guides/documentation.md
+  - リファレンス:
+      - 技術スタック: reference/technology-stack.md
+      - リポジトリ構成: reference/repository-structure.md
+      - docsとspecsの管理: reference/spec-governance.md
+      - 応答形式: reference/response-format.md
+  - コードベースガイド:
+      - 概要: codebase/index.md
+      - ビジュアルマップ: codebase/dashboard/index.html
+      - アーキテクチャ: codebase/ARCHITECTURE.md
+      - 構成: codebase/STRUCTURE.md
+      - 技術スタック: codebase/STACK.md
+      - 外部連携: codebase/INTEGRATIONS.md
+      - 実装規約: codebase/CONVENTIONS.md
+      - テスト: codebase/TESTING.md
+      - 注意点: codebase/CONCERNS.md
+  - 計画（未確定）:
+      - ナレッジ分析・教育支援: plans/admin-learning-dashboard.md
+      - 音声 v2: plans/realtime-voice-v2.md
+  - 実装履歴:
+      - 音声 v1（履歴）: plans/realtime-voice-v1.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format

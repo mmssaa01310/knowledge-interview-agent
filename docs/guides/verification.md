@@ -11,9 +11,7 @@
 
 ## 2. Frontend
 
-フロントエンドは Docker 前提で確認する。
-
-通常は個別の `pnpm build` を必須にせず、必要に応じて Docker 経由で確認する。
+フロントエンドを含む全体動作はDocker Composeで確認する。Web単体の型検査・翻訳検査・本番Buildは、必要に応じて個別にも実行する。
 
 ```bash
 docker compose -f infra/docker-compose.yml config
@@ -25,16 +23,16 @@ docker compose -f infra/docker-compose.yml up --build
 
 ```bash
 cd app/web
-pnpm test
-pnpm typecheck
+pnpm lint
+pnpm check:i18n
+pnpm build
+node --test tests/*.test.mjs
 ```
 
 ## 3. Backend API
 
 ```bash
 cd app/api
-uv run ruff check .
-uv run mypy src
 uv run pytest
 ```
 
@@ -42,8 +40,6 @@ uv run pytest
 
 ```bash
 cd app/worker
-uv run ruff check .
-uv run mypy src
 uv run pytest
 ```
 
@@ -54,7 +50,22 @@ docker compose -f infra/docker-compose.yml config
 docker compose -f infra/docker-compose.yml build
 ```
 
-## 6. プロンプト分離の確認
+## 6. PostgreSQL
+
+通常のAPIテストは`DATABASE_URL=memory://test`のテストダブルを使う。PostgreSQL Storeの統合テストは、到達可能なPostgreSQLを`TEST_DATABASE_URL`で明示した場合だけ実行する。
+
+```bash
+cd app/api
+TEST_DATABASE_URL=postgresql://... uv run pytest tests/repositories/test_postgres_store.py
+```
+
+ローカルComposeの設定とスキーマは次でも確認する。
+
+```bash
+docker compose -f infra/docker-compose.yml config
+```
+
+## 7. プロンプト分離の確認
 
 質問項目設計まわり、実行設定まわり、プロンプト loader まわりを変更した場合は、以下を確認する。
 
@@ -64,7 +75,7 @@ docker compose -f infra/docker-compose.yml build
 * 「追加カスタマイズ」「テンプレート」「実インタビュー用」相当のUI文言が、質問項目設計チャット側に誤誘導していないか
 * プロンプト分離を担保するテストが壊れていないか
 
-## 7. フロントエンド変更時の確認
+## 8. フロントエンド変更時の確認
 
 フロントエンドを変更した場合は、以下を確認する。
 
@@ -82,3 +93,12 @@ docker compose -f infra/docker-compose.yml build
 * キャッシュクリア
 * 開発サーバー再起動
 * コンテナ再起動
+
+## 9. ドキュメント変更時の確認
+
+```bash
+uv run --group dev mkdocs build --strict
+python .github/skills/codebase-visualizer/scripts/validate_dashboard.py docs/codebase/dashboard
+```
+
+MkDocsの表示内容を変更した場合は、ローカルで`uv run --group dev mkdocs serve`を起動してナビゲーションも確認する。

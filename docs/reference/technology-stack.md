@@ -2,21 +2,18 @@
 
 ## 1. Frontend
 
-* React
-* Vite
-* TypeScript
-* i18next
-* react-i18next
-* Tailwind CSS
-* shadcn/ui
-* Radix UI
-* lucide-react
-* TanStack Query
-* React Hook Form
-* Zod
-* Zustand または Jotai
+現行のWebアプリは`app/web`のReact/Viteアプリである。
 
-## 2. Frontend Hosting
+* React 18 + TypeScript
+* Vite 5
+* i18next / react-i18next
+* Driver.js（操作ガイド）
+* React Flow（`@xyflow/react`、処理フローの表示）
+* CSS Modulesではなく、`styles.css`と`kikiori.css`を中心としたCSS
+
+現行の`app/web/package.json`にはTailwind CSS、shadcn/ui、Radix UI、lucide-react、TanStack Query、React Hook Form、Zod、Zustand、Jotaiは含まれない。導入済みとして扱わない。
+
+## 2. Frontend Hosting（目標構成）
 
 * ECS Fargate
 * Nginx
@@ -36,37 +33,22 @@ MVPでは以下を使わない。
 * Pydantic
 * psycopg（PostgreSQL接続）
 * boto3
-* Cognito JWT検証
+* 本番IdP JWT検証（候補: Microsoft Entra ID。未実装）
 * SSE
 
-WebSocketは将来のリアルタイム音声用とする。
+リアルタイム音声は現行の`app/voice`によるWebRTC + HTTP SDP signalingを使用する。WebSocketは現行の公開経路ではなく、Trickle ICEなどを採用する場合の将来検討である。
 
 ## 4. Worker
 
-* Python
-* uv
-* ECS Worker
-* SQS
-* psycopg（PostgreSQL接続）
-* boto3
-* Bedrock
-* Pydantic
+現行の`app/worker`はPython / uvの最小実装で、文書取り込み状態のサンプル処理を持つ。SQS受信、PostgreSQL接続、Bedrock呼び出しはまだ実装されていない。
 
-Workerは、ドキュメント取り込みや将来の外部DB送信など、APIリクエスト内で完結させない非同期処理を担当する。
+ECS Worker、SQS、PostgreSQL接続、boto3、Bedrockは、Workerを本実装する際の目標構成であり、現行Workerの実行依存としては記載しない。
 
-## 5. AWS
+## 5. インフラとAWS
 
-* ECS Fargate
-* ALB
-* Cognito
-* PostgreSQL（ローカルはDocker Compose、実運用はマネージドPostgreSQLを利用）
-* Bedrock
-* SQS
-* ECS Worker
-* Secrets Manager
-* CloudWatch Logs
-* IAM
-* KMS
+ローカル開発ではDocker ComposeによりWeb、API、Voice、PostgreSQLを起動する。PostgreSQLは`postgres:16-alpine`で、初期スキーマは`infra/postgres/init/001_schema.sql`に置く。
+
+AWS CDKの雛形は`infra/cdk`にある。ECS Fargate上のFrontend、API、Voice、Worker、ALB、企業IdP（Entra ID候補）、SQS、Secrets Manager、CloudWatch Logs、IAM、KMSは目標アーキテクチャとして`docs/architecture/aws/aws-architecture.md`に記載する。導入済みの実行環境として断定しない。
 
 ## 6. データベース方針
 
@@ -77,6 +59,17 @@ Workerは、ドキュメント取り込みや将来の外部DB送信など、API
 本番環境のPostgreSQL提供方式、バックアップ、冗長化はデプロイ環境ごとに決定する。ローカルと本番でアプリケーションの保存契約を分けない。
 
 ただし、ファイル原本保存が明示された場合のみ、S3またはEFSの追加を検討してよい。
+
+## 開発・ドキュメント
+
+* Node.js依存管理: pnpm workspace（pnpm 11）
+* Python依存管理: uv
+* API / Voice / Workerテスト: pytest
+* Webの型検査: TypeScript (`pnpm --dir app/web lint`)
+* Web翻訳検査: `pnpm --dir app/web check:i18n`
+* ドキュメント: MkDocs Material (`uv run --group dev mkdocs build --strict`)
+
+`ruff`、`mypy`、カバレッジ閾値、FrontendのE2Eテスト基盤は現行設定では定義されていない。検証コマンドは[検証ルール](../guides/verification.md)を参照する。
 
 ## 7. 構造化インタビューのLLM
 

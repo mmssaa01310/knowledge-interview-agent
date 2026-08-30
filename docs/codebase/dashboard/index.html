@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="KIKIORI codebase visual map.">
+  <title>KIKIORI — Codebase Map</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="Overviewへ移動">
+      <span class="brand-mark">KI</span>
+      <span><strong>KIKIORI</strong><small>codebase map</small></span>
+    </a>
+    <nav class="topnav" aria-label="Dashboard sections">
+      <a href="#overview">Overview</a>
+      <a href="#runtime">Runtime</a>
+      <a href="#components">Components</a>
+      <a href="#states">States</a>
+      <a href="#integrations">Integrations</a>
+      <a href="#risks">Risks &amp; Tests</a>
+      <a href="#code">Code</a>
+    </nav>
+    <a class="source-link" data-doc-href="../ARCHITECTURE.md" href="../ARCHITECTURE.md">Architecture ↗</a>
+  </header>
+
+  <main>
+    <section id="overview" class="hero section-shell">
+      <div class="eyebrow">CURRENT IMPLEMENTATION MAP</div>
+      <div class="hero-grid">
+        <div>
+          <h1>いま動く構成を、<em>ひと目で。</em></h1>
+          <p id="system-purpose" class="lead">読み込み中…</p>
+          <div id="boundary-note" class="boundary-note"></div>
+        </div>
+        <div class="hero-card">
+          <span class="card-label">Runtime path</span>
+          <div id="runtime-rail" class="runtime-rail" aria-label="Runtime path"></div>
+          <p id="system-status" class="muted"></p>
+        </div>
+      </div>
+      <div id="kpis" class="kpi-grid" aria-label="Codebase facts"></div>
+    </section>
+
+    <section id="runtime" class="section-shell">
+      <div class="section-heading">
+        <div><span class="section-number">01</span><h2>Runtime flow</h2></div>
+        <p>ユーザー発話から再生まで。カードの色は処理の性質を示します。</p>
+      </div>
+      <div id="flow-cards" class="flow-stack"></div>
+    </section>
+
+    <section id="components" class="section-shell tinted">
+      <div class="section-heading">
+        <div><span class="section-number">02</span><h2>Components</h2></div>
+        <p>各境界の責務を先に読み、コードは最後に確認します。</p>
+      </div>
+      <div id="component-grid" class="component-grid"></div>
+    </section>
+
+    <section id="states" class="section-shell">
+      <div class="section-heading">
+        <div><span class="section-number">03</span><h2>States</h2></div>
+        <p>InterviewState、Turn、Runtime/UIを別レーンで追えます。</p>
+      </div>
+      <div id="state-grid" class="state-grid"></div>
+    </section>
+
+    <section id="integrations" class="section-shell tinted">
+      <div class="section-heading">
+        <div><span class="section-number">04</span><h2>Integrations</h2></div>
+        <p>AWSサービスと内部HTTPの責務境界です。</p>
+      </div>
+      <div id="integration-grid" class="integration-grid"></div>
+    </section>
+
+    <section id="risks" class="section-shell">
+      <div class="section-heading">
+        <div><span class="section-number">05</span><h2>Risks &amp; Tests</h2></div>
+        <p>不確実性を、影響・根拠・次の確認に分解しています。</p>
+      </div>
+      <div class="risk-test-grid">
+        <div><h3>Risk radar</h3><div id="risk-list" class="stack-list"></div></div>
+        <div><h3>Verification map</h3><div id="test-list" class="stack-list"></div></div>
+      </div>
+    </section>
+
+    <section id="code" class="section-shell tinted">
+      <div class="section-heading">
+        <div><span class="section-number">06</span><h2>Code</h2></div>
+        <p>役割を把握したあとに開く、最小限の関連コードです。</p>
+      </div>
+      <div id="code-list" class="code-list"></div>
+      <div class="source-row"><span>Source docs</span><div id="source-list"></div></div>
+    </section>
+  </main>
+
+  <footer class="footer">Generated from <code>docs/codebase</code> · static HTML/CSS/JS · no framework</footer>
+  <script src="app.js" defer></script>
+</body>
+</html>

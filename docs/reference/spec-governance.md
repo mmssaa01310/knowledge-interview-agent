@@ -9,6 +9,8 @@
 
 `docs/` は、プロダクト全体の正規ドキュメントを置く場所である。
 
+MkDocsでは`docs/`全体を公開する。`docs/codebase/`は、ソースコードを根拠にした技術者向けの案内であり、プロダクト仕様そのものではない。
+
 主な対象は以下。
 
 * アプリ全体の仕様
@@ -32,6 +34,7 @@
 * `docs/guides/verification.md`
 * `docs/reference/response-format.md`
 * `docs/guides/package-management.md`
+* `docs/guides/documentation.md`
 
 ## 3. specs の役割
 
@@ -146,3 +149,12 @@ specs/
 * `specs/`だけを更新して、恒久情報を`docs/`に反映し忘れない。
 * `docs/`と作業中の`specs/<id>`の矛盾を放置しない。
 * 作業対象外の`specs/`を根拠に実装を変更しない。
+
+## 10. 実装との差異を見つけた場合
+
+1. まず実装、テスト、設定を確認し、差異を事実として記録する。
+2. 実装済み範囲の説明は`reference/current-implementation.md`と`docs/codebase/`を更新する。
+3. プロダクトの振る舞いを意図的に変える場合は、`spec.md`と関連する設計文書も更新する。
+4. 目標アーキテクチャや未実装の案は、現行実装と混同しないよう「計画」または「目標」と明示する。
+
+MkDocsの設定、ナビゲーション、ビルド手順は`guides/documentation.md`を正本とする。

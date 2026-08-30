@@ -8,6 +8,8 @@
 
 `app/voice`は音声入出力、WebRTC、Voice Runtime制御、確定Transcriptの受け渡しに責務を限定する。
 
+本書は本番を含む共通契約・責務の設計である。ローカル実装の認証方式と実装済み範囲は[現行実装](../../reference/current-implementation.md)を参照する。
+
 ## 2. 責務境界
 
 ### 2.1 `app/api`
@@ -210,7 +212,7 @@ GET  /api/voice-sessions/{voice_session_id}
 POST /api/voice-sessions/{voice_session_id}/stop
 ```
 
-公開APIはCognito JWTによる認証を必須とする。
+公開APIは認証済みユーザーによるJWT認証を必須とする。採用するIdPは未確定で、Entra IDを候補とする。
 
 ### 6.2 WebRTC API
 
@@ -350,7 +352,7 @@ class VoiceSession:
     created_at: datetime
 ```
 
-`owner_user_id`はCognitoユーザーIDを保存する必須項目である。
+`owner_user_id`は採用した認証プロバイダーのユーザーIDを保存する必須項目である。
 
 `initial_reply_text`は、Session開始時点で`app/api`が決定した初回発話文である。
 v1では固定挨拶「それではインタビューを開始します。」に続けて、既存Interview Agentが決定した初回質問を含める。
@@ -427,9 +429,9 @@ failed
 
 ## 11. 認可ルール
 
-VoiceSessionの作成、取得、停止、WebRTC接続は、認証済みCognitoユーザーが対象`record_id`へ回答操作を実行できることを確認する。Recordの認可は[利用者ワークスペースと認可アーキテクチャ](../access-control.md)に従う。
+VoiceSessionの作成、取得、停止、WebRTC接続は、認証済みユーザーが対象`record_id`へ回答操作を実行できることを確認する。Recordの認可は[利用者ワークスペースと認可アーキテクチャ](../access-control.md)に従う。
 
-`interviewer`が操作する場合は、対象Recordの`ownerUserId`と認証済みCognitoユーザーIDが一致しなければならない。`admin`と`knowledge_manager`は、管理対象Recordに対して操作できる。
+`interviewer`が操作する場合は、対象Recordの`ownerUserId`と認証済みユーザーIDが一致しなければならない。`admin`と`knowledge_manager`は、管理対象Recordに対して操作できる。
 
 `VoiceSession.ownerUserId`だけでRecord権限の代替としてはいけない。
 

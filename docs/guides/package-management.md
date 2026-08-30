@@ -112,8 +112,6 @@ docker compose -f infra/docker-compose.yml up --build
 ```bash
 cd app/api
 uv run pytest
-uv run ruff check .
-uv run mypy src
 ```
 
 ### 同期を避けたい場合
@@ -125,8 +123,6 @@ uv run mypy src
 ```bash
 cd app/api
 uv run --no-sync pytest
-uv run --no-sync ruff check .
-uv run --no-sync mypy src
 ```
 
 表現は「uv が使えない」ではなく、「uv run の同期がネットワーク依存になるため、今回は同期を避けた」とする。

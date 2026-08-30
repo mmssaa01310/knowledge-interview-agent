@@ -17,9 +17,7 @@ build/
 # Local agent runtime compatibility link. The canonical skills live in .github/skills/.
 .agents/
 
-# Generated codebase documentation and local MkDocs environment.
-docs/codebase/
+# Generated MkDocs output and local dependency lock.
 site/
-mkdocs.yml
-pyproject.toml
 uv.lock
+docs/codebase/.codebase-scan.txt

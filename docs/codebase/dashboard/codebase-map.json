@@ -1,0 +1,62 @@
+{
+  "system": {
+    "name": "KIKIORI",
+    "purpose": "インタビューを通じて知識を引き出し、人の確認を経て構造化ナレッジとして保存するWebアプリ。",
+    "boundary": "app/apiが認可・インタビュー状態・AI処理・保存の正本で、app/voiceは音声I/Oを担当する。",
+    "runtimePath": ["Browser", "React / Vite", "FastAPI API", "Service", "PostgreSQL"],
+    "status": "ComposeではWeb、API、Voice、PostgreSQLを起動。Worker / SQS連携は未実装。"
+  },
+  "components": [
+    {"id":"web","name":"Web application","layer":"client","role":"画面、i18n、操作ガイド、API / Voiceクライアント","owns":"表示・ユーザー操作・画面上の状態","notOwns":"認可保証・インタビュー状態遷移・保存","dependsOn":["api","voice"],"code":"app/web/src/app/App.tsx"},
+    {"id":"api","name":"FastAPI API","layer":"backend","role":"REST / SSE、認可、インタビュー・承認・分析の業務処理","owns":"API契約・状態遷移・AI処理・保存の入口","notOwns":"WebRTC・音声codec","dependsOn":["services","postgres","bedrock"],"code":"app/api/src/ai_interviewer_api/main.py"},
+    {"id":"services","name":"Interview services","layer":"domain","role":"回答評価、次質問、提案、承認、Voice Turn処理","owns":"業務状態とBackendの保証","notOwns":"Provider固有の音声入出力","dependsOn":["repositories","bedrock"],"code":"app/api/src/ai_interviewer_api/services/voice_interview.py"},
+    {"id":"repositories","name":"Repository store","layer":"backend","role":"論理エンティティのテナントスコープ保存・取得","owns":"PostgreSQL Store契約","notOwns":"UI表示・認可画面の判断","dependsOn":["postgres"],"code":"app/api/src/ai_interviewer_api/repositories/store.py"},
+    {"id":"voice","name":"Voice service","layer":"voice","role":"WebRTC、音声Runtime、Transcriptと音声再生","owns":"音声I/OとAPI bridge","notOwns":"RAG・回答確定・認可","dependsOn":["api","transcribe","polly"],"code":"app/voice/src/ai_interviewer_voice/main.py"},
+    {"id":"postgres","name":"PostgreSQL","layer":"storage","role":"JSONB payloadと検索用メタデータの永続化","owns":"耐久性のある保存","notOwns":"業務状態の決定","dependsOn":[],"code":"infra/postgres/init/001_schema.sql"},
+    {"id":"bedrock","name":"Amazon Bedrock","layer":"ai","role":"インタビューと質問設計のAI処理","owns":"モデル出力","notOwns":"認可・正式保存","dependsOn":[],"code":"app/api/src/ai_interviewer_api/agents/"}
+  ],
+  "flows": [
+    {"id":"text-interview","label":"Text interview","kind":"normal","summary":"メッセージを認可・状態遷移・AI処理を経てPostgreSQLへ保存する。","steps":["Browser入力","Vite proxy","FastAPI Router","Service","Repository","PostgreSQL","Response / SSE"],"source":"../ARCHITECTURE.md#2-通常のテキストインタビュー"},
+    {"id":"voice-interview","label":"Voice interview","kind":"async","summary":"Voiceは音声を扱い、意味処理と保存をAPIの内部HTTPへ委譲する。","steps":["Browser WebRTC","Voice Runtime","Transcript","API internal HTTP","Interview service","PostgreSQL","音声再生"],"source":"../ARCHITECTURE.md#3-音声インタビュー"},
+    {"id":"persistence","label":"Persistence","kind":"persist","summary":"API起動時にスキーマを確認し、通常実行ではPostgreSQLを使う。","steps":["API startup","ensure_schema","PostgresStore","entity_store JSONB"],"source":"../ARCHITECTURE.md#2-通常のテキストインタビュー"}
+  ],
+  "states": [
+    {"name":"Interview answer","states":["UNANSWERED","CANDIDATE_PENDING","AWAITING_CONFIRMATION","CONFIRMED"],"transitions":["回答を評価して候補化","確認応答を評価","Backendが確定を保証"],"guards":["認可","state version","人による承認"],"cancel":"未確定の候補を正式ナレッジとして保存しない"},
+    {"name":"Record review","states":["in_progress","submitted","returned","approved"],"transitions":["完了でsubmitted","管理者が差し戻し / 承認"],"guards":["ロール","Record access","承認条件"],"cancel":"approvedは直接編集しない"}
+  ],
+  "integrations": [
+    {"group":"Storage","name":"PostgreSQL","purpose":"構造化データをJSONB payloadとして保存する","boundary":"PostgresStore","failure":"API起動時にスキーマ確認。接続不能時は起動に失敗する"},
+    {"group":"AI","name":"Amazon Bedrock","purpose":"インタビュー・質問設計のAI処理","boundary":"API Agent / Provider層","failure":"Voice warmup失敗はwarningとして記録し、起動を継続する"},
+    {"group":"Voice","name":"Transcribe / Polly / WebRTC","purpose":"音声認識、音声合成、ブラウザとの音声通信","boundary":"app/voice Runtime","failure":"Provider固有の失敗をRuntimeで共通イベントへ変換する"},
+    {"group":"Authentication","name":"Development tokens","purpose":"ローカルの固定ユーザー・ロール切替","boundary":"API auth dependency","failure":"無効トークンは401。本番認証は未実装"}
+  ],
+  "risks": [
+    {"level":"HIGH","topic":"Production authentication","impact":"固定開発トークンのままでは本番公開できない","evidence":"app/api/src/ai_interviewer_api/auth/deps.py","action":"本番IdPとJWT検証を確定して実装する"},
+    {"level":"HIGH","topic":"AWS / browser E2E gap","impact":"実AWS、WebRTC、音声遅延の退行を通常テストで検出できない","evidence":"app/voice/tests/","action":"実環境のsmokeとbrowser E2Eを設計する"},
+    {"level":"MEDIUM","topic":"Worker is not connected","impact":"非同期の文書取り込みは実行できない","evidence":"app/worker/src/ai_interviewer_worker/main.py","action":"要件確定後にSQS・保存・再試行を実装する"}
+  ],
+  "tests": [
+    {"risk":"API state and authorization","behavior":"記録アクセス、回答状態、Voice Session契約","existing":"app/api/tests/contract と services tests","gap":"本番IdP・実AWS"},
+    {"risk":"PostgreSQL persistence","behavior":"保存とテナントスコープ","existing":"test_postgres_store.py（TEST_DATABASE_URL指定時）","gap":"実運用負荷・接続プール"},
+    {"risk":"Voice runtime","behavior":"Runtime契約、WebRTC部品、Provider処理","existing":"app/voice/tests/unit と contract","gap":"実Transcribe / Polly・Browser E2E"},
+    {"risk":"Web UI","behavior":"回答表示の状態分離、型・翻訳・Build","existing":"Node test、TypeScript、i18n check","gap":"主要画面のE2E"}
+  ],
+  "codeMap": [
+    {"path":"app/web/src/app/App.tsx","why":"Webアプリの組み立てとProviderの入口"},
+    {"path":"app/api/src/ai_interviewer_api/main.py","why":"API起動、PostgreSQL準備、Router登録"},
+    {"path":"app/api/src/ai_interviewer_api/repositories/store.py","why":"PostgreSQL / memory Storeの境界"},
+    {"path":"app/api/src/ai_interviewer_api/services/voice_interview.py","why":"Voice Turnとインタビュー状態の業務処理"},
+    {"path":"app/voice/src/ai_interviewer_voice/main.py","why":"Voiceサービスの起動とルート登録"},
+    {"path":"infra/docker-compose.yml","why":"ローカルサービスと環境変数の全体像"}
+  ],
+  "sources": [
+    {"label":"Codebase architecture","href":"../ARCHITECTURE.md"},
+    {"label":"Structure","href":"../STRUCTURE.md"},
+    {"label":"Stack","href":"../STACK.md"},
+    {"label":"Integrations","href":"../INTEGRATIONS.md"},
+    {"label":"Testing","href":"../TESTING.md"},
+    {"label":"Concerns","href":"../CONCERNS.md"},
+    {"label":"Current implementation","href":"../../reference/current-implementation.md"},
+    {"label":"Product specification","href":"../../spec.md"}
+  ]
+}

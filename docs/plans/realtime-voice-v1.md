@@ -1,4 +1,8 @@
-# realtime-voice-v1.md
+# リアルタイム音声インタビュー v1 実装履歴
+
+Status: Archived
+
+この文書はv1実装時の検証・判断履歴であり、現行の仕様や実装範囲の正本ではない。現在の契約と実装済み範囲は[リアルタイム音声アーキテクチャ](../architecture/voice/realtime-voice.md)と[現行実装](../reference/current-implementation.md)を参照する。
 
 ## 2026-07-27 Transcribe + Polly Runtime実装
 

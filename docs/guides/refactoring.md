@@ -1,6 +1,4 @@
-# refactoring.md
-
-# Refactoring Skill
+# リファクタリングガイド
 
 ## 1. 目的
 
@@ -49,17 +47,18 @@ Reactコンポーネントでは以下を避ける。
 * API呼び出しと表示ロジックを密結合する
 * form定義、validation、submit処理、表示をすべて同じ場所に置く
 * 型定義をコンポーネント内に大量に書く
-* Zustand/Jotaiに不要な状態を持たせる
-* TanStack Queryを使うべき取得処理を手動状態管理で実装する
+* 現行の依存にない状態管理・データ取得ライブラリを前提にする
+* API取得、画面状態、保存処理を一つのhookやComponentへ集約する
 
 分離候補は以下。
 
 * `components/`: 表示用コンポーネント
 * `features/<feature>/hooks/`: 機能固有hooks
 * `features/<feature>/api/`: API呼び出し
-* `features/<feature>/schemas/`: Zod schema
 * `features/<feature>/types/`: 型定義
 * `features/<feature>/utils/`: 機能固有の補助関数
+
+現行WebはReact hooksと機能単位のController / APIモジュールを使用する。新しい状態管理、データ取得、Form、schemaライブラリは、必要性と依存追加の影響を確認してから導入する。
 
 ## 5. Backendの観点
 

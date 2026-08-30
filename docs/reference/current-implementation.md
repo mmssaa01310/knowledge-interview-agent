@@ -21,7 +21,7 @@
   * 画面ページは`React.lazy`によるルート単位の遅延読み込みを使用し、インタビュー画面のReact Flow・音声機能を初期バンドルへ含めない。
 * `app/api`: FastAPI API
 * `app/voice`: 音声セッション用FastAPIサービス
-* `app/worker`: ドキュメント取り込み用Worker
+* `app/worker`: ドキュメント取り込み状態を返す最小Worker（サンプル。SQS接続は未実装）
 * `packages/shared-types`: FrontendとBackendの共有型
 * `infra/docker-compose.yml`: ローカル開発用Compose
 
@@ -61,6 +61,8 @@ APIの保存先はPostgreSQLである。ローカル開発では`infra/docker-co
 | `dev-viewer` | `user-viewer` | `viewer` |
 
 既定のリクエストヘッダーは`x-dev-token: dev-manager`である。無効なトークンはHTTP 401を返す。Vite開発画面では、左サイドバー下部のユーザーメニューにある「開発者設定」から4ロールを切り替えられる。切り替え後は画面を再読み込みする。ユーザーメニューには表示言語、表示テーマ、ヘルプ、操作ガイド、ログアウトもまとめている。表示テーマは`kikiori.color-theme`へライトまたはダークとして保存し、`data-theme`で配色トークンを切り替える。
+
+`app/api/src/ai_interviewer_api/core/config.py`には旧来の`COGNITO_*`環境変数名が残っているが、現行の`auth/deps.py`は固定開発トークンだけを検証し、この設定を本番認証には使用していない。本番IdPは未決定であり、Microsoft Entra IDは候補として扱う。
 
 保存する主要エンティティには、`tenantId`、`createdByUserId`、`updatedByUserId`、作成日時、更新日時を含める。取得時は認証ユーザーの`tenantId`でスコープする。
 
@@ -327,13 +329,13 @@ POST /api/dev/system-requirement-demo/reset
 
 ### 7.3 直接起動
 
-Composeを使用しない場合の詳細は[README.md](../../README.md)を参照する。
+Composeを使用しない場合の詳細は、リポジトリ直下の`README.md`を参照する。
 
 ## 8. 未実装・制限
 
 次の項目はプロダクト仕様上の将来または本番対応であり、現在のローカル実装には含まれない。
 
-* Cognitoの本番JWT検証
+* 本番IdP（Entra ID候補）のJWT検証
 * SQSの実接続とAPI・Worker間の実ジョブ連携
 * 文書ファイル本体のアップロードと実ファイル処理
 * 承認済み項目値を正式ナレッジへ反映する永続モデル

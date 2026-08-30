@@ -2,7 +2,7 @@
 
 Status: Draft  
 Target: v2  
-Last Updated: 2026-07-14  
+Last Updated: 2026-08-31
 
 関連ドキュメント:
 
@@ -17,9 +17,9 @@ Last Updated: 2026-07-14
 
 ## 2. v2以降の検討対象
 
-以下はv1では実装せず、v2以降で検討する。
+`transcribe_polly` Runtimeは現行コードに実装され、ComposeのWeb既定Providerになっている。以下は、その基礎実装の運用検証またはv2以降の拡張として検討する。
 
-* Transcribe + Polly Runtimeの実動作
+* Transcribe + Polly Runtimeの実AWS・実ブラウザ運用検証
 * Providerの自動fallback
 * NovaからTranscribe + Pollyへの無停止切り替え
 * PostgreSQLによるVoice Session lease

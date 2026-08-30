@@ -8,9 +8,11 @@
 
 * `app/web`: フロントエンド
 * `app/api`: Backend API
-* `app/worker`: 非同期Worker
+* `app/voice`: リアルタイム音声I/Oサービス
+* `app/worker`: 文書取り込み状態の最小Worker（将来の非同期処理枠）
 * `packages/shared-types`: 共有型
 * `infra/cdk`: AWS CDK
+* `infra/postgres`: ローカルPostgreSQLの初期スキーマ
 * `docs`: 仕様・設計ドキュメント
 * `.github/skills`: GitHub Copilot向けAgent Skills
 * `specs`: 実装中の変更単位の作業仕様
@@ -21,7 +23,12 @@
 ```text
 .
 ├── AGENTS.md
+├── mkdocs.yml
+├── pyproject.toml          # MkDocsの開発依存
+├── package.json
+├── pnpm-workspace.yaml
 ├── docs/
+│   ├── index.md
 │   ├── spec.md
 │   ├── architecture/
 │   │   ├── agents/
@@ -31,6 +38,8 @@
 │   ├── agents/
 │   ├── guides/
 │   ├── plans/
+│   ├── codebase/
+│   │   └── dashboard/
 │   └── reference/
 │       ├── current-implementation.md
 │       ├── repository-structure.md
@@ -86,6 +95,9 @@
 │       └── src/
 ├── infra/
 │   ├── cdk/
+│   ├── postgres/
+│   │   └── init/
+│   │       └── 001_schema.sql
 │   └── docker-compose.yml
 ├── specs/
 │   └── <active-feature>/
@@ -213,13 +225,13 @@ Backend APIはFastAPIで実装する。
 主な責務は以下。
 
 * HTTP API
-* Cognito JWT検証
+* 本番IdP JWT検証（候補: Microsoft Entra ID）
 * 認可チェック
 * リクエスト/レスポンスschema管理
 * ユースケース実行
 * PostgreSQL検索・保存
 * Bedrock呼び出し
-* SQSジョブ投入
+* SQSジョブ投入（目標。現行コードでは未接続）
 * SSEストリーミング
 
 プロンプト管理では、質問項目設計用とAIインタビュー用を分離して扱う。
@@ -351,18 +363,18 @@ app/worker/src/ai_interviewer_worker/
 
 ### 5.2 責務
 
-Workerは非同期処理を担当する。
+Workerは将来の非同期処理を担当する。現行コードは文書取り込み状態を返す最小サンプルであり、SQSからの受信やPostgreSQLへの保存はまだ行わない。
 
 主な対象は以下。
 
-* ドキュメント取り込み
-* テキスト抽出
-* チャンク化
-* embedding
-* PostgreSQLへの取り込み状態保存
-* 将来の外部DB送信
+* ドキュメント取り込み（目標）
+* テキスト抽出（目標）
+* チャンク化（目標）
+* embedding（目標）
+* PostgreSQLへの取り込み状態保存（目標）
+* 将来の外部DB送信（目標）
 
-APIリクエスト内で重い処理を完結させず、SQS + Workerで処理する。
+APIリクエスト内で重い処理を完結させずSQS + Workerで処理する構成は目標であり、現行の文書取り込みはまだその構成へ接続されていない。
 
 ## 6. packages/shared-types
 
@@ -391,6 +403,12 @@ infra/docker-compose.yml
 ```
 
 ローカル開発用のDocker Composeを置く。
+
+```text
+infra/postgres/init/001_schema.sql
+```
+
+Compose起動時にPostgreSQLへ適用する初期スキーマを置く。現行APIの起動時にも同じ保存契約のスキーマ確認を行う。
 
 ## 8. docs
 

@@ -8,11 +8,16 @@
 app/
 ├── web/      # React + Vite frontend
 ├── api/      # FastAPI backend
-└── worker/   # SQS/document ingestion worker
+├── voice/    # WebRTC / 音声I/O service
+└── worker/   # document ingestion sample worker
 packages/
 └── shared-types/
 infra/
-└── cdk/
+├── cdk/
+├── docker-compose.yml
+└── postgres/ # ローカルPostgreSQL初期スキーマ
+docs/
+└── ...       # 仕様、設計、開発ガイド、コードベースガイド
 ```
 
 ## Quick Start
@@ -20,7 +25,7 @@ infra/
 - Web: `cd app/web && pnpm install && pnpm dev`
 - API: `cd app/api && uv sync && uv run uvicorn ai_interviewer_api.main:app --reload --port 8001`
 - Voice: `cd app/voice && uv sync && VOICE_API_BASE_URL=http://127.0.0.1:8001 uv run uvicorn ai_interviewer_voice.main:app --reload --port 8010`
-- Worker: `cd app/worker && uv sync && uv run python -m ai_interviewer_worker.main`
+- Worker sample: `cd app/worker && uv sync && uv run python -m ai_interviewer_worker.main`（Composeでは起動しません）
 
 通常のローカル開発はDocker Composeを推奨します。ブラウザからは `http://localhost:5173` だけを開きます。
 Vite dev server が `/api` を `app/api`、`/voice` を `app/voice` へproxyするため、FrontendコードでAPI/Voiceのポートを直接指定しません。
@@ -41,3 +46,14 @@ APIの保存先はComposeで起動するPostgreSQLです。データベース接
 
 ソースコードは bind mount されるため、`app/web`、`app/api`、`app/voice` の変更はコンテナ内でホットリロードされます。依存関係は dev 用イメージ build 時に入るため、通常の再起動で毎回 `pnpm install` / `pip install` は走りません。
 既定ポートは`5173`（Web）、`8001`（API）、`8010`（Voice）で固定しています。ソースコードの変更は各開発サーバーのホットリロードで反映されます。別のポートが必要な場合だけ、`WEB_PORT` / `API_PORT`を明示的に変更してください。
+
+## Documentation
+
+ドキュメントサイトはMkDocsで生成します。`docs/`全体が公開対象です。
+
+```bash
+uv run --group dev mkdocs serve
+uv run --group dev mkdocs build --strict
+```
+
+仕様、現行実装、開発手順の入口は[docs/index.md](docs/index.md)です。
