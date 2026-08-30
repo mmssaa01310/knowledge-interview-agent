@@ -13,6 +13,7 @@ import { KnowledgeDocumentsContent } from "./KnowledgeDocumentsPage";
 import { useI18n, type Translate } from "../i18n";
 import { formatNumber } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
+import { OptionPicker } from "../components/ui/OptionPicker";
 
 const modelOptions = [
   { value: "global.openai.gpt-5.6-luna", labelKey: "interview.model.lunaStandard" },
@@ -445,23 +446,24 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                         <h4>{t("settings.execution.purpose")}</h4>
                       </div>
                     </div>
-                    <label className="sr-only" htmlFor="interview-profile">{t("settings.execution.purposeAria")}</label>
-                    <select
-                      id="interview-profile"
+                    <span className="sr-only">{t("settings.execution.purposeAria")}</span>
+                    <OptionPicker
                       value={selectedInterviewProfile}
-                      onChange={(event) => {
+                      options={interviewProfileOptions.map((option) => ({
+                        value: option.value,
+                        label: t(option.labelKey),
+                        description: t(option.descriptionKey),
+                      }))}
+                      onChange={(value) => {
                         clearSettingsNotice();
                         props.setSettingsInterviewPlan({
                           ...(props.settingsInterviewPlan ?? {}),
                           version: props.settingsInterviewPlan?.version ?? 1,
-                          profile: event.target.value as typeof selectedInterviewProfile,
+                          profile: value as typeof selectedInterviewProfile,
                         });
                       }}
-                    >
-                      {interviewProfileOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
-                      ))}
-                    </select>
+                      ariaLabel={t("settings.execution.purposeAria")}
+                    />
                     <p className="form-help">
                       {(() => { const option = interviewProfileOptions.find((item) => item.value === selectedInterviewProfile); return option ? t(option.descriptionKey) : ""; })()}
                     </p>
@@ -472,23 +474,24 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                         <h4>{t("settings.execution.model")}</h4>
                       </div>
                     </div>
-                    <label className="sr-only" htmlFor="structured-interview-model">{t("settings.execution.modelAria")}</label>
-                    <select
-                      id="structured-interview-model"
+                    <span className="sr-only">{t("settings.execution.modelAria")}</span>
+                    <OptionPicker
                       value={selectedStructuredInterviewModel}
-                      onChange={(event) => {
+                      options={structuredInterviewModelOptions.map((option) => ({
+                        value: option.value,
+                        label: t(option.labelKey),
+                        description: t(option.descriptionKey),
+                      }))}
+                      onChange={(value) => {
                         clearSettingsNotice();
                         props.setSettingsInterviewPlan({
                           ...(props.settingsInterviewPlan ?? {}),
                           version: props.settingsInterviewPlan?.version ?? 1,
-                          modelId: event.target.value as NonNullable<typeof selectedStructuredInterviewModel>,
+                          modelId: value as NonNullable<typeof selectedStructuredInterviewModel>,
                         });
                       }}
-                    >
-                      {structuredInterviewModelOptions.map((option) => (
-                        <option key={option.value} value={option.value}>{t(option.labelKey)}</option>
-                      ))}
-                    </select>
+                      ariaLabel={t("settings.execution.modelAria")}
+                    />
                     <p className="form-help">
                       {(() => { const option = structuredInterviewModelOptions.find((item) => item.value === selectedStructuredInterviewModel); return option ? t(option.descriptionKey) : ""; })()}
                     </p>
@@ -503,18 +506,29 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                   <div className="interview-setting-grid">
                     <section className="interview-setting-card compact">
                       <h5>{t("settings.execution.questionDesignModel")}</h5>
-                      <label className="sr-only" htmlFor="question-design-model">{t("settings.execution.questionDesignModelAria")}</label>
-                      <select id="question-design-model" value={selectedModelOption} onChange={(event) => { clearSettingsNotice(); props.setSettingsDefaultModelId(event.target.value); }}>
-                        {modelOptions.map((option) => (<option key={option.value} value={option.value}>{t(option.labelKey)}</option>))}
-                      </select>
+                      <span className="sr-only">{t("settings.execution.questionDesignModelAria")}</span>
+                      <OptionPicker
+                        value={selectedModelOption}
+                        options={modelOptions.map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                        onChange={(value) => { clearSettingsNotice(); props.setSettingsDefaultModelId(value); }}
+                        ariaLabel={t("settings.execution.questionDesignModelAria")}
+                      />
                     </section>
                     <section className="interview-setting-card compact">
                       <h5>{t("settings.execution.template")}</h5>
                       <div className="inline-form">
-                        <select aria-label={t("settings.execution.templateAria")} value={selectedPromptProfileId} onChange={(event) => setSelectedPromptProfileId(event.target.value)}>
-                          <option value={noPromptProfileValue}>{t("settings.execution.unselected")}</option>
-                          {promptProfiles.map((profile) => (<option key={profile.id} value={profile.id}>{profile.name}</option>))}
-                        </select>
+                        <OptionPicker
+                          value={selectedPromptProfileId}
+                          options={[
+                            { value: noPromptProfileValue, label: t("settings.execution.unselected") },
+                            ...promptProfiles.map((profile) => ({ value: profile.id, label: profile.name })),
+                          ]}
+                          onChange={setSelectedPromptProfileId}
+                          ariaLabel={t("settings.execution.templateAria")}
+                          searchable={promptProfiles.length > 6}
+                          searchPlaceholder={t("settings.execution.templateAria")}
+                          emptyLabel={t("settings.execution.unselected")}
+                        />
                         <button
                           className="ghost compact"
                           type="button"

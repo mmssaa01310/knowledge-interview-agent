@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { formatDate, formatNumber } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import { useI18n } from "../i18n";
+import { OptionPicker } from "../components/ui/OptionPicker";
 
 export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
   const { t, locale } = useI18n();
@@ -76,10 +77,17 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
               <label>{t("knowledge.createDialog.purpose")}<input value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder={t("knowledge.createDialog.purposePlaceholder")} /></label>
               <label>{t("knowledge.createDialog.descriptionField")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("knowledge.createDialog.descriptionPlaceholder")} /></label>
               {props.knowledgeDbs.length > 1 ? (
-                <label>{t("knowledge.createDialog.businessArea")}
-                  <select value={createKnowledgeDbId} onChange={(event) => setCreateKnowledgeDbId(event.target.value)}>
-                    {props.knowledgeDbs.map((knowledgeDb) => <option key={knowledgeDb.id} value={knowledgeDb.id}>{knowledgeDb.name}</option>)}
-                  </select>
+                <label>
+                  <span>{t("knowledge.createDialog.businessArea")}</span>
+                  <OptionPicker
+                    value={createKnowledgeDbId}
+                    options={props.knowledgeDbs.map((knowledgeDb) => ({ value: knowledgeDb.id, label: knowledgeDb.name }))}
+                    onChange={setCreateKnowledgeDbId}
+                    ariaLabel={t("knowledge.createDialog.businessArea")}
+                    searchable={props.knowledgeDbs.length > 6}
+                    searchPlaceholder={t("knowledge.createDialog.businessArea")}
+                    emptyLabel={t("knowledge.emptyView")}
+                  />
                 </label>
               ) : null}
             </div>

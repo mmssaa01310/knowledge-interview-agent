@@ -3,6 +3,7 @@ import type { Knowledge } from "@ai-interviewer/shared-types";
 import { getDevelopmentToken, setDevelopmentToken, type UserProfile } from "../lib/api";
 import { KnowledgeWorkspaceNav } from "../features/knowledge/components/KnowledgeWorkspaceNav";
 import { LocaleSwitcher } from "../components/ui/LocaleSwitcher";
+import { OptionPicker } from "../components/ui/OptionPicker";
 import { useI18n } from "../i18n";
 import type { AppSection } from "../types/app";
 
@@ -112,18 +113,22 @@ export function WorkspaceNav({
           </button>
         ) : null}
         {import.meta.env.DEV ? (
-          <label className="dev-user-switcher">
+          <div className="dev-user-switcher">
             <span>{t("navigation.developmentUser")}</span>
-            <select
+            <OptionPicker
               value={developmentToken}
-              onChange={(event) => handleDevelopmentUserChange(event.target.value)}
-            >
-              <option value="dev-admin">{t("navigation.roles.admin")}</option>
-              <option value="dev-manager">{t("navigation.roles.knowledge_manager")}</option>
-              <option value="dev-interviewer">{t("navigation.roles.interviewer")}</option>
-              <option value="dev-viewer">{t("navigation.roles.viewer")}</option>
-            </select>
-          </label>
+              options={[
+                { value: "dev-admin", label: t("navigation.roles.admin") },
+                { value: "dev-manager", label: t("navigation.roles.knowledge_manager") },
+                { value: "dev-interviewer", label: t("navigation.roles.interviewer") },
+                { value: "dev-viewer", label: t("navigation.roles.viewer") },
+              ]}
+              onChange={handleDevelopmentUserChange}
+              ariaLabel={t("navigation.developmentUser")}
+              className="dev-user-picker"
+              placement="top"
+            />
+          </div>
         ) : null}
         <div className="sidebar-user">
           <p>{t("navigation.loggedIn")}</p>

@@ -350,7 +350,7 @@ body {
   color: var(--ki-primary-strong);
 }
 
-.app-sidebar .dev-user-switcher select {
+.app-sidebar .dev-user-switcher .option-picker-trigger {
   border-radius: 9px;
   border-color: var(--ki-border);
   background: var(--ki-surface-subtle);
@@ -634,6 +634,180 @@ select:hover:not(:disabled) {
 input::placeholder,
 textarea::placeholder {
   color: var(--ki-faint);
+}
+
+.option-picker {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.option-picker-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 38px;
+  gap: 10px;
+  padding: 8px 11px;
+  border: 1px solid var(--ki-border-strong);
+  border-radius: 10px;
+  background: var(--ki-surface);
+  color: var(--ki-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  text-align: start;
+}
+
+.option-picker-trigger:hover:not(:disabled),
+.option-picker[data-open="true"] .option-picker-trigger {
+  border-color: var(--ki-primary);
+  background: var(--ki-primary-wash);
+}
+
+.option-picker-trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.option-picker-trigger-label.placeholder {
+  color: var(--ki-muted);
+  font-weight: 550;
+}
+
+.option-picker-chevron {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: var(--ki-muted);
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.option-picker-chevron.open {
+  color: var(--ki-primary-strong);
+  transform: translateY(2px) rotate(225deg);
+}
+
+.option-picker-menu {
+  position: absolute;
+  z-index: 60;
+  inset-inline-start: 0;
+  top: calc(100% + 7px);
+  width: max(100%, 240px);
+  max-width: min(380px, calc(100vw - 24px));
+  padding: 6px;
+  border: 1px solid var(--ki-border);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--ki-shadow-lg);
+  backdrop-filter: blur(14px);
+}
+
+.option-picker-menu.top {
+  top: auto;
+  bottom: calc(100% + 7px);
+}
+
+.option-picker-search-wrap {
+  padding: 2px 2px 6px;
+}
+
+.option-picker-search {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  font-size: 12px;
+}
+
+.option-picker-options {
+  display: grid;
+  max-height: min(300px, 45vh);
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.option-picker-option {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--ki-text);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: start;
+}
+
+.option-picker-option:hover,
+.option-picker-option.selected {
+  border-color: rgba(25, 87, 215, 0.14);
+  background: var(--ki-primary-wash);
+  color: var(--ki-primary-strong);
+}
+
+.option-picker-option.disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.option-picker-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.option-picker-option-copy strong,
+.option-picker-option-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.option-picker-option-copy strong {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.option-picker-option-copy small {
+  color: var(--ki-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.option-picker-check {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  color: var(--ki-primary);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.option-picker-empty {
+  margin: 0;
+  padding: 12px 10px;
+  color: var(--ki-muted);
+  font-size: 11px;
+}
+
+.option-picker-option:focus-visible,
+.option-picker-search:focus-visible {
+  outline: none;
+  box-shadow: var(--ki-focus-ring);
+}
+
+.inline-form > .option-picker {
+  flex: 1 1 180px;
+  min-width: 0;
 }
 
 label {
@@ -2335,7 +2509,8 @@ html[dir="rtl"] .interview-page-title {
 }
 
 .dashboard-filters input,
-.dashboard-filters select {
+.dashboard-filters select,
+.dashboard-filters .option-picker-trigger {
   min-height: 36px;
   padding: 7px 9px;
   font-size: 12px;
@@ -2486,7 +2661,7 @@ html[dir="rtl"] .interview-page-title {
   font-weight: 750;
 }
 
-.dashboard-analysis-knowledge-select select {
+.dashboard-analysis-knowledge-select .option-picker-trigger {
   width: 100%;
   min-height: 36px;
   padding: 7px 9px;

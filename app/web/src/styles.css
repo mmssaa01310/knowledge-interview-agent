@@ -262,7 +262,7 @@ input:disabled {
   font-size: 11px;
 }
 
-.app-sidebar .dev-user-switcher select {
+.app-sidebar .dev-user-switcher .option-picker-trigger {
   width: 100%;
   border: 1px solid #cbd7e2;
   border-radius: 6px;

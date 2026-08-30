@@ -18,6 +18,7 @@ import type {
   RecordReviewPriority,
 } from "../types/dashboard";
 import type { Knowledge } from "@ai-interviewer/shared-types";
+import { OptionPicker } from "../components/ui/OptionPicker";
 
 type AdminDashboardPageProps = {
   user: UserProfile | null;
@@ -241,32 +242,50 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
           <input type="date" value={filters.dateTo ?? ""} onChange={(event) => updateFilter("dateTo", event.target.value)} />
         </label>
         <label>
-          {t("dashboard.filters.knowledge")}
-          <select value={filters.knowledgeId ?? ""} onChange={(event) => updateFilter("knowledgeId", event.target.value)}>
-            <option value="">{t("dashboard.filters.all")}</option>
-            {knowledges.map((knowledge) => (
-              <option key={knowledge.id} value={knowledge.id}>{knowledge.name}</option>
-            ))}
-          </select>
+          <span>{t("dashboard.filters.knowledge")}</span>
+          <OptionPicker
+            value={filters.knowledgeId ?? ""}
+            options={[
+              { value: "", label: t("dashboard.filters.all") },
+              ...knowledges.map((knowledge) => ({ value: knowledge.id, label: knowledge.name })),
+            ]}
+            onChange={(value) => updateFilter("knowledgeId", value)}
+            ariaLabel={t("dashboard.filters.knowledge")}
+            searchable={knowledges.length > 6}
+            searchPlaceholder={t("dashboard.filters.knowledge")}
+            emptyLabel={t("dashboard.filters.all")}
+          />
         </label>
         <label>
-          {t("dashboard.filters.profile")}
-          <select value={filters.profile ?? ""} onChange={(event) => updateFilter("profile", event.target.value)}>
-            <option value="">{t("dashboard.filters.all")}</option>
-            <option value="fixed_form">{t("interview.profile.fixed_form")}</option>
-            <option value="business_process">{t("interview.profile.business_process")}</option>
-            <option value="system_requirement">{t("interview.profile.system_requirement")}</option>
-          </select>
+          <span>{t("dashboard.filters.profile")}</span>
+          <OptionPicker
+            value={filters.profile ?? ""}
+            options={[
+              { value: "", label: t("dashboard.filters.all") },
+              { value: "fixed_form", label: t("interview.profile.fixed_form") },
+              { value: "business_process", label: t("interview.profile.business_process") },
+              { value: "system_requirement", label: t("interview.profile.system_requirement") },
+            ]}
+            onChange={(value) => updateFilter("profile", value)}
+            ariaLabel={t("dashboard.filters.profile")}
+            emptyLabel={t("dashboard.filters.all")}
+          />
         </label>
         <label>
-          {t("dashboard.filters.status")}
-          <select value={filters.recordStatus ?? ""} onChange={(event) => updateFilter("recordStatus", event.target.value)}>
-            <option value="">{t("dashboard.filters.all")}</option>
-            <option value="in_progress">{t("interview.status.in_progress")}</option>
-            <option value="submitted">{t("interview.status.submitted")}</option>
-            <option value="returned">{t("interview.status.returned")}</option>
-            <option value="approved">{t("interview.status.approved")}</option>
-          </select>
+          <span>{t("dashboard.filters.status")}</span>
+          <OptionPicker
+            value={filters.recordStatus ?? ""}
+            options={[
+              { value: "", label: t("dashboard.filters.all") },
+              { value: "in_progress", label: t("interview.status.in_progress") },
+              { value: "submitted", label: t("interview.status.submitted") },
+              { value: "returned", label: t("interview.status.returned") },
+              { value: "approved", label: t("interview.status.approved") },
+            ]}
+            onChange={(value) => updateFilter("recordStatus", value)}
+            ariaLabel={t("dashboard.filters.status")}
+            emptyLabel={t("dashboard.filters.all")}
+          />
         </label>
         <div className="dashboard-filter-actions">
           <button type="submit" className="primary" disabled={isLoading}>{t("dashboard.filters.apply")}</button>
@@ -362,15 +381,18 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
               <div className="dashboard-analysis-scope">
                 <label className="dashboard-analysis-knowledge-select">
                   <span>{t("dashboard.analysis.knowledgeLabel")}</span>
-                  <select
+                  <OptionPicker
                     value={appliedFilters.knowledgeId ?? ""}
-                    onChange={(event) => handleLearningAnalysisKnowledgeChange(event.target.value)}
-                  >
-                    <option value="">{t("dashboard.analysis.selectKnowledge")}</option>
-                    {knowledges.map((knowledge) => (
-                      <option key={knowledge.id} value={knowledge.id}>{knowledge.name}</option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: "", label: t("dashboard.analysis.selectKnowledge") },
+                      ...knowledges.map((knowledge) => ({ value: knowledge.id, label: knowledge.name })),
+                    ]}
+                    onChange={handleLearningAnalysisKnowledgeChange}
+                    ariaLabel={t("dashboard.analysis.knowledgeLabel")}
+                    searchable={knowledges.length > 6}
+                    searchPlaceholder={t("dashboard.analysis.knowledgeLabel")}
+                    emptyLabel={t("dashboard.analysis.selectKnowledge")}
+                  />
                 </label>
                 <small>{appliedFilters.knowledgeId
                   ? t("dashboard.analysis.scopeRecords", { count: formatNumber(analysisRecordCount, locale) })
