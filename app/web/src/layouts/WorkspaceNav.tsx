@@ -8,6 +8,7 @@ import { useI18n } from "../i18n";
 import type { AppSection } from "../types/app";
 
 type WorkspaceNavProps = {
+  id?: string;
   activeSection: AppSection;
   user: UserProfile | null;
   knowledges: Knowledge[];
@@ -17,10 +18,12 @@ type WorkspaceNavProps = {
   isPreparingKnowledgeCreation?: boolean;
   knowledgeCreationError?: string;
   isCollapsed: boolean;
+  isResponsiveOpen?: boolean;
   onToggleCollapsed: () => void;
 };
 
 export function WorkspaceNav({
+  id,
   activeSection,
   user,
   knowledges,
@@ -30,6 +33,7 @@ export function WorkspaceNav({
   isPreparingKnowledgeCreation,
   knowledgeCreationError,
   isCollapsed,
+  isResponsiveOpen = false,
   onToggleCollapsed
 }: WorkspaceNavProps) {
   const { t } = useI18n();
@@ -43,9 +47,9 @@ export function WorkspaceNav({
     window.location.reload();
   }
 
-  if (isCollapsed) {
+  if (isCollapsed && !isResponsiveOpen) {
     return (
-      <aside className="app-sidebar collapsed" aria-label={t("navigation.mainNavigation")}>
+      <aside id={id} className="app-sidebar collapsed" aria-label={t("navigation.mainNavigation")}>
         <div className="sidebar-collapsed-brand">
           <img src="/images/kikiori-icon.svg" alt="KIKIORI" />
         </div>
@@ -64,7 +68,7 @@ export function WorkspaceNav({
   }
 
   return (
-    <aside className="app-sidebar" aria-label={t("navigation.mainNavigation")}>
+    <aside id={id} className={isResponsiveOpen ? "app-sidebar responsive-open" : "app-sidebar"} aria-label={t("navigation.mainNavigation")}>
       <div className="sidebar-header">
         <div className="brand">
           <img className="brand-logo-image" src="/images/kikiori-logo.svg" alt="KIKIORI" />

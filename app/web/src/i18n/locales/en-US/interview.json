@@ -41,6 +41,9 @@
   "reviewRequest": "Request revision",
   "approveRecord": "Approve record",
   "result": "Organized result",
+  "contextPanel": "Interview details",
+  "openContext": "Details",
+  "closeContext": "Close details",
   "resultTabs": {
     "requirements": "Requirements",
     "process": "Process flow"

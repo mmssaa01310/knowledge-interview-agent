@@ -52,6 +52,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const [isResettingDemo, setIsResettingDemo] = useState(false);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
   const [summaryView, setSummaryView] = useState<"requirements" | "process">("requirements");
+  const [isInterviewContextOpen, setIsInterviewContextOpen] = useState(false);
   const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isInterviewConfigured = isInterviewConfigurationComplete(props.selectedKnowledge);
   const canAnswerRecord = Boolean(
@@ -157,6 +158,11 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     }
     container.scrollTop = container.scrollHeight;
   }, [props.interviewMessages.length, props.streamingInterviewReply]);
+
+  useEffect(() => {
+    document.body.classList.toggle("interview-context-open", isInterviewContextOpen);
+    return () => document.body.classList.remove("interview-context-open");
+  }, [isInterviewContextOpen]);
 
   function handleChatInputKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
@@ -343,7 +349,19 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       </div>
 
       <div className={usesProcessModel ? "interview-shell process-interview-shell" : "interview-shell"}>
-        <aside className="interview-sidebar">
+        <button
+          type="button"
+          className={isInterviewContextOpen ? "interview-context-backdrop visible" : "interview-context-backdrop"}
+          onClick={() => setIsInterviewContextOpen(false)}
+          aria-label={t("interview.closeContext")}
+        />
+        <aside id="interview-context-panel" className={isInterviewContextOpen ? "interview-sidebar knowledge-panel-open" : "interview-sidebar"} aria-label={t("interview.contextPanel")}>
+          <div className="interview-context-drawer-header">
+            <strong>{t("interview.contextPanel")}</strong>
+            <button type="button" className="ghost compact" onClick={() => setIsInterviewContextOpen(false)}>
+              {t("common.close")}
+            </button>
+          </div>
           {interviewProfile === "system_requirement" ? (
             <>
               <div className="interview-summary-header">
@@ -451,9 +469,20 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 <strong>{t("interview.conversation")}</strong>
                 <p className="interview-current-target">{currentTargetMessage}</p>
               </div>
-              <button className="ghost compact" type="button" onClick={props.onStartInterview} disabled={!canStartInterview}>
-                {t("interview.start")}
-              </button>
+              <div className="interview-chat-header-actions">
+                <button
+                  className="ghost compact interview-context-toggle"
+                  type="button"
+                  onClick={() => setIsInterviewContextOpen((value) => !value)}
+                  aria-controls="interview-context-panel"
+                  aria-expanded={isInterviewContextOpen}
+                >
+                  {isInterviewContextOpen ? t("interview.closeContext") : t("interview.openContext")}
+                </button>
+                <button className="ghost compact" type="button" onClick={props.onStartInterview} disabled={!canStartInterview}>
+                  {t("interview.start")}
+                </button>
+              </div>
             </div>
             <div ref={chatLogRef} className="chat-log">
               {props.interviewMessages.map((message, index) => (

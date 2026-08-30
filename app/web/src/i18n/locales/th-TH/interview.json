@@ -41,6 +41,9 @@
   "reviewRequest": "ขอให้แก้ไข",
   "approveRecord": "อนุมัติบันทึก",
   "result": "ผลลัพธ์ที่จัดระเบียบ",
+  "contextPanel": "รายละเอียดการสัมภาษณ์",
+  "openContext": "รายละเอียด",
+  "closeContext": "ปิดรายละเอียด",
   "resultTabs": {
     "requirements": "ความต้องการ",
     "process": "กระบวนการ"

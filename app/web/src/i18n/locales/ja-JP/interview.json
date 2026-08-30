@@ -41,6 +41,9 @@
   "reviewRequest": "修正依頼",
   "approveRecord": "記録を承認",
   "result": "整理結果",
+  "contextPanel": "インタビュー詳細",
+  "openContext": "詳細",
+  "closeContext": "詳細を閉じる",
   "resultTabs": {
     "requirements": "要件整理",
     "process": "処理の流れ"

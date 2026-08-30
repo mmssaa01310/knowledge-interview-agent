@@ -41,6 +41,9 @@
   "reviewRequest": "要求修改",
   "approveRecord": "批准记录",
   "result": "整理结果",
+  "contextPanel": "访谈详情",
+  "openContext": "详情",
+  "closeContext": "关闭详情",
   "resultTabs": {
     "requirements": "需求整理",
     "process": "处理流程"
