@@ -1,0 +1,26 @@
+{
+  "title": "KIKIORIの操作ガイド",
+  "progress": "{current} / {total}",
+  "previous": "戻る",
+  "next": "次へ",
+  "finish": "完了",
+  "close": "ガイドを閉じる",
+  "steps": {
+    "navigation": {
+      "title": "ワークスペースを選ぶ",
+      "description": "左側のナビゲーションから、ナレッジや記録など利用するワークスペースを選択できます。"
+    },
+    "interview": {
+      "title": "インタビューを進める",
+      "description": "AIとの会話を確認しながら回答を入力し、知識を段階的に整理します。"
+    },
+    "knowledge": {
+      "title": "ナレッジ情報を確認する",
+      "description": "質問一覧やインタビューの結果は、画面右側のナレッジパネルから確認できます。"
+    },
+    "composer": {
+      "title": "回答を送信する",
+      "description": "画面下部の入力欄に回答を入力して送信します。音声インタビューにも切り替えられます。"
+    }
+  }
+}

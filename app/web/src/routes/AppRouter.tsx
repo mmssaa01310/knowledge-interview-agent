@@ -2,7 +2,9 @@ import { lazy, Suspense, useEffect } from "react";
 import { AppShell } from "../layouts/AppShell";
 import { KnowledgeLayout } from "../layouts/KnowledgeLayout";
 import { LoginPage } from "../pages/LoginPage";
+import { HelpPage } from "../pages/HelpPage";
 import { useI18n } from "../i18n";
+import { clearDevelopmentToken } from "../lib/api";
 import { useAppRouterController } from "./useAppRouterController";
 
 const SettingsPage = lazy(() => import("../pages/SettingsPage").then(({ SettingsPage: page }) => ({ default: page })));
@@ -26,6 +28,15 @@ export function AppRouter() {
     return <LoginPage onLogin={() => navigate("/knowledge-dbs")} />;
   }
 
+  if (route.name === "help") {
+    return <HelpPage />;
+  }
+
+  function handleLogout() {
+    if (import.meta.env.DEV) clearDevelopmentToken();
+    window.location.replace("/login");
+  }
+
   return (
     <>
       <AppShell
@@ -38,6 +49,7 @@ export function AppRouter() {
         onOpenCreateKnowledge={knowledgeLayoutProps.onOpenCreateKnowledge}
         isPreparingKnowledgeCreation={knowledgeLayoutProps.isPreparingKnowledgeCreation}
         knowledgeCreationError={knowledgeLayoutProps.knowledgeCreationError}
+        onLogout={handleLogout}
       >
       <Suspense fallback={<p className="empty" role="status">{t("common.loading")}</p>}>
         {currentSection === "settings"

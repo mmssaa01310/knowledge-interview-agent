@@ -289,7 +289,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     : [];
 
   return (
-    <section className="panel interview-page">
+    <section className="panel interview-page" data-guide="interview-pane">
       <div className="panel-header interview-page-header">
         <div className="interview-page-title">
           {interviewLaunchPath ? (
@@ -355,7 +355,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           onClick={() => setIsInterviewContextOpen(false)}
           aria-label={t("interview.closeContext")}
         />
-        <aside id="interview-context-panel" className={isInterviewContextOpen ? "interview-sidebar knowledge-panel-open" : "interview-sidebar"} aria-label={t("interview.contextPanel")}>
+        <aside id="interview-context-panel" data-guide="knowledge-pane" className={isInterviewContextOpen ? "interview-sidebar knowledge-panel-open" : "interview-sidebar"} aria-label={t("interview.contextPanel")}>
           <div className="interview-context-drawer-header">
             <strong>{t("interview.contextPanel")}</strong>
             <button type="button" className="ghost compact" onClick={() => setIsInterviewContextOpen(false)}>
@@ -473,6 +473,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 <button
                   className="ghost compact interview-context-toggle"
                   type="button"
+                  data-guide="knowledge-toggle"
                   onClick={() => setIsInterviewContextOpen((value) => !value)}
                   aria-controls="interview-context-panel"
                   aria-expanded={isInterviewContextOpen}
@@ -540,7 +541,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 <p>{t("interview.reviewNote", { note: props.selectedRecord.reviewNote })}</p>
               </div>
             ) : null}
-            <div className="answer-composer">
+            <div className="answer-composer" data-guide="message-composer">
               {!isChatOnlyInterview ? (
                 <VoiceConversationStatus
                   status={realtimeVoice.status}

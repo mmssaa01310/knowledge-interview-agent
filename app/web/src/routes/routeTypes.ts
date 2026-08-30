@@ -1,5 +1,6 @@
 export type Route =
   | { name: "login" }
+  | { name: "help" }
   | { name: "knowledge-dbs" }
   | { name: "knowledge-db"; knowledgeDbId: string }
   | { name: "knowledge-new"; knowledgeDbId: string }

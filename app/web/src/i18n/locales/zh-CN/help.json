@@ -1,0 +1,23 @@
+{
+  "title": "KIKIORI操作手册",
+  "intro": "KIKIORI是一个通过AI辅助访谈整理现场知识的工作区。",
+  "backToApp": "返回KIKIORI",
+  "sections": {
+    "navigation": {
+      "title": "选择知识库",
+      "description": "从左侧导航选择知识库。用户菜单还可以访问显示语言和设置。"
+    },
+    "interview": {
+      "title": "进行访谈",
+      "description": "在访谈页面查看AI的问题，并通过文字或语音发送回答。"
+    },
+    "knowledge": {
+      "title": "查看结果",
+      "description": "在访谈页面和知识面板中查看回答、提取的候选内容以及记录状态。"
+    },
+    "review": {
+      "title": "管理知识",
+      "description": "根据需要查看或编辑记录和知识设置，并在使用前由人员确认内容。"
+    }
+  }
+}

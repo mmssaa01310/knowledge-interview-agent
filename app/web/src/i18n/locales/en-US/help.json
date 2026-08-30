@@ -1,0 +1,23 @@
+{
+  "title": "KIKIORI user guide",
+  "intro": "KIKIORI is a workspace for organizing field knowledge through AI-assisted interviews.",
+  "backToApp": "Back to KIKIORI",
+  "sections": {
+    "navigation": {
+      "title": "Choose a knowledge area",
+      "description": "Choose a knowledge area from the navigation on the left. The user menu also provides display language and settings."
+    },
+    "interview": {
+      "title": "Run an interview",
+      "description": "Review AI questions on the interview screen and send answers with text or voice."
+    },
+    "knowledge": {
+      "title": "Review results",
+      "description": "Review answers, extracted candidates, and record status in the interview screen and knowledge panel."
+    },
+    "review": {
+      "title": "Manage knowledge",
+      "description": "Review or edit records and knowledge settings as needed, then have a person review the content before using it."
+    }
+  }
+}

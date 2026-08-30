@@ -1,9 +1,7 @@
-import { useState } from "react";
 import type { Knowledge } from "@ai-interviewer/shared-types";
-import { getDevelopmentToken, setDevelopmentToken, type UserProfile } from "../lib/api";
+import type { UserProfile } from "../lib/api";
 import { KnowledgeWorkspaceNav } from "../features/knowledge/components/KnowledgeWorkspaceNav";
-import { LocaleSwitcher } from "../components/ui/LocaleSwitcher";
-import { OptionPicker } from "../components/ui/OptionPicker";
+import { UserMenu } from "../components/ui/UserMenu";
 import { useI18n } from "../i18n";
 import type { AppSection } from "../types/app";
 
@@ -20,6 +18,8 @@ type WorkspaceNavProps = {
   isCollapsed: boolean;
   isResponsiveOpen?: boolean;
   onToggleCollapsed: () => void;
+  onStartGuide: () => void;
+  onLogout: () => void;
 };
 
 export function WorkspaceNav({
@@ -34,18 +34,12 @@ export function WorkspaceNav({
   knowledgeCreationError,
   isCollapsed,
   isResponsiveOpen = false,
-  onToggleCollapsed
+  onToggleCollapsed,
+  onStartGuide,
+  onLogout,
 }: WorkspaceNavProps) {
   const { t } = useI18n();
-  const [developmentToken, setDevelopmentTokenState] = useState(getDevelopmentToken);
-  const canManageSystem = user?.role === "admin";
   const canManageKnowledge = user?.role === "admin" || user?.role === "knowledge_manager";
-
-  function handleDevelopmentUserChange(token: string) {
-    setDevelopmentToken(token);
-    setDevelopmentTokenState(token);
-    window.location.reload();
-  }
 
   if (isCollapsed && !isResponsiveOpen) {
     return (
@@ -63,6 +57,14 @@ export function WorkspaceNav({
         >
           <span className="nav-toggle-icon open" aria-hidden="true" />
         </button>
+        <UserMenu
+          user={user}
+          activeSection={activeSection}
+          isCollapsed
+          onNavigate={onNavigate}
+          onStartGuide={onStartGuide}
+          onLogout={onLogout}
+        />
       </aside>
     );
   }
@@ -106,38 +108,13 @@ export function WorkspaceNav({
       </nav>
 
       <div className="sidebar-footer">
-        <LocaleSwitcher />
-        {canManageSystem ? (
-          <button
-            type="button"
-            className={activeSection === "settings" ? "sidebar-system-link active" : "sidebar-system-link"}
-            onClick={() => onNavigate("/settings")}
-          >
-            {t("navigation.systemSettings")}
-          </button>
-        ) : null}
-        {import.meta.env.DEV ? (
-          <div className="dev-user-switcher">
-            <span>{t("navigation.developmentUser")}</span>
-            <OptionPicker
-              value={developmentToken}
-              options={[
-                { value: "dev-admin", label: t("navigation.roles.admin") },
-                { value: "dev-manager", label: t("navigation.roles.knowledge_manager") },
-                { value: "dev-interviewer", label: t("navigation.roles.interviewer") },
-                { value: "dev-viewer", label: t("navigation.roles.viewer") },
-              ]}
-              onChange={handleDevelopmentUserChange}
-              ariaLabel={t("navigation.developmentUser")}
-              className="dev-user-picker"
-              placement="top"
-            />
-          </div>
-        ) : null}
-        <div className="sidebar-user">
-          <p>{t("navigation.loggedIn")}</p>
-          <strong>{user ? `${user.displayName} / ${t(`navigation.roles.${user.role}`)}` : t("navigation.disconnected")}</strong>
-        </div>
+        <UserMenu
+          user={user}
+          activeSection={activeSection}
+          onNavigate={onNavigate}
+          onStartGuide={onStartGuide}
+          onLogout={onLogout}
+        />
       </div>
     </aside>
   );

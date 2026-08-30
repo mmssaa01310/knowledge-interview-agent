@@ -2,7 +2,12 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useI18n } from "../../i18n";
 
-export function LocaleSwitcher() {
+type LocaleSwitcherProps = {
+  compact?: boolean;
+  className?: string;
+};
+
+export function LocaleSwitcher({ compact = false, className = "" }: LocaleSwitcherProps) {
   const { locale, locales, setLocale, t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
   const switcherId = useId();
@@ -100,8 +105,8 @@ export function LocaleSwitcher() {
   }
 
   return (
-    <div className="locale-switcher" ref={rootRef}>
-      <span className="locale-switcher-label">{t("common.language")}</span>
+    <div className={`locale-switcher${compact ? " compact" : ""}${className ? ` ${className}` : ""}`} ref={rootRef} data-open={isOpen ? "true" : "false"}>
+      {!compact ? <span className="locale-switcher-label">{t("common.language")}</span> : null}
       <div className="locale-switcher-control">
         <button
           ref={triggerRef}
@@ -115,6 +120,7 @@ export function LocaleSwitcher() {
           onKeyDown={handleTriggerKeyDown}
         >
           <span className="locale-switcher-current">
+            {compact ? <span className="locale-switcher-compact-label">{t("common.language")}</span> : null}
             <span className="locale-switcher-current-name">{currentLocale?.name ?? locale}</span>
           </span>
           <span className={isOpen ? "locale-switcher-chevron open" : "locale-switcher-chevron"} aria-hidden="true" />

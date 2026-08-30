@@ -4,6 +4,7 @@ import { WorkspaceNav } from "./WorkspaceNav";
 import type { UserProfile } from "../lib/api";
 import type { AppSection } from "../types/app";
 import { useI18n } from "../i18n";
+import { InteractiveGuide } from "../components/ui/InteractiveGuide";
 
 type AppShellProps = {
   activeSection: AppSection;
@@ -16,6 +17,7 @@ type AppShellProps = {
   onOpenCreateKnowledge: () => void;
   isPreparingKnowledgeCreation?: boolean;
   knowledgeCreationError?: string;
+  onLogout: () => void;
 };
 
 export function AppShell({
@@ -28,11 +30,13 @@ export function AppShell({
   onNavigate,
   onOpenCreateKnowledge,
   isPreparingKnowledgeCreation,
-  knowledgeCreationError
+  knowledgeCreationError,
+  onLogout,
 }: AppShellProps) {
   const { t } = useI18n();
   const [isWorkspaceNavCollapsed, setIsWorkspaceNavCollapsed] = useState(false);
   const [isWorkspaceNavOpen, setIsWorkspaceNavOpen] = useState(false);
+  const [isInteractiveGuideOpen, setIsInteractiveGuideOpen] = useState(false);
 
   useEffect(() => {
     document.body.classList.toggle("nav-drawer-open", isWorkspaceNavOpen);
@@ -55,6 +59,16 @@ export function AppShell({
       return;
     }
     setIsWorkspaceNavCollapsed((value) => !value);
+  }
+
+  function handleStartGuide() {
+    setIsWorkspaceNavOpen(false);
+    setIsInteractiveGuideOpen(true);
+  }
+
+  function handleLogout() {
+    setIsWorkspaceNavOpen(false);
+    onLogout();
   }
 
   return (
@@ -93,8 +107,11 @@ export function AppShell({
         isCollapsed={isWorkspaceNavCollapsed}
         isResponsiveOpen={isWorkspaceNavOpen}
         onToggleCollapsed={handleWorkspaceNavToggle}
+        onStartGuide={handleStartGuide}
+        onLogout={handleLogout}
       />
       <main className="main-content" data-active-path={activePath}>{children}</main>
+      <InteractiveGuide isOpen={isInteractiveGuideOpen} onClose={() => setIsInteractiveGuideOpen(false)} />
     </div>
   );
 }

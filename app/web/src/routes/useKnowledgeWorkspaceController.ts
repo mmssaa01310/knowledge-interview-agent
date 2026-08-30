@@ -498,11 +498,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   }
 
   async function refresh() {
-    const profile = await fetchMe();
-    setUser(profile);
-    if (args.route.name === "login") {
+    if (args.route.name === "login" || args.route.name === "help") {
       return;
     }
+    const profile = await fetchMe();
+    setUser(profile);
 
     const isRecordOnlyUser = profile.role === "interviewer" || profile.role === "viewer";
     if (isRecordOnlyUser) {

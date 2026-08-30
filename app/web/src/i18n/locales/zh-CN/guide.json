@@ -1,0 +1,26 @@
+{
+  "title": "KIKIORI操作指南",
+  "progress": "{current} / {total}",
+  "previous": "返回",
+  "next": "下一步",
+  "finish": "完成",
+  "close": "关闭指南",
+  "steps": {
+    "navigation": {
+      "title": "选择工作区",
+      "description": "使用左侧导航选择知识库、记录和其他工作区。"
+    },
+    "interview": {
+      "title": "进行访谈",
+      "description": "查看与AI的对话并输入回答，逐步整理知识。"
+    },
+    "knowledge": {
+      "title": "查看知识信息",
+      "description": "通过右侧知识面板查看问题列表和访谈结果。"
+    },
+    "composer": {
+      "title": "发送回答",
+      "description": "在底部输入框中输入回答并发送，也可以切换到语音访谈。"
+    }
+  }
+}

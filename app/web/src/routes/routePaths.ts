@@ -1,5 +1,6 @@
 export const routePaths = {
   login: "/login",
+  help: "/help",
   dashboard: "/dashboard",
   settings: "/settings",
   knowledgeDbs: "/knowledge-dbs",

@@ -1,0 +1,26 @@
+{
+  "title": "KIKIORI quick guide",
+  "progress": "{current} / {total}",
+  "previous": "Back",
+  "next": "Next",
+  "finish": "Finish",
+  "close": "Close guide",
+  "steps": {
+    "navigation": {
+      "title": "Choose a workspace",
+      "description": "Use the navigation on the left to choose the knowledge area, records, and other workspaces."
+    },
+    "interview": {
+      "title": "Run the interview",
+      "description": "Follow the conversation with AI, enter answers, and organize knowledge step by step."
+    },
+    "knowledge": {
+      "title": "Review knowledge context",
+      "description": "Use the knowledge panel on the right to review the question list and interview results."
+    },
+    "composer": {
+      "title": "Send an answer",
+      "description": "Enter an answer in the composer at the bottom and send it. You can also switch to a voice interview."
+    }
+  }
+}

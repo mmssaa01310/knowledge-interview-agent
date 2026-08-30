@@ -91,6 +91,15 @@ export function setDevelopmentToken(token: string) {
   window.localStorage.setItem(DEV_TOKEN_STORAGE_KEY, token);
 }
 
+export function clearDevelopmentToken() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(DEV_TOKEN_STORAGE_KEY);
+  } catch {
+    // Storageが使えない環境でも、ログアウト導線は継続する。
+  }
+}
+
 export type DocumentSummary = {
   id: string;
   fileName: string;

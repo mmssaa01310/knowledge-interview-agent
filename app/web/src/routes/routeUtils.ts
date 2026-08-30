@@ -4,6 +4,7 @@ import type { Route } from "./routeTypes";
 export function parseRoute(pathname: string): Route {
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0] === "login") return { name: "login" };
+  if (segments[0] === "help") return { name: "help" };
   if (segments[0] === "dashboard") return { name: "dashboard" };
   if (segments[0] === "settings") return { name: "settings" };
   if (segments[0] === "knowledge" && !segments[1]) return { name: "knowledge-dbs" };
