@@ -1,10 +1,14 @@
 from fastapi import APIRouter, Depends
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_management_role
+from ai_interviewer_api.core.permissions import require_knowledge_read_role, require_management_role
 from ai_interviewer_api.models.domain import KnowledgeField
 from ai_interviewer_api.repositories.store import store
-from ai_interviewer_api.routers.common import get_scoped_item
+from ai_interviewer_api.routers.common import (
+    ensure_interviewer_knowledge_access,
+    get_scoped_item,
+    interview_context_fields,
+)
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest, KnowledgeFieldCreate, KnowledgeFieldUpdate
 from ai_interviewer_api.services.field_suggestions import suggest_fields_with_bedrock
 
@@ -13,11 +17,13 @@ router = APIRouter(prefix="/api")
 
 @router.get("/knowledges/{knowledge_id}/fields")
 def list_fields(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
-    require_management_role(user)
-    get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
-    return [
+    require_knowledge_read_role(user)
+    knowledge = get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+    ensure_interviewer_knowledge_access(knowledge, user)
+    fields = [
         row for row in store.list("knowledge_fields", user.tenant_id) if row["knowledgeId"] == knowledge_id
     ]
+    return interview_context_fields(fields, user)
 
 
 @router.post("/knowledges/{knowledge_id}/fields")

@@ -13,7 +13,8 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
   if (!selectedKnowledgeDb || !selectedKnowledge) return null;
 
   const isConfigured = isInterviewConfigurationComplete(selectedKnowledge);
-  const canCreateRecord = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
+  const canManageKnowledge = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
+  const canCreateRecord = canManageKnowledge || props.user?.role === "interviewer";
   const basePath = `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${selectedKnowledge.id}`;
   const resumableRecords = props.records.filter((record) => resumableStatuses.has(record.status));
 
@@ -30,7 +31,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
         {!isConfigured ? <span className="status-pill muted">{t("knowledge.launch.needsSetup")}</span> : null}
       </div>
 
-      {!isConfigured && canCreateRecord ? (
+      {!isConfigured && canManageKnowledge ? (
         <div className="interview-launch-notice">
           <div>
             <strong>{t("knowledge.launch.setupTitle")}</strong>
@@ -42,7 +43,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
         </div>
       ) : null}
 
-      {!isConfigured && !canCreateRecord ? (
+      {!isConfigured && !canManageKnowledge ? (
         <p className="empty">{t("knowledge.launch.cannotStart")}</p>
       ) : null}
 

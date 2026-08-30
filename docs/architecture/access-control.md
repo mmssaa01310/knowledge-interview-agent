@@ -40,7 +40,7 @@ Frontendは`GET /api/me`で取得したロールを使用し、ワークスペ�
 |---|---|---|
 | `admin` | `/knowledge-dbs` | ナレッジ管理、システム設定。記録はナレッジ内で扱う |
 | `knowledge_manager` | `/knowledge-dbs` | ナレッジ管理。記録はナレッジ内で扱う |
-| `interviewer` | `/knowledge-dbs` | 担当記録を含むナレッジ。記録はナレッジ内で扱う |
+| `interviewer` | `/knowledge-dbs` | 同一テナントの有効なナレッジ。自分の記録はナレッジ内で開始・回答する |
 | `viewer` | `/knowledge-dbs` | 閲覧許可済み記録を含むナレッジ。記録はナレッジ内で扱う |
 
 画面ルートは次の役割で分ける。
@@ -54,11 +54,11 @@ Frontendは`GET /api/me`で取得したロールを使用し、ワークスペ�
 | `/dashboard` | `admin`と`knowledge_manager`のテナント内集計、確認優先度、教育支援案レビュー |
 | `/settings` | システム設定 |
 
-全ロールは左サイドバーの権限範囲内のナレッジ一覧から`Knowledge`を選択し、ナレッジ配下の「インタビュー」「記録」をメイン画面上部の主導線として使用する。`interviewer`と`viewer`には担当または閲覧許可された記録が存在するナレッジだけを表示する。`interviewer`と`viewer`には設定画面、文書管理、ナレッジ作成を表示しない。Frontendの`/records`と`/records/{record_id}`ルートは提供しない。設定画面は主タブに表示せず、ナレッジヘッダーから開く補助画面とする。
+全ロールは左サイドバーの権限範囲内のナレッジ一覧から`Knowledge`を選択し、ナレッジ配下の「インタビュー」「記録」をメイン画面上部の主導線として使用する。`interviewer`には同一テナントの有効なナレッジ、`viewer`には閲覧許可された記録が存在するナレッジだけを表示する。`interviewer`と`viewer`には設定画面、文書管理、ナレッジ作成を表示しない。Frontendの`/records`と`/records/{record_id}`ルートは提供しない。設定画面は主タブに表示せず、ナレッジヘッダーから開く補助画面とする。
 
 `KnowledgeDb`は`Knowledge`をまとめる内部の管理単位であり、ナレッジ管理の主一覧には表示しない。複数の`KnowledgeDb`がある場合だけ、ナレッジ作成時に「業務領域」として保存先を選択できる。
 
-インタビュー設定の完了条件は、保存済みの`Knowledge.interviewPlan.profile`と`Knowledge.interviewPlan.modelId`である。両方が有効な値でなければ、Frontendは記録作成・開始操作を表示または有効化してはいけない。
+インタビュー設定の完了条件は、保存済みの`Knowledge.interviewPlan.profile`と`Knowledge.interviewPlan.modelId`である。両方が有効な値でなければ、Frontendは管理者系ロールと対象者の記録作成・開始操作を表示または有効化してはいけない。
 
 Frontendは権限のないナビゲーションやボタンを表示してはいけない。Frontendの表示制御だけを根拠に操作を許可してはいけない。
 
@@ -74,7 +74,7 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 
 記録作成、旧`draft`から`in_progress`への互換移行、テキストの開始・回答、音声セッションの開始では、対象`Knowledge`のインタビュー設定完了も確認する。インタビュー状態が`completed`になった場合、Backendは記録状態を`submitted`へ変更する。設定未完了時は`409 interview_configuration_required`を返す。
 
-`interviewer`が記録へアクセスする場合、`ownerUserId`が認証ユーザーIDと一致しなければならない。`admin`と`knowledge_manager`はテナント内の管理対象記録にアクセスできる。`viewer`は明示的に閲覧を許可された`approved`状態の記録だけを取得できる。
+`interviewer`が記録へアクセスする場合、`ownerUserId`が認証ユーザーIDと一致しなければならない。`interviewer`は有効なナレッジから記録を新規作成できるが、Backendは`ownerUserId`を認証ユーザーへ固定し、他ユーザーの担当者・閲覧者を指定する要求を拒否する。`admin`と`knowledge_manager`はテナント内の管理対象記録にアクセスできる。`viewer`は明示的に閲覧を許可された`approved`状態の記録だけを取得できる。
 
 記録一覧APIは、Frontendで一覧を取得してから絞り込んではいけない。Backendがロールごとの対象記録だけを返す。
 
@@ -113,6 +113,9 @@ ProcessModelの手動保存と編集指示は、`admin`と`knowledge_manager`だ
 ロール分離の実装では、各ユーザー向けに少なくとも次を確認する。
 
 * `interviewer`が自分以外の記録を一覧・取得・回答・音声接続できない。
+* `interviewer`が同一テナントの有効なナレッジを読み取り、新規記録を自分の所有者として作成できる。
+* `interviewer`が無効またはアーカイブ済みのナレッジから記録を作成できない。
+* `interviewer`が自分で作成する記録に他ユーザーの担当者・閲覧者を設定できない。
 * `interviewer`がナレッジ設定、文書管理、実行設定、提案承認を実行できない。
 * `knowledge_manager`が管理対象の記録をレビュー、差し戻し、承認できる。
 * `viewer`が許可されていない記録と、`approved`以外の記録を取得できない。

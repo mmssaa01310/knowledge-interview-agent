@@ -14,12 +14,18 @@ from ai_interviewer_api.core.permissions import (
     accessible_records,
     require_admin_role,
     require_management_role,
+    require_record_creation_role,
     require_record_action,
 )
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import InterviewRecord
 from ai_interviewer_api.repositories.store import store
-from ai_interviewer_api.routers.common import get_scoped_item
+from ai_interviewer_api.routers.common import (
+    ensure_interviewer_knowledge_access,
+    get_scoped_item,
+    interview_context_fields,
+    interview_context_knowledge,
+)
 from ai_interviewer_api.schemas.requests import (
     ChatMessageCreate,
     InterviewAnswerUpdate,
@@ -51,12 +57,21 @@ def create_record(
     payload: RecordCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    require_management_role(user)
+    require_record_creation_role(user)
     knowledge = get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+    ensure_interviewer_knowledge_access(knowledge, user)
     require_interview_configuration(knowledge)
     payload_data = payload.model_dump()
     requested_interview_locale = payload_data.pop("interviewLocale", None)
-    owner_user_id = payload_data.pop("ownerUserId", None) or user.user_id
+    requested_owner_user_id = payload_data.pop("ownerUserId", None)
+    owner_user_id = requested_owner_user_id or user.user_id
+    if user.role == "interviewer":
+        if requested_owner_user_id and requested_owner_user_id != user.user_id:
+            raise HTTPException(status_code=403, detail="record_owner_must_be_current_user")
+        if payload_data.get("viewerUserIds"):
+            raise HTTPException(status_code=403, detail="record_viewer_assignment_forbidden")
+        payload_data["viewerUserIds"] = []
+        owner_user_id = user.user_id
     item = InterviewRecord(
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
@@ -102,8 +117,8 @@ def get_record_interview_context(record_id: str, user: UserContext = Depends(get
     ]
     return {
         "record": record,
-        "knowledge": _interview_context_knowledge(knowledge, user),
-        "fields": _interview_context_fields(fields, user),
+        "knowledge": interview_context_knowledge(knowledge, user),
+        "fields": interview_context_fields(fields, user),
     }
 
 
@@ -458,43 +473,3 @@ def _transition_record_status(
 
 def _get_record_knowledge(record: dict, user: UserContext) -> dict:
     return get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
-
-
-def _interview_context_knowledge(knowledge: dict, user: UserContext) -> dict:
-    knowledge = dict(knowledge)
-    knowledge.setdefault("tags", [])
-    if user.role in {"admin", "knowledge_manager"}:
-        return knowledge
-
-    result = knowledge
-    result.pop("systemPrompt", None)
-    result.pop("defaultModelId", None)
-    plan = result.get("interviewPlan")
-    if isinstance(plan, dict):
-        result["interviewPlan"] = {
-            "profile": plan.get("profile"),
-            "modelId": plan.get("modelId"),
-        }
-    return result
-
-
-def _interview_context_fields(fields: list[dict], user: UserContext) -> list[dict]:
-    if user.role in {"admin", "knowledge_manager"}:
-        return fields
-
-    public_keys = {
-        "id",
-        "tenantId",
-        "createdByUserId",
-        "updatedByUserId",
-        "knowledgeId",
-        "name",
-        "description",
-        "inputType",
-        "required",
-        "askByAi",
-        "aiQuestionExamples",
-        "options",
-        "displayOrder",
-    }
-    return [{key: value for key, value in field.items() if key in public_keys} for field in fields]

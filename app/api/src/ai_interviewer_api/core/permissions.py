@@ -5,6 +5,8 @@ from ai_interviewer_api.auth.deps import UserContext
 
 MANAGEMENT_ROLES = {"admin", "knowledge_manager"}
 DASHBOARD_ROLES = MANAGEMENT_ROLES
+KNOWLEDGE_READ_ROLES = MANAGEMENT_ROLES | {"interviewer"}
+RECORD_CREATION_ROLES = MANAGEMENT_ROLES | {"interviewer"}
 RECORD_READABLE_BY_INTERVIEWEE = {"in_progress", "submitted", "returned", "approved"}
 RECORD_EDITABLE_BY_INTERVIEWEE = {"in_progress", "returned"}
 
@@ -21,6 +23,14 @@ def ensure_tenant_scope(user: UserContext, tenant_id: str) -> None:
 
 def require_management_role(user: UserContext) -> None:
     require_roles(user, MANAGEMENT_ROLES)
+
+
+def require_knowledge_read_role(user: UserContext) -> None:
+    require_roles(user, KNOWLEDGE_READ_ROLES)
+
+
+def require_record_creation_role(user: UserContext) -> None:
+    require_roles(user, RECORD_CREATION_ROLES)
 
 
 def require_dashboard_role(user: UserContext) -> None:

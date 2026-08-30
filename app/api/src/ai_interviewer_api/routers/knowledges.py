@@ -1,11 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_management_role
+from ai_interviewer_api.core.permissions import require_knowledge_read_role, require_management_role
 from ai_interviewer_api.models.domain import Knowledge
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.repositories.store import store
-from ai_interviewer_api.routers.common import get_scoped_item
+from ai_interviewer_api.routers.common import (
+    ensure_interviewer_knowledge_access,
+    ensure_interviewer_knowledge_db_access,
+    get_scoped_item,
+    interview_context_knowledge,
+)
 from ai_interviewer_api.schemas.requests import KnowledgeCreate, KnowledgeUpdate
 from ai_interviewer_api.services.audit import write_audit_log
 from ai_interviewer_api.services.knowledge_tags import (
@@ -18,11 +23,12 @@ router = APIRouter(prefix="/api")
 
 def enrich_knowledge(row: dict, user: UserContext) -> dict:
     knowledge_id = row["id"]
-    enriched = dict(row)
+    enriched = interview_context_knowledge(row, user)
     enriched.setdefault("tags", [])
-    enriched["recordCount"] = len(
-        [item for item in store.list("records", user.tenant_id) if item["knowledgeId"] == knowledge_id]
-    )
+    records = [item for item in store.list("records", user.tenant_id) if item["knowledgeId"] == knowledge_id]
+    if user.role == "interviewer":
+        records = [item for item in records if item.get("ownerUserId") == user.user_id]
+    enriched["recordCount"] = len(records)
     enriched["documentCount"] = len(
         [item for item in store.list("documents", user.tenant_id) if item["knowledgeId"] == knowledge_id]
     )
@@ -34,12 +40,19 @@ def enrich_knowledge(row: dict, user: UserContext) -> dict:
 
 @router.get("/knowledge-dbs/{knowledge_db_id}/knowledges")
 def list_knowledges(knowledge_db_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
-    require_management_role(user)
-    get_scoped_item("knowledge_dbs", knowledge_db_id, user, "knowledge_db_not_found")
-    return [
-        enrich_knowledge(row, user)
+    require_knowledge_read_role(user)
+    knowledge_db = get_scoped_item("knowledge_dbs", knowledge_db_id, user, "knowledge_db_not_found")
+    ensure_interviewer_knowledge_db_access(knowledge_db, user)
+    rows = [
+        row
         for row in store.list("knowledges", user.tenant_id)
         if row["knowledgeDbId"] == knowledge_db_id
+    ]
+    if user.role == "interviewer":
+        rows = [row for row in rows if row.get("status", "active") == "active"]
+    return [
+        enrich_knowledge(row, user)
+        for row in rows
     ]
 
 
@@ -67,8 +80,10 @@ def create_knowledge(
 
 @router.get("/knowledges/{knowledge_id}")
 def get_knowledge(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> dict:
-    require_management_role(user)
-    return enrich_knowledge(get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found"), user)
+    require_knowledge_read_role(user)
+    item = get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+    ensure_interviewer_knowledge_access(item, user)
+    return enrich_knowledge(item, user)
 
 
 @router.patch("/knowledges/{knowledge_id}")

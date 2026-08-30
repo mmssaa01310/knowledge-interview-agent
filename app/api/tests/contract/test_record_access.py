@@ -172,9 +172,41 @@ def test_new_record_is_immediately_answerable_by_assigned_interviewer() -> None:
         get_record(manager_owned["id"], interviewer)
     assert exc_info.value.status_code == 403
 
-    with pytest.raises(HTTPException) as knowledge_exc_info:
-        list_knowledge_dbs(interviewer)
-    assert knowledge_exc_info.value.status_code == 403
+    knowledge_dbs = list_knowledge_dbs(interviewer)
+    assert len(knowledge_dbs) == 2
+
+
+def test_interviewer_can_create_a_record_for_self_from_active_knowledge() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    interviewer = DEV_TOKENS["dev-interviewer"]
+    knowledge = _create_knowledge(manager)
+
+    record = create_record(
+        knowledge["id"],
+        RecordCreate(title="対象者が開始したインタビュー"),
+        interviewer,
+    )
+
+    assert record["ownerUserId"] == interviewer.user_id
+    assert record["createdByUserId"] == interviewer.user_id
+    assert record["status"] == "in_progress"
+    assert [item["id"] for item in list_accessible_records(interviewer)] == [record["id"]]
+
+
+def test_interviewer_cannot_assign_a_self_started_record_to_another_user() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    interviewer = DEV_TOKENS["dev-interviewer"]
+    knowledge = _create_knowledge(manager)
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_record(
+            knowledge["id"],
+            RecordCreate(title="所有者を変更する記録", ownerUserId=manager.user_id),
+            interviewer,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "record_owner_must_be_current_user"
 
 
 def test_only_admin_can_delete_record() -> None:

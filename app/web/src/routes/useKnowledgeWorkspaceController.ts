@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb, UserRole } from "@ai-interviewer/shared-types";
 import { confirmApproveAll } from "../components/ui/ApproveAllDialog";
 import {
   createKnowledge,
@@ -372,6 +372,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     knowledgeDbId: string,
     knowledgeId?: string,
     knowledgeIndex?: Knowledge[],
+    accessRole: UserRole | null = user?.role ?? null,
   ) {
     const nextKnowledges = knowledgeIndex
       ? knowledgeIndex.filter((knowledge) => knowledge.knowledgeDbId === knowledgeDbId)
@@ -392,9 +393,12 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     }
     rememberKnowledge(nextKnowledgeId);
 
+    const isInterviewer = accessRole === "interviewer";
     const [nextRecords, nextDocuments, nextFields] = await Promise.all([
-      fetchRecords(nextKnowledgeId),
-      fetchDocuments(nextKnowledgeId),
+      isInterviewer
+        ? fetchAccessibleRecords().then((accessible) => accessible.filter((record) => record.knowledgeId === nextKnowledgeId))
+        : fetchRecords(nextKnowledgeId),
+      isInterviewer ? Promise.resolve([] as DocumentSummary[]) : fetchDocuments(nextKnowledgeId),
       fetchKnowledgeFields(nextKnowledgeId)
     ]);
     setRecords(nextRecords);
@@ -404,7 +408,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     })));
     setFields(nextFields);
     setDraftFields(nextFields);
-    if (nextRecords[0]) {
+    if (!isInterviewer && nextRecords[0]) {
       setProposals(await fetchProposals(nextRecords[0].id));
     } else {
       setProposals([]);
@@ -505,8 +509,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     const profile = await fetchMe();
     setUser(profile);
 
-    const isRecordOnlyUser = profile.role === "interviewer" || profile.role === "viewer";
-    if (isRecordOnlyUser) {
+    if (profile.role === "viewer") {
       await loadAccessibleKnowledgeWorkspace();
       return;
     }
@@ -557,7 +560,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         : undefined;
       const initialKnowledgeId = routeKnowledgeForDb
         ?? (args.route.name === "knowledge-dbs" ? rememberedKnowledgeForDb : undefined);
-      const nextKnowledges = await loadKnowledgeWorkspace(nextKnowledgeDbId, initialKnowledgeId, knowledgeIndex);
+      const nextKnowledges = await loadKnowledgeWorkspace(nextKnowledgeDbId, initialKnowledgeId, knowledgeIndex, profile.role);
       const openedKnowledge = nextKnowledges.find((knowledge) => knowledge.id === initialKnowledgeId)
         ?? nextKnowledges[0];
       if (!openedKnowledge) {
@@ -703,7 +706,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         })
       );
       await loadKnowledgeDbs();
-      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id, undefined, user?.role);
       setSettingsSaveState("success");
       setSettingsNotice(t("settings.messages.saved", { tab: tabLabel }));
     } catch (error) {
