@@ -34,7 +34,7 @@
 * 型定義
 * 業務ロジック
 * 外部サービス呼び出し
-* Elasticsearchクエリ
+* PostgreSQLクエリ
 * Bedrock呼び出し
 
 ただし、単に行数だけで分割しない。
@@ -66,7 +66,7 @@ Reactコンポーネントでは以下を避ける。
 FastAPIでは以下を避ける。
 
 * routerに業務ロジックを書く
-* routerにElasticsearchクエリを書く
+* routerにPostgreSQLクエリを書く
 * routerからBedrockを直接呼ぶ
 * Pydantic schemaと内部モデルを混在させる
 * 認証ユーザーIDの保存を忘れる
@@ -78,7 +78,7 @@ FastAPIでは以下を避ける。
 * `routers/`: HTTP入出力、認証済みユーザー取得、service呼び出し
 * `schemas/`: request / response schema
 * `services/`: ユースケース、業務ルール
-* `repositories/`: Elasticsearchアクセス
+* `repositories/`: PostgreSQLアクセス
 * `core/`: 認証、設定、共通処理
 
 ## 6. 可読性の観点
@@ -111,7 +111,7 @@ FastAPIでは以下を避ける。
 * 同じ業務ルール
 * 同じAPI呼び出し
 * 同じバリデーション
-* 同じElasticsearchクエリ生成
+* 同じPostgreSQLクエリ生成
 * 同じエラーハンドリング
 * 同じ日付・状態変換
 

@@ -10,7 +10,7 @@ MVPでは以下を基本構成とする。
 * Backend API: ECS Fargate + FastAPI
 * Worker: ECS Fargate Worker
 * 認証: Amazon Cognito
-* 検索・保存: Elasticsearch / Elastic Cloud on AWS
+* 検索・保存: PostgreSQL
 * AI処理: Amazon Bedrock
 * 非同期処理: SQS + ECS Worker
 
@@ -38,13 +38,13 @@ MVPでは以下を基本構成とする。
            - Text extraction
            - Chunking
            - Embedding
-           - Elasticsearch indexing
+           - PostgreSQL persistence
            - Future export jobs
 
 [Backend API / Worker]
    |
    +--> [Cognito]
-   +--> [Elasticsearch / Elastic Cloud on AWS]
+   +--> [PostgreSQL]
    +--> [Bedrock]
    +--> [SQS]
    +--> [Secrets Manager]
@@ -95,7 +95,7 @@ Backend APIはFastAPIで実装する。
 * SSEストリーミング
 * Cognito JWT検証
 * 認可チェック
-* Elasticsearch検索・保存
+* PostgreSQL検索・保存
 * Bedrock呼び出し
 * SQSへのジョブ投入
 
@@ -111,7 +111,7 @@ WorkerはSQSからジョブを受け取り、非同期処理を実行する。
 * テキスト抽出
 * チャンク化
 * embedding
-* Elasticsearch index登録
+* PostgreSQLへの取り込み状態保存
 * 将来の外部DB送信
 
 重い処理はAPIリクエスト内で完結させず、SQS + Worker に逃がす。
@@ -129,21 +129,17 @@ WorkerはSQSからジョブを受け取り、非同期処理を実行する。
 * 保存データにはCognitoユーザーIDを含める。
 * 認可チェックを省略しない。
 * ユーザーが参照権限を持つデータだけを検索・表示する。
-* 権限フィルタなしでElasticsearch検索を行わない。
+* 権限フィルタなしでPostgreSQL検索を行わない。
 
 ロール別ワークスペース、Recordの担当者、承認操作の権限は、[利用者ワークスペースと認可アーキテクチャ](../access-control.md)に従う。
 
-## 9. Elasticsearch / Elastic Cloud on AWS
+## 9. PostgreSQL
 
-Elasticsearchを中心に検索・保存を行う。
+構造化データの保存と検索はPostgreSQLを正本とする。ローカル開発ではDocker ComposeのPostgreSQLを使用し、APIとWorkerは`DATABASE_URL`で接続する。
 
-MVPでは以下への置き換えを行わない。
+現在のRepository互換層は、`kikiori.entity_store`へ論理エンティティをJSONB payloadとして保存する。テナントID、論理エンティティ種別、関連IDには検索用の列・インデックスを持たせ、権限スコープを適用したRepository操作だけを許可する。
 
-* PostgreSQL
-* DynamoDB
-* OpenSearch
-
-検索クエリはRepository層に閉じ込め、UIやAPI routerに直接書かない。
+本番では可用性、バックアップ、接続プール、秘密情報管理を満たすマネージドPostgreSQLへ配置する。検索クエリはRepository層に閉じ込め、UIやAPI routerに直接書かない。
 
 ## 10. Bedrock
 
@@ -164,7 +160,7 @@ SQSは非同期ジョブの受け渡しに利用する。
 
 * ドキュメント取り込み
 * embedding生成
-* Elasticsearch index登録
+* PostgreSQLへの取り込み状態保存
 * 将来の外部DB送信
 
 MVPでは非同期処理にEventBridgeを使わない。
@@ -195,8 +191,5 @@ MVPでは以下を使わない。
 * CloudFront
 * S3フロント配信
 * EventBridge
-* Aurora PostgreSQL
-* DynamoDB
-* OpenSearchへの置き換え
 
 ただし、ファイル原本保存が明示された場合のみ、S3またはEFSの追加を検討してよい。

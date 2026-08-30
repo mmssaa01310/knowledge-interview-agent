@@ -964,7 +964,7 @@ User Turn lifecycleは`RECEIVED -> EVALUATING -> COMMITTED`を通常系、
 
 v1では以下を実装しない。
 
-* DynamoDB session lease
+* PostgreSQL session lease
 * 複数Voice Gateway間のセッション移送
 * ECSタスク障害時の自動引き継ぎ
 * Provider自動fallback

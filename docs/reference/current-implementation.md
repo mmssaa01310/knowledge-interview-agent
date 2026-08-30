@@ -43,11 +43,11 @@
 
 ### 2.3 現在の保存方式
 
-APIの現在のローカル実装は`InMemoryStore`を使用する。APIプロセスを再起動すると保存内容は失われる。
+APIの保存先はPostgreSQLである。ローカル開発では`infra/docker-compose.yml`のPostgreSQLを起動し、`DATABASE_URL`でAPIから接続する。API起動時に`kikiori`スキーマと`kikiori.entity_store`を冪等に作成するため、再起動してもデータは保持される。
 
-`ELASTICSEARCH_URL`、SQS、Cognitoの設定項目は存在するが、現在のローカル実装ではそれぞれメモリ保存、メモリキュー、開発トークン認証を使用する。
+既存サービスの辞書ベースのRepository契約は`PostgresStore`が実装する。論理テーブル名、テナントID、エンティティIDをメタデータ列に保持し、ドメインの辞書全体はJSONB payloadとして保存する。テナント・Knowledge・Record単位の検索用インデックスを持つ。テストでは`DATABASE_URL=memory://test`を指定して`InMemoryStore`を使用する。
 
-ナレッジ分析の集計結果は既存データから都度計算し、教育支援案と学習支援分析の下書きは現在`InMemoryStore`へ保存する。APIプロセスを再起動すると、集計対象の記録と同様に下書きも失われる。
+ナレッジ分析の集計結果、教育支援案、学習支援分析の下書きも同じPostgreSQLへ保存する。
 
 ## 3. 認証・認可
 
@@ -304,8 +304,11 @@ docker compose -f infra/docker-compose.yml up --build
 | Web | `http://localhost:5173` |
 | API | `http://localhost:8001` |
 | Voice | `http://localhost:8010` |
+| PostgreSQL | `localhost:5432`（DB: `kikiori`） |
 
 ソースコードはbind mountされ、Web、API、Voiceはホットリロードする。通常はWebのURLだけをブラウザで開く。
+
+PostgreSQLのデータは`postgres-data`ボリュームへ保存される。既定の接続先は`postgresql://kikiori:kikiori@localhost:5432/kikiori`で、Compose内のAPIからはホスト名`postgres`を使用する。
 
 ### 7.2 開発用データ
 
@@ -331,12 +334,11 @@ Composeを使用しない場合の詳細は[README.md](../../README.md)を参照
 次の項目はプロダクト仕様上の将来または本番対応であり、現在のローカル実装には含まれない。
 
 * Cognitoの本番JWT検証
-* Elasticsearchへの実データ永続化
 * SQSの実接続とAPI・Worker間の実ジョブ連携
 * 文書ファイル本体のアップロードと実ファイル処理
 * 承認済み項目値を正式ナレッジへ反映する永続モデル
 * 本番向けの監視、負荷対策、マルチテナント運用
 
-質問項目設計の検索データ源は現在`InMemoryStore`である。実Elasticsearch接続と文書ファイル本体の取り込みは未実装である。
+質問項目設計の検索データ源もPostgreSQLのRepository Storeである。文書ファイル本体のアップロードと実ファイル処理は未実装である。
 
-これらを実装した場合は、恒久的な仕様を`docs/spec.md`または該当する`docs/architecture/`・`docs/reference/`へ反映し、この文書の実装状況も更新する。
+未実装項目を実装した場合は、恒久的な仕様を`docs/spec.md`または該当する`docs/architecture/`・`docs/reference/`へ反映し、この文書の実装状況も更新する。

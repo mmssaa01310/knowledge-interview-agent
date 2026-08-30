@@ -1,11 +1,14 @@
 import asyncio
 import json
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.interview_configuration import require_interview_configuration
+from ai_interviewer_api.core.interview_configuration import (
+    require_interview_configuration,
+)
 from ai_interviewer_api.core.interview_locale import resolve_interview_locale
 from ai_interviewer_api.core.permissions import (
     accessible_records,
@@ -25,14 +28,19 @@ from ai_interviewer_api.schemas.requests import (
     RecordCreate,
     RecordUpdate,
 )
-from ai_interviewer_api.services.audit import write_audit_log
 from ai_interviewer_api.services.ai_interview import (
     build_mock_proposal,
     generate_interview_reply,
     get_interview_state_snapshot,
 )
-from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
-from ai_interviewer_api.services.process_model import edit_process_model, save_process_model
+from ai_interviewer_api.services.audit import write_audit_log
+from ai_interviewer_api.services.process_model import (
+    edit_process_model,
+    save_process_model,
+)
+from ai_interviewer_api.services.record_lifecycle import (
+    sync_record_status_after_interview,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -281,7 +289,7 @@ def create_record_message(
         "id": (
             f"msg-client-{user.tenant_id}-{payload.clientMessageId}"
             if payload.clientMessageId
-            else f"msg-{len(store.tables['messages']) + 1}"
+            else f"msg-{uuid4()}"
         ),
         "tenantId": user.tenant_id,
         "recordId": record_id,

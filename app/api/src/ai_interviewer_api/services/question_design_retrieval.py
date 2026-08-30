@@ -40,7 +40,7 @@ def retrieve_question_design_context(
 
     The local repository is currently backed by the in-memory store. The
     candidate contract is intentionally independent from that implementation
-    so the same service can later use the Elasticsearch repository.
+    so the same service uses the PostgreSQL repository store.
     """
 
     query = _build_query(payload)

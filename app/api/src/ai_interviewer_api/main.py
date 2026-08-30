@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ai_interviewer_api.agents.common.strands_runtime import invoke_voice_bedrock_text
 from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.routes import router
 from ai_interviewer_api.services.dev_maintenance_demo import ensure_dev_maintenance_demo
 from ai_interviewer_api.services.dev_system_requirement_demo import ensure_dev_system_requirement_demo
@@ -33,6 +34,8 @@ def _warm_voice_bedrock() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    store.ensure_schema()
+    logger.info("database_ready backend=%s", store.health()["backend"])
     logger.info(
         "ai_interview_model_configuration structured_interview_enabled=%s structured_interview_model_id=%s question_design_model_id=%s legacy_model_id=%s voice_evaluation_model_id=%s",
         settings.structured_interview_enabled,

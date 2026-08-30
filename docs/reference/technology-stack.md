@@ -34,7 +34,7 @@ MVPでは以下を使わない。
 * uv
 * FastAPI
 * Pydantic
-* Elasticsearch Python client
+* psycopg（PostgreSQL接続）
 * boto3
 * Cognito JWT検証
 * SSE
@@ -47,7 +47,7 @@ WebSocketは将来のリアルタイム音声用とする。
 * uv
 * ECS Worker
 * SQS
-* Elasticsearch Python client
+* psycopg（PostgreSQL接続）
 * boto3
 * Bedrock
 * Pydantic
@@ -59,7 +59,7 @@ Workerは、ドキュメント取り込みや将来の外部DB送信など、API
 * ECS Fargate
 * ALB
 * Cognito
-* Elasticsearch / Elastic Cloud on AWS
+* PostgreSQL（ローカルはDocker Compose、実運用はマネージドPostgreSQLを利用）
 * Bedrock
 * SQS
 * ECS Worker
@@ -68,14 +68,13 @@ Workerは、ドキュメント取り込みや将来の外部DB送信など、API
 * IAM
 * KMS
 
-## 6. MVPで使わないもの
+## 6. データベース方針
 
-MVPでは以下を追加しない。
+アプリケーションの構造化データはPostgreSQLを正本とする。ローカル開発ではDocker Composeの`postgres:16-alpine`を使用し、APIは`DATABASE_URL`で接続する。
 
-* EventBridge
-* Aurora PostgreSQL
-* DynamoDB
-* OpenSearchへの置き換え
+検索と保存は同じPostgreSQLのRepository境界へ集約する。ドメインの拡張に追従できるよう、現在の互換Storeは`kikiori.entity_store`のJSONB payloadへ保存し、テナント・論理エンティティ・関連IDの検索インデックスを持つ。
+
+本番環境のPostgreSQL提供方式、バックアップ、冗長化はデプロイ環境ごとに決定する。ローカルと本番でアプリケーションの保存契約を分けない。
 
 ただし、ファイル原本保存が明示された場合のみ、S3またはEFSの追加を検討してよい。
 

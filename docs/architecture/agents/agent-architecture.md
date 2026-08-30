@@ -165,7 +165,7 @@ Question Design Validator（同じモデル・同じStructured Output）
 
 中期方針:
 
-* ElasticsearchのRepositoryへ検索アダプターを接続する
+* PostgreSQLのRepositoryへ検索アダプターを接続する
 * retrieved context、generated questions、validation result を監査可能なメタデータとして記録する
 
 長期方針:

@@ -217,7 +217,7 @@ Backend APIはFastAPIで実装する。
 * 認可チェック
 * リクエスト/レスポンスschema管理
 * ユースケース実行
-* Elasticsearch検索・保存
+* PostgreSQL検索・保存
 * Bedrock呼び出し
 * SQSジョブ投入
 * SSEストリーミング
@@ -280,7 +280,7 @@ models/
 repositories/
 ```
 
-Elasticsearchや外部ストレージへのアクセス処理を置く。
+PostgreSQLへのアクセス処理を置く。現在の保存契約は`store.py`の`PostgresStore`へ集約する。
 
 ```text
 routers/
@@ -325,7 +325,7 @@ services/prompts/
 
 FastAPI routerに業務ロジックを詰め込まない。
 
-ElasticsearchクエリはRepository層に閉じ込める。
+PostgreSQLクエリはRepository層に閉じ込める。
 
 Bedrock呼び出しはService層に閉じ込める。
 
@@ -359,7 +359,7 @@ Workerは非同期処理を担当する。
 * テキスト抽出
 * チャンク化
 * embedding
-* Elasticsearch index登録
+* PostgreSQLへの取り込み状態保存
 * 将来の外部DB送信
 
 APIリクエスト内で重い処理を完結させず、SQS + Workerで処理する。
@@ -415,7 +415,7 @@ GitHub Copilotが必要なタスクだけ読み込むAgent Skillsを置く。各
 * 実装品質
 * Frontend実装
 * Backend実装
-* Elasticsearch
+* PostgreSQL
 * AI / RAG
 * AWS Architecture
 * Testing

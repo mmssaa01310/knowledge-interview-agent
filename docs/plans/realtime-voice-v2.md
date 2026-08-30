@@ -22,7 +22,7 @@ Last Updated: 2026-07-14
 * Transcribe + Polly Runtimeの実動作
 * Providerの自動fallback
 * NovaからTranscribe + Pollyへの無停止切り替え
-* DynamoDBによるVoice Session lease
+* PostgreSQLによるVoice Session lease
 * 複数Voice Gateway間のセッション移送
 * ECSタスク障害時の自動引き継ぎ
 * 長時間音声ファイル保存

@@ -18,7 +18,10 @@ class Settings:
     cognito_user_pool_id: str = os.getenv("COGNITO_USER_POOL_ID", "local-placeholder")
     cognito_region: str = os.getenv("COGNITO_REGION", "ap-northeast-1")
     cognito_app_client_id: str = os.getenv("COGNITO_APP_CLIENT_ID", "local-placeholder")
-    elasticsearch_url: str = os.getenv("ELASTICSEARCH_URL", "memory://local")
+    database_url: str = os.getenv(
+        "DATABASE_URL",
+        "postgresql://kikiori:kikiori@localhost:5432/kikiori",
+    )
     sqs_document_queue_url: str = os.getenv(
         "SQS_DOCUMENT_QUEUE_URL", "memory://document-ingestion"
     )

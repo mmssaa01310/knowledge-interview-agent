@@ -24,6 +24,7 @@ infra/
 
 通常のローカル開発はDocker Composeを推奨します。ブラウザからは `http://localhost:5173` だけを開きます。
 Vite dev server が `/api` を `app/api`、`/voice` を `app/voice` へproxyするため、FrontendコードでAPI/Voiceのポートを直接指定しません。
+APIの保存先はComposeで起動するPostgreSQLです。データベース接続先は`DATABASE_URL`で変更できます。
 
 ## Docker Compose (Development)
 
@@ -36,6 +37,7 @@ Vite dev server が `/api` を `app/api`、`/voice` を `app/voice` へproxyす�
 - Frontend: Vite 開発サーバー `http://localhost:5173`
 - API: FastAPI + `uvicorn --reload` `http://localhost:8001`
 - Voice: FastAPI + `uvicorn --reload` `http://localhost:8010`
+- Database: PostgreSQL `localhost:5432`（`kikiori`データベース）
 
 ソースコードは bind mount されるため、`app/web`、`app/api`、`app/voice` の変更はコンテナ内でホットリロードされます。依存関係は dev 用イメージ build 時に入るため、通常の再起動で毎回 `pnpm install` / `pip install` は走りません。
 既定ポートは`5173`（Web）、`8001`（API）、`8010`（Voice）で固定しています。ソースコードの変更は各開発サーバーのホットリロードで反映されます。別のポートが必要な場合だけ、`WEB_PORT` / `API_PORT`を明示的に変更してください。
