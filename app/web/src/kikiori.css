@@ -2139,6 +2139,27 @@ label {
   gap: 10px;
 }
 
+.interview-resume-section .section-title-row h3 {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.section-title-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--ki-border);
+  border-radius: 999px;
+  background: var(--ki-surface-tint);
+  color: var(--ki-primary-strong);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
 .interview-resume-card {
   min-height: 64px;
   padding: 11px 13px;
@@ -3969,6 +3990,100 @@ html[dir="rtl"] .interview-page-title {
   margin-inline-start: auto;
 }
 
+.records-filter-panel {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--ki-border);
+  border-radius: var(--ki-radius-md);
+  background: var(--ki-surface-subtle);
+}
+
+.records-filter-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 8px;
+}
+
+.records-filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  gap: 9px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ki-ink);
+  cursor: pointer;
+  text-align: start;
+}
+
+.records-filter-toggle:hover,
+.records-filter-toggle:focus-visible {
+  color: var(--ki-primary-strong);
+}
+
+.records-filter-toggle strong {
+  color: var(--ki-ink);
+  font-size: 13px;
+}
+
+.records-filter-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--ki-focus-ring);
+}
+
+.records-filter-toggle-icon {
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.records-filter-toggle-icon.open {
+  transform: translateY(2px) rotate(225deg);
+}
+
+.records-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  gap: 10px;
+}
+
+.records-filter-grid label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--ki-muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.records-filter-grid input,
+.records-filter-grid .option-picker-trigger {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 9px;
+  font-size: 12px;
+}
+
+.records-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.records-filter-actions button {
+  min-height: 36px;
+}
+
 .dashboard-tabs {
   display: flex;
   gap: 4px;
@@ -4895,6 +5010,10 @@ html[dir="rtl"] .interview-page-title {
 }
 
 @media (max-width: 900px) {
+  .records-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .dashboard-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4916,6 +5035,23 @@ html[dir="rtl"] .interview-page-title {
 @media (max-width: 640px) {
   .panel-header-actions,
   .dashboard-filter-actions {
+    width: 100%;
+  }
+
+  .records-filter-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .records-filter-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .records-filter-actions {
+    justify-content: stretch;
+  }
+
+  .records-filter-actions button {
     width: 100%;
   }
 

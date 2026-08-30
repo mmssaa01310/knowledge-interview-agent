@@ -71,10 +71,12 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
       {resumableRecords.length > 0 ? (
         <section className="interview-resume-section" data-guide="interview-resume">
           <div className="section-title-row compact-row">
-            <div>
-              <h3>{t("knowledge.launch.inProgressTitle")}</h3>
-            </div>
-            <span className="counter">{formatNumber(resumableRecords.length, locale)}</span>
+            <h3>
+              {t("knowledge.launch.inProgressTitle")}
+              <span className="section-title-count">
+                {t("common.itemCount", { count: formatNumber(resumableRecords.length, locale) })}
+              </span>
+            </h3>
           </div>
           <div className="interview-resume-list">
             {resumableRecords.map((record) => (
