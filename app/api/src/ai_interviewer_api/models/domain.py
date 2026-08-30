@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from ai_interviewer_api.core.interview_locale import InterviewLocale
 from ai_interviewer_api.models.base import BaseEntity

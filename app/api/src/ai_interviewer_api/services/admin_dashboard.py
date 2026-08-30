@@ -744,7 +744,7 @@ def review_learning_analysis(
 
 
 def list_guidance_for_record(record_id: str, user: UserContext, *, public: bool = False) -> list[GuidanceDraftResponse]:
-    record = _get_record_for_access(record_id, user)
+    _get_record_for_access(record_id, user)
     if public:
         if user.role != "interviewer":
             raise HTTPException(status_code=403, detail="guidance_public_access_forbidden")

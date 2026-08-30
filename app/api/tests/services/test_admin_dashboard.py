@@ -9,7 +9,6 @@ from ai_interviewer_api.routers.knowledge_fields import create_field
 from ai_interviewer_api.routers.knowledges import create_knowledge
 from ai_interviewer_api.routers.records import create_record
 from ai_interviewer_api.schemas.dashboard import (
-    GuidanceUpdateRequest,
     LearningAnalysisRequest,
     LearningAnalysisUpdateRequest,
 )

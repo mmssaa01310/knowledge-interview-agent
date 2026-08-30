@@ -79,7 +79,7 @@ def test_create_transcribe_client_uses_frozen_credentials_and_resolver(monkeypat
     monkeypatch.setattr(
         transcribe_stream,
         "create_default_chain",
-        lambda actual_transport: resolver,
+        lambda _actual_transport: resolver,
     )
     monkeypatch.setattr(
         transcribe_stream,

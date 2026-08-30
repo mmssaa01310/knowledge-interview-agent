@@ -56,7 +56,7 @@ from ai_interviewer_voice.runtimes.nova_sonic.protocol.events import (
     UserSpeechStartEvent,
     decode_output_bytes,
 )
-from ai_interviewer_voice.runtimes.nova_sonic.session_state import CompletionStatus, ContentState, InputState, InterviewTurnKind, PendingToolCall
+from ai_interviewer_voice.runtimes.nova_sonic.session_state import CompletionStatus, InputState, InterviewTurnKind, PendingToolCall
 from ai_interviewer_voice.schemas.events import (
     AssistantAudioChunk,
     AssistantSpeechEnded,

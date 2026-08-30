@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ai_interviewer_api.agents.common.strands_runtime import (
     create_agent,

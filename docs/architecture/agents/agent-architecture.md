@@ -48,7 +48,7 @@ AI関連処理は、以下の2種類のエージェント責務に分けて扱�
 当面は以下を維持する。
 
 * `app/api/src/ai_interviewer_api/services/field_suggestions.py`
-* `app/api/src/ai_interviewer_api/services/prompts/field_fill/`
+* `app/api/src/ai_interviewer_api/agents/question_design/prompts/`
 * `POST /api/knowledges/{knowledge_id}/field-suggestions`
 
 実処理は`agents/question_design/`配下の入力変換、Structured Output runner、Validatorへ委譲する。

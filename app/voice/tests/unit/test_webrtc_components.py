@@ -12,7 +12,6 @@ from aiortc import MediaStreamTrack
 
 from ai_interviewer_voice.schemas.events import AssistantAudioChunk, AssistantSpeechEnded, RuntimeError, UserTranscriptFinal
 from ai_interviewer_voice.schemas.events import InputStateChanged
-from ai_interviewer_voice.services.ice_server_service import IceServer
 from ai_interviewer_voice.services.voice_session_service import AuthorizedVoiceSession, InitialReplyClaim
 from ai_interviewer_voice.services.voice_session_service import VoiceSessionService
 from ai_interviewer_voice.transports.webrtc.audio_input_track import AudioInputTrackConsumer
@@ -78,8 +77,8 @@ class StubRuntime:
         return None
 
     async def events(self):
-        if False:
-            yield None
+        for event in ():
+            yield event
 
 
 class BurstAudioTrack(MediaStreamTrack):
@@ -364,10 +363,10 @@ async def test_peer_close_logs_explicit_reason_and_runtime_state(
     runtime = StubRuntime()
 
     class StubVoiceSessionService:
-        async def mark_initial_reply_failed(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        async def mark_initial_reply_failed(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
             return None
 
-        async def create_connection_event(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        async def create_connection_event(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
             return None
 
     peer = VoicePeerConnection(
@@ -408,10 +407,10 @@ async def test_peer_playback_watchdog_reopens_runtime_when_browser_drain_is_miss
     runtime = StubRuntime()
 
     class StubVoiceSessionService:
-        async def mark_initial_reply_failed(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        async def mark_initial_reply_failed(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
             return None
 
-        async def create_connection_event(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        async def create_connection_event(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
             return None
 
     peer = VoicePeerConnection(

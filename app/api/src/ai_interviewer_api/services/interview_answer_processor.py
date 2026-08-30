@@ -255,7 +255,7 @@ class InterviewAnswerProcessor:
                         evidence_transcript_id=evidence_transcript_id,
                         knowledge_context=context,
                     )
-                except Exception as exc:  # noqa: BLE001 - retrieval failures are system errors
+                except Exception:  # noqa: BLE001 - retrieval failures are system errors
                     evaluation = AnswerEvaluation(
                         decision="UNCLEAR",
                         evaluation_status="EVALUATION_ERROR",
@@ -301,7 +301,7 @@ class InterviewAnswerProcessor:
     def _evaluate(self, **kwargs: Any) -> AnswerEvaluation:
         try:
             return self._evaluator(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - evaluation failures are a separate system status
+        except Exception:  # noqa: BLE001 - evaluation failures are a separate system status
             return AnswerEvaluation(
                 decision="UNCLEAR",
                 evaluation_status="EVALUATION_ERROR",

@@ -3,8 +3,6 @@ from __future__ import annotations
 from fractions import Fraction
 
 import av
-import pytest
-
 from ai_interviewer_voice.transports.webrtc.audio_resampler import (
     OutputAudioResampler,
     build_pcm_frame,

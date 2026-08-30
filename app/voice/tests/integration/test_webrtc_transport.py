@@ -15,7 +15,7 @@ from httpx import ASGITransport
 
 from ai_interviewer_voice.main import app
 from ai_interviewer_voice.routers import webrtc as webrtc_router
-from ai_interviewer_voice.services.ice_server_service import IceServer, IceServerConfig
+from ai_interviewer_voice.services.ice_server_service import IceServerConfig
 from ai_interviewer_voice.services.voice_session_service import AuthorizedVoiceSession, InitialReplyClaim
 from ai_interviewer_voice.transports.webrtc.registry import PeerConnectionRegistry
 

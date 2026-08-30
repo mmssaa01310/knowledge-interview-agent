@@ -12,11 +12,6 @@ export function isInterviewLocale(value: unknown): value is InterviewLocale {
   return INTERVIEW_LOCALE_OPTIONS.some((option) => option.value === value);
 }
 
-export function getInterviewLocaleLabelKey(locale: InterviewLocale) {
-  return INTERVIEW_LOCALE_OPTIONS.find((option) => option.value === locale)?.labelKey
-    ?? "interview.languages.jaJP";
-}
-
 export function resolveDefaultInterviewLocale(
   knowledge: Knowledge | null | undefined,
   uiLocale: UiLocale = "ja-JP",

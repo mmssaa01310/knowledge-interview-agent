@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from time import monotonic
 
 from ai_interviewer_voice.runtimes.nova_sonic.completion_registry import CompletionRegistry
 from ai_interviewer_voice.runtimes.nova_sonic.pending_turn_store import PendingTurnStore
@@ -25,9 +24,7 @@ from ai_interviewer_voice.runtimes.nova_sonic.session_state import (
     CompletionState,
     CompletionStatus,
     InputState,
-    InterviewTurnKind,
     NovaSonicObservedOutput,
-    PendingToolCall,
     VoiceSessionRuntimeState,
 )
 
@@ -153,7 +150,6 @@ class CompletionLifecycle:
         }:
             return
         completion_state.finalized = True
-        pending = self._lookup_pending_turn(completion_state.completion_id)
         self._cancel_reply_completion_start_watchdog(completion_state.response_id)
         logger.info(
             "assistant_authorized_completion_finished voice_session_id=%s turn_index=%s current_question_id=%s state_version=%s completion_id=%s response_id=%s generation=%s output_audio_content_end_received=%s output_text_content_end_received=%s completion_end_received=%s completion_fallback_reason=%s input_state=%s",
@@ -245,9 +241,6 @@ class CompletionLifecycle:
             return
         observed_output.completion_protocol_degraded = True
         observed_output.failed_stage = "output_complete_without_completion_end"
-
-    def _lookup_pending_turn(self, completion_id: str) -> PendingToolCall | None:
-        return self._pending_turn_store.get_any(completion_id)
 
     def _current_question_id(self) -> str | None:
         voice_session_state = self._voice_session_state_getter()

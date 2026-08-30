@@ -161,7 +161,7 @@ class FakeProcessModelProvider:
 def test_process_model_command_applies_structured_patch_and_keeps_command_history() -> None:
     manager = DEV_TOKENS["dev-manager"]
     record = _create_process_record(manager)
-    state = _seed_process_state(record, manager)
+    _seed_process_state(record, manager)
     provider = FakeProcessModelProvider(
         ProcessModelEditOutput(
             reply="申請受付の名称を変更しました。",

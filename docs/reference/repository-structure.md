@@ -253,7 +253,7 @@ agents/question_design/
 ```
 
 質問項目設計を置く。
-既存の `field-suggestions` と `services/prompts/field_fill/` はこの責務に属する。
+既存の `field-suggestions` と `agents/question_design/prompts/` はこの責務に属する。
 `services/field_suggestions.py` は router 互換の薄いラッパーとして残し、事前検索は`services/question_design_retrieval.py`、生成と検証はBedrock OpenAI互換Responses APIのStructured Output runnerに置く。
 
 ```text
@@ -312,26 +312,23 @@ services/
 
 ユースケース、業務ロジック、Bedrock呼び出しを置く。
 
-将来的にプロンプトを分離管理する場合は、以下のような構成を推奨する。
+プロンプトはエージェントごとに分離して管理する。
 
 ```text
-services/prompts/
-  field_fill/
-    base.md
-    guard.md
-  interview/
-    base.md
-    templates/
-  loader.py
+agents/question_design/prompts/
+  base.md
+  validation.md
+agents/interview/prompts/
+  base.md
+agents/learning_support/prompts/
+  overall_analysis.md
+  personal_advice.md
 ```
 
-* `field_fill/`: 質問項目設計用の固定プロンプト
-* `interview/base.md`: AIインタビュー用の固定ベースプロンプト
-* `interview/templates/`: ユーザー追加カスタマイズのたたき台
-* `field_fill/*`: 質問項目設計専用プロンプト。`interview/*` やユーザー追加カスタマイズを連結しない
-* `loader.py`: md や config から実行時にプロンプトを組み立てる処理
-
-将来的に prompt を `agents/question_design/prompts/` へ移す場合も、endpoint URL、request schema、response schema は維持する。
+* `question_design/prompts/`: 質問項目設計の生成・検証用プロンプト
+* `interview/prompts/`: AIインタビュー用の固定ベースプロンプト
+* `learning_support/prompts/`: 管理者向け学習分析・助言用プロンプト
+* ユーザー追加カスタマイズは実インタビュー実行時だけに適用し、質問項目設計用プロンプトとは分離する
 
 ### 4.4 Backendで避けること
 

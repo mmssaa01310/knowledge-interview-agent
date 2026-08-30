@@ -31,7 +31,6 @@ from ai_interviewer_voice.schemas.events import (
     AssistantTranscriptFinal,
     RuntimeClosed,
     RuntimeError,
-    RuntimeReady,
     UserSpeechEnded,
     UserSpeechStarted,
 )
@@ -1176,7 +1175,7 @@ def test_authorize_failure_does_not_send_user_text() -> None:
         runtime = NovaSonicRuntime(sdk_client=FakeSdkClient(stream))
         await runtime.start(_context())
 
-        def fail_authorize(*args, **kwargs):
+        def fail_authorize(*_args, **_kwargs):
             return None
 
         runtime._response_controller.authorize = fail_authorize  # type: ignore[method-assign]
@@ -1387,7 +1386,6 @@ def _obsolete_old_generation_completion_end_does_not_finish_new_followup_reply()
             )
         )
         await runtime._protocol_dispatcher.handle_stream_event(_chunk({"event": {"completionStart": {"completionId": "c2"}}}))
-        new_completion = runtime._completion_registry.completion_states["c2"]
         old_event = AssistantSpeechEnded(response_id="preface-response", generation=0)
 
         accepted_before = runtime._response_controller.accepts_speech_ended(old_event, completion_id="c1")

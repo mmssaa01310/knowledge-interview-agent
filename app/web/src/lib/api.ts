@@ -1,10 +1,9 @@
 import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb, UserRole } from "@ai-interviewer/shared-types";
-import type { ChatMessage, InterviewState, ProcessModelState } from "../types/app";
+import type { InterviewState, ProcessModelState } from "../types/app";
 import type {
   AdminDashboard,
   DashboardFilters,
   GuidanceDraft,
-  GuidanceUpdatePayload,
   LearningAnalysisDraft,
   LearningAnalysisUpdatePayload,
 } from "../types/dashboard";
@@ -218,17 +217,6 @@ export async function createKnowledgeDb(payload: {
   });
 }
 
-export async function updateKnowledgeDb(knowledgeDbId: string, payload: Partial<KnowledgeDb>) {
-  return apiRequest<KnowledgeDb>(`/api/knowledge-dbs/${knowledgeDbId}`, {
-    method: "PATCH",
-    body: payload
-  });
-}
-
-export async function deleteKnowledgeDb(knowledgeDbId: string) {
-  return apiRequest<{ deleted: boolean }>(`/api/knowledge-dbs/${knowledgeDbId}`, { method: "DELETE" });
-}
-
 export async function fetchKnowledges(knowledgeDbId: string) {
   return apiRequest<Knowledge[]>(`/api/knowledge-dbs/${knowledgeDbId}/knowledges`);
 }
@@ -314,34 +302,8 @@ export async function reviewLearningAnalysis(analysisId: string) {
   });
 }
 
-export async function fetchManagementGuidance(recordId: string) {
-  return apiRequest<GuidanceDraft[]>(`/api/admin/records/${recordId}/guidance`);
-}
-
 export async function fetchPublishedGuidance(recordId: string) {
   return apiRequest<GuidanceDraft[]>(`/api/records/${recordId}/guidance`);
-}
-
-export async function generateGuidanceDraft(recordId: string) {
-  return apiRequest<GuidanceDraft>(`/api/admin/records/${recordId}/guidance`, { method: "POST" });
-}
-
-export async function updateGuidanceDraft(
-  draftId: string,
-  payload: GuidanceUpdatePayload,
-) {
-  return apiRequest<GuidanceDraft>(`/api/admin/guidance/${draftId}`, {
-    method: "PATCH",
-    body: payload,
-  });
-}
-
-export async function publishGuidanceDraft(draftId: string) {
-  return apiRequest<GuidanceDraft>(`/api/admin/guidance/${draftId}/publish`, { method: "POST" });
-}
-
-export async function unpublishGuidanceDraft(draftId: string) {
-  return apiRequest<GuidanceDraft>(`/api/admin/guidance/${draftId}/unpublish`, { method: "POST" });
 }
 
 export async function fetchRecordInterviewContext(recordId: string) {
@@ -539,57 +501,6 @@ export async function bulkApproveRecords(recordIds: string[]) {
       body: { recordIds }
     }
   );
-}
-
-export async function createDemoDataset() {
-  const knowledgeDb = await apiRequest<KnowledgeDb>("/api/knowledge-dbs", {
-    method: "POST",
-    body: {
-      name: "保全ノウハウ DB",
-      description: "圧入工程と搬送設備の暗黙知を集める",
-      category: "maintenance",
-      targetBusiness: "保全",
-      targetEquipment: "圧入機A",
-      language: "ja"
-    }
-  });
-
-  await apiRequest(`/api/knowledge-dbs/${knowledgeDb.id}/fields`, {
-    method: "POST",
-    body: {
-      name: "現象",
-      inputType: "long_text",
-      required: true,
-      askByAi: true,
-      displayOrder: 1
-    }
-  });
-
-  const record = await apiRequest<InterviewRecord>(`/api/knowledge-dbs/${knowledgeDb.id}/records`, {
-    method: "POST",
-    body: {
-      title: "圧入機A 朝一の荷重ばらつき",
-      targetEquipment: "圧入機A",
-      targetProcess: "圧入工程"
-    }
-  });
-
-  await apiRequest(`/api/records/${record.id}/messages`, {
-    method: "POST",
-    body: {
-      content: "圧入荷重が朝一と段取り替え後に不安定になります"
-    }
-  });
-
-  await apiRequest(`/api/knowledge-dbs/${knowledgeDb.id}/documents`, {
-    method: "POST",
-    body: {
-      fileName: "圧入機A_保全手順.pdf",
-      contentType: "application/pdf"
-    }
-  });
-
-  return knowledgeDb;
 }
 
 export async function resetDevVoiceDemo() {

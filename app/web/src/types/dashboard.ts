@@ -145,12 +145,6 @@ export type GuidanceDraft = {
   updatedAt: string;
 };
 
-export type GuidanceUpdatePayload = {
-  summary?: string;
-  learnerGuidance?: string;
-  instructorGuidance?: string;
-};
-
 export type LearningAnalysisStatus = "draft" | "reviewed";
 
 export type LearningObjectiveTrend = {

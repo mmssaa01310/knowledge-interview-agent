@@ -182,7 +182,7 @@ def test_retrieval_never_disables_tools_but_still_runs_evaluation() -> None:
     def fake_factory(**kwargs: Any):  # type: ignore[no-untyped-def]
         factory_calls.append(kwargs["allow_retrieval"])
 
-        def fake_runner(*args: Any, **runner_kwargs: Any) -> FakeAgentResult:
+        def fake_runner(*args: Any, **_runner_kwargs: Any) -> FakeAgentResult:
             return FakeAgentResult(
                 structured_output=InterviewTurnOutput(
                     reply="評価しました。",

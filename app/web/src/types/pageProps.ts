@@ -9,7 +9,7 @@ import type {
   InterviewStreamMetadata,
   ProcessModelState
 } from "./app";
-import type { GuidanceDraft, GuidanceUpdatePayload } from "./dashboard";
+import type { GuidanceDraft } from "./dashboard";
 
 export type PromptProfile = {
   id: string;

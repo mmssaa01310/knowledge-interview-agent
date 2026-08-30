@@ -170,7 +170,7 @@ class VoiceAnswerEvaluationOutput(BaseModel):
 
     @field_validator("captured_items", mode="before")
     @classmethod
-    def normalize_captured_items(cls, value: Any) -> Any:
+    def normalize_captured_items(_cls, value: Any) -> Any:
         return _normalize_captured_items(value)
 
 
@@ -184,7 +184,7 @@ class VoiceConfirmationEvaluationOutput(BaseModel):
 
     @field_validator("captured_items", mode="before")
     @classmethod
-    def normalize_captured_items(cls, value: Any) -> Any:
+    def normalize_captured_items(_cls, value: Any) -> Any:
         return _normalize_captured_items(value)
 
 
@@ -211,7 +211,7 @@ class VoiceTurnEvaluationOutput(BaseModel):
 
     @field_validator("capturedItems", mode="before")
     @classmethod
-    def normalize_captured_items(cls, value: Any) -> Any:
+    def normalize_captured_items(_cls, value: Any) -> Any:
         return _normalize_captured_items(value)
 
 

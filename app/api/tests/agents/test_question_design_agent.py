@@ -370,10 +370,6 @@ def test_run_question_design_retries_once_when_validation_requests_retry() -> No
 
     def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
         prompt = args[0]
-        retry_instruction = None
-        for line in prompt.splitlines():
-            if line.startswith("retry_instruction:"):
-                continue
         if "retry_instruction:\nnone" in prompt:
             generation_calls.append(None)
             return FakeAgentResult(

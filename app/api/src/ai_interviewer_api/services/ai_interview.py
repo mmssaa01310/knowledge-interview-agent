@@ -5,7 +5,6 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from ai_interviewer_api.agents.interview.adapter import AdaptedInterviewTurnResult
 from ai_interviewer_api.agents.interview.adapter import run_adapted_interview_turn as _run_adapted_interview_turn
 from ai_interviewer_api.agents.interview.schemas import InterviewAgentResult, InterviewQuestion, InterviewState
 from ai_interviewer_api.agents.interview_knowledge.service import (

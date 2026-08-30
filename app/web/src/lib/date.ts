@@ -14,10 +14,3 @@ export function formatDate(value?: string, locale: UiLocale = getCurrentUiLocale
 export function formatNumber(value: number, locale: UiLocale = getCurrentUiLocale()) {
   return new Intl.NumberFormat(getLocaleMetadata(locale).numberLocale).format(value);
 }
-
-export function formatPercent(value: number, locale: UiLocale = getCurrentUiLocale()) {
-  return new Intl.NumberFormat(getLocaleMetadata(locale).numberLocale, {
-    style: "percent",
-    maximumFractionDigits: 0,
-  }).format(value);
-}
