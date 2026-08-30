@@ -17,6 +17,9 @@ export default defineConfig(({ mode }) => {
       watch: {
         usePolling: true,
         interval: 250,
+        // WSL/DrvFsでは、エージェント用の隠しディレクトリをchokidarが
+        // 再帰走査するとEIOになることがある。ソース監視の対象外にする。
+        ignored: ["**/.git/**", "**/.codex/**", "**/.agents/**"],
       },
       proxy: {
         "/api": {

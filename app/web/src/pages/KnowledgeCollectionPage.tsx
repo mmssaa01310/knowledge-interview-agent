@@ -125,8 +125,9 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
       ) : null}
 
       <div className="table-list">
-        <div className="table-row table-head">
+        <div className="table-row table-head knowledge-collection-row">
           <span>{t("knowledge.table.name")}</span>
+          <span>{t("knowledge.table.tags")}</span>
           <span>{t("knowledge.table.purpose")}</span>
           <span>{t("knowledge.table.recordCount")}</span>
           <span>{t("knowledge.table.documentCount")}</span>
@@ -138,17 +139,19 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
           <button
             type="button"
             key={knowledge.id}
-            className="table-row selectable"
+            className="table-row selectable knowledge-collection-row"
             onClick={() => props.navigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
           >
             <span>
               <strong>{knowledge.name}</strong>
               {knowledge.description && <small>{knowledge.description}</small>}
+            </span>
+            <span className="knowledge-table-tags">
               {knowledge.tags?.length ? (
                 <span className="knowledge-tag-list" aria-label={t("knowledge.tagsLabel")}>
                   {knowledge.tags.map((tag) => <span className="knowledge-tag" key={tag}>#{tag}</span>)}
                 </span>
-              ) : null}
+              ) : <span className="knowledge-table-empty">{t("knowledge.tagsNotSet")}</span>}
             </span>
             <span>{knowledge.purpose ?? knowledge.category ?? "-"}</span>
             <span>{formatNumber(knowledge.recordCount ?? 0, locale)}</span>

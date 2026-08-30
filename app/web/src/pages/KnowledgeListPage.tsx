@@ -48,8 +48,9 @@ export function KnowledgeListPage({
       </div>
       {knowledgeCreationError && <p className="notice error">{knowledgeCreationError}</p>}
       <div className="table-list">
-        <div className="table-row table-head">
+        <div className="table-row table-head knowledge-list-row">
           <span>{t("knowledge.table.name")}</span>
+          <span>{t("knowledge.table.tags")}</span>
           <span>{t("knowledge.table.purpose")}</span>
           <span>{t("knowledge.table.recordCount")}</span>
           <span>{t("knowledge.table.updatedAt")}</span>
@@ -60,17 +61,19 @@ export function KnowledgeListPage({
           <button
             type="button"
             key={knowledge.id}
-            className="table-row selectable"
+            className="table-row selectable knowledge-list-row"
             onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
           >
             <span>
               <strong>{knowledge.name}</strong>
               {knowledge.description && <small>{knowledge.description}</small>}
+            </span>
+            <span className="knowledge-table-tags">
               {knowledge.tags?.length ? (
                 <span className="knowledge-tag-list" aria-label={t("knowledge.tagsLabel")}>
                   {knowledge.tags.map((tag) => <span className="knowledge-tag" key={tag}>#{tag}</span>)}
                 </span>
-              ) : null}
+              ) : <span className="knowledge-table-empty">{t("knowledge.tagsNotSet")}</span>}
             </span>
             <span>{knowledge.purpose ?? knowledge.category ?? t("knowledge.purposeNotSet")}</span>
             <span>{formatNumber(knowledge.recordCount ?? 0, locale)}</span>

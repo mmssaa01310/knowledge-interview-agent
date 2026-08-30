@@ -4,6 +4,7 @@
   "preparingCreate": "Preparing",
   "table": {
     "name": "Knowledge name",
+    "tags": "Tags",
     "purpose": "Purpose",
     "recordCount": "Records",
     "documentCount": "Documents",
@@ -13,6 +14,7 @@
   "emptyView": "No knowledge is available.",
   "purposeNotSet": "Purpose not set",
   "tagsLabel": "Knowledge tags",
+  "tagsNotSet": "No tags",
   "createDialog": {
     "title": "Create new knowledge",
     "description": "Configure the interview after creation.",

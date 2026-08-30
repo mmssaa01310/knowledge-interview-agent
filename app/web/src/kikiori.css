@@ -707,17 +707,12 @@ small {
   opacity: 0.82;
 }
 
-.sub-nav-icon.conversation::after {
-  content: "";
-  position: absolute;
-  right: -3px;
-  bottom: -3px;
-  width: 5px;
-  height: 5px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  background: inherit;
-  transform: skew(-25deg);
+.sub-nav-svg-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  opacity: 0.9;
 }
 
 .sub-nav-icon.records::before,
@@ -1137,6 +1132,37 @@ label {
   background: var(--ki-surface);
   color: var(--ki-text);
   font-size: 13px;
+}
+
+.knowledge-list-row,
+.knowledge-collection-row {
+  min-width: 0;
+}
+
+.knowledge-list-row {
+  grid-template-columns: minmax(0, 1.65fr) minmax(0, 1.15fr) minmax(0, 1.1fr) minmax(64px, 0.65fr) minmax(100px, 0.9fr);
+}
+
+.knowledge-collection-row {
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1.1fr) minmax(0, 1fr) minmax(64px, 0.65fr) minmax(74px, 0.7fr) minmax(100px, 0.9fr);
+}
+
+.knowledge-list-row > span,
+.knowledge-collection-row > span,
+.knowledge-table-tags {
+  min-width: 0;
+}
+
+.knowledge-table-tags .knowledge-tag-list {
+  max-height: 50px;
+  margin-top: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.knowledge-table-empty {
+  color: var(--ki-faint);
+  font-size: 11px;
 }
 
 .table-row small {
@@ -1618,6 +1644,18 @@ label {
   background: var(--ki-surface);
   color: var(--ki-text);
   box-shadow: none;
+}
+
+.voice-button-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.voice-button-icon img {
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 
 .voice-conversation-status {
