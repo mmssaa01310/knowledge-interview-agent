@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
 import { confirmApproveAll } from "../components/ui/ApproveAllDialog";
 import {
   createKnowledge,
@@ -905,15 +905,29 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setRecordNotice(t("errors.chatDeleted"));
   }
 
-  function handleStartInterview() {
+  async function handleStartInterview(interviewLocale?: InterviewLocale) {
     if (!selectedRecord || isInterviewStreaming) return;
+
+    let recordId = selectedRecord.id;
+    if (interviewLocale && selectedRecord.interviewLocale !== interviewLocale) {
+      try {
+        const updatedRecord = await updateRecord(selectedRecord.id, { interviewLocale });
+        setRecords((currentRecords) => currentRecords.map((record) => (
+          record.id === updatedRecord.id ? updatedRecord : record
+        )));
+      } catch (error) {
+        console.error("Failed to save interview locale", error);
+        setRecordNotice(t("errors.interviewLanguageUpdateFailed"));
+        return;
+      }
+    }
     pendingInterviewSubmissionRef.current = null;
     setStreamingInterviewReply("");
     setInterviewStreamMetadata(null);
     setInterviewError(false);
     setIsInterviewStreaming(true);
     setRecordNotice("");
-    interviewStream.start(selectedRecord.id);
+    interviewStream.start(recordId);
   }
 
   async function handleSendInterviewMessage(

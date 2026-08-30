@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { InterviewLocale } from "@ai-interviewer/shared-types";
 import {
   getInterviewAnswerStatusLabel,
   getInterviewDisplayAnswer,
@@ -12,6 +13,12 @@ import { SystemRequirementProgressPanel } from "../features/interviews/component
 import {
   isInterviewConfigurationComplete,
 } from "../features/interviews/interviewConfiguration";
+import {
+  getInterviewLocaleLabelKey,
+  resolveRecordInterviewLocale,
+} from "../features/interviews/interviewLocale";
+import { INTERVIEW_LOCALE_OPTIONS } from "../features/interviews/interviewLocale";
+import { OptionPicker } from "../components/ui/OptionPicker";
 import { resetDevSystemRequirementDemo, resetDevVoiceDemo } from "../lib/api";
 import { useI18n, type Translate } from "../i18n";
 import { formatNumber } from "../lib/date";
@@ -47,6 +54,11 @@ function buildFieldQuestion(field: KnowledgeLayoutProps["sortedFields"][number],
 
 export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const { t, locale } = useI18n();
+  const resolvedInterviewLocale = resolveRecordInterviewLocale(
+    props.selectedRecord,
+    props.selectedKnowledge,
+    locale,
+  );
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isResettingDemo, setIsResettingDemo] = useState(false);
@@ -54,6 +66,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const [summaryView, setSummaryView] = useState<"requirements" | "process">("requirements");
   const [isInterviewContextOpen, setIsInterviewContextOpen] = useState(false);
   const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
+  const [selectedInterviewLocale, setSelectedInterviewLocale] = useState<InterviewLocale>(resolvedInterviewLocale);
   const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isInterviewConfigured = isInterviewConfigurationComplete(props.selectedKnowledge);
   const canAnswerRecord = Boolean(
@@ -125,7 +138,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     props.sortedFields.some((field) => field.name.trim())
       || interviewProfile === "business_process"
   );
-
+  useEffect(() => {
+    setSelectedInterviewLocale(resolvedInterviewLocale);
+  }, [props.selectedRecord?.id, props.selectedRecord?.interviewLocale, resolvedInterviewLocale]);
   const realtimeVoice = useRealtimeVoiceInterview({
     recordId: props.selectedRecord?.id,
     hasQuestions: hasVoiceQuestions,
@@ -306,6 +321,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           <div className="interview-title-status">
             <h2>{t("interview.title")}</h2>
             <span className="interview-model-badge">{t("interview.modelLabel", { model: props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-terra" ? t("interview.model.terra") : props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-luna" ? t("interview.model.luna") : t("interview.profile.notSet") })}</span>
+            <span className="interview-language-badge">{t("interview.languageLabel", { language: t(getInterviewLocaleLabelKey(selectedInterviewLocale)) })}</span>
             {props.selectedRecord ? (
               <span className={props.selectedRecord.status === "approved" ? "status-pill" : "status-pill muted"}>
                 {t(`interview.status.${props.selectedRecord.status}`)}
@@ -520,7 +536,20 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 >
                   {isInterviewContextOpen ? t("interview.closeContext") : t("interview.openContext")}
                 </button>
-                <button className="ghost compact" type="button" onClick={props.onStartInterview} disabled={!canStartInterview}>
+                <div className="interview-start-language-picker">
+                  <OptionPicker
+                    value={selectedInterviewLocale}
+                    options={INTERVIEW_LOCALE_OPTIONS.map((option) => ({
+                      value: option.value,
+                      label: t(option.labelKey),
+                    }))}
+                    onChange={(value) => setSelectedInterviewLocale(value as InterviewLocale)}
+                    ariaLabel={t("knowledge.launch.interviewLanguageAria")}
+                    placement="bottom"
+                    disabled={!canStartInterview}
+                  />
+                </div>
+                <button className="ghost compact" type="button" onClick={() => void props.onStartInterview(selectedInterviewLocale)} disabled={!canStartInterview}>
                   {t("interview.start")}
                 </button>
               </div>

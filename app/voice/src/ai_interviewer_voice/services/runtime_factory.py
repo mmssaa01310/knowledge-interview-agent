@@ -1,5 +1,9 @@
 from ai_interviewer_voice.clients.interview_api import InterviewApiClient
 from ai_interviewer_voice.config import settings
+from ai_interviewer_voice.interview_locale import (
+    localized_runtime_texts,
+    resolve_transcribe_polly_locale,
+)
 from ai_interviewer_voice.runtimes.base import RealtimeVoiceRuntime
 from ai_interviewer_voice.runtimes.fake_runtime import FakeRuntime
 from ai_interviewer_voice.runtimes.nova_sonic.config import NovaSonicRuntimeConfig
@@ -13,7 +17,7 @@ from ai_interviewer_voice.runtimes.transcribe_polly.runtime import (
 from ai_interviewer_voice.services.interview_bridge import InterviewBridge
 
 
-def create_runtime(provider: str) -> RealtimeVoiceRuntime:
+def create_runtime(provider: str, interview_locale: str | None = None) -> RealtimeVoiceRuntime:
     normalized = provider.strip().lower()
     if normalized == "fake":
         if settings.app_env not in {"local", "test"}:
@@ -48,6 +52,8 @@ def create_runtime(provider: str) -> RealtimeVoiceRuntime:
             interview_bridge=bridge,
         )
     if normalized == "transcribe_polly":
+        locale_config = resolve_transcribe_polly_locale(interview_locale)
+        runtime_texts = localized_runtime_texts(locale_config.interview_locale)
         bridge = InterviewBridge(
             InterviewApiClient(
                 settings.api_base_url,
@@ -59,16 +65,25 @@ def create_runtime(provider: str) -> RealtimeVoiceRuntime:
         return TranscribePollyRuntime(
             config=TranscribePollyRuntimeConfig(
                 aws_region=settings.aws_region,
-                language_code=settings.transcribe_language_code,
+                interview_locale=locale_config.interview_locale,
+                language_code=locale_config.transcribe_language_code,
                 transcribe_chunk_ms=settings.transcribe_chunk_ms,
                 partial_results_stability=settings.transcribe_partial_results_stability,
                 transcribe_reconnect_attempts=settings.transcribe_reconnect_attempts,
                 reconnect_audio_buffer_ms=settings.transcribe_reconnect_audio_buffer_ms,
                 vad_rms_threshold=settings.transcribe_vad_rms_threshold,
-                polly_voice_id=settings.polly_voice_id,
+                polly_voice_id=(
+                    settings.polly_voice_id
+                    if locale_config.interview_locale == "ja-JP"
+                    else locale_config.polly_voice_id
+                ),
+                polly_language_code=locale_config.polly_language_code,
                 polly_engine=settings.polly_engine,
                 polly_max_parallel_requests=settings.polly_max_parallel_requests,
                 backchannel_enabled=settings.voice_enable_backchannels,
+                listen_ack_text=runtime_texts["listen_ack"],
+                processing_ack_text=runtime_texts["processing_ack"],
+                long_processing_text=runtime_texts["long_processing"],
             ),
             interview_bridge=bridge,
         )

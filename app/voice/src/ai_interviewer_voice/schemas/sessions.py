@@ -14,3 +14,4 @@ class VoiceRuntimeContext(BaseModel):
     voice_session_id: str
     record_id: str
     provider: str
+    interview_locale: str = "ja-JP"

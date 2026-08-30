@@ -59,6 +59,8 @@
     "cannotStart": "此知识库暂时无法开始访谈。",
     "recordTitle": "记录标题",
     "recordTitlePlaceholder": "记录标题（可选）",
+    "interviewLanguage": "对话语言",
+    "interviewLanguageAria": "AI访谈对话语言",
     "newInterview": "开始新访谈",
     "accessibleHint": "请在记录中选择你负责或有权查看的记录。",
     "inProgressTitle": "进行中的访谈",

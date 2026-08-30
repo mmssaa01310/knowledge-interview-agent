@@ -34,6 +34,13 @@
   },
   "title": "AI访谈",
   "modelLabel": "执行模型：{model}",
+  "languageLabel": "对话：{language}",
+  "languages": {
+    "jaJP": "日本語",
+    "enUS": "English",
+    "zhCN": "简体中文",
+    "ptBR": "葡萄牙语（巴西）"
+  },
   "configureNotice": "请设置用途和执行模型。",
   "returnToStart": "返回访谈开始页",
   "kikoName": "kiko",

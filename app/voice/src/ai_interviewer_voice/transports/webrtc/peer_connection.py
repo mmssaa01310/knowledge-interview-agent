@@ -81,7 +81,7 @@ class VoicePeerConnection:
         *,
         session: AuthorizedVoiceSession,
         bearer_token: str,
-        runtime_factory: Callable[[str], RealtimeVoiceRuntime],
+        runtime_factory: Callable[..., RealtimeVoiceRuntime],
         ice_servers: tuple[IceServer, ...],
         voice_session_service: VoiceSessionService,
         on_closed: Callable[[str], Awaitable[None]],
@@ -104,7 +104,11 @@ class VoicePeerConnection:
         self._peer_disconnected_grace_seconds = peer_disconnected_grace_seconds
         self._playback_drain_timeout_seconds = playback_drain_timeout_seconds
         self._session_state = session
-        self._runtime = runtime_factory(session.provider)
+        self._runtime = (
+            runtime_factory(session.provider, session.interview_locale)
+            if session.provider == "transcribe_polly"
+            else runtime_factory(session.provider)
+        )
         runtime_output_rate_hz = int(getattr(self._runtime, "output_sample_rate_hz", 24000))
         self._playback_buffer = PlaybackBuffer(
             sample_rate_hz=runtime_output_rate_hz,
@@ -334,6 +338,7 @@ class VoicePeerConnection:
                         voice_session_id=self._session_state.voice_session_id,
                         record_id=self._session_state.record_id,
                         provider=self._session_state.provider,
+                        interview_locale=self._session_state.interview_locale,
                     )
                 )
                 self._runtime_events_task = asyncio.create_task(self._consume_runtime_events())

@@ -13,6 +13,11 @@ from ai_interviewer_api.agents.common.strands_runtime import (
     create_voice_evaluation_bedrock_model,
 )
 from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.core.interview_locale import (
+    InterviewLocale,
+    interview_language_instruction,
+    localized_interview_fallbacks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +105,7 @@ def interpret_dialogue_act(
     field_state: dict[str, Any],
     recent_messages: list[dict[str, Any]],
     last_assistant_message: dict[str, Any] | None = None,
+    interview_locale: InterviewLocale = "ja-JP",
 ) -> DialogueInterpretation:
     if not settings.bedrock_enabled:
         return DialogueInterpretation(act="ANSWER", evaluation_status="DISABLED")
@@ -111,10 +117,11 @@ def interpret_dialogue_act(
         field_state=field_state,
         recent_messages=recent_messages,
         last_assistant_message=last_assistant_message,
+        interview_locale=interview_locale,
     )
     started_at = monotonic()
     try:
-        result = _run_dialogue_structured_output(prompt)
+        result = _run_dialogue_structured_output(prompt, interview_locale)
     except Exception as exc:  # noqa: BLE001 - classification failures must not pollute answers
         logger.exception(
             "dialogue_act_interpretation_failed question_id=%s error_type=%s",
@@ -123,7 +130,12 @@ def interpret_dialogue_act(
         )
         return DialogueInterpretation(
             act="OTHER",
-            response_text="すみません。いまの内容をうまく解釈できませんでした。もう一度、言い換えて教えてください。",
+            response_text={
+                "ja-JP": "すみません。いまの内容をうまく解釈できませんでした。もう一度、言い換えて教えてください。",
+                "en-US": "Sorry, I could not understand that. Please rephrase your answer.",
+                "zh-CN": "抱歉，我没能理解刚才的内容。请换一种方式说明。",
+                "pt-BR": "Desculpe, não consegui entender. Reformule sua resposta, por favor.",
+            }.get(interview_locale, localized_interview_fallbacks(interview_locale)["error"]),
             reason="dialogue_interpretation_failed",
             evaluation_status="EVALUATION_ERROR",
         )
@@ -140,10 +152,16 @@ def interpret_dialogue_act(
     )
 
 
-def _run_dialogue_structured_output(prompt: str) -> DialogueInterpretationOutput:
+def _run_dialogue_structured_output(
+    prompt: str,
+    interview_locale: InterviewLocale = "ja-JP",
+) -> DialogueInterpretationOutput:
     agent = create_agent(
         model=create_voice_evaluation_bedrock_model(),
-        system_prompt=_DIALOGUE_INTERPRETER_SYSTEM_PROMPT,
+        system_prompt=(
+            f"{_DIALOGUE_INTERPRETER_SYSTEM_PROMPT}\n\n"
+            f"{interview_language_instruction(interview_locale)}"
+        ),
         tools=[],
         hooks=[],
         name="Interview Dialogue Interpreter",
@@ -178,6 +196,7 @@ def _build_dialogue_interpreter_prompt(
     field_state: dict[str, Any],
     recent_messages: list[dict[str, Any]],
     last_assistant_message: dict[str, Any] | None,
+    interview_locale: InterviewLocale,
 ) -> str:
     payload = {
         "currentQuestion": {
@@ -205,6 +224,8 @@ def _build_dialogue_interpreter_prompt(
         "lastAssistantMessage": _message_digest(last_assistant_message),
         "recentMessages": [_message_digest(message) for message in recent_messages[-8:]],
         "userTranscript": transcript,
+        "interviewLocale": interview_locale,
+        "languageInstruction": interview_language_instruction(interview_locale),
         "instructions": {
             "routeOnlyAnswerLikeActsToAnswerEvaluation": True,
             "doNotAdvanceInterviewStateForConversationActs": True,

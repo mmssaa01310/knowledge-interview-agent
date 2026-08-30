@@ -59,6 +59,8 @@
     "cannotStart": "このナレッジは現在インタビューを開始できません。",
     "recordTitle": "記録タイトル",
     "recordTitlePlaceholder": "記録タイトル（任意）",
+    "interviewLanguage": "会話の言語",
+    "interviewLanguageAria": "AIインタビューの会話言語",
     "newInterview": "新規インタビューを開始",
     "accessibleHint": "「記録」から担当または閲覧を許可された記録を選択してください。",
     "inProgressTitle": "途中のインタビュー",

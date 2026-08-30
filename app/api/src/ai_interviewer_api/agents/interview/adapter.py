@@ -12,6 +12,7 @@ from ai_interviewer_api.agents.interview.schemas import (
     InterviewTurnOutput,
 )
 from ai_interviewer_api.agents.interview.service import run_interview_turn
+from ai_interviewer_api.core.interview_locale import resolve_interview_locale
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ def build_interview_turn_input(
         record_title=_normalize_text(record.get("title")),
         custom_prompt=_normalize_text(knowledge.get("systemPrompt")),
         interview_plan=knowledge.get("interviewPlan"),
+        interview_locale=resolve_interview_locale(record, knowledge),
         user_message=_resolve_latest_user_message(conversation_history),
         conversation_history=conversation_history,
         approved_fields=approved_fields,

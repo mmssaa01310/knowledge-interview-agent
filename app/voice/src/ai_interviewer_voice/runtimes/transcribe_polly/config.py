@@ -5,6 +5,7 @@ from dataclasses import dataclass
 class TranscribePollyRuntimeConfig:
     provider_name: str = "transcribe_polly"
     aws_region: str = "ap-northeast-1"
+    interview_locale: str = "ja-JP"
     language_code: str = "ja-JP"
     input_sample_rate_hz: int = 16000
     transcribe_chunk_ms: int = 100
@@ -28,6 +29,7 @@ class TranscribePollyRuntimeConfig:
     long_processing_notice_ms: int = 3000
     barge_in_voice_ms: int = 120
     polly_voice_id: str = "Kazuha"
+    polly_language_code: str = "ja-JP"
     polly_engine: str = "neural"
     polly_sample_rate_hz: int = 16000
     polly_max_parallel_requests: int = 2
@@ -37,3 +39,6 @@ class TranscribePollyRuntimeConfig:
     first_chunk_max_chars: int = 30
     following_chunk_min_chars: int = 20
     following_chunk_max_chars: int = 80
+    listen_ack_text: str = "はい。"
+    processing_ack_text: str = "回答を確認しています。"
+    long_processing_text: str = "確認に少し時間がかかっています。"

@@ -34,6 +34,13 @@
   },
   "title": "AIインタビュー",
   "modelLabel": "実行モデル：{model}",
+  "languageLabel": "会話：{language}",
+  "languages": {
+    "jaJP": "日本語",
+    "enUS": "English",
+    "zhCN": "简体中文",
+    "ptBR": "Português (Brasil)"
+  },
   "configureNotice": "用途と実行モデルを設定してください。",
   "returnToStart": "インタビュー開始画面に戻る",
   "kikoName": "kiko",

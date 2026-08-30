@@ -1,5 +1,9 @@
 from ai_interviewer_api.services.interview_confirmation import is_unambiguous_confirmation
 from ai_interviewer_api.services import voice_interview
+from ai_interviewer_api.core.interview_locale import (
+    localized_interview_fallbacks,
+    resolve_interview_locale,
+)
 
 
 def test_confirmation_accepts_common_speech_recognition_variants() -> None:
@@ -29,3 +33,11 @@ def test_voice_confirmation_fast_path_does_not_need_a_model_call(monkeypatch) ->
 
     assert result.outcome == "CONFIRM"
     assert result.record_answer == "バスケです"
+
+
+def test_interview_locale_is_record_scoped_and_supports_portuguese() -> None:
+    assert resolve_interview_locale(
+        {"interviewLocale": "pt-BR"},
+        {"interviewPlan": {"interviewLocale": "en-US"}},
+    ) == "pt-BR"
+    assert localized_interview_fallbacks("pt-BR")["completion"].startswith("A entrevista")

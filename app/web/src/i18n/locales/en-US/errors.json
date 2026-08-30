@@ -11,6 +11,7 @@
   "settingsSave": "Could not save {tab}. Check your connection and try again.",
   "configurationRequired": "Save the interview purpose and execution model in Interview settings before creating a record.",
   "recordCreate": "Could not create the record. Check your connection and try again.",
+  "interviewLanguageUpdateFailed": "Could not save the conversation language. Check your connection and try again.",
   "recordDeleteConfirm": "Delete this record?",
   "recordDeleted": "Record deleted.",
   "recordDeleteFailed": "Could not delete the record. Check permissions and your connection.",

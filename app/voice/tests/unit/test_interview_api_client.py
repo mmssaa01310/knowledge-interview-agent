@@ -24,6 +24,7 @@ def test_interview_api_client_gets_session_and_processes_turn() -> None:
                         "currentQuestionId": "q-1",
                         "stateVersion": 2,
                         "status": "active",
+                        "interviewLocale": "pt-BR",
                     },
                 )
             if request.url.path == "/internal/voice-sessions/session-1/turns":
@@ -58,6 +59,7 @@ def test_interview_api_client_gets_session_and_processes_turn() -> None:
 
     session, saved, processed, calls = asyncio.run(run())
     assert session.current_question_id == "q-1"
+    assert session.interview_locale == "pt-BR"
     assert saved.turn_id == "turn-1"
     assert processed.reply_text == "確認します。"
     assert processed.question_id == "q-2"

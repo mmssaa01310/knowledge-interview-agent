@@ -17,6 +17,11 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     StructuredInterviewOutput,
 )
 from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.core.interview_locale import (
+    InterviewLocale,
+    interview_language_instruction,
+    normalize_interview_locale,
+)
 
 
 class StructuredInterviewProviderError(RuntimeError):
@@ -104,7 +109,10 @@ class BedrockResponsesStructuredProvider:
                     reasoning_effort=reasoning_effort,
                     schema_name="structured_interview_output",
                     schema=StructuredInterviewOutput.model_json_schema(),
-                    system_prompt=_interpreter_system_prompt(profile),
+                    system_prompt=_interpreter_system_prompt(
+                        profile,
+                        normalize_interview_locale(context.get("interviewLocale")) or "ja-JP",
+                    ),
                     user_payload=context,
                     max_output_tokens=max_output_tokens,
                 )
@@ -131,7 +139,10 @@ class BedrockResponsesStructuredProvider:
                     reasoning_effort=reasoning_effort,
                     schema_name="interview_question",
                     schema=QuestionGenerationOutput.model_json_schema(),
-                    system_prompt=_question_system_prompt(profile),
+                    system_prompt=_question_system_prompt(
+                        profile,
+                        normalize_interview_locale(context.get("interviewLocale")) or "ja-JP",
+                    ),
                     user_payload={"context": context, "target": target},
                     max_output_tokens=settings.structured_interview_question_max_output_tokens,
                 )
@@ -366,13 +377,14 @@ def _make_strict_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     return visit(dict(schema))
 
 
-def _interpreter_system_prompt(profile: str) -> str:
+def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> str:
     return f"""あなたは構造化インタビューの意味解釈器です。
 用途 profile は {profile} です。
 最新の発話と会話状態から、発話に明示された情報だけを抽出してください。
 返却は指定されたJSON Schemaだけに従い、JSON以外を返さないでください。
 
 必須ルール:
+{interview_language_instruction(locale)}
 - fieldUpdates、requirementUpdates、processPatch、contradictions、applicability、openIssuesを使用します。
 - 確定判断、質問対象の選択、完了判定はBackendが実行します。あなたは確定済みと返しません。
 - 最新の発話から取得できた情報は、複数項目でもすべて候補として抽出します。
@@ -396,9 +408,10 @@ def _interpreter_system_prompt(profile: str) -> str:
 """.strip()
 
 
-def _question_system_prompt(profile: str) -> str:
+def _question_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> str:
     return f"""あなたは{profile}用途のインタビュー質問文生成器です。
-Backendが選択したtargetについて、質問を1問だけ日本語で生成してください。
+Backendが選択したtargetについて、質問を1問だけ生成してください。
+{interview_language_instruction(locale)}
 返却は{{\"questionText\":\"...\"}}だけにしてください。
 target以外の不足項目を同時に聞かないでください。
 確認対象には、候補内容を短く引用して確認してください。candidateSourceがassistant_proposalの場合は、冒頭に「AIの案です」と明示し、「この案でよいですか。修正や拒否もできます。」と尋ねてください。

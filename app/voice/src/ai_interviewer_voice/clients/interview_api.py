@@ -28,6 +28,7 @@ class VoiceSessionSnapshot:
     current_question_id: str | None
     state_version: int
     interview_status: str
+    interview_locale: str = "ja-JP"
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,7 @@ class InterviewApiClient:
             current_question_id=_optional_str(payload.get("currentQuestionId")),
             state_version=int(payload.get("stateVersion") or 0),
             interview_status=str(payload.get("status") or "active"),
+            interview_locale=str(payload.get("interviewLocale") or "ja-JP"),
         )
 
     async def claim_initial_reply(

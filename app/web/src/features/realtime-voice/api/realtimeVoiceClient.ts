@@ -3,7 +3,7 @@ import type { VoiceIceConfigResponse, VoiceSessionResponse } from "../types";
 
 const VOICE_API_BASE_URL = "";
 const DEV_AUTH_TOKEN = import.meta.env.VITE_DEV_TOKEN ?? "dev-manager";
-const VOICE_RUNTIME_PROVIDER = import.meta.env.VITE_VOICE_RUNTIME_PROVIDER ?? "transcribe_polly";
+export const VOICE_RUNTIME_PROVIDER = import.meta.env.VITE_VOICE_RUNTIME_PROVIDER ?? "transcribe_polly";
 
 type RequestOptions = {
   method?: "GET" | "POST" | "DELETE";

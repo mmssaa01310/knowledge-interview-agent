@@ -356,6 +356,7 @@ export async function createRecord(
   knowledgeId: string,
   payload: {
     title: string;
+    interviewLocale?: InterviewRecord["interviewLocale"];
     targetEquipment?: string;
     targetProcess?: string;
     ownerUserId?: string;

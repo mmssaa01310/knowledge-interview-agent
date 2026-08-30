@@ -37,3 +37,21 @@ async def test_polly_synthesizer_requests_neural_16khz_and_caches() -> None:
     assert client.calls[0]["VoiceId"] == "Kazuha"
     assert client.calls[0]["OutputFormat"] == "pcm"
     assert client.calls[0]["SampleRate"] == "16000"
+
+
+@pytest.mark.anyio
+async def test_polly_synthesizer_uses_selected_portuguese_language_and_voice() -> None:
+    client = StubPollyClient()
+    synthesizer = PollySynthesizer(
+        TranscribePollyRuntimeConfig(
+            interview_locale="pt-BR",
+            polly_language_code="pt-BR",
+            polly_voice_id="Camila",
+        ),
+        client=client,
+    )
+
+    await synthesizer.synthesize("Olá.")
+
+    assert client.calls[0]["LanguageCode"] == "pt-BR"
+    assert client.calls[0]["VoiceId"] == "Camila"

@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import InterviewProfile
+from ai_interviewer_api.core.interview_locale import InterviewLocale
 from ai_interviewer_api.models.interview_plan import (
     CapturedInterviewItem,
     InterviewPlan,
@@ -134,6 +135,7 @@ class InterviewTurnInput(BaseModel):
     record_title: str | None = None
     custom_prompt: str | None = None
     interview_plan: InterviewPlan | None = None
+    interview_locale: InterviewLocale = "ja-JP"
     user_message: str
     conversation_history: list[InterviewMessage] = Field(default_factory=list)
     approved_fields: list[InterviewField] = Field(default_factory=list)

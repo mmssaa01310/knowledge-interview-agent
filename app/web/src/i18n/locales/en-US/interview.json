@@ -34,6 +34,13 @@
   },
   "title": "AI interview",
   "modelLabel": "Execution model: {model}",
+  "languageLabel": "Conversation: {language}",
+  "languages": {
+    "jaJP": "日本語",
+    "enUS": "English",
+    "zhCN": "简体中文",
+    "ptBR": "Portuguese (Brazil)"
+  },
   "configureNotice": "Configure the purpose and execution model.",
   "returnToStart": "Back to interview start",
   "kikoName": "kiko",

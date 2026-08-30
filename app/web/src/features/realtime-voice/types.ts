@@ -10,6 +10,8 @@ Relations:
   Used by realtime voice hooks, WebRTC helpers, and UI components.
 */
 
+import type { InterviewLocale } from "@ai-interviewer/shared-types";
+
 export type VoiceConversationStatus =
   | "idle"
   | "checking"
@@ -30,6 +32,7 @@ export type VoiceSessionResponse = {
   id: string;
   recordId: string;
   provider: string;
+  interviewLocale?: InterviewLocale | null;
   status: string;
   currentQuestionId?: string | null;
   stateVersion?: number;

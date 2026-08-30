@@ -11,6 +11,7 @@ from ai_interviewer_api.agents.interview.schemas import (
     InterviewTurnInput,
     InterviewTurnOutput,
 )
+from ai_interviewer_api.core.interview_locale import localized_interview_fallbacks
 
 DEFAULT_FOLLOW_UP_REPLY = "もう少し詳しく確認させてください。"
 DEFAULT_FOLLOW_UP_QUESTION = "その点をもう少し詳しく教えてください。"
@@ -88,6 +89,8 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
     ]
 
     sections = [
+        f"conversation_language: {interview_input.interview_locale}",
+        "language_instruction: Generate all user-facing interview replies and follow-up questions in conversation_language.",
         f"knowledge_id: {interview_input.knowledge_id or 'none'}",
         "knowledge_context:",
         *(knowledge_context_lines or ["- none"]),
@@ -158,7 +161,7 @@ def _coerce_output(result: Any, interview_input: InterviewTurnInput) -> Intervie
 
     field_id = interview_input.current_field.fieldId if interview_input.current_field else "unknown"
     return InterviewTurnOutput(
-        reply=DEFAULT_FOLLOW_UP_REPLY,
+        reply=localized_interview_fallbacks(interview_input.interview_locale)["follow_up"],
         field_evaluation=InterviewFieldEvaluation(
             fieldId=field_id or "unknown",
             isComplete=False,
@@ -191,7 +194,7 @@ def _normalize_output(
     invocation_state: dict[str, Any],
     interview_input: InterviewTurnInput,
 ) -> InterviewTurnOutput:
-    reply = output.reply.strip() or DEFAULT_FOLLOW_UP_REPLY
+    reply = output.reply.strip() or localized_interview_fallbacks(interview_input.interview_locale)["follow_up"]
     follow_up_question = output.follow_up_question.strip() if isinstance(output.follow_up_question, str) and output.follow_up_question.strip() else None
     evaluation = output.field_evaluation
     answer_summary = evaluation.answerSummary.strip() if isinstance(evaluation.answerSummary, str) else ""

@@ -59,6 +59,8 @@
     "cannotStart": "This knowledge cannot start an interview yet.",
     "recordTitle": "Record title",
     "recordTitlePlaceholder": "Record title (optional)",
+    "interviewLanguage": "Conversation language",
+    "interviewLanguageAria": "AI interview conversation language",
     "newInterview": "Start new interview",
     "accessibleHint": "Select a record you own or are allowed to view from Records.",
     "inProgressTitle": "In-progress interviews",

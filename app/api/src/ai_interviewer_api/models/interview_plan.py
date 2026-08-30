@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ai_interviewer_api.core.interview_locale import InterviewLocale
+
 
 InterviewProfile = Literal["fixed_form", "business_process", "system_requirement"]
 StructuredInterviewModelId = Literal[
@@ -24,6 +26,8 @@ class InterviewPlan(BaseModel):
     profile: InterviewProfile = "fixed_form"
     # None keeps existing plans on the backend default model.
     modelId: StructuredInterviewModelId | None = None
+    # The interview conversation language is independent from the UI locale.
+    interviewLocale: InterviewLocale | None = None
 
 
 class InterviewPlanItem(BaseModel):

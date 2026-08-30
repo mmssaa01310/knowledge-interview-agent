@@ -952,6 +952,8 @@ ProcessModelとRequirementStateの直接編集は、インタビュー回答の�
 
 Web UIの表示言語は`uiLocale`として管理し、AIインタビューの会話言語`interviewLocale`および表示タイムゾーン`timezone`と分離する。`uiLocale`を変更しても、インタビュー言語、AI回答、ユーザー回答、ナレッジ本文、既存Knowledgeの`language`は変更しない。
 
+AIインタビューの会話言語はインタビュー開始時に記録単位で選択し、`InterviewRecord.interviewLocale`へ保存する。初期対応は`ja-JP`、`en-US`、`zh-CN`、`pt-BR`とし、テキスト経路と音声経路（Amazon Transcribe + Polly）へ同じ言語設定を渡す。
+
 初期対応Localeは`ja-JP`、`en-US`、`zh-CN`、`th-TH`とする。Localeメタデータは一元管理し、機能単位の翻訳JSONを使用する。Fallbackは`ja-JP`とし、翻訳Key不足・余分なKey・空文字・JSON構文エラーはBuild前の検査で失敗させる。
 
 Localeは、ユーザーの明示設定、ユーザープロファイル、Cookie、LocalStorage、ブラウザー設定、`ja-JP`の順で決定する。切替時は再ログインせず、UI文言、`html lang`、`html dir`を即時更新する。日付・数値・パーセントはUI LocaleでIntl形式へ変換し、Timezoneは独立して扱う。

@@ -22,6 +22,17 @@ def test_create_runtime_returns_transcribe_polly_runtime() -> None:
     assert runtime.output_sample_rate_hz == 16000
 
 
+def test_create_runtime_configures_brazilian_portuguese_for_transcribe_and_polly() -> None:
+    runtime = create_runtime("transcribe_polly", "pt-BR")
+
+    assert isinstance(runtime, TranscribePollyRuntime)
+    assert runtime._config.interview_locale == "pt-BR"
+    assert runtime._config.language_code == "pt-BR"
+    assert runtime._config.polly_language_code == "pt-BR"
+    assert runtime._config.polly_voice_id == "Camila"
+    assert runtime._config.listen_ack_text == "Certo."
+
+
 def test_create_runtime_rejects_unknown_provider() -> None:
     with pytest.raises(ValueError):
         create_runtime("unknown")

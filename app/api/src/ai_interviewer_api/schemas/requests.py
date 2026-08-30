@@ -2,6 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ai_interviewer_api.core.interview_locale import InterviewLocale
 from ai_interviewer_api.models.interview_plan import InterviewPlan, InterviewQuestionPlan
 
 
@@ -112,6 +113,7 @@ class FieldSuggestionRequest(BaseModel):
 
 class RecordCreate(BaseModel):
     title: str
+    interviewLocale: InterviewLocale | None = None
     targetEquipment: str | None = None
     targetProcess: str | None = None
     ownerUserId: str | None = None
@@ -120,6 +122,7 @@ class RecordCreate(BaseModel):
 
 class RecordUpdate(BaseModel):
     title: str | None = None
+    interviewLocale: InterviewLocale | None = None
     status: Literal["draft", "in_progress", "submitted", "returned", "approved"] | None = None
     targetEquipment: str | None = None
     targetProcess: str | None = None

@@ -26,6 +26,12 @@ from ai_interviewer_api.agents.common.strands_runtime import invoke_voice_bedroc
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_configuration import require_interview_configuration
+from ai_interviewer_api.core.interview_locale import (
+    InterviewLocale,
+    interview_language_instruction,
+    localized_interview_fallbacks,
+    resolve_interview_locale,
+)
 from ai_interviewer_api.core.permissions import require_record_action
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import VoiceSession, VoiceTurn
@@ -294,6 +300,7 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
     require_record_action(record, user, "answer")
     knowledge = get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
     require_interview_configuration(knowledge)
+    interview_locale = resolve_interview_locale(record, knowledge)
     if not _has_voice_interview_fields(record, user):
         raise HTTPException(status_code=409, detail="voice_session_missing_questions")
     initial_reply = _initialize_initial_question(record, user)
@@ -310,6 +317,7 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
         ownerRole=user.role,
         recordId=record_id,
         provider=payload.provider,
+        interviewLocale=interview_locale,
         currentQuestionId=current_question_id,
         initialReplyText=initial_reply,
         initialQuestionId=current_question_id if initial_reply else None,
@@ -700,6 +708,7 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
                         candidate_answer=str(field_state.get("candidateAnswer") or "").strip(),
                         user_reply=str(turn.get("transcript") or ""),
                         field_state=field_state,
+                        interview_locale=resolve_interview_locale(session, {}),
                     ),
                     request=evaluation_request,
                 )
@@ -713,9 +722,8 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
                 )
                 confirmation_evaluation = VoiceConfirmationEvaluation(
                     outcome="UNCLEAR",
-                    clarification_question=(
-                        "内容を確定してよいか判断できませんでした。正しければ『はい』、"
-                        "修正があれば正しい内容を教えてください。"
+                    clarification_question=_localized_confirmation_fallback(
+                        resolve_interview_locale(session, {})
                     ),
                     evaluation_status="EVALUATION_ERROR",
                 )
@@ -738,6 +746,7 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
                         current_field=current_field,
                         field_state=field_state,
                         evidence_message_id=user_message["id"],
+                        interview_locale=resolve_interview_locale(session, {}),
                     ),
                     request=evaluation_request,
                 )
@@ -755,7 +764,10 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
                     is_relevant=None,
                     is_sufficient=False,
                     missing_information=[],
-                    follow_up_question=_build_evaluation_fallback_prompt(current_question),
+                    follow_up_question=_build_evaluation_fallback_prompt(
+                        current_question,
+                        resolve_interview_locale(session, {}),
+                    ),
                     evidence_transcript_ids=[user_message["id"]],
                     evaluation_degraded=True,
                     degraded_reason=_voice_evaluation_degraded_reason(exc),
@@ -798,7 +810,11 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             interpretation,
             awaiting_confirmation=field_state.get("answerState") == ANSWER_STATE_AWAITING_CONFIRMATION,
         ):
-            reply_text = _dialogue_response_text(interpretation, current_question)
+            reply_text = _dialogue_response_text(
+                interpretation,
+                current_question,
+                resolve_interview_locale(session, {}),
+            )
             field_state["lastDialogueAct"] = interpretation.act
             field_state["lastDialogueResponse"] = reply_text
             interview_state["lastProcessedUserMessageId"] = user_message["id"]
@@ -1007,7 +1023,9 @@ def _commit_control_turn(
     interview_state: dict[str, Any],
 ) -> dict:
     current_question_id = interview_state.get("currentQuestionId")
-    reply_text = "承知しました。"
+    reply_text = localized_interview_fallbacks(
+        resolve_interview_locale(session, {})
+    )["control_ack"]
     action = "ask_configured_field"
     response_id = f"voice-response-{uuid4().hex[:12]}"
     latest_session = _get_voice_session_for_internal_use(session["id"])
@@ -1479,6 +1497,7 @@ def _process_candidate_turn(
                 current_field=current_field,
                 field_state=field_state,
                 evidence_message_id=user_message["id"],
+                interview_locale=resolve_interview_locale(session, {}),
             ),
             request=evaluation_request,
         )
@@ -1499,7 +1518,10 @@ def _process_candidate_turn(
             is_relevant=None,
             is_sufficient=False,
             missing_information=[],
-            follow_up_question=_build_evaluation_fallback_prompt(current_question),
+            follow_up_question=_build_evaluation_fallback_prompt(
+                current_question,
+                resolve_interview_locale(session, {}),
+            ),
             evidence_transcript_ids=[user_message["id"]],
             evaluation_degraded=True,
             degraded_reason=degraded_reason,
@@ -1656,6 +1678,7 @@ def _process_confirmation_turn(
                     candidate_answer=kwargs["candidate_answer"],
                     user_reply=kwargs["user_reply"],
                     field_state=field_state,
+                    interview_locale=resolve_interview_locale(session, {}),
                 )
             except Exception:
                 logger.exception(
@@ -1666,9 +1689,8 @@ def _process_confirmation_turn(
                 )
                 decision = VoiceConfirmationEvaluation(
                     outcome="UNCLEAR",
-                    clarification_question=(
-                        "内容を確定してよいか判断できませんでした。正しければ『はい』、"
-                        "修正があれば正しい内容を教えてください。"
+                    clarification_question=_localized_confirmation_fallback(
+                        resolve_interview_locale(session, {})
                     ),
                     evaluation_status="EVALUATION_ERROR",
                 )
@@ -1814,15 +1836,20 @@ def _evaluate_voice_turn_candidate(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    interview_locale: InterviewLocale = "ja-JP",
 ) -> VoiceTurnEvaluation:
     result = _run_voice_json_output(
-        system_prompt=_VOICE_TURN_EVALUATION_SYSTEM_PROMPT,
+        system_prompt=(
+            f"{_VOICE_TURN_EVALUATION_SYSTEM_PROMPT}\n\n"
+            f"{interview_language_instruction(interview_locale)}"
+        ),
         prompt=_build_voice_turn_evaluation_prompt(
             transcript=transcript,
             current_question=current_question,
             current_field=current_field,
             field_state=field_state,
             evidence_message_id=evidence_message_id,
+            interview_locale=interview_locale,
         ),
         output_model=VoiceTurnEvaluationOutput,
         max_tokens=256,
@@ -1922,6 +1949,7 @@ def _evaluate_voice_answer_candidate(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    interview_locale: InterviewLocale = "ja-JP",
 ) -> VoiceAnswerEvaluation:
     prompt = _build_voice_answer_evaluation_prompt(
         transcript=transcript,
@@ -1929,9 +1957,10 @@ def _evaluate_voice_answer_candidate(
         current_field=current_field,
         field_state=field_state,
         evidence_message_id=evidence_message_id,
+        interview_locale=interview_locale,
     )
     result = _run_voice_json_output(
-        system_prompt=_voice_answer_evaluation_system_prompt(),
+        system_prompt=_voice_answer_evaluation_system_prompt(interview_locale),
         prompt=prompt,
         output_model=VoiceAnswerEvaluationOutput,
         max_tokens=256,
@@ -2018,6 +2047,7 @@ def _evaluate_confirmation_response(
     candidate_answer: str,
     user_reply: str,
     field_state: dict[str, Any],
+    interview_locale: InterviewLocale = "ja-JP",
 ) -> VoiceConfirmationEvaluation:
     if is_unambiguous_confirmation(user_reply):
         logger.info(
@@ -2033,9 +2063,13 @@ def _evaluate_confirmation_response(
         candidate_answer=candidate_answer,
         user_reply=user_reply,
         field_state=field_state,
+        interview_locale=interview_locale,
     )
     result = _run_voice_json_output(
-        system_prompt=_VOICE_CONFIRMATION_TEXT_SYSTEM_PROMPT,
+        system_prompt=(
+            f"{_VOICE_CONFIRMATION_TEXT_SYSTEM_PROMPT}\n\n"
+            f"{interview_language_instruction(interview_locale)}"
+        ),
         prompt=prompt,
         output_model=VoiceConfirmationEvaluationOutput,
         max_tokens=160,
@@ -2062,11 +2096,28 @@ def _evaluate_confirmation_response(
     )
 
 
-def _build_evaluation_fallback_prompt(current_question: dict[str, Any] | None) -> str:
+def _localized_confirmation_fallback(locale: InterviewLocale) -> str:
+    return {
+        "ja-JP": "内容を確定してよいか判断できませんでした。正しければ『はい』、修正があれば正しい内容を教えてください。",
+        "en-US": "I could not confirm the answer. Say yes if it is correct, or tell me the correct information.",
+        "zh-CN": "我无法确认这个回答。如果正确请说“是”，如果需要修改请告诉我正确内容。",
+        "pt-BR": "Não consegui confirmar a resposta. Diga sim se estiver correta ou informe o conteúdo correto.",
+    }[locale]
+
+
+def _build_evaluation_fallback_prompt(
+    current_question: dict[str, Any] | None,
+    locale: InterviewLocale = "ja-JP",
+) -> str:
     question_text = str(current_question.get("text") or "").strip() if isinstance(current_question, dict) else ""
     if question_text:
-        return f"回答処理に一時的な問題がありました。もう一度、{question_text}"
-    return "回答処理に一時的な問題がありました。もう一度お答えください。"
+        return {
+            "ja-JP": f"回答処理に一時的な問題がありました。もう一度、{question_text}",
+            "en-US": f"There was a temporary problem processing your answer. Please answer again: {question_text}",
+            "zh-CN": f"处理回答时遇到临时问题。请重新回答：{question_text}",
+            "pt-BR": f"Ocorreu um problema temporário ao processar sua resposta. Responda novamente: {question_text}",
+        }[locale]
+    return localized_interview_fallbacks(locale)["follow_up"]
 
 
 def _voice_evaluation_degraded_reason(exc: Exception) -> str:
@@ -2152,7 +2203,7 @@ def _run_voice_json_output(
     return parsed
 
 
-def _voice_answer_evaluation_system_prompt() -> str:
+def _voice_answer_evaluation_system_prompt(locale: InterviewLocale = "ja-JP") -> str:
     return (
         "あなたは音声インタビュー回答評価器です。\n"
         "ユーザーの生発話をそのまま回答確定してはいけません。\n"
@@ -2188,7 +2239,8 @@ def _voice_answer_evaluation_system_prompt() -> str:
         "具体的なfollow_up_questionを必ず返してください。元の質問をそのまま繰り返してはいけません。\n"
         "ユーザーが『何を答えればよいか』『どんな内容か』と案内を求めた場合は、"
         "回答候補にせずNOT_ANSWERとし、明示された要件の範囲で答え方を説明する"
-        "follow_up_questionを返してください。要件がなければ、質問に沿った一般的な例を簡潔に示してください。"
+        "follow_up_questionを返してください。要件がなければ、質問に沿った一般的な例を簡潔に示してください。\n"
+        f"{interview_language_instruction(locale)}"
     )
 
 
@@ -2199,6 +2251,7 @@ def _build_voice_answer_evaluation_prompt(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    interview_locale: InterviewLocale,
 ) -> str:
     question_context = {
         "id": (current_question or {}).get("id"),
@@ -2228,6 +2281,8 @@ def _build_voice_answer_evaluation_prompt(
             },
             "transcript": transcript,
             "evidenceTranscriptId": evidence_message_id,
+            "interviewLocale": interview_locale,
+            "languageInstruction": interview_language_instruction(interview_locale),
             "instructions": {
                 "allowedDecisions": ["CONFIRMABLE", "NEEDS_MORE_INFORMATION", "NOT_ANSWER", "UNCLEAR"],
                 "allowedAnswerDispositions": ["ANSWERED", "UNCLEAR", "IRRELEVANT"],
@@ -2286,6 +2341,7 @@ def _build_voice_turn_evaluation_prompt(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    interview_locale: InterviewLocale,
 ) -> str:
     return json.dumps(
         {
@@ -2313,6 +2369,8 @@ def _build_voice_turn_evaluation_prompt(
             },
             "transcript": transcript,
             "evidenceTranscriptId": evidence_message_id,
+            "interviewLocale": interview_locale,
+            "languageInstruction": interview_language_instruction(interview_locale),
         },
         ensure_ascii=False,
     )
@@ -2324,6 +2382,7 @@ def _build_voice_confirmation_prompt(
     candidate_answer: str,
     user_reply: str,
     field_state: dict[str, Any],
+    interview_locale: InterviewLocale,
 ) -> str:
     return json.dumps(
         {
@@ -2331,6 +2390,8 @@ def _build_voice_confirmation_prompt(
             "question": current_question or {},
             "candidateAnswer": candidate_answer,
             "userReply": user_reply,
+            "interviewLocale": interview_locale,
+            "languageInstruction": interview_language_instruction(interview_locale),
             "fieldState": {
                 "answerState": field_state.get("answerState"),
                 "pendingQuestionId": field_state.get("pendingQuestionId"),

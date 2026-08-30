@@ -23,6 +23,7 @@ def test_ensure_dev_system_requirement_demo_creates_browser_test_data() -> None:
         "purpose": None,
         "profile": "system_requirement",
         "modelId": "global.openai.gpt-5.6-terra",
+        "interviewLocale": None,
     }
     assert store.get("records", SYSTEM_REQUIREMENT_DEMO_RECORD_ID)["targetProcess"] == "受注実績検索・CSV出力"
     assert [

@@ -66,6 +66,43 @@ def _approve_record(record: dict, user: UserContext) -> dict:
     return update_record(record["id"], RecordUpdate(status="approved"), user)
 
 
+def test_record_creation_persists_selected_interview_locale() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    knowledge = _create_knowledge(manager)
+
+    record = create_record(
+        knowledge["id"],
+        RecordCreate(title="ポルトガル語インタビュー", interviewLocale="pt-BR"),
+        manager,
+    )
+
+    assert record["interviewLocale"] == "pt-BR"
+
+
+def test_assigned_interviewer_can_select_locale_before_interview_starts() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    interviewer = DEV_TOKENS["dev-interviewer"]
+    record = _create_record(manager, owner_user_id=interviewer.user_id)
+
+    updated = update_record(record["id"], RecordUpdate(interviewLocale="pt-BR"), interviewer)
+
+    assert updated["interviewLocale"] == "pt-BR"
+
+    store.upsert(
+        "messages",
+        {
+            "id": "started-message",
+            "tenantId": interviewer.tenant_id,
+            "recordId": record["id"],
+        },
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        update_record(record["id"], RecordUpdate(interviewLocale="en-US"), interviewer)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "interview_locale_locked_after_start"
+
+
 def test_record_creation_requires_saved_interview_configuration() -> None:
     manager = DEV_TOKENS["dev-manager"]
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="設定未完了テストDB"), manager)

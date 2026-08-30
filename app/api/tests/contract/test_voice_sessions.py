@@ -61,6 +61,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
         current_field: dict | None,
         field_state: dict,
         evidence_message_id: str,
+        interview_locale: str = "ja-JP",
     ):
         question_text = str((current_question or {}).get("text") or "")
         normalized = transcript.strip().replace("です。", "").replace("です", "")
@@ -130,6 +131,7 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
         candidate_answer: str,
         user_reply: str,
         field_state: dict,
+        interview_locale: str = "ja-JP",
     ):
         text = user_reply.strip()
         compact = text.replace("。", "").replace("、", "").replace(" ", "")

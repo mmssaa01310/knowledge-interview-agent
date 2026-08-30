@@ -18,6 +18,7 @@ class AuthorizedVoiceSession:
     current_question_id: str | None
     state_version: int
     interview_status: str
+    interview_locale: str = "ja-JP"
     initial_reply_text: str | None = None
     initial_question_id: str | None = None
     initial_reply_status: str | None = None
@@ -108,6 +109,7 @@ class VoiceSessionService:
             current_question_id=str(current_question_id) if current_question_id is not None else None,
             state_version=int(payload.get("stateVersion") or 0),
             interview_status=status,
+            interview_locale=str(payload.get("interviewLocale") or "ja-JP"),
             initial_reply_text=_optional_str(payload.get("initialReplyText")),
             initial_question_id=_optional_str(payload.get("initialQuestionId")),
             initial_reply_status=_optional_str(payload.get("initialReplyStatus")),

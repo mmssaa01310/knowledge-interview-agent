@@ -34,6 +34,13 @@
   },
   "title": "การสัมภาษณ์ด้วย AI",
   "modelLabel": "โมเดลที่ใช้: {model}",
+  "languageLabel": "ภาษาในการสนทนา: {language}",
+  "languages": {
+    "jaJP": "日本語",
+    "enUS": "English",
+    "zhCN": "简体中文",
+    "ptBR": "โปรตุเกส (บราซิล)"
+  },
   "configureNotice": "ตั้งค่าวัตถุประสงค์และโมเดลที่ใช้",
   "returnToStart": "กลับไปหน้าเริ่มสัมภาษณ์",
   "kikoName": "kiko",

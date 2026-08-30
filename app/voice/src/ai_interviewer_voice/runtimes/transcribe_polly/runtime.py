@@ -246,7 +246,11 @@ class TranscribePollyRuntime:
         if self._config.backchannel_enabled:
             self._spawn_background(
                 self._polly.warm(
-                    (LISTEN_ACK_TEXT, PROCESSING_ACK_TEXT, LONG_PROCESSING_TEXT)
+                    (
+                        self._config.listen_ack_text,
+                        self._config.processing_ack_text,
+                        self._config.long_processing_text,
+                    )
                 )
             )
         logger.info(
@@ -637,12 +641,12 @@ class TranscribePollyRuntime:
             elapsed_ms = int((monotonic() - self._last_backchannel_at) * 1000)
             if elapsed_ms < self._config.backchannel_cooldown_ms:
                 return
-        pcm = await self._polly.get_cached(LISTEN_ACK_TEXT)
+        pcm = await self._polly.get_cached(self._config.listen_ack_text)
         if not pcm:
             return
         accepted = await self._play_backchannel(
             kind=OutputKind.LISTEN_ACK,
-            text=LISTEN_ACK_TEXT,
+            text=self._config.listen_ack_text,
             pcm=pcm,
         )
         if accepted:
@@ -690,13 +694,13 @@ class TranscribePollyRuntime:
             self._schedule_notice(
                 delay_ms=self._config.processing_ack_delay_ms,
                 kind=OutputKind.PROCESSING_ACK,
-                text=PROCESSING_ACK_TEXT,
+                text=self._config.processing_ack_text,
                 generation=generation,
             )
             self._schedule_notice(
                 delay_ms=self._config.long_processing_notice_ms,
                 kind=OutputKind.LONG_PROCESSING,
-                text=LONG_PROCESSING_TEXT,
+                text=self._config.long_processing_text,
                 generation=generation,
             )
         result_received = False

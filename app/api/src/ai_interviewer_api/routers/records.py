@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
 from ai_interviewer_api.core.interview_configuration import require_interview_configuration
+from ai_interviewer_api.core.interview_locale import resolve_interview_locale
 from ai_interviewer_api.core.permissions import (
     accessible_records,
     require_admin_role,
@@ -46,6 +47,7 @@ def create_record(
     knowledge = get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     require_interview_configuration(knowledge)
     payload_data = payload.model_dump()
+    requested_interview_locale = payload_data.pop("interviewLocale", None)
     owner_user_id = payload_data.pop("ownerUserId", None) or user.user_id
     item = InterviewRecord(
         tenantId=user.tenant_id,
@@ -55,6 +57,7 @@ def create_record(
         knowledgeName=knowledge["name"],
         ownerUserId=owner_user_id,
         status="in_progress",
+        interviewLocale=requested_interview_locale or resolve_interview_locale(knowledge=knowledge),
         **payload_data,
     )
     store.upsert("records", item.model_dump())
@@ -133,12 +136,18 @@ def update_record(
     requested_status = requested_updates.pop("status", None)
 
     if user.role == "interviewer":
-        if requested_updates:
+        if set(requested_updates) - {"interviewLocale"}:
             raise HTTPException(status_code=403, detail="record_management_forbidden")
         if requested_status is None:
-            raise HTTPException(status_code=403, detail="record_management_forbidden")
+            require_record_action(item, user, "answer")
     else:
         require_management_role(user)
+
+    if "interviewLocale" in requested_updates:
+        if store.get("interview_states", f"interview-state-{record_id}"):
+            raise HTTPException(status_code=409, detail="interview_locale_locked_after_start")
+        if any(row.get("recordId") == record_id for row in store.list("messages", user.tenant_id)):
+            raise HTTPException(status_code=409, detail="interview_locale_locked_after_start")
 
     if requested_status is not None:
         _transition_record_status(

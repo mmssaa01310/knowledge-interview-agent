@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ai_interviewer_api.core.interview_locale import InterviewLocale
 from ai_interviewer_api.models.base import BaseEntity
 from ai_interviewer_api.models.interview_plan import InterviewPlan, InterviewQuestionPlan
 
@@ -60,6 +61,7 @@ class InterviewRecord(BaseEntity):
     knowledgeId: str
     knowledgeName: str
     title: str
+    interviewLocale: InterviewLocale | None = None
     status: Literal["draft", "in_progress", "submitted", "returned", "approved"] = "draft"
     targetEquipment: str | None = None
     targetProcess: str | None = None
@@ -74,6 +76,7 @@ class VoiceSession(BaseEntity):
     recordId: str
     ownerRole: Literal["admin", "knowledge_manager", "interviewer", "viewer"] = "interviewer"
     provider: str = "nova_sonic"
+    interviewLocale: InterviewLocale | None = None
     status: str = "active"
     connectionStatus: str = "created"
     currentQuestionId: str | None = None

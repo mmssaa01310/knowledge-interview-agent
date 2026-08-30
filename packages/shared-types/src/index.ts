@@ -1,5 +1,7 @@
 export type UserRole = "admin" | "knowledge_manager" | "interviewer" | "viewer";
 
+export type InterviewLocale = "ja-JP" | "en-US" | "zh-CN" | "pt-BR";
+
 export type ApprovalStatus = "draft" | "needs_review" | "approved" | "rejected";
 
 export type DocumentIngestionStatus =
@@ -39,7 +41,7 @@ export type InterviewPlan = {
   profile?: "fixed_form" | "business_process" | "system_requirement";
   modelId?: "global.openai.gpt-5.6-terra" | "global.openai.gpt-5.6-luna" | null;
   /** AIインタビューの言語。Web UIのuiLocaleとは独立して扱う。 */
-  interviewLocale?: string | null;
+  interviewLocale?: InterviewLocale | null;
 };
 
 export type Knowledge = BaseEntity & {
@@ -72,6 +74,8 @@ export type InterviewRecord = BaseEntity & {
   knowledgeId: string;
   knowledgeName: string;
   title: string;
+  /** Conversation language selected when this interview was created. */
+  interviewLocale?: InterviewLocale | null;
   status: "draft" | "in_progress" | "submitted" | "returned" | "approved";
   targetEquipment?: string;
   targetProcess?: string;

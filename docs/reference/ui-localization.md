@@ -21,7 +21,7 @@ UI表示言語とAIインタビューの会話言語は別の状態として扱�
 | 状態 | 役割 | 現行実装 |
 |---|---|---|
 | `uiLocale` | Web UIの表示言語 | 実装済み |
-| `interviewLocale` | AIインタビューで使用する言語 | 将来拡張用の型を保持 |
+| `interviewLocale` | AIインタビューで使用する言語 | インタビュー記録単位で保存 |
 | `timezone` | 日付・時刻の表示タイムゾーン | Localeと分離した任意値 |
 
 `uiLocale`の変更で`interviewLocale`または`timezone`を変更してはならない。既存のKnowledgeの`language`はAI・ナレッジ側の既存契約であり、UI Localeとして再利用しない。
@@ -34,6 +34,8 @@ UI表示言語とAIインタビューの会話言語は別の状態として扱�
 * `en-US`: English
 * `zh-CN`: 简体中文
 * `th-TH`: ไทย
+
+`uiLocale`の対応言語とは別に、AIインタビューの会話言語はインタビュー開始時に記録ごとに選択できる。現在の会話言語は`ja-JP`、`en-US`、`zh-CN`、`pt-BR`（Português (Brasil)）である。音声経路（Amazon Transcribe + Polly）では、音声入力にTranscribeのコード、音声出力にPollyの言語・音声コードを使用する。
 
 Localeのメタデータは`app/web/src/i18n/localeMetadata.ts`で一元管理する。各エントリは少なくとも`code`、`name`、`dir`、`fallback`、`dateLocale`、`numberLocale`を持つ。
 
@@ -99,6 +101,6 @@ TimezoneはLocaleから推測・変更せず、必要な場合は独立した`ti
 
 ## 8. Backendとの境界
 
-今回の多言語化ではBackendの業務ロジック、AI処理、保存形式、認証・認可を変更しない。Backendエラーは既存の`status`・`detail`をFrontendで分類し、利用者向けUI文言はLocaleリソースから表示する。
+`uiLocale`の変更ではBackendの業務ロジック、認証・認可、保存済みの会話内容を変更しない。AIインタビューの`interviewLocale`だけは開始時に記録へ保存し、AI処理と音声経路へ明示的に渡す。Backendエラーは既存の`status`・`detail`をFrontendで分類し、利用者向けUI文言はLocaleリソースから表示する。
 
 将来新しいBackendエラーを追加する場合は、可能な限り言語非依存のエラーコードを返し、FrontendでLocale別メッセージへ変換する。

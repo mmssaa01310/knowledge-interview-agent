@@ -11,6 +11,7 @@
   "settingsSave": "无法保存{tab}。请检查网络连接后重试。",
   "configurationRequired": "请在访谈设置中保存用途和执行模型后再创建记录。",
   "recordCreate": "无法创建记录，请检查网络连接后重试。",
+  "interviewLanguageUpdateFailed": "无法保存访谈语言，请检查网络连接后重试。",
   "recordDeleteConfirm": "要删除这条记录吗？",
   "recordDeleted": "记录已删除。",
   "recordDeleteFailed": "无法删除记录，请检查权限和网络连接。",

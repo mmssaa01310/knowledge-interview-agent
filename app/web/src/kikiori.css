@@ -2135,6 +2135,41 @@ label {
   min-height: 42px;
 }
 
+.interview-language-picker {
+  display: grid;
+  flex: 0 1 210px;
+  min-width: 0;
+  gap: 5px;
+}
+
+.interview-language-picker-label {
+  color: var(--ki-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.interview-language-picker .option-picker,
+.interview-language-picker .option-picker-trigger {
+  min-width: 0;
+  width: 100%;
+}
+
+.interview-language-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--ki-border);
+  border-radius: 999px;
+  background: var(--ki-surface-tint);
+  color: var(--ki-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .interview-resume-section {
   gap: 10px;
 }
@@ -3116,6 +3151,24 @@ label {
   gap: 8px;
 }
 
+.interview-start-language-picker {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 168px;
+}
+
+.interview-start-language-picker .option-picker,
+.interview-start-language-picker .option-picker-trigger {
+  width: 100%;
+  min-width: 0;
+}
+
+.interview-start-language-picker .option-picker-trigger {
+  min-height: 36px;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+
 .interview-context-toggle {
   display: none;
 }
@@ -3595,6 +3648,11 @@ label {
   .interview-launch-notice {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .interview-language-picker {
+    width: 100%;
+    flex: 0 0 auto;
   }
 
   .interview-launch-page > *,
@@ -6503,6 +6561,17 @@ html[dir="rtl"] .interview-page-title {
     gap: 4px;
   }
 
+  .interview-record-main-content .interview-start-language-picker {
+    min-width: 0;
+    flex: 0 1 132px;
+  }
+
+  .interview-record-main-content .interview-start-language-picker .option-picker-trigger {
+    min-height: 44px;
+    padding-inline: 7px;
+    font-size: 11px;
+  }
+
   .interview-record-main-content .interview-chat-header-actions > button {
     min-width: 0;
     min-height: 44px;
@@ -6590,6 +6659,15 @@ html[dir="rtl"] .interview-page-title {
 
 @media (max-width: 350px) {
   .interview-record-main-content .interview-chat-header-actions > button {
+    padding-inline: 6px;
+    font-size: 10px;
+  }
+
+  .interview-record-main-content .interview-start-language-picker {
+    flex-basis: 104px;
+  }
+
+  .interview-record-main-content .interview-start-language-picker .option-picker-trigger {
     padding-inline: 6px;
     font-size: 10px;
   }

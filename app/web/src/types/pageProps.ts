@@ -1,4 +1,4 @@
-import type { InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
+import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
 import type { AiProposal, DocumentSummary, KnowledgeField, UserProfile } from "../lib/api";
 import type { Route } from "../routes/routeTypes";
 import type {
@@ -115,7 +115,7 @@ export type KnowledgeLayoutProps = {
   onSaveInterviewAnswer: (fieldId: string, recordAnswer: string) => Promise<void>;
   onDeleteInterviewAnswers: () => void;
   onDeleteInterviewChat: () => void;
-  onStartInterview: () => void;
+  onStartInterview: (interviewLocale?: InterviewLocale) => Promise<void>;
   onSendInterviewMessage: (target?: InterviewAnswerTarget | null, content?: string) => void;
   onAppendInterviewMessage: (message: ChatMessage) => void;
   onRefreshInterviewSnapshot: () => void;

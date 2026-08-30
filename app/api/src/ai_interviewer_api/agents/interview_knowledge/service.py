@@ -26,6 +26,12 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
 )
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.core.interview_locale import (
+    InterviewLocale,
+    interview_language_instruction,
+    localized_interview_fallbacks,
+    resolve_interview_locale,
+)
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.interview_plan import STRUCTURED_INTERVIEW_MODEL_IDS
 from ai_interviewer_api.repositories.store import store
@@ -55,6 +61,7 @@ def generate_structured_interview_result(
     messages = _list_record_messages(record, user)
     profile = _effective_profile(state, resolve_profile(knowledge))
     model_id = resolve_structured_model_id(knowledge)
+    interview_locale = resolve_interview_locale(record, knowledge)
 
     if state.get("status") == "completed":
         return _build_result(
@@ -62,7 +69,7 @@ def generate_structured_interview_result(
             state=state,
             messages=messages,
             fields=fields,
-            reply=_completion_reply(),
+            reply=_completion_reply(interview_locale),
             question=None,
             action="finish",
             status="completed",
@@ -196,7 +203,7 @@ def generate_structured_interview_result(
                     state=state,
                     messages=messages,
                     fields=fields,
-                    reply=_completion_reply(),
+                    reply=_completion_reply(interview_locale),
                     question=None,
                     action="finish",
                     status="completed",
@@ -226,7 +233,7 @@ def generate_structured_interview_result(
                 state=state,
                 messages=messages,
                 fields=fields,
-                reply=_completion_reply(),
+                reply=_completion_reply(interview_locale),
                 question=None,
                 action="finish",
                 status="completed",
@@ -633,6 +640,8 @@ def _generate_question_text(
         "knowledgeName": knowledge.get("name"),
         "recordTitle": record.get("title"),
         "customPrompt": knowledge.get("systemPrompt"),
+        "interviewLocale": resolve_interview_locale(record, knowledge),
+        "languageInstruction": interview_language_instruction(resolve_interview_locale(record, knowledge)),
         "currentState": _compact_state(state),
         "recentConversation": [
             {"role": message.get("role"), "content": message.get("content")}
@@ -700,8 +709,8 @@ def _build_question(
     return question
 
 
-def _completion_reply() -> str:
-    return "インタビューが完了しました。回答内容を確認してください。"
+def _completion_reply(locale: InterviewLocale = "ja-JP") -> str:
+    return localized_interview_fallbacks(locale)["completion"]
 
 
 def _build_result(

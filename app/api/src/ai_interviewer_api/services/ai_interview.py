@@ -14,6 +14,11 @@ from ai_interviewer_api.agents.interview_knowledge.service import (
     is_structured_interview_enabled,
 )
 from ai_interviewer_api.auth.deps import UserContext
+from ai_interviewer_api.core.interview_locale import (
+    InterviewLocale,
+    localized_interview_fallbacks,
+    resolve_interview_locale,
+)
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
@@ -140,7 +145,7 @@ def generate_interview_reply(
         engine_name = "Structured Interview" if structured_enabled else "Strands interview agent"
         logger.exception("%s failed; returning safe error response", engine_name)
         return InterviewStreamResult(
-            reply_chunks=[_SAFE_INTERVIEW_ERROR_REPLY],
+            reply_chunks=[localized_interview_fallbacks(resolve_interview_locale(record, knowledge))["error"]],
             metadata={"error": "structured_interview_failed" if structured_enabled else "strands_interview_failed"},
         )
 
@@ -156,10 +161,17 @@ def _generate_interview_stream_result_with_strands(
     knowledge_fields = _list_interview_fields(knowledge, user)
     interview_state = _load_or_initialize_interview_state(record, knowledge_fields, user)
     field_lookup = _build_field_lookup(knowledge_fields)
+    interview_locale = resolve_interview_locale(record, knowledge)
 
     if interview_state["status"] == "completed":
         _migrate_formal_record_answers(interview_state, messages, user)
-        result = _build_finish_result(record, interview_state, messages, field_lookup)
+        result = _build_finish_result(
+            record,
+            interview_state,
+            messages,
+            field_lookup,
+            interview_locale=interview_locale,
+        )
         return InterviewStreamResult(reply_chunks=_split_reply_chunks(result["reply"]), metadata=result)
 
     last_processed_user_message_id = interview_state.get("lastProcessedUserMessageId")
@@ -184,6 +196,7 @@ def _generate_interview_stream_result_with_strands(
             latest_user_turn,
             user,
             persist_assistant_message=persist_assistant_messages,
+            interview_locale=interview_locale,
         )
         return InterviewStreamResult(reply_chunks=_split_reply_chunks(result["reply"]), metadata=result)
 
@@ -196,6 +209,7 @@ def _generate_interview_stream_result_with_strands(
             messages,
             user,
             persist_assistant_message=persist_assistant_messages,
+            interview_locale=interview_locale,
         )
         return InterviewStreamResult(reply_chunks=_split_reply_chunks(result["reply"]), metadata=result)
 
@@ -488,6 +502,7 @@ def _acknowledge_control_turn(
     user: UserContext,
     *,
     persist_assistant_message: bool,
+    interview_locale: InterviewLocale | None = None,
 ) -> dict[str, Any]:
     """Keep control turns outside answer processing while preserving the UI flow."""
     interview_state["lastProcessedUserMessageId"] = control_turn.get("id")
@@ -575,6 +590,7 @@ def _ask_next_configured_field(
     user: UserContext,
     *,
     persist_assistant_message: bool = True,
+    interview_locale: InterviewLocale | None = None,
 ) -> dict[str, Any]:
     next_field = _resolve_current_field(knowledge_fields, interview_state)
     if next_field is None:
@@ -583,7 +599,13 @@ def _ask_next_configured_field(
         interview_state["currentQuestionId"] = None
         interview_state["pendingFieldIds"] = []
         _persist_interview_state(interview_state, user)
-        return _build_finish_result(record, interview_state, messages, _build_field_lookup(knowledge_fields))
+        return _build_finish_result(
+            record,
+            interview_state,
+            messages,
+            _build_field_lookup(knowledge_fields),
+            interview_locale=interview_locale or resolve_interview_locale(record, {}),
+        )
 
     question = _build_configured_question(next_field, interview_state)
     reply_text = _compose_assistant_content("", question["text"])
@@ -673,6 +695,7 @@ def _process_text_answer_turn(
             field_state=field_state,
             recent_messages=messages,
             last_assistant_message=_latest_assistant_message(messages),
+            interview_locale=resolve_interview_locale(record, knowledge),
         )
     latest_user_message["dialogueAct"] = interpretation.act
     store.upsert("messages", latest_user_message)
@@ -692,6 +715,7 @@ def _process_text_answer_turn(
             user=user,
             persist_assistant_message=persist_assistant_message,
             retrieval_policy=retrieval_policy,
+            interview_locale=resolve_interview_locale(record, knowledge),
         )
     evaluation_retrieval_executed = False
 
@@ -813,6 +837,7 @@ def _process_text_answer_turn(
             messages,
             user,
             persist_assistant_message=persist_assistant_message,
+            interview_locale=resolve_interview_locale(record, knowledge),
         )
 
     follow_up_question = _build_follow_up_question(
@@ -874,9 +899,14 @@ def _build_dialogue_act_response_result(
     user: UserContext,
     persist_assistant_message: bool,
     retrieval_policy: str,
+    interview_locale: InterviewLocale | None = None,
 ) -> dict[str, Any]:
     field_lookup = _build_field_lookup(knowledge_fields)
-    reply_text = _dialogue_response_text(interpretation, current_question)
+    reply_text = _dialogue_response_text(
+        interpretation,
+        current_question,
+        interview_locale or resolve_interview_locale(record, {}),
+    )
     interview_state["lastProcessedUserMessageId"] = user_message["id"]
     field_state = interview_state.setdefault("fieldStates", {}).setdefault(current_field_id, {})
     field_state["lastDialogueAct"] = interpretation.act
@@ -919,10 +949,12 @@ def _build_finish_result(
     answer_summary: str | None = None,
     missing_information: list[str] | None = None,
     used_tools: list[str] | None = None,
+    interview_locale: InterviewLocale | None = None,
 ) -> dict[str, Any]:
+    locale = interview_locale or resolve_interview_locale(record, {})
     return _build_agent_result_payload(
         action="finish",
-        reply="以上で、設定されているすべての質問項目へのインタビューが完了しました。ご協力ありがとうございました。",
+        reply=localized_interview_fallbacks(locale)["completion_full"],
         question=None,
         completed_field_id=completed_field_id,
         current_field_id=None,
@@ -1107,21 +1139,52 @@ def _compose_assistant_content(reply: str, question_text: str | None) -> str:
 def _dialogue_response_text(
     interpretation: DialogueInterpretation,
     current_question: dict[str, Any] | None,
+    interview_locale: InterviewLocale = "ja-JP",
 ) -> str:
     if interpretation.response_text:
         return interpretation.response_text
     question_text = str((current_question or {}).get("text") or "").strip()
     if interpretation.act in {"BACKCHANNEL", "HESITATION"}:
-        return "少し考えてからで大丈夫です。"
+        return {
+            "ja-JP": "少し考えてからで大丈夫です。",
+            "en-US": "Take your time. It is okay to think before answering.",
+            "zh-CN": "您可以先想一想，不必着急回答。",
+            "pt-BR": "Não tenha pressa. Você pode pensar antes de responder.",
+        }.get(interview_locale, "少し考えてからで大丈夫です。")
     if interpretation.act == "CLARIFICATION_REQUEST" and question_text:
-        return f"この質問は、{question_text}という内容について伺っています。分かる範囲で教えてください。"
+        return {
+            "ja-JP": f"この質問は、{question_text}という内容について伺っています。分かる範囲で教えてください。",
+            "en-US": f"This question is asking about: {question_text}. Please share what you know.",
+            "zh-CN": f"这个问题是在询问：{question_text}。请告诉我您知道的内容。",
+            "pt-BR": f"Esta pergunta é sobre: {question_text}. Conte o que você sabe.",
+        }.get(interview_locale, f"この質問は、{question_text}という内容について伺っています。分かる範囲で教えてください。")
     if interpretation.act == "QUESTION_TO_ASSISTANT":
-        return "直前に確認した内容についての質問ですね。もう少し具体的に聞きたい点を教えてください。"
+        return {
+            "ja-JP": "直前に確認した内容についての質問ですね。もう少し具体的に聞きたい点を教えてください。",
+            "en-US": "You have a question about what we just discussed. Please tell me what you would like to know.",
+            "zh-CN": "您是在询问刚才确认的内容。请告诉我您想进一步了解什么。",
+            "pt-BR": "Você tem uma pergunta sobre o que acabamos de discutir. Diga o que gostaria de saber.",
+        }.get(interview_locale, "直前に確認した内容についての質問ですね。もう少し具体的に聞きたい点を教えてください。")
     if interpretation.act == "CONVERSATION_REQUEST":
-        return "少し補足しながら進めます。いまの質問について、分かる範囲で教えてください。"
+        return {
+            "ja-JP": "少し補足しながら進めます。いまの質問について、分かる範囲で教えてください。",
+            "en-US": "I will add a little context as we go. Please answer the current question as best you can.",
+            "zh-CN": "我会补充一些说明。请尽可能回答当前问题。",
+            "pt-BR": "Vou acrescentar um pouco de contexto. Responda à pergunta atual da melhor forma possível.",
+        }.get(interview_locale, "少し補足しながら進めます。いまの質問について、分かる範囲で教えてください。")
     if interpretation.act in {"IRRELEVANT", "OTHER"} and question_text:
-        return f"ありがとうございます。インタビューでは、いまは「{question_text}」について伺っています。"
-    return "ありがとうございます。いまの質問について、分かる範囲で教えてください。"
+        return {
+            "ja-JP": f"ありがとうございます。インタビューでは、いまは「{question_text}」について伺っています。",
+            "en-US": f"Thank you. For this interview, we are currently asking about: {question_text}.",
+            "zh-CN": f"谢谢。目前访谈正在询问：{question_text}。",
+            "pt-BR": f"Obrigado. Nesta entrevista, estamos perguntando sobre: {question_text}.",
+        }.get(interview_locale, f"ありがとうございます。インタビューでは、いまは「{question_text}」について伺っています。")
+    return {
+        "ja-JP": "ありがとうございます。いまの質問について、分かる範囲で教えてください。",
+        "en-US": "Thank you. Please answer the current question as best you can.",
+        "zh-CN": "谢谢。请尽可能回答当前问题。",
+        "pt-BR": "Obrigado. Responda à pergunta atual da melhor forma possível.",
+    }.get(interview_locale, "ありがとうございます。いまの質問について、分かる範囲で教えてください。")
 
 
 def _save_assistant_message(

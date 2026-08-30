@@ -86,7 +86,7 @@ class PollySynthesizer:
             )
         response = self._client.synthesize_speech(
             Engine=self._config.polly_engine,
-            LanguageCode="ja-JP",
+            LanguageCode=self._config.polly_language_code,
             OutputFormat="pcm",
             SampleRate=str(self._config.polly_sample_rate_hz),
             Text=text,
@@ -108,7 +108,7 @@ class PollySynthesizer:
 
     def _cache_key(self, text: str) -> str:
         material = (
-            f"{self._config.polly_engine}|{self._config.polly_voice_id}|"
+            f"{self._config.polly_language_code}|{self._config.polly_engine}|{self._config.polly_voice_id}|"
             f"{self._config.polly_sample_rate_hz}|{text}"
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()

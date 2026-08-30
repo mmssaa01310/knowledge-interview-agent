@@ -145,3 +145,25 @@ async def test_aws_transcribe_port_uses_stabilized_ja_jp_and_maps_results() -> N
     assert results[0].is_partial is True
     await port.close()
     assert stream.closed is True
+
+
+@pytest.mark.anyio
+async def test_aws_transcribe_port_uses_selected_portuguese_language() -> None:
+    stream = FakeDuplexStream()
+    client = FakeClient(stream)
+    port = AwsTranscribeStreamingPort(
+        TranscribePollyRuntimeConfig(
+            interview_locale="pt-BR",
+            language_code="pt-BR",
+        ),
+        client=client,
+    )
+
+    await port.start(
+        on_result=lambda result: asyncio.sleep(0),
+        on_reconnecting=lambda attempt: asyncio.sleep(0),
+        on_fatal_error=lambda exc: asyncio.sleep(0),
+    )
+
+    assert client.inputs[0].language_code.value == "pt-BR"
+    await port.close()
