@@ -616,6 +616,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     name: string;
     description?: string;
     purpose?: string;
+    tags?: string[];
   }, knowledgeDbId?: string) {
     const targetKnowledgeDb = knowledgeDbId
       ? knowledgeDbs.find((db) => db.id === knowledgeDbId) ?? null
@@ -633,6 +634,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       category: settingsCategory || undefined,
       targetBusiness: settingsTargetBusiness || undefined,
       targetEquipment: settingsTargetEquipment || undefined,
+      tags: payload.tags,
       language: settingsLanguage,
       defaultModelId: settingsDefaultModelId || undefined
     }).then(async (knowledge) => {

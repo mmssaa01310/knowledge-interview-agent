@@ -1,17 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { formatDate, formatNumber } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import { useI18n } from "../i18n";
 import { OptionPicker } from "../components/ui/OptionPicker";
+import { TagEditor } from "../components/ui/TagEditor";
 
 export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
   const { t, locale } = useI18n();
   const [name, setName] = useState("");
   const [purpose, setPurpose] = useState("");
   const [description, setDescription] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
   const [createKnowledgeDbId, setCreateKnowledgeDbId] = useState(props.selectedKnowledgeDb?.id ?? "");
   const canManage = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isCreateDialogOpen = canManage && props.route.name === "knowledge-new";
+  const existingTags = useMemo(
+    () => props.knowledges.flatMap((knowledge) => knowledge.tags ?? []),
+    [props.knowledges],
+  );
 
   useEffect(() => {
     if (!isCreateDialogOpen || !props.selectedKnowledgeDb) return;
@@ -27,6 +33,7 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
     setName("");
     setPurpose("");
     setDescription("");
+    setTags([]);
     props.navigate(knowledgeDbPath);
   }
 
@@ -36,13 +43,15 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
       {
         name: name.trim(),
         purpose: purpose.trim() || undefined,
-        description: description.trim() || undefined
+        description: description.trim() || undefined,
+        tags,
       },
       createKnowledgeDbId,
     );
     setName("");
     setPurpose("");
     setDescription("");
+    setTags([]);
   }
 
   return (
@@ -73,7 +82,23 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
               </div>
             </div>
             <div className="form-stack">
-              <label>{t("knowledge.createDialog.name")}<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder={t("knowledge.createDialog.namePlaceholder")} /></label>
+              <div className="knowledge-create-primary-fields">
+                <label>{t("knowledge.createDialog.name")}<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder={t("knowledge.createDialog.namePlaceholder")} /></label>
+                <div className="knowledge-tags-field">
+                  <strong className="knowledge-info-field-label">{t("settings.tags.title")}</strong>
+                  <TagEditor
+                    tags={tags}
+                    suggestions={existingTags}
+                    onChange={setTags}
+                    ariaLabel={t("settings.tags.inputAria")}
+                    placeholder={t("settings.tags.placeholder")}
+                    addLabel={t("settings.tags.add")}
+                    removeLabel={(tag) => t("settings.tags.remove", { tag })}
+                    suggestionsLabel={t("settings.tags.existing")}
+                    selectSuggestionLabel={(tag) => t("settings.tags.select", { tag })}
+                  />
+                </div>
+              </div>
               <label>{t("knowledge.createDialog.purpose")}<input value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder={t("knowledge.createDialog.purposePlaceholder")} /></label>
               <label>{t("knowledge.createDialog.descriptionField")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("knowledge.createDialog.descriptionPlaceholder")} /></label>
               {props.knowledgeDbs.length > 1 ? (

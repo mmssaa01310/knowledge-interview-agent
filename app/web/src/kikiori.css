@@ -452,6 +452,15 @@ body {
   gap: 6px;
 }
 
+.tag-editor-selected-list {
+  max-height: 68px;
+  overflow-y: auto;
+  padding: 5px 6px;
+  border: 1px solid var(--ki-border);
+  border-radius: 9px;
+  background: var(--ki-surface-subtle);
+}
+
 .tag-editor-remove {
   display: inline-grid;
   width: 18px;
@@ -493,9 +502,57 @@ body {
   width: auto;
 }
 
-.tag-editor-count {
-  color: var(--ki-faint);
+.knowledge-info-primary > label > input,
+.knowledge-create-primary-fields > label > input,
+.knowledge-info-primary .tag-editor-input-row input,
+.knowledge-create-primary-fields .tag-editor-input-row input,
+.knowledge-info-primary .tag-editor-input-row .compact,
+.knowledge-create-primary-fields .tag-editor-input-row .compact {
+  height: 40px;
+  min-height: 40px;
+}
+
+.tag-editor-suggestions {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.tag-editor-suggestions-label {
+  color: var(--ki-muted);
   font-size: 10px;
+  font-weight: 700;
+}
+
+.tag-editor-suggestion-list {
+  display: flex;
+  flex-wrap: wrap;
+  max-height: 86px;
+  gap: 5px;
+  overflow-y: auto;
+  padding: 1px;
+}
+
+.tag-editor-suggestion {
+  min-height: 28px;
+  padding: 5px 8px;
+  border: 1px solid var(--ki-border);
+  border-radius: 999px;
+  background: var(--ki-surface-subtle);
+  color: var(--ki-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tag-editor-suggestion:hover {
+  border-color: rgba(25, 87, 215, 0.24);
+  background: var(--ki-primary-wash);
+  color: var(--ki-primary-strong);
+}
+
+.tag-editor-suggestion:focus-visible {
+  outline: none;
+  box-shadow: var(--ki-focus-ring);
 }
 
 .sidebar-footer {
@@ -1904,34 +1961,108 @@ label {
 }
 
 .knowledge-info-section {
-  padding: 13px 16px;
+  padding: 0;
   background: var(--ki-surface);
 }
 
-.knowledge-info-fields textarea {
+.knowledge-info-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 12px;
+  padding: 13px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.knowledge-info-summary::-webkit-details-marker {
+  display: none;
+}
+
+.knowledge-info-summary::marker {
+  content: "";
+}
+
+.knowledge-info-summary:hover {
+  background: var(--ki-surface-subtle);
+}
+
+.knowledge-info-summary:focus-visible {
+  outline: none;
+  box-shadow: inset var(--ki-focus-ring);
+}
+
+.knowledge-info-summary-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.knowledge-info-summary-label {
+  color: var(--ki-muted);
+  font-size: 10px;
+}
+
+.knowledge-info-summary-copy strong {
+  overflow: hidden;
+  color: var(--ki-ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-info-summary-meta {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  color: var(--ki-muted);
+  font-size: 10px;
+}
+
+.knowledge-info-summary-chevron {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 140ms ease;
+}
+
+.knowledge-info-section[open] .knowledge-info-summary-chevron {
+  transform: translateY(2px) rotate(225deg);
+}
+
+.knowledge-info-content {
+  display: grid;
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.knowledge-info-primary,
+.knowledge-create-primary-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.knowledge-info-description textarea {
   min-height: 58px;
 }
 
 .knowledge-tags-field {
   display: grid;
-  grid-template-columns: minmax(150px, 0.38fr) minmax(0, 1fr);
-  align-items: start;
-  gap: 12px;
-  padding-top: 2px;
+  min-width: 0;
+  gap: 5px;
 }
 
-.knowledge-tags-field > div:first-child {
-  display: grid;
-  gap: 3px;
-}
-
-.knowledge-tags-field strong {
+.knowledge-info-field-label {
   color: var(--ki-text);
-  font-size: 12px;
-}
-
-.knowledge-tags-field .form-help {
-  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .settings-tabs-row {
@@ -2430,7 +2561,8 @@ label {
     padding: 12px;
   }
 
-  .knowledge-info-fields {
+  .knowledge-info-primary,
+  .knowledge-create-primary-fields {
     grid-template-columns: 1fr;
   }
 
@@ -3740,12 +3872,5 @@ html[dir="rtl"] .interview-page-title {
   .dashboard-review-actions > button,
   .dashboard-analysis-editor .dashboard-review-actions > button {
     flex: 1 1 130px;
-  }
-}
-
-@media (max-width: 640px) {
-  .knowledge-tags-field {
-    grid-template-columns: 1fr;
-    gap: 6px;
   }
 }

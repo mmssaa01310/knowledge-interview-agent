@@ -90,6 +90,7 @@ export type KnowledgeLayoutProps = {
     name: string;
     description?: string;
     purpose?: string;
+    tags?: string[];
   }, knowledgeDbId?: string) => void;
   onDeleteKnowledge: (knowledgeId: string) => void;
   onSaveSettings: (activeTab: "fields" | "execution") => void;

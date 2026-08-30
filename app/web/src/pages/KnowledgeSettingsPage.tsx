@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import {
   suggestKnowledgeFields,
@@ -132,6 +132,10 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const initializedKnowledgeIdRef = useRef(props.selectedKnowledge?.id ?? null);
   const promptProfiles = props.promptProfiles ?? [];
   const requiresInterviewConfiguration = !isInterviewConfigurationComplete(props.selectedKnowledge);
+  const existingTags = useMemo(
+    () => props.knowledges.flatMap((knowledge) => knowledge.tags ?? []),
+    [props.knowledges],
+  );
 
   const selectedModelOption = modelOptions.some((option) => option.value === props.settingsDefaultModelId)
     ? props.settingsDefaultModelId
@@ -415,27 +419,38 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         </div>
       ) : null}
 
-      <section className="settings-section knowledge-info-section" aria-label={t("settings.knowledgeInfo")}>
-        <div className="knowledge-info-fields">
-          <label>{t("common.name")}<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
-          <label>{t("common.description")}<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
-        </div>
-        <div className="knowledge-tags-field">
-          <div>
-            <strong>{t("settings.tags.title")}</strong>
-            <p className="form-help">{t("settings.tags.description")}</p>
+      <details className="settings-section knowledge-info-section" open>
+        <summary className="knowledge-info-summary">
+          <span className="knowledge-info-summary-copy">
+            <span className="knowledge-info-summary-label">{t("settings.knowledgeInfo")}</span>
+            <strong>{props.settingsName.trim() || t("common.notSet")}</strong>
+          </span>
+          <span className="knowledge-info-summary-meta">
+            {t("settings.knowledgeInfoDetails")}
+            <span className="knowledge-info-summary-chevron" aria-hidden="true" />
+          </span>
+        </summary>
+        <div className="knowledge-info-content">
+          <div className="knowledge-info-primary">
+            <label>{t("common.name")}<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
+            <div className="knowledge-tags-field">
+              <strong className="knowledge-info-field-label">{t("settings.tags.title")}</strong>
+              <TagEditor
+                tags={props.settingsTags}
+                suggestions={existingTags}
+                onChange={(tags) => { clearSettingsNotice(); props.setSettingsTags(tags); }}
+                ariaLabel={t("settings.tags.inputAria")}
+                placeholder={t("settings.tags.placeholder")}
+                addLabel={t("settings.tags.add")}
+                removeLabel={(tag) => t("settings.tags.remove", { tag })}
+                suggestionsLabel={t("settings.tags.existing")}
+                selectSuggestionLabel={(tag) => t("settings.tags.select", { tag })}
+              />
+            </div>
           </div>
-          <TagEditor
-            tags={props.settingsTags}
-            onChange={(tags) => { clearSettingsNotice(); props.setSettingsTags(tags); }}
-            ariaLabel={t("settings.tags.inputAria")}
-            placeholder={t("settings.tags.placeholder")}
-            addLabel={t("settings.tags.add")}
-            removeLabel={(tag) => t("settings.tags.remove", { tag })}
-            countLabel={t("settings.tags.count", { count: props.settingsTags.length })}
-          />
+          <label className="knowledge-info-description">{t("common.description")}<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
         </div>
-      </section>
+      </details>
 
       <div className="settings-tabs-row">
         <div className="settings-tabs" role="tablist" aria-label={t("settings.menuAria")}>

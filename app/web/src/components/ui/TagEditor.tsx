@@ -3,32 +3,40 @@ import type { KeyboardEvent } from "react";
 
 type TagEditorProps = {
   tags: readonly string[];
+  suggestions?: readonly string[];
   onChange: (tags: string[]) => void;
   ariaLabel: string;
   placeholder: string;
   addLabel: string;
   removeLabel: (tag: string) => string;
-  countLabel?: string;
+  suggestionsLabel?: string;
+  selectSuggestionLabel?: (tag: string) => string;
   maxTags?: number;
   maxTagLength?: number;
 };
 
+function normalizeTagKey(tag: string) {
+  return tag.trim().toLocaleLowerCase();
+}
+
 function hasTag(tags: readonly string[], candidate: string) {
-  const normalizedCandidate = candidate.toLocaleLowerCase();
+  const normalizedCandidate = normalizeTagKey(candidate);
   return tags.some((tag) => {
-    const normalizedTag = tag.toLocaleLowerCase();
+    const normalizedTag = normalizeTagKey(tag);
     return normalizedTag === normalizedCandidate;
   });
 }
 
 export function TagEditor({
   tags,
+  suggestions = [],
   onChange,
   ariaLabel,
   placeholder,
   addLabel,
   removeLabel,
-  countLabel,
+  suggestionsLabel,
+  selectSuggestionLabel,
   maxTags = 20,
   maxTagLength = 40,
 }: TagEditorProps) {
@@ -63,11 +71,23 @@ export function TagEditor({
     && draft.trim().length <= maxTagLength
     && tags.length < maxTags
     && !hasTag(tags, draft.trim());
+  const availableSuggestions = Array.from(
+    new Map(
+      suggestions
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+        .map((tag) => [normalizeTagKey(tag), tag] as const),
+    ).values(),
+  )
+    .filter((tag) => tag.length <= maxTagLength)
+    .filter((tag) => !hasTag(tags, tag))
+    .filter((tag) => !draft.trim() || normalizeTagKey(tag).includes(normalizeTagKey(draft)))
+    .sort((left, right) => left.localeCompare(right));
 
   return (
     <div className="tag-editor">
       {tags.length > 0 ? (
-        <div className="tag-editor-list" aria-label={ariaLabel}>
+        <div className="tag-editor-list tag-editor-selected-list" aria-label={ariaLabel}>
           {tags.map((tag) => (
             <span className="knowledge-tag" key={tag}>
               <span>#{tag}</span>
@@ -87,7 +107,24 @@ export function TagEditor({
         />
         <button type="button" className="ghost compact" onClick={() => addTag()} disabled={!canAdd}>{addLabel}</button>
       </div>
-      {countLabel ? <span className="tag-editor-count">{countLabel}</span> : null}
+      {tags.length < maxTags && suggestionsLabel && selectSuggestionLabel && availableSuggestions.length > 0 ? (
+        <div className="tag-editor-suggestions" aria-label={suggestionsLabel}>
+          <span className="tag-editor-suggestions-label">{suggestionsLabel}</span>
+          <div className="tag-editor-suggestion-list" role="list">
+            {availableSuggestions.map((tag) => (
+              <button
+                type="button"
+                className="tag-editor-suggestion"
+                key={tag}
+                onClick={() => addTag(tag)}
+                aria-label={selectSuggestionLabel(tag)}
+              >
+                #{tag}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
