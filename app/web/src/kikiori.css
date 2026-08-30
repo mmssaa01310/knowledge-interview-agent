@@ -3050,6 +3050,12 @@ label {
     min-height: 40px;
   }
 
+  .interview-chat-header-actions > .interview-context-toggle {
+    align-items: center;
+    justify-content: center;
+    line-height: 1.2;
+  }
+
   .interview-chat-panel .chat-log {
     height: auto;
     min-height: 220px;
