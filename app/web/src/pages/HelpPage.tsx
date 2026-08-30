@@ -1,10 +1,22 @@
 import { LocaleSwitcher } from "../components/ui/LocaleSwitcher";
-import { helpContentByLocale } from "../content/help";
+import { helpContentByLocale, type HelpSectionIcon } from "../content/help";
 import { useI18n } from "../i18n";
+
+const helpSectionIconSources: Record<HelpSectionIcon, string> = {
+  kikiori: "/images/kikiori-icon.svg",
+  kiko: "/images/kiko-waiting.svg",
+};
 
 export function HelpPage() {
   const { locale, t } = useI18n();
   const content = helpContentByLocale[locale];
+
+  function closeHelpPage() {
+    window.close();
+    if (!window.closed) {
+      window.location.replace("/knowledge-dbs");
+    }
+  }
 
   return (
     <main className="help-page">
@@ -33,12 +45,19 @@ export function HelpPage() {
           <div className="help-content">
             {content.sections.map((section) => (
               <section className="help-content-section" id={`help-${section.id}`} key={section.id}>
-                <h2>{section.title}</h2>
+                <div className={section.icon ? "help-section-heading with-icon" : "help-section-heading"}>
+                  {section.icon ? <img className="help-section-icon" src={helpSectionIconSources[section.icon]} alt="" aria-hidden="true" /> : null}
+                  <h2>{section.title}</h2>
+                </div>
                 <p>{section.summary}</p>
-                <div className="help-steps-label">{t("help.stepsLabel")}</div>
-                <ol className="help-step-list">
-                  {section.steps.map((step) => <li key={step}>{step}</li>)}
-                </ol>
+                {section.steps.length > 0 ? (
+                  <>
+                    <div className="help-steps-label">{t("help.stepsLabel")}</div>
+                    <ol className="help-step-list">
+                      {section.steps.map((step) => <li key={step}>{step}</li>)}
+                    </ol>
+                  </>
+                ) : null}
               </section>
             ))}
             <section className="help-content-section help-faq" id="help-faq">
@@ -53,7 +72,7 @@ export function HelpPage() {
           </div>
         </div>
         <p className="help-external-note">{t("help.externalNote")}</p>
-        <a className="primary help-back-link" href="/knowledge-dbs">{t("help.backToApp")}</a>
+        <button className="primary help-back-link" type="button" onClick={closeHelpPage}>{t("help.close")}</button>
       </article>
     </main>
   );

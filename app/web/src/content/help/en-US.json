@@ -4,12 +4,17 @@
   "sections": [
     {
       "id": "about",
+      "icon": "kikiori",
       "title": "About KIKIORI",
-      "summary": "Combine AI interviews with human review to create knowledge that can be used with confidence.",
-      "steps": [
-        "Configure the purpose and question fields for each knowledge area.",
-        "Review and edit information from the AI conversation before using it as knowledge."
-      ]
+      "summary": "KIKIORI is a workspace that organizes field conversations through AI interviews and shares the content people review and edit as knowledge.",
+      "steps": []
+    },
+    {
+      "id": "kiko",
+      "icon": "kiko",
+      "title": "About KIKO",
+      "summary": "KIKO is the AI assistant that supports KIKIORI interviews by organizing the conversation and presenting the next questions or items to confirm.",
+      "steps": []
     },
     {
       "id": "navigation",

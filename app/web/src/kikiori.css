@@ -3672,10 +3672,13 @@ label {
   position: absolute;
   z-index: 20;
   inset-inline-end: 0;
-  bottom: calc(100% + 7px);
+  top: calc(100% + 7px);
+  bottom: auto;
   width: max-content;
   min-width: 178px;
   max-width: min(240px, 70vw);
+  max-height: min(240px, calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)));
+  overflow-y: auto;
   display: grid;
   gap: 3px;
   padding: 5px;
@@ -5022,6 +5025,32 @@ html[dir="rtl"] .interview-page-title {
   border: 1px solid var(--ki-border);
   border-radius: var(--ki-radius-md);
   background: var(--ki-surface-subtle);
+}
+
+.help-section-heading {
+  min-width: 0;
+}
+
+.help-section-heading.with-icon {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.help-section-heading.with-icon h2 {
+  margin-bottom: 0;
+}
+
+.help-section-icon {
+  display: block;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  padding: 5px;
+  border: 1px solid var(--ki-border);
+  border-radius: 14px;
+  background: var(--ki-surface);
+  object-fit: contain;
 }
 
 .help-content-section h2 {

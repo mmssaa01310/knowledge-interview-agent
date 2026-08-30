@@ -4,12 +4,17 @@
   "sections": [
     {
       "id": "about",
+      "icon": "kikiori",
       "title": "关于KIKIORI",
-      "summary": "结合AI访谈和人工确认，创建可以放心使用的知识。",
-      "steps": [
-        "为每个知识库设置访谈目的和问题字段。",
-        "在使用AI对话内容作为知识前，先进行确认和编辑。"
-      ]
+      "summary": "KIKIORI是一个通过AI访谈整理现场对话，并将人工确认和编辑后的内容分享为知识的工作区。",
+      "steps": []
+    },
+    {
+      "id": "kiko",
+      "icon": "kiko",
+      "title": "关于KIKO",
+      "summary": "KIKO是支持KIKIORI访谈的AI助手，会整理对话并提示下一个问题或需要确认的内容。",
+      "steps": []
     },
     {
       "id": "navigation",
