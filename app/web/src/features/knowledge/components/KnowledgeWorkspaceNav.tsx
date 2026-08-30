@@ -94,7 +94,7 @@ export function KnowledgeWorkspaceNav({
   }
 
   return (
-    <div className="sidebar-section">
+    <div className="sidebar-section" data-guide="knowledge-navigation">
       <div className="workspace-nav-header">
         <div className="sidebar-section-heading">
           <span className="sidebar-section-kicker">{t("navigation.workspace")}</span>
@@ -108,6 +108,7 @@ export function KnowledgeWorkspaceNav({
             disabled={isPreparingKnowledgeCreation}
             aria-label={t("navigation.createKnowledge")}
             title={t("navigation.createKnowledge")}
+            data-guide="knowledge-create"
           >
             {isPreparingKnowledgeCreation ? "…" : "+"}
           </button>
@@ -142,6 +143,8 @@ export function KnowledgeWorkspaceNav({
                     type="button"
                     key={`${group.key}-${knowledge.id}`}
                     className={selectedKnowledgeId === knowledge.id ? "workspace-item active" : "workspace-item"}
+                    data-guide="knowledge-item"
+                    data-knowledge-path={`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`}
                     onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
                   >
                     <strong>{knowledge.name}</strong>

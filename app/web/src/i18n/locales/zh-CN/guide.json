@@ -5,10 +5,67 @@
   "next": "下一步",
   "finish": "完成",
   "close": "关闭指南",
+  "selector": {
+    "title": "您想了解哪项操作？",
+    "description": "选择主题后，指南会在当前页面按顺序突出显示操作位置。",
+    "manualNotice": "如果要阅读操作步骤，请打开用户菜单并选择操作手册。"
+  },
+  "status": {
+    "not_started": "未开始",
+    "in_progress": "进行中",
+    "completed": "已完成",
+    "dismissed": "已结束"
+  },
+  "catalog": {
+    "gettingStarted": {
+      "title": "第一次使用KIKIORI",
+      "description": "简要了解主要页面区域以及开始操作的位置。"
+    },
+    "createKnowledge": {
+      "title": "创建知识库",
+      "description": "了解从创建知识库到设置访谈和问题的完整流程。"
+    },
+    "runInterview": {
+      "title": "进行访谈",
+      "description": "创建记录，并了解AI对话、回答输入和知识确认流程。"
+    },
+    "reviewKnowledge": {
+      "title": "编辑并确认知识",
+      "description": "查看并修正访谈记录，然后确认需要处理的内容。"
+    },
+    "knowledgeSettings": {
+      "title": "查看知识设置",
+      "description": "了解查看或更新问题字段和访谈设置的位置。"
+    },
+    "adminAnalysis": {
+      "title": "查看管理员分析",
+      "description": "了解如何筛选管理面板，并查看汇总、趋势和需要处理的记录。"
+    }
+  },
   "steps": {
     "navigation": {
       "title": "选择工作区",
       "description": "使用左侧导航选择知识库、记录和其他工作区。"
+    },
+    "knowledgeList": {
+      "title": "查看知识库列表",
+      "description": "从列表中选择知识库，打开访谈或设置页面。"
+    },
+    "knowledgeItem": {
+      "title": "选择要使用的知识库",
+      "description": "选择知识库名称即可打开对应的访谈工作区。"
+    },
+    "userMenu": {
+      "title": "使用用户菜单",
+      "description": "通过底部用户区域切换语言，或打开帮助和操作指南。"
+    },
+    "interviewStart": {
+      "title": "找到访谈入口",
+      "description": "在此创建新记录，或选择进行中的记录继续访谈。"
+    },
+    "interviewEntry": {
+      "title": "创建或继续记录",
+      "description": "输入标题开始新记录，或选择进行中的行继续操作。"
     },
     "interview": {
       "title": "进行访谈",
@@ -21,6 +78,97 @@
     "composer": {
       "title": "发送回答",
       "description": "在底部输入框中输入回答并发送，也可以切换到语音访谈。"
+    },
+    "createKnowledge": {
+      "title": "创建知识库",
+      "description": "输入新知识库的名称和用途，开始创建。"
+    },
+    "createKnowledgeForm": {
+      "title": "输入创建信息",
+      "description": "输入名称、用途、说明和标签，然后确认并创建知识库。"
+    },
+    "knowledgeDetails": {
+      "title": "查看知识基本信息",
+      "description": "确认名称、说明、用途和标签等访谈基础信息。"
+    },
+    "interviewSettings": {
+      "title": "设置访谈选项",
+      "description": "设置访谈目的、模型、问题设计模型以及可选的提示词模板。"
+    },
+    "questionSettings": {
+      "title": "设置问题选项",
+      "description": "查看AI访谈中要确认的问题字段，并编辑需要调整的项目。"
+    },
+    "questionAdd": {
+      "title": "添加问题字段",
+      "description": "使用此处添加字段，然后输入字段名称和说明。"
+    },
+    "knowledgeSettings": {
+      "title": "查看知识设置",
+      "description": "在这里查看知识详情、问题字段和访谈执行设置。"
+    },
+    "knowledgeEdit": {
+      "title": "编辑问题字段",
+      "description": "添加或编辑AI在访谈中使用的问题字段。"
+    },
+    "knowledgeReview": {
+      "title": "查看待确认项目",
+      "description": "这是提取或待确认的内容。请阅读并在需要时修正。"
+    },
+    "records": {
+      "title": "查看访谈记录",
+      "description": "在记录列表中查看进度，并打开需要的记录。"
+    },
+    "recordItem": {
+      "title": "选择要确认的记录",
+      "description": "确认标题、负责人、状态和更新时间，然后打开记录。"
+    },
+    "recordDetail": {
+      "title": "确认记录内容",
+      "description": "对照访谈对话和知识面板，查看提取或待确认的回答。"
+    },
+    "dashboard": {
+      "title": "打开管理面板",
+      "description": "管理员和知识管理员可以在这里查看知识运营的整体情况。"
+    },
+    "dashboardFilters": {
+      "title": "筛选分析范围",
+      "description": "按日期、知识库、访谈配置和记录状态调整统计范围。"
+    },
+    "dashboardTabs": {
+      "title": "切换分析视图",
+      "description": "使用分析查看运营情况，使用学习支持查看学习状态和生成的分析。"
+    },
+    "dashboardSummary": {
+      "title": "查看汇总指标",
+      "description": "通过知识库数、记录数、待确认数和优先处理数了解整体状态。"
+    },
+    "dashboardTrend": {
+      "title": "查看记录趋势",
+      "description": "比较创建、提交和批准的记录，了解运营变化。"
+    },
+    "dashboardLearning": {
+      "title": "查看学习状态",
+      "description": "确认已确认、待确认和需要后续跟进的项目数量。"
+    },
+    "dashboardAnalysis": {
+      "title": "查看学习分析",
+      "description": "选择知识库并生成分析，查看摘要、趋势和指导建议。"
+    },
+    "dashboardReview": {
+      "title": "打开优先处理记录",
+      "description": "查看高优先级记录及其原因，必要时打开记录详情。"
+    },
+    "knowledgeConfirm": {
+      "title": "确认内容",
+      "description": "完成查看和编辑后，通过保存或批准操作确认内容。"
     }
+  },
+  "knowledgeCreated": {
+    "title": "知识库已创建",
+    "description": "接下来将介绍如何确认刚刚创建的知识库。",
+    "start": "开始指南",
+    "later": "稍后",
+    "dontShowAgain": "今后不再显示此提示"
   }
 }

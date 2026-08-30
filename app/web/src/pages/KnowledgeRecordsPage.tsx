@@ -41,7 +41,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
 
       {props.recordNotice ? <p className="notice" role="status">{props.recordNotice}</p> : null}
 
-      <div className="table-list">
+      <div className="table-list" data-guide="knowledge-records">
         <div className="table-row table-head records-workspace-row knowledge-records-row">
           <span>{t("knowledge.records.record")}</span>
           <span>{t("knowledge.records.assignee")}</span>
@@ -52,7 +52,12 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
         {props.records.length === 0 ? (
           <p className="empty">{t("knowledge.records.empty")}</p>
         ) : props.records.map((record) => (
-          <div className="table-row records-workspace-row knowledge-records-row" key={record.id}>
+          <div
+            className="table-row records-workspace-row knowledge-records-row"
+            key={record.id}
+            data-guide="record-item"
+            data-record-path={`${basePath}/records/${record.id}`}
+          >
             <span>
               <strong>{record.title}</strong>
               <small>{record.targetEquipment || record.targetProcess || "-"}</small>
@@ -65,7 +70,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
             </span>
             <span>{formatDate(record.updatedAt, locale)}</span>
             <span className="inline-actions">
-              <button className="ghost compact" type="button" onClick={() => openRecord(record.id)}>
+              <button className="ghost compact" type="button" data-guide="record-open" onClick={() => openRecord(record.id)}>
                 {props.user?.role === "viewer" ? t("knowledge.records.viewerAction") : t("knowledge.records.editAction")}
               </button>
               {isAdmin ? (
@@ -78,7 +83,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
                   <button className="ghost compact" type="button" onClick={() => returnRecord(record.id)}>
                     {t("knowledge.records.return")}
                   </button>
-                  <button className="primary compact" type="button" onClick={() => approveRecord(record.id)}>
+                  <button className="primary compact" type="button" data-guide="knowledge-confirm" onClick={() => approveRecord(record.id)}>
                     {t("knowledge.records.approve")}
                   </button>
                 </>

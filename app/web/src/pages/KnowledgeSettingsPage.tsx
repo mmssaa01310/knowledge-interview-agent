@@ -15,6 +15,7 @@ import { formatNumber } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import { OptionPicker } from "../components/ui/OptionPicker";
 import { TagEditor } from "../components/ui/TagEditor";
+import { useGuide } from "../features/guides/GuideProvider";
 
 const modelOptions = [
   { value: "global.openai.gpt-5.6-luna", labelKey: "interview.model.lunaStandard" },
@@ -112,6 +113,7 @@ function toFieldSuggestionErrorMessage(error: unknown, t: Translate) {
 
 export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const { t, locale } = useI18n();
+  const guide = useGuide();
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     if (!isInterviewConfigurationComplete(props.selectedKnowledge)) return "execution";
     return getStoredSettingsTab();
@@ -126,6 +128,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const [promptProfileNotice, setPromptProfileNotice] = useState("");
   const [isSavePromptDialogOpen, setIsSavePromptDialogOpen] = useState(false);
   const [savePromptTemplateName, setSavePromptTemplateName] = useState("");
+  const [dontShowCreationGuideAgain, setDontShowCreationGuideAgain] = useState(false);
   const [expandedFieldIndex, setExpandedFieldIndex] = useState<number | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const assistInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -388,8 +391,18 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
     handleSendAssistMessage();
   }
 
+  const showKnowledgeCreationGuideNotice = props.knowledgeCreationNotice
+    && !guide.isKnowledgeCreationGuideAutoPromptDisabled();
+
+  function dismissKnowledgeCreationGuideNotice() {
+    if (dontShowCreationGuideAgain) {
+      guide.setKnowledgeCreationGuideAutoPromptDisabled(true);
+    }
+    props.onDismissKnowledgeCreationNotice();
+  }
+
   return (
-    <section className="panel">
+    <section className="panel" data-guide="knowledge-settings">
       <div className="panel-header">
         <div>
           <h2>{t("settings.title")}</h2>
@@ -413,13 +426,45 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         </div>
       </div>
 
+      {showKnowledgeCreationGuideNotice ? (
+        <div className="knowledge-created-guide-notice" data-guide="knowledge-created-notice" role="status">
+          <div className="knowledge-created-guide-copy">
+            <strong>{t("guide.knowledgeCreated.title")}</strong>
+            <p>{t("guide.knowledgeCreated.description")}</p>
+          </div>
+          <div className="knowledge-created-guide-actions">
+            <button
+              type="button"
+              className="primary compact"
+              onClick={() => {
+                dismissKnowledgeCreationGuideNotice();
+                guide.startGuide("knowledge-settings");
+              }}
+            >
+              {t("guide.knowledgeCreated.start")}
+            </button>
+            <button type="button" className="ghost compact" onClick={dismissKnowledgeCreationGuideNotice}>
+              {t("guide.knowledgeCreated.later")}
+            </button>
+          </div>
+          <label className="check-row knowledge-created-guide-preference">
+            <input
+              type="checkbox"
+              checked={dontShowCreationGuideAgain}
+              onChange={(event) => setDontShowCreationGuideAgain(event.target.checked)}
+            />
+            {t("guide.knowledgeCreated.dontShowAgain")}
+          </label>
+        </div>
+      ) : null}
+
       {requiresInterviewConfiguration ? (
         <div className="settings-setup-notice">
           <strong>{t("settings.setupNotice")}</strong>
         </div>
       ) : null}
 
-      <details className="settings-section knowledge-info-section" open>
+      <details className="settings-section knowledge-info-section" data-guide="knowledge-details" open>
         <summary className="knowledge-info-summary">
           <span className="knowledge-info-summary-copy">
             <span className="knowledge-info-summary-label">{t("settings.knowledgeInfo")}</span>
@@ -452,18 +497,18 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         </div>
       </details>
 
-      <div className="settings-tabs-row">
+      <div className="settings-tabs-row" data-guide="settings-tabs">
         <div className="settings-tabs" role="tablist" aria-label={t("settings.menuAria")}>
-          <button id="settings-tab-fields" type="button" role="tab" aria-controls="settings-panel-fields" aria-selected={activeTab === "fields"} className={activeTab === "fields" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("fields")}>{t("settings.tabs.fields")}</button>
-          <button id="settings-tab-execution" type="button" role="tab" aria-controls="settings-panel-execution" aria-selected={activeTab === "execution"} className={activeTab === "execution" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("execution")}>{t("settings.tabs.execution")}</button>
-          <button id="settings-tab-knowledge" type="button" role="tab" aria-controls="settings-panel-knowledge" aria-selected={activeTab === "knowledge"} className={activeTab === "knowledge" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("knowledge")}>{t("settings.tabs.knowledge")}</button>
+          <button id="settings-tab-fields" type="button" role="tab" data-guide="settings-tab-fields" aria-controls="settings-panel-fields" aria-selected={activeTab === "fields"} className={activeTab === "fields" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("fields")}>{t("settings.tabs.fields")}</button>
+          <button id="settings-tab-execution" type="button" role="tab" data-guide="settings-tab-execution" aria-controls="settings-panel-execution" aria-selected={activeTab === "execution"} className={activeTab === "execution" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("execution")}>{t("settings.tabs.execution")}</button>
+          <button id="settings-tab-knowledge" type="button" role="tab" data-guide="settings-tab-knowledge" aria-controls="settings-panel-knowledge" aria-selected={activeTab === "knowledge"} className={activeTab === "knowledge" ? "settings-tab active" : "settings-tab"} onClick={() => selectTab("knowledge")}>{t("settings.tabs.knowledge")}</button>
         </div>
       </div>
 
       <div className="settings-workspace">
         <div className="settings-main">
           {activeTab === "execution" ? (
-            <section id="settings-panel-execution" className="settings-section" role="tabpanel" aria-labelledby="settings-tab-execution">
+            <section id="settings-panel-execution" className="settings-section" data-guide="interview-settings" role="tabpanel" aria-labelledby="settings-tab-execution">
               <div className="section-title-row">
                 <div>
                   <h3>{t("settings.execution.title")}</h3>
@@ -607,16 +652,16 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
           ) : null}
 
           {activeTab === "fields" ? (
-            <div id="settings-panel-fields" className="settings-split" role="tabpanel" aria-labelledby="settings-tab-fields">
+            <div id="settings-panel-fields" className="settings-split" data-guide="question-settings" role="tabpanel" aria-labelledby="settings-tab-fields">
               <section className="settings-section">
                 <div className="section-title-row compact-row">
                   <div className="question-list-title">
                     <h3>{t("settings.fields.title")}</h3>
                     <span className="counter">{t("settings.fields.count", { count: formatNumber(props.draftFields.length, locale) })}</span>
                   </div>
-                  <button className="ghost compact" type="button" onClick={addField}>{t("settings.fields.add")}</button>
+                  <button className="ghost compact" type="button" data-guide="question-add" onClick={addField}>{t("settings.fields.add")}</button>
                 </div>
-                <div className="field-list">
+                <div className="field-list" data-guide="knowledge-edit">
                   {props.draftFields.length === 0 ? <p className="empty">{t("settings.fields.empty")}</p> : props.draftFields.map((field, index) => {
                     const isExpanded = expandedFieldIndex === index;
                     const editorId = `knowledge-field-editor-${index}`;
@@ -717,6 +762,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             <button
               type="button"
               className="primary"
+              data-guide="knowledge-confirm"
               onClick={() => props.onSaveSettings(getSettingsSaveTab(activeTab))}
               disabled={props.settingsSaveState === "saving"}
               aria-busy={props.settingsSaveState === "saving"}

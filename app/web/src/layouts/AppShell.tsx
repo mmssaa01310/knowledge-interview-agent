@@ -4,7 +4,7 @@ import { WorkspaceNav } from "./WorkspaceNav";
 import type { UserProfile } from "../lib/api";
 import type { AppSection } from "../types/app";
 import { useI18n } from "../i18n";
-import { InteractiveGuide } from "../components/ui/InteractiveGuide";
+import { GuideProvider, useGuide } from "../features/guides/GuideProvider";
 
 type AppShellProps = {
   activeSection: AppSection;
@@ -20,7 +20,15 @@ type AppShellProps = {
   onLogout: () => void;
 };
 
-export function AppShell({
+export function AppShell(props: AppShellProps) {
+  return (
+    <GuideProvider userId={props.user?.userId} userRole={props.user?.role} currentPath={props.activePath} onNavigate={props.onNavigate}>
+      <AppShellContent {...props} />
+    </GuideProvider>
+  );
+}
+
+function AppShellContent({
   activeSection,
   activePath,
   user,
@@ -34,9 +42,9 @@ export function AppShell({
   onLogout,
 }: AppShellProps) {
   const { t } = useI18n();
+  const { openGuideSelector } = useGuide();
   const [isWorkspaceNavCollapsed, setIsWorkspaceNavCollapsed] = useState(false);
   const [isWorkspaceNavOpen, setIsWorkspaceNavOpen] = useState(false);
-  const [isInteractiveGuideOpen, setIsInteractiveGuideOpen] = useState(false);
 
   useEffect(() => {
     document.body.classList.toggle("nav-drawer-open", isWorkspaceNavOpen);
@@ -63,7 +71,7 @@ export function AppShell({
 
   function handleStartGuide() {
     setIsWorkspaceNavOpen(false);
-    setIsInteractiveGuideOpen(true);
+    openGuideSelector();
   }
 
   function handleLogout() {
@@ -82,6 +90,7 @@ export function AppShell({
           aria-label={t("navigation.navOpen")}
           aria-controls="workspace-navigation"
           aria-expanded={isWorkspaceNavOpen}
+          data-guide="navigation-trigger"
         >
           <span className="mobile-nav-trigger-icon" aria-hidden="true" />
         </button>
@@ -111,7 +120,6 @@ export function AppShell({
         onLogout={handleLogout}
       />
       <main className="main-content" data-active-path={activePath}>{children}</main>
-      <InteractiveGuide isOpen={isInteractiveGuideOpen} onClose={() => setIsInteractiveGuideOpen(false)} />
     </div>
   );
 }

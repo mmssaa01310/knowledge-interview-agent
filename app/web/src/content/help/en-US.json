@@ -1,0 +1,109 @@
+{
+  "title": "KIKIORI user guide",
+  "intro": "KIKIORI is a workspace for organizing field knowledge through AI-assisted interviews. Choose a topic from the table of contents to get started.",
+  "sections": [
+    {
+      "id": "about",
+      "title": "About KIKIORI",
+      "summary": "Combine AI interviews with human review to create knowledge that can be used with confidence.",
+      "steps": [
+        "Configure the purpose and question fields for each knowledge area.",
+        "Review and edit information from the AI conversation before using it as knowledge."
+      ]
+    },
+    {
+      "id": "navigation",
+      "title": "Choose a screen or knowledge area",
+      "summary": "Use the navigation on the left to choose the knowledge area and screen you need.",
+      "steps": [
+        "Select a knowledge name to open its interview screen.",
+        "Switch between interviews, records, settings, and the knowledge list from navigation.",
+        "On a smartphone, open navigation from the menu button at the top of the screen."
+      ]
+    },
+    {
+      "id": "create-interview",
+      "title": "Start an interview",
+      "summary": "Prepare a knowledge area, create a record, and start an interview.",
+      "steps": [
+        "Create a knowledge area and review its purpose, question fields, and interview settings.",
+        "Enter a record title on the interview screen and select the start button.",
+        "A record can be saved partway through and resumed later."
+      ]
+    },
+    {
+      "id": "ai-interview",
+      "title": "Run an AI interview",
+      "summary": "Answer AI questions with text or voice.",
+      "steps": [
+        "Read the conversation, enter an answer in the composer, and send it.",
+        "For a voice interview, select the voice start button and speak naturally.",
+        "As you answer, AI presents the next question or items that need review."
+      ]
+    },
+    {
+      "id": "knowledge-review",
+      "title": "Review knowledge",
+      "summary": "Review extracted information and items that still need confirmation.",
+      "steps": [
+        "Use the knowledge panel on the interview screen to compare questions and answers.",
+        "Read each item waiting for confirmation and add or correct information when needed.",
+        "On a smartphone, open the panel with the knowledge button."
+      ]
+    },
+    {
+      "id": "knowledge-edit",
+      "title": "Edit and confirm knowledge",
+      "summary": "Edit extracted content, review it, and save it after confirmation.",
+      "steps": [
+        "Edit field names and descriptions in the knowledge settings.",
+        "Review records and extracted proposals, then approve or correct only the items that need action.",
+        "Save and confirm the content when it is ready to use as official knowledge."
+      ]
+    },
+    {
+      "id": "admin-analysis",
+      "title": "Review admin analysis",
+      "summary": "Administrators and knowledge managers can use the dashboard to review operations and priorities.",
+      "steps": [
+        "Open the admin dashboard from the knowledge list and choose the date range or knowledge area.",
+        "Review knowledge, record, pending-review, and priority counts together with created, submitted, and approved trends.",
+        "Review the learning status counts for confirmed, pending, and follow-up items.",
+        "Select a knowledge area to generate learning analysis, then review its summaries and trends.",
+        "Review the reasons for priority records and open record details when follow-up is needed."
+      ]
+    },
+    {
+      "id": "search",
+      "title": "Find knowledge",
+      "summary": "Use the knowledge list and tags to find the information you need.",
+      "steps": [
+        "The knowledge list shows names, purpose, tags, and the last updated time.",
+        "Expand or collapse tag groups in navigation to find a knowledge area."
+      ]
+    },
+    {
+      "id": "language",
+      "title": "Change the display language",
+      "summary": "Switch KIKIORI's display language from the user menu.",
+      "steps": [
+        "Open the user area at the bottom of the sidebar and select Display language.",
+        "Choose 日本語, English, 简体中文, or ไทย to update the interface."
+      ]
+    }
+  ],
+  "faq": [
+    {
+      "question": "How do I resume an interview?",
+      "answer": "Open the knowledge area and select a record from the interview list. Records in progress can be resumed from where you left off."
+    },
+    {
+      "question": "Can I confirm AI-extracted content immediately?",
+      "answer": "Review the content before confirming it. Edit errors and save or confirm only after the item has been checked."
+    },
+    {
+      "question": "How can I see where an action is on screen?",
+      "answer": "Open the user menu, select Start interactive guide, and choose the guide for your task."
+    }
+  ]
+}

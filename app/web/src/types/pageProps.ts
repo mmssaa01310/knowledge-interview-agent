@@ -86,6 +86,8 @@ export type KnowledgeLayoutProps = {
   onOpenCreateKnowledge: () => void;
   isPreparingKnowledgeCreation: boolean;
   knowledgeCreationError: string;
+  knowledgeCreationNotice: boolean;
+  onDismissKnowledgeCreationNotice: () => void;
   onCreateKnowledge: (payload: {
     name: string;
     description?: string;

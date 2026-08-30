@@ -5,10 +5,67 @@
   "next": "次へ",
   "finish": "完了",
   "close": "ガイドを閉じる",
+  "selector": {
+    "title": "どの操作をガイドしますか？",
+    "description": "目的に合うガイドを選ぶと、現在の画面上で操作場所を順番に確認できます。",
+    "manualNotice": "操作手順を読む場合は、ユーザーメニューの操作マニュアルを開いてください。"
+  },
+  "status": {
+    "not_started": "未開始",
+    "in_progress": "進行中",
+    "completed": "完了済み",
+    "dismissed": "終了済み"
+  },
+  "catalog": {
+    "gettingStarted": {
+      "title": "初めてKIKIORIを使う",
+      "description": "画面の基本構成と、最初に選ぶ場所を短く確認します。"
+    },
+    "createKnowledge": {
+      "title": "ナレッジを作成する",
+      "description": "ナレッジ作成からインタビュー設定・質問設定・保存までを確認します。"
+    },
+    "runInterview": {
+      "title": "インタビューを実施する",
+      "description": "記録を作成し、AIとの会話・回答入力・ナレッジ確認までを確認します。"
+    },
+    "reviewKnowledge": {
+      "title": "ナレッジを編集・確定する",
+      "description": "記録の確認・修正から、必要な内容の確定までを確認します。"
+    },
+    "knowledgeSettings": {
+      "title": "ナレッジ設定を確認する",
+      "description": "質問項目や実行設定を確認・更新する場所を案内します。"
+    },
+    "adminAnalysis": {
+      "title": "管理者向けの分析を確認する",
+      "description": "管理ダッシュボードで絞り込み、集計、傾向、要確認記録を確認する方法を案内します。"
+    }
+  },
   "steps": {
     "navigation": {
       "title": "ワークスペースを選ぶ",
       "description": "左側のナビゲーションから、ナレッジや記録など利用するワークスペースを選択できます。"
+    },
+    "knowledgeList": {
+      "title": "ナレッジ一覧を見る",
+      "description": "ナレッジの一覧では、対象を選び、インタビューや設定へ移動できます。"
+    },
+    "knowledgeItem": {
+      "title": "使うナレッジを選ぶ",
+      "description": "ナレッジ名を選ぶと、そのナレッジのインタビュー画面を開けます。"
+    },
+    "userMenu": {
+      "title": "ユーザーメニューを使う",
+      "description": "画面下部のユーザー領域から、言語変更、ヘルプ、操作ガイドを開けます。"
+    },
+    "interviewStart": {
+      "title": "インタビューの入口を確認する",
+      "description": "この画面から新しい記録を作成したり、途中の記録を再開したりできます。"
+    },
+    "interviewEntry": {
+      "title": "記録を作成または再開する",
+      "description": "新しい記録ではタイトルを入力して開始し、途中の記録は行を選んで続きから再開します。"
     },
     "interview": {
       "title": "インタビューを進める",
@@ -21,6 +78,97 @@
     "composer": {
       "title": "回答を送信する",
       "description": "画面下部の入力欄に回答を入力して送信します。音声インタビューにも切り替えられます。"
+    },
+    "createKnowledge": {
+      "title": "ナレッジを作成する",
+      "description": "新しいナレッジの名前や目的を入力して、作成を開始します。"
+    },
+    "createKnowledgeForm": {
+      "title": "作成内容を入力する",
+      "description": "ナレッジの名前、目的、説明、タグを入力し、内容を確認して作成します。"
+    },
+    "knowledgeDetails": {
+      "title": "ナレッジの基本情報を確認する",
+      "description": "ナレッジ名、説明、目的、タグなど、インタビューの土台となる情報を確認します。"
+    },
+    "interviewSettings": {
+      "title": "インタビュー設定を行う",
+      "description": "インタビューの目的、利用モデル、質問作成モデル、テンプレートなどを設定します。"
+    },
+    "questionSettings": {
+      "title": "質問設定を行う",
+      "description": "AIインタビューで確認する質問項目を一覧で確認し、必要な項目を編集します。"
+    },
+    "questionAdd": {
+      "title": "質問項目を追加する",
+      "description": "質問項目を追加する場合はここから新しい項目を作成し、名前や説明を入力します。"
+    },
+    "knowledgeSettings": {
+      "title": "ナレッジ設定を確認する",
+      "description": "ナレッジの基本情報、質問項目、インタビュー実行設定を確認できます。"
+    },
+    "knowledgeEdit": {
+      "title": "質問項目を編集する",
+      "description": "AIインタビューで確認する項目を追加・編集できます。"
+    },
+    "knowledgeReview": {
+      "title": "確認待ちの項目を見る",
+      "description": "この項目はAIが抽出した内容や確認待ちの回答です。内容を読み、必要に応じて修正してください。"
+    },
+    "records": {
+      "title": "インタビュー記録を確認する",
+      "description": "記録一覧から進行状況を確認し、必要な記録を開けます。"
+    },
+    "recordItem": {
+      "title": "確認する記録を選ぶ",
+      "description": "タイトル、担当者、状態、更新日時を確認し、対象の記録を開きます。"
+    },
+    "recordDetail": {
+      "title": "記録の内容を確認する",
+      "description": "会話とナレッジパネルを見比べ、抽出された回答や確認が必要な内容を確認します。"
+    },
+    "dashboard": {
+      "title": "管理ダッシュボードを見る",
+      "description": "管理者・ナレッジ管理者は、ナレッジ全体の状況をこの画面で確認できます。"
+    },
+    "dashboardFilters": {
+      "title": "分析対象を絞り込む",
+      "description": "期間、ナレッジ、インタビュープロファイル、記録状態を指定して集計範囲を調整します。"
+    },
+    "dashboardTabs": {
+      "title": "分析表示を切り替える",
+      "description": "分析タブでは運用状況を、学習支援タブではナレッジの学習状況や分析結果を確認できます。"
+    },
+    "dashboardSummary": {
+      "title": "全体の指標を確認する",
+      "description": "ナレッジ数、記録数、確認待ち、優先対応数を確認し、全体の状況を把握します。"
+    },
+    "dashboardTrend": {
+      "title": "記録の推移を確認する",
+      "description": "作成・提出・承認の推移を見て、運用状況の変化を確認します。"
+    },
+    "dashboardLearning": {
+      "title": "学習状況を確認する",
+      "description": "確認済み、確認待ち、追加フォローが必要な項目の集計を確認します。"
+    },
+    "dashboardAnalysis": {
+      "title": "学習分析を確認する",
+      "description": "対象ナレッジを選んで分析を生成し、要約・傾向・個別の案内を確認します。"
+    },
+    "dashboardReview": {
+      "title": "優先確認の記録を開く",
+      "description": "対応優先度の高い記録と理由を確認し、必要なら記録詳細へ移動します。"
+    },
+    "knowledgeConfirm": {
+      "title": "内容を確定する",
+      "description": "確認・編集が終わったら、保存または承認操作で内容を確定します。"
     }
+  },
+  "knowledgeCreated": {
+    "title": "ナレッジが作成されました",
+    "description": "続けて、作成したナレッジの確認方法をご案内します。",
+    "start": "ガイドを開始",
+    "later": "あとで",
+    "dontShowAgain": "この案内を今後表示しない"
   }
 }

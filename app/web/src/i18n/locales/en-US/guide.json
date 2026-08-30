@@ -5,10 +5,67 @@
   "next": "Next",
   "finish": "Finish",
   "close": "Close guide",
+  "selector": {
+    "title": "What would you like to learn?",
+    "description": "Choose a topic to see the controls highlighted in order on the current screen.",
+    "manualNotice": "To read step-by-step instructions, open the user menu and select the user guide."
+  },
+  "status": {
+    "not_started": "Not started",
+    "in_progress": "In progress",
+    "completed": "Completed",
+    "dismissed": "Dismissed"
+  },
+  "catalog": {
+    "gettingStarted": {
+      "title": "First steps in KIKIORI",
+      "description": "Get a short orientation to the main screen areas and where to start."
+    },
+    "createKnowledge": {
+      "title": "Create knowledge",
+      "description": "Learn the flow from knowledge creation through interview and question settings."
+    },
+    "runInterview": {
+      "title": "Run an interview",
+      "description": "Create a record and learn the AI conversation, answer composer, and knowledge review flow."
+    },
+    "reviewKnowledge": {
+      "title": "Edit and confirm knowledge",
+      "description": "Review and correct interview records, then confirm the content that needs action."
+    },
+    "knowledgeSettings": {
+      "title": "Review knowledge settings",
+      "description": "Find the place to review or update question fields and interview settings."
+    },
+    "adminAnalysis": {
+      "title": "Review admin analysis",
+      "description": "Learn how to filter the admin dashboard and review totals, trends, and records needing attention."
+    }
+  },
   "steps": {
     "navigation": {
       "title": "Choose a workspace",
       "description": "Use the navigation on the left to choose the knowledge area, records, and other workspaces."
+    },
+    "knowledgeList": {
+      "title": "View the knowledge list",
+      "description": "Choose a knowledge area from the list to open its interview or settings."
+    },
+    "knowledgeItem": {
+      "title": "Choose a knowledge area",
+      "description": "Select a knowledge name to open its interview workspace."
+    },
+    "userMenu": {
+      "title": "Use the user menu",
+      "description": "Use the user area at the bottom to change language or open help and guides."
+    },
+    "interviewStart": {
+      "title": "Find the interview entry point",
+      "description": "Create a new record here or select an in-progress record to resume it."
+    },
+    "interviewEntry": {
+      "title": "Create or resume a record",
+      "description": "Enter a title to start a new record, or select an in-progress row to continue."
     },
     "interview": {
       "title": "Run the interview",
@@ -21,6 +78,97 @@
     "composer": {
       "title": "Send an answer",
       "description": "Enter an answer in the composer at the bottom and send it. You can also switch to a voice interview."
+    },
+    "createKnowledge": {
+      "title": "Create knowledge",
+      "description": "Enter a name and purpose for a new knowledge area to begin creating it."
+    },
+    "createKnowledgeForm": {
+      "title": "Enter creation details",
+      "description": "Enter the name, purpose, description, and tags, then review and create the knowledge area."
+    },
+    "knowledgeDetails": {
+      "title": "Review the knowledge details",
+      "description": "Review the name, description, purpose, and tags that form the foundation of the interview."
+    },
+    "interviewSettings": {
+      "title": "Set interview options",
+      "description": "Choose the interview purpose, models, question design model, and optional prompt template."
+    },
+    "questionSettings": {
+      "title": "Set question options",
+      "description": "Review the fields AI will cover during the interview and edit the ones that need changes."
+    },
+    "questionAdd": {
+      "title": "Add a question field",
+      "description": "Use this control to add a field, then enter its name and description."
+    },
+    "knowledgeSettings": {
+      "title": "Review knowledge settings",
+      "description": "Review the knowledge details, question fields, and interview execution settings here."
+    },
+    "knowledgeEdit": {
+      "title": "Edit question fields",
+      "description": "Add or edit the fields that AI uses during the interview."
+    },
+    "knowledgeReview": {
+      "title": "Review an item that needs confirmation",
+      "description": "This item contains extracted or pending content. Read it and correct it when needed."
+    },
+    "records": {
+      "title": "Review interview records",
+      "description": "Check progress in the record list and open the record you need."
+    },
+    "recordItem": {
+      "title": "Choose a record to review",
+      "description": "Check the title, owner, status, and updated time, then open the record."
+    },
+    "recordDetail": {
+      "title": "Review the record content",
+      "description": "Compare the conversation with the knowledge panel and review extracted or pending answers."
+    },
+    "dashboard": {
+      "title": "Open the admin dashboard",
+      "description": "Administrators and knowledge managers can review the overall knowledge operation here."
+    },
+    "dashboardFilters": {
+      "title": "Filter the analysis scope",
+      "description": "Adjust the scope by date, knowledge, interview profile, and record status."
+    },
+    "dashboardTabs": {
+      "title": "Switch analysis views",
+      "description": "Use Analysis for operations and Learning support for learning status and generated analysis."
+    },
+    "dashboardSummary": {
+      "title": "Review the summary metrics",
+      "description": "Use the knowledge, record, pending-review, and priority counts to understand the overall state."
+    },
+    "dashboardTrend": {
+      "title": "Review record trends",
+      "description": "Compare created, submitted, and approved records to understand changes over time."
+    },
+    "dashboardLearning": {
+      "title": "Review learning status",
+      "description": "Check counts for confirmed, pending, and follow-up items."
+    },
+    "dashboardAnalysis": {
+      "title": "Review learning analysis",
+      "description": "Select a knowledge area, generate analysis, and review summaries, trends, and guidance."
+    },
+    "dashboardReview": {
+      "title": "Open priority records",
+      "description": "Review high-priority records and the reasons they need attention, then open their details when needed."
+    },
+    "knowledgeConfirm": {
+      "title": "Confirm the content",
+      "description": "After reviewing and editing, save or approve the content to confirm it."
     }
+  },
+  "knowledgeCreated": {
+    "title": "Knowledge was created",
+    "description": "Continue with a short guide to reviewing the knowledge you just created.",
+    "start": "Start guide",
+    "later": "Later",
+    "dontShowAgain": "Do not show this again"
   }
 }

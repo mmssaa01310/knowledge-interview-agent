@@ -340,6 +340,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             <button
               type="button"
               className="primary compact"
+              data-guide="knowledge-confirm"
               onClick={() => void props.onChangeRecordStatus("approved")}
             >
               {t("interview.approveRecord")}
@@ -355,7 +356,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           onClick={() => setIsInterviewContextOpen(false)}
           aria-label={t("interview.closeContext")}
         />
-        <aside id="interview-context-panel" data-guide="knowledge-pane" className={isInterviewContextOpen ? "interview-sidebar knowledge-panel-open" : "interview-sidebar"} aria-label={t("interview.contextPanel")}>
+        <aside id="interview-context-panel" data-guide="knowledge-pane" data-guide-record-review="true" className={isInterviewContextOpen ? "interview-sidebar knowledge-panel-open" : "interview-sidebar"} aria-label={t("interview.contextPanel")}>
           <div className="interview-context-drawer-header">
             <strong>{t("interview.contextPanel")}</strong>
             <button type="button" className="ghost compact" onClick={() => setIsInterviewContextOpen(false)}>
@@ -416,12 +417,17 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             </div>
             {configuredQuestionItems.length ? (
               <div className="interview-question-list">
-                {configuredQuestionItems.map((item) => {
+                {configuredQuestionItems.map((item, index) => {
                   const fieldState = item.fieldId ? props.interviewState?.fieldStates?.[item.fieldId] : undefined;
                   const statusLabel = getInterviewAnswerStatusLabel(fieldState, t);
 
                   return (
-                    <div key={item.id} className={`interview-question-item ${item.status}`}>
+                    <div
+                      key={item.id}
+                      className={`interview-question-item ${item.status}`}
+                      data-guide={item.status !== "answered" ? "knowledge-review" : undefined}
+                      data-guide-index={item.status !== "answered" ? index : undefined}
+                    >
                       <div className="interview-question-head">
                         <strong>{item.label}</strong>
                         <div className="interview-question-actions">
@@ -502,6 +508,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                     <button
                       type="button"
                       className="proposal-confirm-button"
+                      data-guide="knowledge-confirm"
                       onClick={() => handleConfirmProposal(message)}
                       disabled={!canAnswerRecord || isCompleted || props.isInterviewStreaming || realtimeVoice.isActive}
                     >

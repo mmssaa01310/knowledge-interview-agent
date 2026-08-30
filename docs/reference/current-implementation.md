@@ -25,6 +25,13 @@
 * `packages/shared-types`: FrontendとBackendの共有型
 * `infra/docker-compose.yml`: ローカル開発用Compose
 
+### 2.1.1 操作ヘルプと操作ガイド
+
+* `/help`は、サイドバーのユーザーメニューから別タブで開く操作マニュアルである。本文は`app/web/src/content/help/`のロケール別JSONで管理し、目次と本文をDesktopでは2列、狭い画面では1列で表示する。
+* インタラクティブ操作ガイドは`driver.js`を使用し、`app/web/src/features/guides/`のGuide Registry、Selector、Engineで共通管理する。画面ごとのGuide Componentを複製せず、対象要素には`data-guide`属性を付ける。ガイドは、初回の画面案内、ナレッジ作成・インタビュー／質問設定、インタビュー実施、記録確認・修正、ナレッジ設定、管理者分析に分け、管理者分析は`admin`と`knowledge_manager`だけに表示する。
+* Guideの進捗はユーザー単位のLocalStorageへ`guideId`、`version`、`status`、完了日時を保存する。ナレッジ作成後の確認案内を表示しない設定も同じ領域で管理し、Guideは完了後もユーザーメニューから再実行できる。
+* インタビュー画面の確認対象は既存の`InterviewState.fieldStates`から画面が計算した状態を利用する。`CONFIRMED`の項目にはGuide対象属性を付けず、確認が必要な項目だけをGuide Engineが実行時に項目単位のStepへ展開してハイライトする。対象が存在しないOptional StepはGuide Engineが短時間でスキップする。設定画面の実行設定・質問設定、記録詳細、管理ダッシュボードのタブは、Guide Definitionの共通ステップから必要なタブを選択して対象を表示する。
+
 ### 2.2 Backendの責務分離
 
 * `routers`: HTTP入出力と認証・認可依存性の接続

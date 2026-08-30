@@ -185,6 +185,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [settingsSaveState, setSettingsSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [isPreparingKnowledgeCreation, setIsPreparingKnowledgeCreation] = useState(false);
   const [knowledgeCreationError, setKnowledgeCreationError] = useState("");
+  const [newlyCreatedKnowledgeId, setNewlyCreatedKnowledgeId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [interviewMessages, setInterviewMessages] = useState<ChatMessage[]>([]);
   const [interviewState, setInterviewState] = useState<InterviewState | null>(null);
@@ -638,6 +639,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       language: settingsLanguage,
       defaultModelId: settingsDefaultModelId || undefined
     }).then(async (knowledge) => {
+      setNewlyCreatedKnowledgeId(knowledge.id);
       await loadKnowledgeWorkspace(targetKnowledgeDb.id, knowledge.id);
       args.navigate(`/knowledge-dbs/${targetKnowledgeDb.id}/knowledges/${knowledge.id}/settings`);
     }).catch((error) => {
@@ -1185,6 +1187,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onOpenCreateKnowledge: openCreateKnowledge,
     isPreparingKnowledgeCreation,
     knowledgeCreationError,
+    knowledgeCreationNotice: newlyCreatedKnowledgeId === selectedKnowledge?.id,
+    onDismissKnowledgeCreationNotice: () => setNewlyCreatedKnowledgeId(null),
     onCreateKnowledge: handleCreateKnowledge,
     onDeleteKnowledge: handleDeleteKnowledge,
     onSaveSettings: handleSaveSettings,

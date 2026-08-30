@@ -157,7 +157,7 @@ export function UserMenu({
   }
 
   return (
-    <div className={isCollapsed ? "sidebar-user-menu collapsed" : "sidebar-user-menu"} ref={rootRef} data-open={isOpen ? "true" : "false"}>
+    <div className={isCollapsed ? "sidebar-user-menu collapsed" : "sidebar-user-menu"} ref={rootRef} data-open={isOpen ? "true" : "false"} data-guide="user-menu">
       <button
         ref={triggerRef}
         type="button"

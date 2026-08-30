@@ -219,7 +219,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
   const analysisRecordCount = appliedFilters.knowledgeId ? totals?.recordCount ?? 0 : 0;
 
   return (
-    <section className="dashboard-page page-stack">
+    <section className="dashboard-page page-stack" data-guide="admin-analysis">
       <header className="dashboard-header">
         <div>
           <button type="button" className="ghost compact" onClick={() => onNavigate("/knowledge-dbs")}>
@@ -232,7 +232,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
         <p className="dashboard-safety-note">{t("dashboard.activityNote")}</p>
       </header>
 
-      <form className="dashboard-filters" onSubmit={submitFilters}>
+      <form className="dashboard-filters" data-guide="dashboard-filters" onSubmit={submitFilters}>
         <label>
           {t("dashboard.filters.from")}
           <input type="date" value={filters.dateFrom ?? ""} onChange={(event) => updateFilter("dateFrom", event.target.value)} />
@@ -293,7 +293,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
         </div>
       </form>
 
-      <div className="dashboard-tabs" role="tablist" aria-label={t("dashboard.tabs.label")}>
+      <div className="dashboard-tabs" data-guide="dashboard-tabs" role="tablist" aria-label={t("dashboard.tabs.label")}>
         <button
           id="dashboard-tab-analysis"
           type="button"
@@ -329,7 +329,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
           aria-labelledby={activeTab === "analysis" ? "dashboard-tab-analysis" : "dashboard-tab-learning-support"}
           tabIndex={0}
         >
-          <div className="dashboard-kpi-grid">
+          <div className="dashboard-kpi-grid" data-guide="dashboard-summary">
             <div className="dashboard-kpi"><span>{t("dashboard.totals.knowledge")}</span><strong>{formatNumber(totals?.knowledgeCount ?? 0, locale)}</strong></div>
             <div className="dashboard-kpi"><span>{t("dashboard.totals.records")}</span><strong>{formatNumber(totals?.recordCount ?? 0, locale)}</strong></div>
             <div className="dashboard-kpi"><span>{t("dashboard.totals.pending")}</span><strong>{formatNumber(totals?.pendingReviewCount ?? 0, locale)}</strong></div>
@@ -337,7 +337,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
           </div>
 
           <div className="dashboard-content-grid">
-            <section className="dashboard-card dashboard-trend-card">
+            <section className="dashboard-card dashboard-trend-card" data-guide="dashboard-trend">
               <div className="dashboard-section-heading"><div><p className="eyebrow">{t("dashboard.trend.eyebrow")}</p><h2>{t("dashboard.trend.title")}</h2></div></div>
               {dashboard.timeSeries.length === 0 ? <p className="empty">{t("dashboard.trend.empty")}</p> : (
                 <div className="dashboard-trend-list">
@@ -357,7 +357,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
               <p className="dashboard-legend"><span className="legend-dot created" />{t("dashboard.trend.createdLabel")} <span className="legend-dot submitted" />{t("dashboard.trend.submittedLabel")} <span className="legend-dot approved" />{t("dashboard.trend.approvedLabel")}</p>
             </section>
 
-            <section className="dashboard-card">
+            <section className="dashboard-card" data-guide="dashboard-learning">
               <div className="dashboard-section-heading"><div><p className="eyebrow">{t("dashboard.learning.eyebrow")}</p><h2>{t("dashboard.learning.title")}</h2></div></div>
               <div className="dashboard-status-list">
                 {(["confirmed", "partiallyConfirmed", "notEvidenced", "needsFollowUp", "notApplicable"] as const).map((status) => (
@@ -368,7 +368,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
             </section>
           </div>
 
-          <section className="dashboard-card dashboard-analysis-card">
+          <section className="dashboard-card dashboard-analysis-card" data-guide="dashboard-analysis">
             <div className="dashboard-section-heading">
               <div>
                 <p className="eyebrow">{t("dashboard.analysis.eyebrow")}</p>
@@ -581,7 +581,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
           </section>
           </div>
 
-          <section className="dashboard-card dashboard-review-card">
+          <section className="dashboard-card dashboard-review-card" data-guide="dashboard-review">
             <div className="dashboard-section-heading"><div><p className="eyebrow">{t("dashboard.review.eyebrow")}</p><h2>{t("dashboard.review.title")}</h2><p>{t("dashboard.review.description", { count: dashboard.reviewPriorityTotal })}</p></div></div>
             {dashboard.reviewPriorities.length === 0 ? <p className="empty">{t("dashboard.review.empty")}</p> : (
               <div className="dashboard-review-list" role="list">

@@ -55,7 +55,7 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
   }
 
   return (
-    <section className="panel">
+    <section className="panel" data-guide="knowledge-list">
       <div className="panel-header">
         <div>
           <h2>{t("knowledge.listTitle")}</h2>
@@ -64,6 +64,7 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
           <button
             type="button"
             className="primary"
+            data-guide="knowledge-create"
             onClick={() => props.navigate(`/knowledge-dbs/${props.selectedKnowledgeDb?.id}/knowledges/new`)}
           >
             {t("knowledge.createButton")}
@@ -74,7 +75,7 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
 
       {isCreateDialogOpen ? (
         <div className="dialog-backdrop" role="presentation">
-          <div className="dialog-panel" role="dialog" aria-modal="true" aria-label={t("knowledge.createDialog.title")}>
+          <div className="dialog-panel" data-guide="knowledge-create-form" role="dialog" aria-modal="true" aria-label={t("knowledge.createDialog.title")}>
             <div className="dialog-header">
               <div>
                 <h2>{t("knowledge.createDialog.title")}</h2>
@@ -140,6 +141,8 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
             type="button"
             key={knowledge.id}
             className="table-row selectable knowledge-collection-row"
+            data-guide="knowledge-item"
+            data-knowledge-path={`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`}
             onClick={() => props.navigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
           >
             <span>

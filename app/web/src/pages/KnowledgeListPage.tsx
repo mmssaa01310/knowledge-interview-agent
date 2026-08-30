@@ -23,7 +23,7 @@ export function KnowledgeListPage({
 }: KnowledgeListPageProps) {
   const { t, locale } = useI18n();
   return (
-    <section className="panel">
+    <section className="panel" data-guide="knowledge-list">
       <div className="panel-header">
         <div>
           <h2>{t("knowledge.listTitle")}</h2>
@@ -40,6 +40,7 @@ export function KnowledgeListPage({
               className="primary"
               onClick={onOpenCreateKnowledge}
               disabled={isPreparingKnowledgeCreation}
+              data-guide="knowledge-create"
             >
               {isPreparingKnowledgeCreation ? t("knowledge.preparingCreate") : t("knowledge.createButton")}
             </button>
@@ -62,6 +63,8 @@ export function KnowledgeListPage({
             type="button"
             key={knowledge.id}
             className="table-row selectable knowledge-list-row"
+            data-guide="knowledge-item"
+            data-knowledge-path={`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`}
             onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
           >
             <span>

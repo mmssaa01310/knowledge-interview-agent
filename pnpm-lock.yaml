@@ -16,6 +16,9 @@ importers:
       '@xyflow/react':
         specifier: ^12.11.5
         version: 12.11.5(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      driver.js:
+        specifier: ^1.3.6
+        version: 1.8.0
       i18next:
         specifier: ^26.4.0
         version: 26.4.0(typescript@5.9.3)
@@ -607,6 +610,9 @@ packages:
     peerDependenciesMeta:
       supports-color:
         optional: true
+
+  driver.js@1.8.0:
+    resolution: {integrity: sha512-+8/IO7h1v14IzWh2GP60N7T3PFZweXwdn5e5POuxRSBoCYUojsBxzqawPeXh3YZIibRy7EehYNEyxe7slwwtdg==}
 
   electron-to-chromium@1.5.388:
     resolution: {integrity: sha512-Pl/aJaqOOxYxda3vcx1IKSJimwYXHDkEnGn0F+kG2EE68dDtx2uCinaS+Vih8Z91B9t8CSAbiF/HKyWcnXjhzw==}
@@ -1236,6 +1242,8 @@ snapshots:
   debug@4.4.3:
     dependencies:
       ms: 2.1.3
+
+  driver.js@1.8.0: {}
 
   electron-to-chromium@1.5.388: {}
 

@@ -22,7 +22,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
   }
 
   return (
-    <section className="panel page-stack interview-launch-page">
+    <section className="panel page-stack interview-launch-page" data-guide="interview-start">
       <div className="panel-header interview-launch-header">
         <div>
           <h2>{t("knowledge.launch.title")}</h2>
@@ -47,7 +47,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
       ) : null}
 
       {isConfigured && canCreateRecord ? (
-        <section className="interview-launch-card">
+        <section className="interview-launch-card" data-guide="interview-entry">
           <div className="new-interview-form">
             <label className="sr-only" htmlFor="new-record-title">{t("knowledge.launch.recordTitle")}</label>
             <input
@@ -69,7 +69,7 @@ export function KnowledgeInterviewPage(props: KnowledgeLayoutProps) {
       ) : null}
 
       {resumableRecords.length > 0 ? (
-        <section className="interview-resume-section">
+        <section className="interview-resume-section" data-guide="interview-resume">
           <div className="section-title-row compact-row">
             <div>
               <h3>{t("knowledge.launch.inProgressTitle")}</h3>
