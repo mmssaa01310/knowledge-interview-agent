@@ -5397,3 +5397,618 @@ html[dir="rtl"] .interview-page-title {
     flex: 1;
   }
 }
+
+/* Keep the active interview usable within the mobile viewport. The page shell
+   owns the viewport height; only the conversation log is allowed to scroll. */
+.interview-more-actions {
+  display: contents;
+}
+
+.interview-more-actions-trigger {
+  display: none;
+}
+
+.interview-more-actions-menu {
+  display: contents;
+}
+
+@media (max-width: 767px), (max-height: 520px) and (max-width: 1199px) {
+  body.interview-record-active {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  .app-shell.interview-record-shell {
+    height: 100svh;
+    height: 100dvh;
+    min-height: 100svh;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .app-shell.interview-record-shell .main-content.interview-record-main-content {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: auto;
+    gap: 8px;
+    overflow: hidden;
+    padding: 8px 10px max(8px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .interview-record-main-content > .page-header {
+    display: flex;
+    flex: 0 0 44px;
+    align-items: center;
+    min-height: 44px;
+    height: 44px;
+    gap: 8px;
+    flex-direction: row;
+    padding: 0 2px;
+  }
+
+  .interview-record-main-content > .page-header .page-header-copy {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    min-width: 0;
+    gap: 4px;
+  }
+
+  .interview-record-main-content > .page-header .page-header-copy > div {
+    min-width: 0;
+  }
+
+  .interview-record-main-content > .page-header .page-header-back {
+    display: inline-flex;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .interview-record-main-content > .page-header .page-header-back-icon {
+    color: var(--ki-primary-strong);
+    font-size: 21px;
+    line-height: 1;
+  }
+
+  .interview-record-main-content > .page-header .page-header-back-label {
+    display: none;
+  }
+
+  .interview-record-main-content > .page-header h1 {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 16px;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .interview-record-main-content > .page-header > .primary {
+    display: inline-grid;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+    place-items: center;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .interview-record-main-content > .page-header > .primary::before {
+    content: "⚙";
+    color: currentColor;
+    font-size: 19px;
+    line-height: 1;
+  }
+
+  .interview-record-main-content > .sub-nav {
+    width: 100%;
+    min-height: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .interview-record-main-content > .sub-nav .sub-nav-items {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    height: 100%;
+    gap: 2px;
+  }
+
+  .interview-record-main-content > .sub-nav .sub-nav-item {
+    min-width: 0;
+    min-height: 42px;
+    height: 42px;
+    justify-content: center;
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+
+  .interview-record-main-content > .sub-nav .sub-nav-svg-icon {
+    width: 15px;
+    height: 15px;
+    flex-basis: 15px;
+  }
+
+  .interview-record-main-content > .interview-page {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  .interview-record-main-content .interview-page-header {
+    display: flex;
+    min-width: 0;
+    min-height: 46px;
+    height: auto;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 0;
+    padding: 0 2px;
+  }
+
+  .interview-record-main-content .interview-page-title {
+    display: flex;
+    min-width: 0;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .interview-record-main-content .interview-back-button {
+    display: inline-flex;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .interview-record-main-content .interview-back-icon {
+    color: var(--ki-primary-strong);
+    font-size: 20px;
+    line-height: 1;
+  }
+
+  .interview-record-main-content .interview-back-label {
+    display: none;
+  }
+
+  .interview-record-main-content .interview-title-status {
+    display: grid;
+    min-width: 0;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0 6px;
+  }
+
+  .interview-record-main-content .interview-title-status h2 {
+    min-width: 0;
+    grid-column: 1;
+    grid-row: 1;
+    overflow: hidden;
+    font-size: 16px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .interview-record-main-content .interview-title-status > .status-pill {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  .interview-record-main-content .interview-model-badge {
+    min-width: 0;
+    max-width: 100%;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: start;
+    min-height: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: 9px;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .interview-record-main-content .interview-page-title > .notice {
+    display: none;
+  }
+
+  .interview-record-main-content .interview-more-actions {
+    position: relative;
+    display: block;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    flex: 0 0 44px;
+  }
+
+  .interview-record-main-content .interview-more-actions-trigger {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    place-items: center;
+    border: 1px solid var(--ki-border);
+    border-radius: 10px;
+    background: var(--ki-surface);
+    color: var(--ki-muted);
+    cursor: pointer;
+    font-size: 22px;
+    line-height: 1;
+    list-style: none;
+  }
+
+  .interview-record-main-content .interview-more-actions-trigger:hover,
+  .interview-record-main-content .interview-more-actions-trigger:focus-visible {
+    border-color: var(--ki-primary);
+    background: var(--ki-primary-wash);
+    color: var(--ki-primary-strong);
+    outline: none;
+  }
+
+  .interview-record-main-content .interview-more-actions-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 150;
+    display: none;
+    min-width: min(230px, calc(100vw - 28px));
+    gap: 3px;
+    padding: 6px;
+    border: 1px solid var(--ki-border);
+    border-radius: 12px;
+    background: var(--ki-surface);
+    box-shadow: var(--ki-shadow-lg);
+  }
+
+  .interview-record-main-content .interview-more-actions-menu.open {
+    display: grid;
+  }
+
+  .interview-record-main-content .interview-more-actions-menu button {
+    width: 100%;
+    min-height: 44px;
+    justify-content: flex-start;
+    padding-inline: 10px;
+    text-align: start;
+    white-space: normal;
+  }
+
+  .interview-record-main-content .interview-shell {
+    display: block;
+    min-height: 0;
+    height: auto;
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .interview-record-main-content .interview-sidebar {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 130;
+    display: grid;
+    width: min(420px, calc(100vw - 16px));
+    height: 100svh;
+    height: 100dvh;
+    min-height: 100svh;
+    min-height: 100dvh;
+    max-height: none;
+    margin: 0;
+    padding: max(18px, env(safe-area-inset-top, 0px)) 18px calc(18px + env(safe-area-inset-bottom, 0px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    border: 1px solid var(--ki-border);
+    border-right: 0;
+    border-radius: 18px 0 0 18px;
+    background: var(--ki-surface);
+    box-shadow: var(--ki-shadow-lg);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(105%);
+    transition: transform 180ms ease, opacity 180ms ease;
+    visibility: hidden;
+  }
+
+  .interview-record-main-content .interview-sidebar.knowledge-panel-open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+    visibility: visible;
+  }
+
+  .interview-record-main-content .interview-context-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: rgba(15, 35, 46, 0.34);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+
+  .interview-record-main-content .interview-context-backdrop.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .interview-record-main-content .interview-context-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--ki-border);
+  }
+
+  .interview-record-main-content .interview-context-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.25;
+  }
+
+  .interview-record-main-content .interview-main-column {
+    width: 100%;
+  }
+
+  .interview-record-main-content .interview-main-column {
+    display: flex;
+    min-height: 0;
+    height: 100%;
+    flex-direction: column;
+    gap: 6px;
+    overflow: hidden;
+  }
+
+  .interview-record-main-content .interview-chat-panel {
+    display: grid;
+    min-height: 0;
+    height: auto;
+    max-height: none;
+    flex: 1 1 auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .interview-record-main-content .interview-chat-header {
+    display: flex;
+    min-width: 0;
+    min-height: 52px;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .interview-record-main-content .interview-chat-header > div:first-child {
+    position: relative;
+    min-width: 0;
+    flex: 1 1 auto;
+    line-height: 1.2;
+  }
+
+  .interview-record-main-content .interview-chat-header > div:first-child::before {
+    position: absolute;
+    top: 4px;
+    left: 0;
+    width: 6px;
+    height: 6px;
+    margin: 0;
+  }
+
+  .interview-record-main-content .interview-chat-header strong {
+    display: block;
+    padding-left: 11px;
+    font-size: 13px;
+    line-height: 1.2;
+  }
+
+  .interview-record-main-content .interview-chat-header p {
+    max-width: 100%;
+    margin: 1px 0 0;
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .interview-record-main-content .interview-chat-header-actions {
+    min-width: 0;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 4px;
+  }
+
+  .interview-record-main-content .interview-chat-header-actions > button {
+    min-width: 0;
+    min-height: 44px;
+    padding-inline: 8px;
+    white-space: nowrap;
+  }
+
+  .interview-record-main-content .interview-chat-header-actions > .interview-context-toggle {
+    min-height: 44px;
+    line-height: 1.2;
+  }
+
+  .interview-record-main-content .interview-chat-panel .chat-log {
+    min-height: 0;
+    height: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 10px;
+  }
+
+  .interview-record-main-content .bubble {
+    max-width: 96%;
+  }
+
+  .interview-record-main-content .answer-composer {
+    position: static;
+    z-index: auto;
+    min-height: 0;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+    border-radius: 0 0 var(--ki-radius-lg) var(--ki-radius-lg);
+    box-shadow: none;
+  }
+
+  .interview-record-main-content .answer-composer textarea {
+    min-height: 56px;
+    max-height: 25dvh;
+    scroll-margin-bottom: 160px;
+  }
+
+  .interview-record-main-content .answer-composer-actions {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .interview-record-main-content .answer-composer-actions > .primary,
+  .interview-record-main-content .answer-composer-actions > .voice-controls,
+  .interview-record-main-content .voice-controls > * {
+    width: 100%;
+    min-width: 0;
+    flex: none;
+  }
+
+  .interview-record-main-content .answer-composer-actions > .primary {
+    min-height: 44px;
+    padding-inline: 8px;
+  }
+
+  .interview-record-main-content .voice-controls {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .interview-record-main-content .voice-conversation-button {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+    padding-inline: 6px;
+    white-space: normal;
+  }
+
+  .interview-record-main-content .published-learning-guidance {
+    flex: 0 1 30%;
+    max-height: 30%;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 350px) {
+  .interview-record-main-content .interview-chat-header-actions > button {
+    padding-inline: 6px;
+    font-size: 10px;
+  }
+
+  .interview-record-main-content .answer-composer-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-height: 520px) and (max-width: 1199px) {
+  .app-shell.interview-record-shell .app-mobile-header {
+    min-height: 56px;
+    height: 56px;
+    padding: 5px 10px;
+  }
+
+  .app-shell.interview-record-shell .app-mobile-brand {
+    max-height: 28px;
+  }
+
+  .app-shell.interview-record-shell .main-content.interview-record-main-content {
+    gap: 4px;
+    padding: 4px 8px max(4px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .interview-record-main-content > .page-header {
+    flex-basis: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .interview-record-main-content > .sub-nav {
+    flex-basis: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+
+  .interview-record-main-content > .interview-page {
+    gap: 4px;
+  }
+
+  .interview-record-main-content .interview-page-header {
+    min-height: 44px;
+  }
+
+  .interview-record-main-content .interview-chat-header {
+    min-height: 48px;
+    padding: 2px 6px;
+  }
+
+  .interview-record-main-content .interview-chat-header > div:first-child::before {
+    top: 4px;
+  }
+
+  .interview-record-main-content .interview-chat-panel .chat-log {
+    padding: 6px;
+  }
+
+  .interview-record-main-content .answer-composer {
+    gap: 4px;
+    padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .interview-record-main-content .answer-composer textarea {
+    min-height: 48px;
+    max-height: 20dvh;
+  }
+}

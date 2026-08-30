@@ -45,11 +45,17 @@ function AppShellContent({
   const { openGuideSelector } = useGuide();
   const [isWorkspaceNavCollapsed, setIsWorkspaceNavCollapsed] = useState(false);
   const [isWorkspaceNavOpen, setIsWorkspaceNavOpen] = useState(false);
+  const isInterviewRecordView = /\/records\/[^/]+\/?$/.test(activePath);
 
   useEffect(() => {
     document.body.classList.toggle("nav-drawer-open", isWorkspaceNavOpen);
     return () => document.body.classList.remove("nav-drawer-open");
   }, [isWorkspaceNavOpen]);
+
+  useEffect(() => {
+    document.body.classList.toggle("interview-record-active", isInterviewRecordView);
+    return () => document.body.classList.remove("interview-record-active");
+  }, [isInterviewRecordView]);
 
   function handleNavigate(path: string) {
     setIsWorkspaceNavOpen(false);
@@ -80,7 +86,7 @@ function AppShellContent({
   }
 
   return (
-    <div className={isWorkspaceNavCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+    <div className={`app-shell${isWorkspaceNavCollapsed ? " sidebar-collapsed" : ""}${isInterviewRecordView ? " interview-record-shell" : ""}`}>
       <header className="app-mobile-header">
         <img className="app-mobile-brand" src="/images/kikiori-logo.svg" alt={t("common.appName")} />
         <button
@@ -119,7 +125,7 @@ function AppShellContent({
         onStartGuide={handleStartGuide}
         onLogout={handleLogout}
       />
-      <main className="main-content" data-active-path={activePath}>{children}</main>
+      <main className={`main-content${isInterviewRecordView ? " interview-record-main-content" : ""}`} data-active-path={activePath}>{children}</main>
     </div>
   );
 }

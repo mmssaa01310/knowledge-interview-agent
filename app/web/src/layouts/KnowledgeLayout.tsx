@@ -66,14 +66,18 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
             type="button"
             className="page-header-back"
             onClick={() => props.navigate("/knowledge-dbs")}
+            aria-label={t("navigation.backToKnowledgeList")}
           >
-            ← {t("navigation.backToKnowledgeList")}
+            <span className="page-header-back-icon" aria-hidden="true">←</span>
+            <span className="page-header-back-label">{t("navigation.backToKnowledgeList")}</span>
           </button>
         }
         actions={canManageKnowledge && props.route.name !== "knowledge-settings" ? (
           <button
             type="button"
             className="primary"
+            aria-label={t("settings.title")}
+            title={t("settings.title")}
             onClick={() => props.navigate(`/knowledge-dbs/${props.selectedKnowledgeDb?.id}/knowledges/${props.selectedKnowledge?.id}/settings`)}
           >
             {t("settings.title")}

@@ -53,6 +53,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
   const [summaryView, setSummaryView] = useState<"requirements" | "process">("requirements");
   const [isInterviewContextOpen, setIsInterviewContextOpen] = useState(false);
+  const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
   const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isInterviewConfigured = isInterviewConfigurationComplete(props.selectedKnowledge);
   const canAnswerRecord = Boolean(
@@ -274,6 +275,12 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     && props.interviewMessages.length === 0
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
+  const hasDemoResetAction = isManagementUser && (
+    props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID
+      || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID
+  );
+  const hasReviewActions = isManagementUser && props.selectedRecord?.status === "submitted";
+  const hasInterviewActions = hasDemoResetAction || hasReviewActions;
   const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && realtimeVoice.isActive);
   const interviewLaunchPath = props.selectedKnowledgeDb && props.selectedKnowledge
     ? `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}/interview`
@@ -297,8 +304,11 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               type="button"
               className="ghost compact interview-back-button"
               onClick={() => props.navigate(interviewLaunchPath)}
+              aria-label={t("interview.returnToStart")}
+              title={t("interview.returnToStart")}
             >
-              {t("interview.returnToStart")}
+              <span className="interview-back-icon" aria-hidden="true">←</span>
+              <span className="interview-back-label">{t("interview.returnToStart")}</span>
             </button>
           ) : null}
           <div className="interview-title-status">
@@ -314,38 +324,52 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             <p className="notice">{t("interview.configureNotice")}</p>
           ) : null}
         </div>
-        {isManagementUser && (props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID
-        || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID) ? (
-          <button
-            type="button"
-            className="ghost compact"
-            onClick={handleResetDemo}
-            disabled={isResettingDemo || realtimeVoice.isActive}
-          >
-            {isResettingDemo ? t("interview.resettingDemo") : t("interview.resetDemo")}
-          </button>
-        ) : null}
-        {isManagementUser && props.selectedRecord?.status === "submitted" ? (
-          <>
+        {hasInterviewActions ? (
+          <div className="interview-more-actions">
             <button
               type="button"
-              className="ghost compact"
-              onClick={() => {
-                const note = window.prompt(t("knowledge.records.reviewPrompt"), "");
-                if (note?.trim()) void props.onChangeRecordStatus("returned", note.trim());
-              }}
+              className="interview-more-actions-trigger"
+              aria-label={t("common.operation")}
+              aria-expanded={isMoreActionsOpen}
+              onClick={() => setIsMoreActionsOpen((value) => !value)}
             >
-              {t("interview.reviewRequest")}
+              ⋯
             </button>
-            <button
-              type="button"
-              className="primary compact"
-              data-guide="knowledge-confirm"
-              onClick={() => void props.onChangeRecordStatus("approved")}
-            >
-              {t("interview.approveRecord")}
-            </button>
-          </>
+            <div className={isMoreActionsOpen ? "interview-more-actions-menu open" : "interview-more-actions-menu"}>
+              {hasDemoResetAction ? (
+                <button
+                  type="button"
+                  className="ghost compact"
+                  onClick={handleResetDemo}
+                  disabled={isResettingDemo || realtimeVoice.isActive}
+                >
+                  {isResettingDemo ? t("interview.resettingDemo") : t("interview.resetDemo")}
+                </button>
+              ) : null}
+              {hasReviewActions ? (
+                <>
+                  <button
+                    type="button"
+                    className="ghost compact"
+                    onClick={() => {
+                      const note = window.prompt(t("knowledge.records.reviewPrompt"), "");
+                      if (note?.trim()) void props.onChangeRecordStatus("returned", note.trim());
+                    }}
+                  >
+                    {t("interview.reviewRequest")}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary compact"
+                    data-guide="knowledge-confirm"
+                    onClick={() => void props.onChangeRecordStatus("approved")}
+                  >
+                    {t("interview.approveRecord")}
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
         ) : null}
       </div>
 
