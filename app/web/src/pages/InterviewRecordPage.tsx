@@ -14,7 +14,6 @@ import {
   isInterviewConfigurationComplete,
 } from "../features/interviews/interviewConfiguration";
 import {
-  getInterviewLocaleLabelKey,
   resolveRecordInterviewLocale,
 } from "../features/interviews/interviewLocale";
 import { INTERVIEW_LOCALE_OPTIONS } from "../features/interviews/interviewLocale";
@@ -321,7 +320,6 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           <div className="interview-title-status">
             <h2>{t("interview.title")}</h2>
             <span className="interview-model-badge">{t("interview.modelLabel", { model: props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-terra" ? t("interview.model.terra") : props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-luna" ? t("interview.model.luna") : t("interview.profile.notSet") })}</span>
-            <span className="interview-language-badge">{t("interview.languageLabel", { language: t(getInterviewLocaleLabelKey(selectedInterviewLocale)) })}</span>
             {props.selectedRecord ? (
               <span className={props.selectedRecord.status === "approved" ? "status-pill" : "status-pill muted"}>
                 {t(`interview.status.${props.selectedRecord.status}`)}
@@ -536,22 +534,24 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 >
                   {isInterviewContextOpen ? t("interview.closeContext") : t("interview.openContext")}
                 </button>
-                <div className="interview-start-language-picker">
-                  <OptionPicker
-                    value={selectedInterviewLocale}
-                    options={INTERVIEW_LOCALE_OPTIONS.map((option) => ({
-                      value: option.value,
-                      label: t(option.labelKey),
-                    }))}
-                    onChange={(value) => setSelectedInterviewLocale(value as InterviewLocale)}
-                    ariaLabel={t("knowledge.launch.interviewLanguageAria")}
-                    placement="bottom"
-                    disabled={!canStartInterview}
-                  />
+                <div className="interview-start-actions">
+                  <div className="interview-start-language-picker">
+                    <OptionPicker
+                      value={selectedInterviewLocale}
+                      options={INTERVIEW_LOCALE_OPTIONS.map((option) => ({
+                        value: option.value,
+                        label: t(option.labelKey),
+                      }))}
+                      onChange={(value) => setSelectedInterviewLocale(value as InterviewLocale)}
+                      ariaLabel={t("knowledge.launch.interviewLanguageAria")}
+                      placement="bottom"
+                      disabled={!canStartInterview}
+                    />
+                  </div>
+                  <button className="ghost compact interview-start-button" type="button" onClick={() => void props.onStartInterview(selectedInterviewLocale)} disabled={!canStartInterview}>
+                    {t("interview.start")}
+                  </button>
                 </div>
-                <button className="ghost compact" type="button" onClick={() => void props.onStartInterview(selectedInterviewLocale)} disabled={!canStartInterview}>
-                  {t("interview.start")}
-                </button>
               </div>
             </div>
             <div ref={chatLogRef} className="chat-log">

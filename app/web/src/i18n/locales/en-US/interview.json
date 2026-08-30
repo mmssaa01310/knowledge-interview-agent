@@ -79,7 +79,7 @@
   "done": "Done",
   "send": "Send",
   "playAudio": "Play audio",
-  "start": "Start interview",
+  "start": "Start",
   "initialMessages": {
     "first": "We are about to start the interview.",
     "second": "Answer the questions. We will confirm each answer as we go.",

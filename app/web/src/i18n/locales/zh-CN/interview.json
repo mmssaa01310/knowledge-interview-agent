@@ -79,7 +79,7 @@
   "done": "完成",
   "send": "发送",
   "playAudio": "播放音频",
-  "start": "开始访谈",
+  "start": "开始",
   "initialMessages": {
     "first": "访谈即将开始。",
     "second": "请回答问题，我们会在过程中确认每个回答。",

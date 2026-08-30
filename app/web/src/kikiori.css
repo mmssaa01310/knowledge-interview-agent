@@ -2154,22 +2154,6 @@ label {
   width: 100%;
 }
 
-.interview-language-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  max-width: 100%;
-  padding: 3px 8px;
-  border: 1px solid var(--ki-border);
-  border-radius: 999px;
-  background: var(--ki-surface-tint);
-  color: var(--ki-text-secondary);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
 .interview-resume-section {
   gap: 10px;
 }
@@ -3151,6 +3135,14 @@ label {
   gap: 8px;
 }
 
+.interview-start-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
 .interview-start-language-picker {
   display: flex;
   min-width: 0;
@@ -3167,6 +3159,10 @@ label {
   min-height: 32px;
   padding: 6px 10px;
   font-size: 11px;
+}
+
+.interview-start-button {
+  flex: 0 0 auto;
 }
 
 .interview-context-toggle {
@@ -6561,6 +6557,12 @@ html[dir="rtl"] .interview-page-title {
     gap: 4px;
   }
 
+  .interview-record-main-content .interview-start-actions {
+    min-width: 0;
+    flex: 0 0 auto;
+    gap: 4px;
+  }
+
   .interview-record-main-content .interview-start-language-picker {
     min-width: 0;
     flex: 0 1 132px;
@@ -6572,7 +6574,8 @@ html[dir="rtl"] .interview-page-title {
     font-size: 11px;
   }
 
-  .interview-record-main-content .interview-chat-header-actions > button {
+  .interview-record-main-content .interview-chat-header-actions > button,
+  .interview-record-main-content .interview-start-actions > button {
     min-width: 0;
     min-height: 44px;
     padding-inline: 8px;
@@ -6658,7 +6661,8 @@ html[dir="rtl"] .interview-page-title {
 }
 
 @media (max-width: 350px) {
-  .interview-record-main-content .interview-chat-header-actions > button {
+  .interview-record-main-content .interview-chat-header-actions > button,
+  .interview-record-main-content .interview-start-actions > button {
     padding-inline: 6px;
     font-size: 10px;
   }
