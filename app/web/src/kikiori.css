@@ -59,7 +59,8 @@ body {
 }
 
 #root {
-  min-height: 100vh;
+  min-height: 100svh;
+  min-height: 100dvh;
 }
 
 ::selection {
@@ -1216,6 +1217,8 @@ label {
 }
 
 .login-page {
+  min-height: 100svh;
+  min-height: 100dvh;
   background:
     radial-gradient(circle at 15% 15%, rgba(37, 99, 235, 0.13), transparent 22rem),
     radial-gradient(circle at 85% 80%, rgba(37, 196, 184, 0.13), transparent 24rem),
@@ -2765,6 +2768,7 @@ label {
     position: fixed;
     inset: 0;
     z-index: 100;
+    display: block;
     width: 100%;
     height: 100%;
     padding: 0;
@@ -2980,6 +2984,12 @@ label {
     padding-inline: 12px;
   }
 
+  .login-page {
+    min-height: 100svh;
+    min-height: 100dvh;
+    padding: max(16px, env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+
   .app-mobile-brand {
     width: min(150px, 58vw);
   }
@@ -3041,8 +3051,10 @@ label {
   }
 
   .interview-chat-panel .chat-log {
-    height: min(420px, 44dvh);
+    height: auto;
     min-height: 220px;
+    max-height: none;
+    overflow: visible;
     padding: 14px 12px;
   }
 
@@ -3051,13 +3063,12 @@ label {
   }
 
   .answer-composer {
-    position: sticky;
-    bottom: 0;
-    z-index: 6;
+    position: static;
+    z-index: auto;
     margin-inline: -1px;
     padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px));
     border-radius: 0 0 var(--ki-radius-lg) var(--ki-radius-lg);
-    box-shadow: 0 -6px 18px rgba(19, 42, 56, 0.07);
+    box-shadow: none;
   }
 
   .answer-composer textarea {
@@ -3133,22 +3144,156 @@ label {
     flex-direction: column;
   }
 
+  .interview-launch-page > *,
+  .interview-launch-card,
+  .interview-resume-section,
+  .interview-resume-list,
+  .interview-resume-card,
+  .new-interview-form {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .new-interview-form input,
+  .new-interview-form button {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .interview-resume-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .interview-resume-card-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    gap: 4px;
+    overflow: visible;
+  }
+
+  .interview-resume-card-main strong,
+  .interview-resume-card-main span,
+  .interview-resume-card-main small {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .interview-resume-card-actions {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
+
   .settings-ai-chat {
     height: min(620px, calc(100dvh - 150px));
     min-height: 0;
   }
 
   .dialog-backdrop {
+    min-height: 100svh;
+    min-height: 100dvh;
     padding: max(10px, env(safe-area-inset-top, 0px)) 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .dialog-panel {
+    max-height: calc(100svh - 20px);
+    max-height: calc(100dvh - 20px);
+  }
+
+  .process-model-fullscreen {
+    height: calc(100svh - 20px);
+    height: calc(100dvh - 20px);
+    max-height: calc(100dvh - 20px);
+  }
+}
+
+@media (max-width: 767px) and (max-height: 720px) {
+  /* Keep the conversation header visible on short screens. The composer remains
+     in normal flow, so focused inputs can scroll into view without overlap. */
+  .answer-composer {
+    position: static;
+    box-shadow: none;
+  }
+
+  .interview-chat-panel .chat-log {
+    height: auto;
+    min-height: 180px;
+  }
+}
+
+@media (max-height: 720px) {
+  /* Landscape phones and short tablet viewports need scrollable overlays too. */
+  .dialog-backdrop {
+    align-items: start;
+    min-height: 100svh;
+    min-height: 100dvh;
+    overflow: auto;
+    padding: max(10px, env(safe-area-inset-top, 0px)) 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .dialog-panel {
+    max-height: calc(100svh - 20px);
+    max-height: calc(100dvh - 20px);
+    overflow: auto;
+  }
+
+  .process-model-fullscreen {
+    height: calc(100svh - 20px);
+    height: calc(100dvh - 20px);
+    max-height: calc(100dvh - 20px);
+  }
+
+  .settings-ai-chat {
+    height: min(540px, calc(100dvh - 120px));
+    min-height: 0;
   }
 }
 
 @media (hover: none) and (pointer: coarse) {
+  .primary,
+  .ghost,
+  .secondary,
+  .danger,
+  .workspace-collapse-button,
+  .workspace-create,
+  .page-header-back,
   .workspace-item,
   .workspace-tag-group-header,
   .sub-nav-item,
   .interview-context-toggle,
+  .interview-context-drawer-header button,
+  .answer-composer-actions button,
+  .voice-controls button,
+  .locale-switcher-trigger,
+  .option-picker-trigger,
+  .dialog-actions button,
+  .settings-tab,
+  .knowledge-info-summary,
   .app-mobile-nav-trigger {
+    min-height: 44px;
+  }
+
+  .interview-chat-header-actions > .interview-context-toggle {
+    min-height: 44px;
+  }
+
+  input,
+  select {
     min-height: 44px;
   }
 }
