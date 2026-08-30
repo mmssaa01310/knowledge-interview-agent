@@ -4,6 +4,7 @@ import { getDevelopmentToken, setDevelopmentToken } from "../../lib/api";
 import { useI18n } from "../../i18n";
 import { LocaleSwitcher } from "./LocaleSwitcher";
 import { OptionPicker } from "./OptionPicker";
+import { ThemeToggle } from "./ThemeToggle";
 import type { AppSection } from "../../types/app";
 
 type UserMenuProps = {
@@ -191,6 +192,7 @@ export function UserMenu({
 
           <div className="user-menu-items">
             <LocaleSwitcher compact />
+            <ThemeToggle />
             <a
               className="user-menu-item"
               href="/help"

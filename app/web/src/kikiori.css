@@ -43,6 +43,36 @@
   line-height: 1.55;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ki-primary: #356ad4;
+  --ki-primary-strong: #b5d0ff;
+  --ki-primary-soft: #243b66;
+  --ki-primary-wash: #182b49;
+  --ki-ink: #edf5fa;
+  --ki-text: #dbe8ef;
+  --ki-muted: #a9bcc7;
+  --ki-faint: #8197a4;
+  --ki-background: #0e171e;
+  --ki-surface: #17232c;
+  --ki-surface-subtle: #1d2b35;
+  --ki-surface-tint: #163039;
+  --ki-border: #30434f;
+  --ki-border-strong: #46606e;
+  --ki-success: #73c99d;
+  --ki-success-soft: #173d31;
+  --ki-warning: #efc271;
+  --ki-warning-soft: #493817;
+  --ki-error: #f09ba1;
+  --ki-error-soft: #48252b;
+  --ki-info: #8fc8f0;
+  --ki-info-soft: #19384b;
+  --ki-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --ki-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.3);
+  --ki-shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.48);
+  --ki-focus-ring: 0 0 0 3px rgba(121, 168, 255, 0.34);
+}
+
 html {
   min-width: 320px;
   background: var(--ki-background);
@@ -56,6 +86,74 @@ body {
     var(--ki-background);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+:root[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at 100% 0, rgba(64, 149, 176, 0.13), transparent 28rem),
+    var(--ki-background);
+}
+
+:root[data-theme="dark"] .app-sidebar {
+  background: rgba(20, 31, 39, 0.92);
+  color: var(--ki-text);
+  box-shadow: 8px 0 30px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="dark"] .sub-nav {
+  background: rgba(23, 35, 44, 0.9);
+}
+
+:root[data-theme="dark"] .sub-nav-item {
+  color: var(--ki-text);
+}
+
+:root[data-theme="dark"] .sub-nav-item.active,
+:root[data-theme="dark"] .sub-nav-item:hover {
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .user-menu-surface,
+:root[data-theme="dark"] .help-panel,
+:root[data-theme="dark"] .sticky-actions {
+  background: rgba(23, 35, 44, 0.96);
+}
+
+:root[data-theme="dark"] .settings-setup-notice {
+  border-color: #7a5d22;
+  color: var(--ki-warning);
+}
+
+:root[data-theme="dark"] .help-panel,
+:root[data-theme="dark"] .help-quick-start-step {
+  background: var(--ki-surface);
+}
+
+:root[data-theme="dark"] :where(input, textarea, select) {
+  border-color: var(--ki-border-strong);
+  background: var(--ki-surface);
+  color: var(--ki-text);
+}
+
+/* Keep secondary content readable on the dark surfaces used by interview work. */
+:root[data-theme="dark"] .interview-question-item.answered {
+  border-color: #2f7258;
+}
+
+:root[data-theme="dark"] .interview-answer-block {
+  background: var(--ki-surface-subtle);
+}
+
+:root[data-theme="dark"] .interview-answer-text {
+  color: var(--ki-text);
+}
+
+:root[data-theme="dark"] .status-pill.muted,
+:root[data-theme="dark"] .status-pill.pending,
+:root[data-theme="dark"] .status-pill.not-applicable {
+  border-color: var(--ki-border);
+  background: var(--ki-surface-subtle);
+  color: var(--ki-text);
 }
 
 #root {
@@ -821,6 +919,18 @@ body {
   margin-inline-start: auto;
 }
 
+.theme-toggle-value {
+  margin-inline-start: auto;
+  color: var(--ki-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.theme-toggle:hover .theme-toggle-value,
+.theme-toggle:focus-visible .theme-toggle-value {
+  color: currentColor;
+}
+
 .user-menu-item.destructive {
   color: var(--ki-error);
 }
@@ -1468,6 +1578,7 @@ label {
 
 .dialog-panel {
   border-color: var(--ki-border);
+  background: var(--ki-surface);
   border-radius: var(--ki-radius-lg);
   box-shadow: var(--ki-shadow-lg);
   padding: 20px;

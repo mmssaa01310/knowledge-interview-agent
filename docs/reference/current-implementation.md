@@ -60,7 +60,7 @@ APIの現在のローカル実装は`InMemoryStore`を使用する。APIプロ�
 | `dev-interviewer` | `user-interviewer` | `interviewer` |
 | `dev-viewer` | `user-viewer` | `viewer` |
 
-既定のリクエストヘッダーは`x-dev-token: dev-manager`である。無効なトークンはHTTP 401を返す。Vite開発画面では、左サイドバー下部のユーザーメニューにある「開発者設定」から4ロールを切り替えられる。切り替え後は画面を再読み込みする。ユーザーメニューには表示言語、ヘルプ、操作ガイド、ログアウトもまとめている。
+既定のリクエストヘッダーは`x-dev-token: dev-manager`である。無効なトークンはHTTP 401を返す。Vite開発画面では、左サイドバー下部のユーザーメニューにある「開発者設定」から4ロールを切り替えられる。切り替え後は画面を再読み込みする。ユーザーメニューには表示言語、表示テーマ、ヘルプ、操作ガイド、ログアウトもまとめている。表示テーマは`kikiori.color-theme`へライトまたはダークとして保存し、`data-theme`で配色トークンを切り替える。
 
 保存する主要エンティティには、`tenantId`、`createdByUserId`、`updatedByUserId`、作成日時、更新日時を含める。取得時は認証ユーザーの`tenantId`でスコープする。
 

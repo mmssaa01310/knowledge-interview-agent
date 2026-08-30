@@ -5,6 +5,7 @@ import type { UserProfile } from "../lib/api";
 import type { AppSection } from "../types/app";
 import { useI18n } from "../i18n";
 import { GuideProvider, useGuide } from "../features/guides/GuideProvider";
+import { ThemeLogo } from "../components/ui/ThemeLogo";
 
 type AppShellProps = {
   activeSection: AppSection;
@@ -88,7 +89,7 @@ function AppShellContent({
   return (
     <div className={`app-shell${isWorkspaceNavCollapsed ? " sidebar-collapsed" : ""}${isInterviewRecordView ? " interview-record-shell" : ""}`}>
       <header className="app-mobile-header">
-        <img className="app-mobile-brand" src="/images/kikiori-logo.svg" alt={t("common.appName")} />
+        <ThemeLogo className="app-mobile-brand" alt={t("common.appName")} />
         <button
           type="button"
           className="app-mobile-nav-trigger"

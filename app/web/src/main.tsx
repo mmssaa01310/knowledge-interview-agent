@@ -4,6 +4,9 @@ import { App } from "./app/App";
 import "./styles.css";
 import "driver.js/dist/driver.css";
 import "./kikiori.css";
+import { initializeColorTheme } from "./theme";
+
+initializeColorTheme();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

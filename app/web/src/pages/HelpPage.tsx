@@ -9,6 +9,7 @@ import {
 import type { GuideId } from "../features/guides/guideRegistry";
 import { requestGuideFromHelp } from "../features/guides/guideStorage";
 import { useI18n } from "../i18n";
+import { ThemeLogo } from "../components/ui/ThemeLogo";
 
 const helpSectionIconSources: Record<HelpSectionIcon, string> = {
   kikiori: "/images/kikiori-icon.svg",
@@ -36,7 +37,7 @@ export function HelpPage() {
     <main className="help-page">
       <header className="help-header">
         <a className="help-brand" href="/knowledge-dbs">
-          <img src="/images/kikiori-logo.svg" alt={t("common.appName")} />
+          <ThemeLogo alt={t("common.appName")} />
         </a>
         <LocaleSwitcher />
       </header>

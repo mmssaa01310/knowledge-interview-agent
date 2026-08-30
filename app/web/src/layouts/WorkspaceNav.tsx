@@ -2,6 +2,7 @@ import type { Knowledge } from "@ai-interviewer/shared-types";
 import type { UserProfile } from "../lib/api";
 import { KnowledgeWorkspaceNav } from "../features/knowledge/components/KnowledgeWorkspaceNav";
 import { UserMenu } from "../components/ui/UserMenu";
+import { ThemeLogo } from "../components/ui/ThemeLogo";
 import { useI18n } from "../i18n";
 import type { AppSection } from "../types/app";
 
@@ -73,7 +74,7 @@ export function WorkspaceNav({
     <aside id={id} className={isResponsiveOpen ? "app-sidebar responsive-open" : "app-sidebar"} aria-label={t("navigation.mainNavigation")} data-guide="navigation">
       <div className="sidebar-header">
         <div className="brand">
-          <img className="brand-logo-image" src="/images/kikiori-logo.svg" alt="KIKIORI" />
+          <ThemeLogo className="brand-logo-image" alt="KIKIORI" />
           <span className="brand-tagline">{t("common.tagline")}</span>
         </div>
         <button
