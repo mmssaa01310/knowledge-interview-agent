@@ -1,4 +1,4 @@
-import type { GuideId } from "./guideRegistry";
+import { isGuideId, type GuideId } from "./guideRegistry";
 
 export type GuideStatus = "not_started" | "in_progress" | "completed" | "dismissed";
 
@@ -15,7 +15,12 @@ type StoredGuidePreferences = {
 };
 
 const STORAGE_KEY_PREFIX = "ai-interviewer.guide-preferences.v1";
-const GUIDE_VERSION = 1;
+const GUIDE_VERSION = 2;
+export const GUIDE_REQUEST_STORAGE_KEY = "ai-interviewer.guide-request.v1";
+
+export type HelpGuideRequest =
+  | { type: "open-selector"; requestedAt: number }
+  | { type: "start-guide"; guideId: GuideId; requestedAt: number };
 
 function storageKey(userId: string | null | undefined) {
   return `${STORAGE_KEY_PREFIX}:${userId || "anonymous"}`;
@@ -76,4 +81,33 @@ export function setKnowledgeCreationGuideAutoPromptDisabled(
   const preferences = readPreferences(userId);
   preferences.knowledgeCreationAutoPromptDisabled = disabled;
   writePreferences(userId, preferences);
+}
+
+export function requestGuideFromHelp(guideId?: GuideId) {
+  const request: HelpGuideRequest = guideId
+    ? { type: "start-guide", guideId, requestedAt: Date.now() }
+    : { type: "open-selector", requestedAt: Date.now() };
+  try {
+    window.localStorage.setItem(GUIDE_REQUEST_STORAGE_KEY, JSON.stringify(request));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function parseHelpGuideRequest(value: string | null): HelpGuideRequest | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as { type?: unknown; guideId?: unknown; requestedAt?: unknown };
+    if (typeof parsed.requestedAt !== "number") return null;
+    if (parsed.type === "open-selector") {
+      return { type: "open-selector", requestedAt: parsed.requestedAt };
+    }
+    if (parsed.type === "start-guide" && typeof parsed.guideId === "string" && isGuideId(parsed.guideId)) {
+      return { type: "start-guide", guideId: parsed.guideId, requestedAt: parsed.requestedAt };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }

@@ -107,6 +107,7 @@ function AppShellContent({
           className="app-nav-backdrop"
           onClick={() => setIsWorkspaceNavOpen(false)}
           aria-label={t("navigation.navClose")}
+          data-guide="navigation-backdrop"
         />
       ) : null}
       <WorkspaceNav

@@ -1,8 +1,13 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { GuideSelectorDialog } from "./GuideSelectorDialog";
 import { getGuideDefinition, type GuideId } from "./guideRegistry";
-import { isKnowledgeCreationGuideAutoPromptDisabled, setKnowledgeCreationGuideAutoPromptDisabled } from "./guideStorage";
+import {
+  GUIDE_REQUEST_STORAGE_KEY,
+  isKnowledgeCreationGuideAutoPromptDisabled,
+  parseHelpGuideRequest,
+  setKnowledgeCreationGuideAutoPromptDisabled,
+} from "./guideStorage";
 import { InteractiveGuide } from "./InteractiveGuide";
 
 type GuideContextValue = {
@@ -37,6 +42,26 @@ export function GuideProvider({ userId, userRole, currentPath, onNavigate, child
     setActiveGuideId(guideId);
   }, [userRole]);
 
+  useEffect(() => {
+    function handleGuideRequest(event: StorageEvent) {
+      if (event.key !== GUIDE_REQUEST_STORAGE_KEY) return;
+      const request = parseHelpGuideRequest(event.newValue);
+      if (!request) return;
+      if (request.type === "open-selector") {
+        openGuideSelector();
+        return;
+      }
+      if (getGuideDefinition(request.guideId, userRole ?? undefined)) {
+        startGuide(request.guideId);
+      } else {
+        openGuideSelector();
+      }
+    }
+
+    window.addEventListener("storage", handleGuideRequest);
+    return () => window.removeEventListener("storage", handleGuideRequest);
+  }, [openGuideSelector, startGuide, userRole]);
+
   const value = useMemo<GuideContextValue>(() => ({
     openGuideSelector,
     startGuide,
@@ -51,6 +76,7 @@ export function GuideProvider({ userId, userRole, currentPath, onNavigate, child
         isOpen={isSelectorOpen}
         userId={userId}
         userRole={userRole}
+        currentPath={currentPath}
         onClose={() => setIsSelectorOpen(false)}
         onSelect={startGuide}
       />

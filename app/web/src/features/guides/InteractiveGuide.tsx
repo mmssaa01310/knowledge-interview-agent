@@ -123,8 +123,10 @@ function appendKikoBadge(popover: PopoverDOM) {
 
 export function InteractiveGuide({ definition, userId, currentPath, onNavigate, onClose }: InteractiveGuideProps) {
   const { t } = useI18n();
+  const translateRef = useRef(t);
   const onNavigateRef = useRef(onNavigate);
   const onCloseRef = useRef(onClose);
+  translateRef.current = t;
   onNavigateRef.current = onNavigate;
   onCloseRef.current = onClose;
 
@@ -132,10 +134,12 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
     if (!definition) return;
 
     const guideId = definition.id;
+    const translate = (key: string, values?: Record<string, string | number>) => translateRef.current(key, values);
     let activeDriver: Driver | null = null;
     let isCancelled = false;
     let isClosing = false;
     let isMoving = false;
+    let openedNavigationDrawer = false;
     let openedKnowledgeDrawer = false;
     let placeholder: HTMLElement | null = null;
     let guideContextPath = window.location.pathname;
@@ -165,6 +169,20 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
           onNavigateRef.current(targetPath);
           const routeReady = await waitForPath(targetPath, 3000);
           if (!routeReady) return null;
+        }
+      }
+
+      if (
+        step.openNavigationDrawer
+        && !findPrimaryTarget(step)
+        && window.matchMedia("(max-width: 1199px)").matches
+      ) {
+        const trigger = document.querySelector<HTMLButtonElement>('[data-guide="navigation-trigger"]');
+        const navigation = document.querySelector<HTMLElement>('[data-guide="navigation"]');
+        if (trigger && navigation && !navigation.classList.contains("responsive-open")) {
+          trigger.click();
+          trigger.setAttribute("data-guide-opened", "true");
+          openedNavigationDrawer = true;
         }
       }
 
@@ -202,6 +220,18 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
       }
       toggle?.removeAttribute("data-guide-opened");
       openedKnowledgeDrawer = false;
+    }
+
+    function closeOpenedNavigationDrawer() {
+      const trigger = document.querySelector<HTMLButtonElement>('[data-guide="navigation-trigger"]');
+      const navigation = document.querySelector<HTMLElement>('[data-guide="navigation"]');
+      const wasOpenedByGuide = openedNavigationDrawer || trigger?.getAttribute("data-guide-opened") === "true";
+      if (!wasOpenedByGuide) return;
+      if (trigger && navigation?.classList.contains("responsive-open")) {
+        document.querySelector<HTMLButtonElement>('[data-guide="navigation-backdrop"]')?.click();
+      }
+      trigger?.removeAttribute("data-guide-opened");
+      openedNavigationDrawer = false;
     }
 
     function restoreApplicationAccessibility() {
@@ -243,8 +273,8 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
         // prepareStep; the placeholder keeps Driver.js from dropping future steps.
         element: () => findVisibleTarget(step) ?? getGuidePlaceholder(),
         popover: {
-          title: t(step.titleKey),
-          description: t(step.descriptionKey),
+          title: translate(step.titleKey),
+          description: translate(step.descriptionKey),
           side: step.placement ?? "bottom",
           align: "start",
         },
@@ -263,7 +293,8 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
         }
 
         const targets = [...document.querySelectorAll<HTMLElement>(step.repeatTarget)]
-          .filter((element) => isRenderedElement(element));
+          .filter((element) => isRenderedElement(element))
+          .slice(0, step.maxRepeats ?? Number.POSITIVE_INFINITY);
         if (targets.length === 0) {
           expandedSteps.push(step);
           continue;
@@ -292,14 +323,29 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
       return expandedCount;
     }
 
+    function isActionComplete(step: GuideStepDefinition) {
+      return Boolean(step.completionTarget && isRenderedElement(document.querySelector(step.completionTarget)));
+    }
+
+    function promptForAction(step: GuideStepDefinition, instance: Driver) {
+      const popover = instance.getState("popover") as PopoverDOM | undefined;
+      if (!popover) return;
+      popover.description.textContent = `${translate(step.descriptionKey)} ${translate("guide.completeActionToContinue")}`;
+      popover.nextButton.textContent = translate("guide.continueAfterAction");
+    }
+
     function notifyClose(reason: GuideCloseReason) {
       if (isClosing) return;
       isClosing = true;
       setGuideProgress(userId, guideId, reason === "completed" ? "completed" : "dismissed");
-      closeOpenedKnowledgeDrawer();
       if (activeDriver?.isActive()) {
         activeDriver.destroy();
       }
+      // Driver.js captures clicks while its overlay is active. Close drawers
+      // after tearing the overlay down so the application's own controls
+      // receive the click and the layout returns to its initial state.
+      closeOpenedNavigationDrawer();
+      closeOpenedKnowledgeDrawer();
       restoreApplicationAccessibility();
       window.requestAnimationFrame(restoreApplicationAccessibility);
       onCloseRef.current();
@@ -348,6 +394,23 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
       isMoving = false;
     }
 
+    function moveForward(instance: Driver) {
+      const index = instance.getActiveIndex() ?? -1;
+      const step = steps[index];
+      if (!step) return;
+      if (step.kind === "action") {
+        if (!isActionComplete(step)) {
+          promptForAction(step, instance);
+          return;
+        }
+        if (step.completeAfterAction || index >= steps.length - 1) {
+          notifyClose("completed");
+          return;
+        }
+      }
+      void moveToAvailableStep(index + 1, instance, 1);
+    }
+
     async function start() {
       expandDynamicSteps();
       let firstIndex = 0;
@@ -374,29 +437,33 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
         overlayOpacity: 0.5,
         stagePadding: 7,
         stageRadius: 12,
+        disableActiveInteraction: false,
         allowClose: true,
         allowScroll: true,
         allowKeyboardControl: true,
         showProgress: true,
         popoverClass: "kikiori-driver-popover",
-        nextBtnText: t("guide.next"),
-        prevBtnText: t("guide.previous"),
-        doneBtnText: t("guide.finish"),
+        nextBtnText: translate("guide.next"),
+        prevBtnText: translate("guide.previous"),
+        doneBtnText: translate("guide.finish"),
         onPopoverRender: (popover, options) => {
           appendKikoBadge(popover);
           if (typeof options.index === "number") {
-            popover.progress.textContent = t("guide.progress", { current: options.index + 1, total: steps.length });
+            popover.progress.textContent = translate("guide.progress", { current: options.index + 1, total: steps.length });
+            if (steps[options.index]?.kind === "action") {
+              popover.nextButton.textContent = translate("guide.continueAfterAction");
+            }
           }
-          popover.closeButton.setAttribute("aria-label", t("guide.close"));
+          popover.closeButton.setAttribute("aria-label", translate("guide.close"));
         },
         onNextClick: (_element, _step, options) => {
-          void moveToAvailableStep((options.driver.getActiveIndex() ?? -1) + 1, options.driver, 1);
+          moveForward(options.driver);
         },
         onPrevClick: (_element, _step, options) => {
           void moveToAvailableStep((options.driver.getActiveIndex() ?? 1) - 1, options.driver, -1);
         },
         onCloseClick: () => notifyClose("dismissed"),
-        onDoneClick: () => notifyClose("completed"),
+        onDoneClick: (_element, _step, options) => moveForward(options.driver),
         onDestroyed: () => {
           restoreApplicationAccessibility();
           if (!isClosing) notifyClose("dismissed");
@@ -409,11 +476,12 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
     void start();
     return () => {
       isCancelled = true;
+      if (activeDriver?.isActive()) activeDriver.destroy();
+      closeOpenedNavigationDrawer();
       closeOpenedKnowledgeDrawer();
       placeholder?.remove();
-      if (activeDriver?.isActive()) activeDriver.destroy();
     };
-  }, [definition, t, userId]);
+  }, [definition, userId]);
 
   // currentPath is intentionally kept as a prop so the host re-renders when a guide changes route.
   // Route/DOM readiness is observed by prepareStep rather than by a device-specific branch.

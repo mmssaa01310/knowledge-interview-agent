@@ -2,6 +2,14 @@
   "close": "ปิด",
   "tableOfContents": "สารบัญ",
   "stepsLabel": "ขั้นตอน",
+  "quickStartLabel": "เพิ่งเริ่มใช้ KIKIORI?",
+  "referenceLabel": "ความช่วยเหลือเพิ่มเติม",
+  "tipLabel": "ข้อควรรู้",
+  "startGuide": "เริ่มคู่มือแบบโต้ตอบ",
+  "viewOnScreen": "ดูขั้นตอนนี้บนหน้าจอ",
+  "guideHint": "ดูตำแหน่งการทำงานตามขั้นตอนบนหน้าจอ KIKIORI เดิม",
+  "guideRequestSent": "เปิดคู่มือบนหน้าจอ KIKIORI เดิมแล้ว ให้กลับไปที่แท็บเดิมเพื่อดำเนินการต่อ",
+  "guideRequestUnavailable": "กลับไปยังหน้าจอ KIKIORI เดิม แล้วเริ่มคู่มือจากเมนูผู้ใช้",
   "faqTitle": "คำถามที่พบบ่อย",
   "externalNote": "หน้านี้เปิดในแท็บใหม่แล้ว เมื่ออ่านเสร็จให้กลับไปยังแท็บ KIKIORI เดิม"
 }

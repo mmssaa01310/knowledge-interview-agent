@@ -3,12 +3,17 @@
   "progress": "{current} / {total}",
   "previous": "戻る",
   "next": "次へ",
+  "continueAfterAction": "操作後に続ける",
+  "completeActionToContinue": "操作を終えたら、このボタンで続けてください。",
   "finish": "完了",
   "close": "ガイドを閉じる",
   "selector": {
     "title": "どの操作をガイドしますか？",
     "description": "目的に合うガイドを選ぶと、現在の画面上で操作場所を順番に確認できます。",
-    "manualNotice": "操作手順を読む場合は、ユーザーメニューの操作マニュアルを開いてください。"
+    "manualNotice": "操作手順を読む場合は、ユーザーメニューの操作マニュアルを開いてください。",
+    "recommended": "この画面でおすすめのガイド",
+    "recommendedDescription": "いまの画面と記録の状態に合う、短いガイドです。",
+    "allGuides": "すべてのガイド"
   },
   "status": {
     "not_started": "未開始",
@@ -23,7 +28,15 @@
     },
     "createKnowledge": {
       "title": "ナレッジを作成する",
-      "description": "ナレッジ作成からインタビュー設定・質問設定・保存までを確認します。"
+      "description": "ナレッジの名前と目的を登録する手順を案内します。"
+    },
+    "configureInterview": {
+      "title": "インタビュー設定を整える",
+      "description": "インタビューの目的・モデル・実行設定を確認して保存します。"
+    },
+    "configureQuestions": {
+      "title": "質問を設定する",
+      "description": "聞き取りたい質問項目を追加・編集して保存します。"
     },
     "runInterview": {
       "title": "インタビューを実施する",
@@ -33,13 +46,29 @@
       "title": "ナレッジを編集・確定する",
       "description": "記録の確認・修正から、必要な内容の確定までを確認します。"
     },
+    "reviseReturnedRecord": {
+      "title": "差し戻された記録を修正する",
+      "description": "管理者からの修正依頼を確認し、回答を直して再提出します。"
+    },
+    "browseRecords": {
+      "title": "記録を確認する",
+      "description": "公開・共有された記録を開き、内容とナレッジを確認します。"
+    },
     "knowledgeSettings": {
       "title": "ナレッジ設定を確認する",
       "description": "質問項目や実行設定を確認・更新する場所を案内します。"
     },
     "adminAnalysis": {
       "title": "管理者向けの分析を確認する",
-      "description": "管理ダッシュボードで絞り込み、集計、傾向、要確認記録を確認する方法を案内します。"
+      "description": "全体の件数と運用の傾向を、短時間で把握する方法を案内します。"
+    },
+    "adminPriorities": {
+      "title": "優先対応の記録を確認する",
+      "description": "確認が必要な記録を絞り込み、次に対応する内容を見つけます。"
+    },
+    "adminLearning": {
+      "title": "学習状況を確認する",
+      "description": "ナレッジの確認状況と学習分析を確認します。"
     }
   },
   "steps": {
@@ -127,6 +156,10 @@
       "title": "記録の内容を確認する",
       "description": "会話とナレッジパネルを見比べ、抽出された回答や確認が必要な内容を確認します。"
     },
+    "returnedNote": {
+      "title": "修正依頼を確認する",
+      "description": "管理者からのコメントを確認し、必要な回答を修正して再提出します。"
+    },
     "dashboard": {
       "title": "管理ダッシュボードを見る",
       "description": "管理者・ナレッジ管理者は、ナレッジ全体の状況をこの画面で確認できます。"
@@ -166,8 +199,8 @@
   },
   "knowledgeCreated": {
     "title": "ナレッジが作成されました",
-    "description": "続けて、作成したナレッジの確認方法をご案内します。",
-    "start": "ガイドを開始",
+    "description": "続けて、インタビュー設定を整える方法をご案内します。",
+    "start": "設定ガイドを開始",
     "later": "あとで",
     "dontShowAgain": "この案内を今後表示しない"
   }

@@ -2,6 +2,14 @@
   "close": "閉じる",
   "tableOfContents": "目次",
   "stepsLabel": "操作手順",
+  "quickStartLabel": "はじめての方へ",
+  "referenceLabel": "その他",
+  "tipLabel": "ポイント",
+  "startGuide": "操作ガイドを開始",
+  "viewOnScreen": "この操作を画面で見る",
+  "guideHint": "元のKIKIORI画面で、操作場所を順番に確認できます。",
+  "guideRequestSent": "元のKIKIORI画面で操作ガイドを開きました。画面を確認してください。",
+  "guideRequestUnavailable": "元のKIKIORI画面に戻り、ユーザーメニューから操作ガイドを開始してください。",
   "faqTitle": "よくある質問",
   "externalNote": "このページは別タブで開いています。読み終えたら元のKIKIORI画面へ戻れます。"
 }

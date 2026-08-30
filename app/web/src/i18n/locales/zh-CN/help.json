@@ -2,6 +2,14 @@
   "close": "关闭",
   "tableOfContents": "目录",
   "stepsLabel": "操作步骤",
+  "quickStartLabel": "第一次使用？",
+  "referenceLabel": "其他帮助",
+  "tipLabel": "提示",
+  "startGuide": "开始操作指南",
+  "viewOnScreen": "在画面上查看此操作",
+  "guideHint": "在原KIKIORI画面中按步骤查看操作位置。",
+  "guideRequestSent": "操作指南已在原KIKIORI画面中打开。请切换回原标签页继续。",
+  "guideRequestUnavailable": "请返回原KIKIORI画面，从用户菜单开始操作指南。",
   "faqTitle": "常见问题",
   "externalNote": "此页面已在新标签页中打开。阅读完成后，请返回原来的KIKIORI标签页。"
 }

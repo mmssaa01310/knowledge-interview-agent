@@ -296,7 +296,11 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     : [];
 
   return (
-    <section className="panel interview-page" data-guide="interview-pane">
+    <section
+      className="panel interview-page"
+      data-guide="interview-pane"
+      data-guide-record-status={props.selectedRecord?.status}
+    >
       <div className="panel-header interview-page-header">
         <div className="interview-page-title">
           <div className="interview-title-status">
@@ -574,7 +578,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               </div>
             ) : null}
             {props.selectedRecord?.status === "returned" && props.selectedRecord.reviewNote ? (
-              <div className="interview-completed-banner">
+              <div className="interview-completed-banner" data-guide="returned-note">
                 <p>{t("interview.reviewNote", { note: props.selectedRecord.reviewNote })}</p>
               </div>
             ) : null}

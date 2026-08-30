@@ -438,7 +438,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               className="primary compact"
               onClick={() => {
                 dismissKnowledgeCreationGuideNotice();
-                guide.startGuide("knowledge-settings");
+                guide.startGuide("configure-interview");
               }}
             >
               {t("guide.knowledgeCreated.start")}

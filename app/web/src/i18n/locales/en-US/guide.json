@@ -3,12 +3,17 @@
   "progress": "{current} / {total}",
   "previous": "Back",
   "next": "Next",
+  "continueAfterAction": "Continue after the action",
+  "completeActionToContinue": "Finish this action, then select this button to continue.",
   "finish": "Finish",
   "close": "Close guide",
   "selector": {
     "title": "What would you like to learn?",
     "description": "Choose a topic to see the controls highlighted in order on the current screen.",
-    "manualNotice": "To read step-by-step instructions, open the user menu and select the user guide."
+    "manualNotice": "To read step-by-step instructions, open the user menu and select the user guide.",
+    "recommended": "Recommended for this screen",
+    "recommendedDescription": "These short guides match the screen and record you are working with now.",
+    "allGuides": "All guides"
   },
   "status": {
     "not_started": "Not started",
@@ -23,7 +28,15 @@
     },
     "createKnowledge": {
       "title": "Create knowledge",
-      "description": "Learn the flow from knowledge creation through interview and question settings."
+      "description": "Register a knowledge name and purpose."
+    },
+    "configureInterview": {
+      "title": "Configure the interview",
+      "description": "Review and save the interview purpose, model, and run settings."
+    },
+    "configureQuestions": {
+      "title": "Configure questions",
+      "description": "Add or edit the questions you want to ask, then save them."
     },
     "runInterview": {
       "title": "Run an interview",
@@ -33,13 +46,29 @@
       "title": "Edit and confirm knowledge",
       "description": "Review and correct interview records, then confirm the content that needs action."
     },
+    "reviseReturnedRecord": {
+      "title": "Revise a returned record",
+      "description": "Review the administrator request, correct your answers, and resubmit."
+    },
+    "browseRecords": {
+      "title": "Browse records",
+      "description": "Open shared records and review their details and knowledge context."
+    },
     "knowledgeSettings": {
       "title": "Review knowledge settings",
       "description": "Find the place to review or update question fields and interview settings."
     },
     "adminAnalysis": {
       "title": "Review admin analysis",
-      "description": "Learn how to filter the admin dashboard and review totals, trends, and records needing attention."
+      "description": "Quickly understand overall counts and operating trends."
+    },
+    "adminPriorities": {
+      "title": "Review priority records",
+      "description": "Filter records needing attention and find the next item to handle."
+    },
+    "adminLearning": {
+      "title": "Review learning progress",
+      "description": "Check knowledge review progress and learning analysis."
     }
   },
   "steps": {
@@ -127,6 +156,10 @@
       "title": "Review the record content",
       "description": "Compare the conversation with the knowledge panel and review extracted or pending answers."
     },
+    "returnedNote": {
+      "title": "Review the revision request",
+      "description": "Read the administrator comment, revise the required answers, then resubmit."
+    },
     "dashboard": {
       "title": "Open the admin dashboard",
       "description": "Administrators and knowledge managers can review the overall knowledge operation here."
@@ -166,8 +199,8 @@
   },
   "knowledgeCreated": {
     "title": "Knowledge was created",
-    "description": "Continue with a short guide to reviewing the knowledge you just created.",
-    "start": "Start guide",
+    "description": "Next, we can show you how to configure the interview.",
+    "start": "Start settings guide",
     "later": "Later",
     "dontShowAgain": "Do not show this again"
   }

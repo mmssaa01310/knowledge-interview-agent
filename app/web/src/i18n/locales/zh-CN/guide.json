@@ -3,12 +3,17 @@
   "progress": "{current} / {total}",
   "previous": "返回",
   "next": "下一步",
+  "continueAfterAction": "完成操作后继续",
+  "completeActionToContinue": "完成此操作后，选择此按钮继续。",
   "finish": "完成",
   "close": "关闭指南",
   "selector": {
     "title": "您想了解哪项操作？",
     "description": "选择主题后，指南会在当前页面按顺序突出显示操作位置。",
-    "manualNotice": "如果要阅读操作步骤，请打开用户菜单并选择操作手册。"
+    "manualNotice": "如果要阅读操作步骤，请打开用户菜单并选择操作手册。",
+    "recommended": "推荐的当前操作指南",
+    "recommendedDescription": "这些简短指南与您当前的页面和记录状态相匹配。",
+    "allGuides": "全部指南"
   },
   "status": {
     "not_started": "未开始",
@@ -23,7 +28,15 @@
     },
     "createKnowledge": {
       "title": "创建知识库",
-      "description": "了解从创建知识库到设置访谈和问题的完整流程。"
+      "description": "登记知识库的名称和用途。"
+    },
+    "configureInterview": {
+      "title": "设置访谈",
+      "description": "确认并保存访谈目的、模型和执行设置。"
+    },
+    "configureQuestions": {
+      "title": "设置问题",
+      "description": "添加或编辑要访谈的问题，然后保存。"
     },
     "runInterview": {
       "title": "进行访谈",
@@ -33,13 +46,29 @@
       "title": "编辑并确认知识",
       "description": "查看并修正访谈记录，然后确认需要处理的内容。"
     },
+    "reviseReturnedRecord": {
+      "title": "修改退回的记录",
+      "description": "查看管理员的修改请求，修正回答后重新提交。"
+    },
+    "browseRecords": {
+      "title": "查看记录",
+      "description": "打开已共享的记录，查看详情和知识信息。"
+    },
     "knowledgeSettings": {
       "title": "查看知识设置",
       "description": "了解查看或更新问题字段和访谈设置的位置。"
     },
     "adminAnalysis": {
       "title": "查看管理员分析",
-      "description": "了解如何筛选管理面板，并查看汇总、趋势和需要处理的记录。"
+      "description": "快速掌握整体数量和运营趋势。"
+    },
+    "adminPriorities": {
+      "title": "查看优先处理记录",
+      "description": "筛选需要关注的记录，找到下一项需要处理的内容。"
+    },
+    "adminLearning": {
+      "title": "查看学习进度",
+      "description": "查看知识确认进度和学习分析。"
     }
   },
   "steps": {
@@ -127,6 +156,10 @@
       "title": "确认记录内容",
       "description": "对照访谈对话和知识面板，查看提取或待确认的回答。"
     },
+    "returnedNote": {
+      "title": "查看修改请求",
+      "description": "阅读管理员留言，修改需要调整的回答后重新提交。"
+    },
     "dashboard": {
       "title": "打开管理面板",
       "description": "管理员和知识管理员可以在这里查看知识运营的整体情况。"
@@ -166,8 +199,8 @@
   },
   "knowledgeCreated": {
     "title": "知识库已创建",
-    "description": "接下来将介绍如何确认刚刚创建的知识库。",
-    "start": "开始指南",
+    "description": "接下来将介绍如何完成访谈设置。",
+    "start": "开始设置指南",
     "later": "稍后",
     "dontShowAgain": "今后不再显示此提示"
   }
