@@ -176,6 +176,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [settingsCategory, setSettingsCategory] = useState("");
   const [settingsTargetBusiness, setSettingsTargetBusiness] = useState("");
   const [settingsTargetEquipment, setSettingsTargetEquipment] = useState("");
+  const [settingsTags, setSettingsTags] = useState<string[]>([]);
   const [settingsLanguage, setSettingsLanguage] = useState<KnowledgeDb["language"]>("ja");
   const [settingsDefaultModelId, setSettingsDefaultModelId] = useState("");
   const [settingsInterviewPlan, setSettingsInterviewPlan] = useState<Knowledge["interviewPlan"]>(undefined);
@@ -676,6 +677,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         category: settingsCategory,
         targetBusiness: settingsTargetBusiness,
         targetEquipment: settingsTargetEquipment,
+        tags: settingsTags,
         language: settingsLanguage,
         defaultModelId: settingsDefaultModelId,
         interviewPlan,
@@ -1051,6 +1053,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsCategory(selectedKnowledge.category ?? "");
     setSettingsTargetBusiness(selectedKnowledge.targetBusiness ?? "");
     setSettingsTargetEquipment(selectedKnowledge.targetEquipment ?? "");
+    setSettingsTags(selectedKnowledge.tags ?? []);
     setSettingsLanguage(selectedKnowledge.language);
     setSettingsDefaultModelId(selectedKnowledge.defaultModelId ?? "");
     setSettingsInterviewPlan(selectedKnowledge.interviewPlan ?? undefined);
@@ -1139,6 +1142,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsTargetBusiness,
     settingsTargetEquipment,
     setSettingsTargetEquipment,
+    settingsTags,
+    setSettingsTags,
     settingsLanguage,
     setSettingsLanguage,
     settingsDefaultModelId,

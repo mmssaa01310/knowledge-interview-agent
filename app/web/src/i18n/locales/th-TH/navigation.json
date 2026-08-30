@@ -26,5 +26,9 @@
   "knowledgeRequired": "สร้างหรือเลือกคลังความรู้",
   "newKnowledge": "คลังความรู้ใหม่",
   "createKnowledge": "สร้างคลังความรู้",
-  "knowledgeSelected": "คลังความรู้ที่เลือก"
+  "knowledgeSelected": "คลังความรู้ที่เลือก",
+  "untaggedKnowledge": "ไม่มีแท็ก",
+  "tagGroup": "คลังความรู้ที่มีแท็ก {tag}",
+  "expandTagGroup": "ขยายกลุ่มแท็ก {tag}",
+  "collapseTagGroup": "ยุบกลุ่มแท็ก {tag}"
 }

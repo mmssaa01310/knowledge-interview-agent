@@ -63,7 +63,15 @@ export function KnowledgeListPage({
             className="table-row selectable"
             onClick={() => onNavigate(`/knowledge-dbs/${knowledge.knowledgeDbId}/knowledges/${knowledge.id}/interview`)}
           >
-            <span><strong>{knowledge.name}</strong>{knowledge.description && <small>{knowledge.description}</small>}</span>
+            <span>
+              <strong>{knowledge.name}</strong>
+              {knowledge.description && <small>{knowledge.description}</small>}
+              {knowledge.tags?.length ? (
+                <span className="knowledge-tag-list" aria-label={t("knowledge.tagsLabel")}>
+                  {knowledge.tags.map((tag) => <span className="knowledge-tag" key={tag}>#{tag}</span>)}
+                </span>
+              ) : null}
+            </span>
             <span>{knowledge.purpose ?? knowledge.category ?? t("knowledge.purposeNotSet")}</span>
             <span>{formatNumber(knowledge.recordCount ?? 0, locale)}</span>
             <span>{formatDate(knowledge.updatedAt, locale)}</span>

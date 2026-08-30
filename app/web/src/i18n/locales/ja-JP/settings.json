@@ -5,6 +5,15 @@
   "saving": "保存中…",
   "setupNotice": "インタビューを開始するには、用途と実行モデルの保存が必要です。",
   "knowledgeInfo": "ナレッジ情報",
+  "tags": {
+    "title": "タグ",
+    "description": "ナレッジを分類し、左のナビゲーションでまとめて表示します。",
+    "inputAria": "ナレッジタグ",
+    "placeholder": "タグ名を入力してEnter",
+    "add": "追加",
+    "remove": "{tag}を削除",
+    "count": "{count}件"
+  },
   "tabs": {
     "fields": "質問項目",
     "execution": "実行設定",

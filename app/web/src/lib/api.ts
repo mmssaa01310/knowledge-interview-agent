@@ -233,6 +233,7 @@ export async function createKnowledge(
     category?: string;
     targetBusiness?: string;
     targetEquipment?: string;
+    tags?: string[];
     language?: "ja" | "en" | "multi";
     defaultModelId?: string;
   }

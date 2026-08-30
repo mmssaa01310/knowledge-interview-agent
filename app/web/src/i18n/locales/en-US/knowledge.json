@@ -12,6 +12,7 @@
   "emptyManage": "No knowledge yet. Create one to get started.",
   "emptyView": "No knowledge is available.",
   "purposeNotSet": "Purpose not set",
+  "tagsLabel": "Knowledge tags",
   "createDialog": {
     "title": "Create new knowledge",
     "description": "Configure the interview after creation.",

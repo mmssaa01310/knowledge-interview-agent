@@ -444,10 +444,12 @@ def _get_record_knowledge(record: dict, user: UserContext) -> dict:
 
 
 def _interview_context_knowledge(knowledge: dict, user: UserContext) -> dict:
+    knowledge = dict(knowledge)
+    knowledge.setdefault("tags", [])
     if user.role in {"admin", "knowledge_manager"}:
         return knowledge
 
-    result = dict(knowledge)
+    result = knowledge
     result.pop("systemPrompt", None)
     result.pop("defaultModelId", None)
     plan = result.get("interviewPlan")

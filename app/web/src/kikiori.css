@@ -322,6 +322,182 @@ body {
   font-size: 11px;
 }
 
+.workspace-tag-group {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspace-tag-group-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ki-muted);
+  text-align: start;
+}
+
+.workspace-tag-group-header:hover {
+  border-color: var(--ki-border);
+  background: var(--ki-surface-subtle);
+  color: var(--ki-primary-strong);
+}
+
+.workspace-tag-group-header:focus-visible {
+  outline: none;
+  box-shadow: var(--ki-focus-ring);
+}
+
+.workspace-tag-group-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-tag-group-mark {
+  flex: 0 0 auto;
+  color: var(--ki-primary);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.workspace-tag-group-count {
+  display: inline-grid;
+  min-width: 20px;
+  min-height: 20px;
+  place-items: center;
+  padding: 2px 5px;
+  border: 1px solid var(--ki-border);
+  border-radius: 999px;
+  background: var(--ki-surface);
+  color: var(--ki-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.workspace-tag-group-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  color: var(--ki-muted);
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.workspace-tag-group-chevron.open {
+  color: var(--ki-primary-strong);
+  transform: translateY(2px) rotate(225deg);
+}
+
+.workspace-tag-group-items {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  margin-inline-start: 7px;
+  padding-inline-start: 5px;
+  border-inline-start: 1px solid var(--ki-border);
+}
+
+.knowledge-tag-list {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.knowledge-tag {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid rgba(25, 87, 215, 0.16);
+  border-radius: 999px;
+  background: var(--ki-primary-wash);
+  color: var(--ki-primary-strong);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.knowledge-tag > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-editor {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.tag-editor-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-editor-remove {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: currentColor;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tag-editor-remove:hover {
+  background: rgba(25, 87, 215, 0.12);
+}
+
+.tag-editor-remove:focus-visible {
+  outline: none;
+  box-shadow: var(--ki-focus-ring);
+}
+
+.tag-editor-input-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+}
+
+.tag-editor-input-row input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.tag-editor-input-row .compact {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.tag-editor-count {
+  color: var(--ki-faint);
+  font-size: 10px;
+}
+
 .sidebar-footer {
   padding-top: 14px;
   border-top: 1px solid var(--ki-border);
@@ -1734,6 +1910,28 @@ label {
 
 .knowledge-info-fields textarea {
   min-height: 58px;
+}
+
+.knowledge-tags-field {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.38fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.knowledge-tags-field > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.knowledge-tags-field strong {
+  color: var(--ki-text);
+  font-size: 12px;
+}
+
+.knowledge-tags-field .form-help {
+  margin: 0;
 }
 
 .settings-tabs-row {
@@ -3542,5 +3740,12 @@ html[dir="rtl"] .interview-page-title {
   .dashboard-review-actions > button,
   .dashboard-analysis-editor .dashboard-review-actions > button {
     flex: 1 1 130px;
+  }
+}
+
+@media (max-width: 640px) {
+  .knowledge-tags-field {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 }

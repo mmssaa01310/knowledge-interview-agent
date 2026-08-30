@@ -5,6 +5,15 @@
   "saving": "保存中…",
   "setupNotice": "开始访谈前，请保存用途和执行模型。",
   "knowledgeInfo": "知识库详情",
+  "tags": {
+    "title": "标签",
+    "description": "用于分类知识，并在左侧导航中分组显示。",
+    "inputAria": "知识标签",
+    "placeholder": "输入标签并按 Enter",
+    "add": "添加",
+    "remove": "删除 {tag}",
+    "count": "{count} 个"
+  },
   "tabs": {
     "fields": "问题项目",
     "execution": "执行设置",

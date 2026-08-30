@@ -141,6 +141,42 @@ def test_knowledge_db_update_delete_and_generated_fields() -> None:
     assert exc_info.value.status_code == 404
 
 
+def test_knowledge_tags_are_normalized_and_validated() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="タグテストDB"), user)
+    knowledge = create_knowledge(
+        knowledge_db["id"],
+        KnowledgeCreate(
+            name="タグ付きナレッジ",
+            tags=[" 保全 ", "品質", "保全", "Safety", " safety ", ""],
+        ),
+        user,
+    )
+
+    assert knowledge["tags"] == ["保全", "品質", "Safety"]
+
+    updated = update_knowledge(
+        knowledge["id"],
+        KnowledgeUpdate(tags=["設備", "設備", "安全"]),
+        user,
+    )
+    assert updated["tags"] == ["設備", "安全"]
+
+    with pytest.raises(HTTPException) as too_long:
+        update_knowledge(knowledge["id"], KnowledgeUpdate(tags=["a" * 41]), user)
+    assert too_long.value.status_code == 422
+    assert too_long.value.detail == "knowledge_tag_too_long"
+
+    with pytest.raises(HTTPException) as too_many:
+        update_knowledge(
+            knowledge["id"],
+            KnowledgeUpdate(tags=[f"tag-{index}" for index in range(21)]),
+            user,
+        )
+    assert too_many.value.status_code == 422
+    assert too_many.value.detail == "knowledge_tag_limit_exceeded"
+
+
 def test_knowledge_model_can_change_after_interview_started() -> None:
     user = DEV_TOKENS["dev-manager"]
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="model change db"), user)

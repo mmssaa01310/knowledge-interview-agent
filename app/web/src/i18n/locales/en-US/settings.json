@@ -5,6 +5,15 @@
   "saving": "Saving…",
   "setupNotice": "Save the purpose and execution model before starting an interview.",
   "knowledgeInfo": "Knowledge details",
+  "tags": {
+    "title": "Tags",
+    "description": "Group this knowledge in the sidebar for faster access.",
+    "inputAria": "Knowledge tags",
+    "placeholder": "Enter a tag and press Enter",
+    "add": "Add",
+    "remove": "Remove {tag}",
+    "count": "{count} tags"
+  },
   "tabs": {
     "fields": "Question items",
     "execution": "Execution",

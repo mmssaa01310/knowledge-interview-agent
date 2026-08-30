@@ -26,5 +26,9 @@
   "knowledgeRequired": "ナレッジを作成または選択してください。",
   "newKnowledge": "新規ナレッジ",
   "createKnowledge": "ナレッジを作成",
-  "knowledgeSelected": "選択中のナレッジ"
+  "knowledgeSelected": "選択中のナレッジ",
+  "untaggedKnowledge": "タグなし",
+  "tagGroup": "タグ {tag} のナレッジ",
+  "expandTagGroup": "タグ {tag} のグループを開く",
+  "collapseTagGroup": "タグ {tag} のグループを閉じる"
 }

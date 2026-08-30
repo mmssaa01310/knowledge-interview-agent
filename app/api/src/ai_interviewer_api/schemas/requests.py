@@ -27,6 +27,7 @@ class KnowledgeCreate(BaseModel):
     category: str | None = None
     targetBusiness: str | None = None
     targetEquipment: str | None = None
+    tags: list[str] = Field(default_factory=list)
     language: str = "ja"
     defaultModelId: str | None = None
 
@@ -40,6 +41,7 @@ class KnowledgeUpdate(BaseModel):
     category: str | None = None
     targetBusiness: str | None = None
     targetEquipment: str | None = None
+    tags: list[str] | None = None
     language: str | None = None
     defaultModelId: str | None = None
     status: str | None = None

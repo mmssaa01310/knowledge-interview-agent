@@ -8,6 +8,10 @@ from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
 from ai_interviewer_api.schemas.requests import KnowledgeCreate, KnowledgeUpdate
 from ai_interviewer_api.services.audit import write_audit_log
+from ai_interviewer_api.services.knowledge_tags import (
+    KnowledgeTagValidationError,
+    normalize_knowledge_tags,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -15,6 +19,7 @@ router = APIRouter(prefix="/api")
 def enrich_knowledge(row: dict, user: UserContext) -> dict:
     knowledge_id = row["id"]
     enriched = dict(row)
+    enriched.setdefault("tags", [])
     enriched["recordCount"] = len(
         [item for item in store.list("records", user.tenant_id) if item["knowledgeId"] == knowledge_id]
     )
@@ -46,12 +51,14 @@ def create_knowledge(
 ) -> dict:
     require_management_role(user)
     get_scoped_item("knowledge_dbs", knowledge_db_id, user, "knowledge_db_not_found")
+    payload_data = payload.model_dump()
+    payload_data["tags"] = _normalize_tags_for_api(payload_data.get("tags"))
     item = Knowledge(
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
         updatedByUserId=user.user_id,
         knowledgeDbId=knowledge_db_id,
-        **payload.model_dump(),
+        **payload_data,
     )
     store.upsert("knowledges", item.model_dump())
     write_audit_log(user, "create", "knowledge", item.id, {"name": item.name, "knowledgeDbId": knowledge_db_id})
@@ -73,6 +80,8 @@ def update_knowledge(
     require_management_role(user)
     item = get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     requested_updates = payload.model_dump(exclude_unset=True)
+    if "tags" in requested_updates:
+        requested_updates["tags"] = _normalize_tags_for_api(requested_updates["tags"])
     if "interviewPlan" in requested_updates:
         current_profile = _resolve_interview_profile(item.get("interviewPlan"))
         requested_profile = _resolve_interview_profile(requested_updates.get("interviewPlan"))
@@ -88,6 +97,13 @@ def update_knowledge(
     store.upsert("knowledges", item)
     write_audit_log(user, "update", "knowledge", knowledge_id, payload.model_dump(exclude_unset=True))
     return enrich_knowledge(item, user)
+
+
+def _normalize_tags_for_api(tags: list[str] | None) -> list[str]:
+    try:
+        return normalize_knowledge_tags(tags)
+    except KnowledgeTagValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def _resolve_interview_profile(plan: object) -> str:

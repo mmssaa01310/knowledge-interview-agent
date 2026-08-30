@@ -12,6 +12,7 @@
   "emptyManage": "ナレッジがありません。「+ ナレッジを作成」から登録してください。",
   "emptyView": "利用できるナレッジがありません。",
   "purposeNotSet": "用途未設定",
+  "tagsLabel": "ナレッジタグ",
   "createDialog": {
     "title": "新規ナレッジ作成",
     "description": "作成後にインタビュー設定を行います。",

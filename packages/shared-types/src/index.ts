@@ -52,6 +52,7 @@ export type Knowledge = BaseEntity & {
   targetEquipment?: string;
   targetBusiness?: string;
   category?: string;
+  tags: string[];
   language: "ja" | "en" | "multi";
   defaultModelId?: string;
   status: "active" | "archived";

@@ -25,6 +25,7 @@ class Knowledge(BaseEntity):
     category: str | None = None
     targetBusiness: str | None = None
     targetEquipment: str | None = None
+    tags: list[str] = Field(default_factory=list)
     language: Literal["ja", "en", "multi"] = "ja"
     defaultModelId: str | None = None
     status: Literal["active", "archived"] = "active"

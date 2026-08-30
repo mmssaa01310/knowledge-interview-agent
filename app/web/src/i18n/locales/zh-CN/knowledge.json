@@ -12,6 +12,7 @@
   "emptyManage": "还没有知识库。请创建一个开始使用。",
   "emptyView": "没有可用的知识库。",
   "purposeNotSet": "未设置用途",
+  "tagsLabel": "知识标签",
   "createDialog": {
     "title": "创建新知识库",
     "description": "创建后配置访谈设置。",

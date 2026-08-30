@@ -26,5 +26,9 @@
   "knowledgeRequired": "请创建或选择知识库。",
   "newKnowledge": "新建知识库",
   "createKnowledge": "创建知识库",
-  "knowledgeSelected": "当前知识库"
+  "knowledgeSelected": "当前知识库",
+  "untaggedKnowledge": "无标签",
+  "tagGroup": "标签为 {tag} 的知识",
+  "expandTagGroup": "展开 {tag} 标签组",
+  "collapseTagGroup": "收起 {tag} 标签组"
 }

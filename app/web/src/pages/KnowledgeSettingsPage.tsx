@@ -14,6 +14,7 @@ import { useI18n, type Translate } from "../i18n";
 import { formatNumber } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import { OptionPicker } from "../components/ui/OptionPicker";
+import { TagEditor } from "../components/ui/TagEditor";
 
 const modelOptions = [
   { value: "global.openai.gpt-5.6-luna", labelKey: "interview.model.lunaStandard" },
@@ -418,6 +419,21 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
         <div className="knowledge-info-fields">
           <label>{t("common.name")}<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
           <label>{t("common.description")}<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
+        </div>
+        <div className="knowledge-tags-field">
+          <div>
+            <strong>{t("settings.tags.title")}</strong>
+            <p className="form-help">{t("settings.tags.description")}</p>
+          </div>
+          <TagEditor
+            tags={props.settingsTags}
+            onChange={(tags) => { clearSettingsNotice(); props.setSettingsTags(tags); }}
+            ariaLabel={t("settings.tags.inputAria")}
+            placeholder={t("settings.tags.placeholder")}
+            addLabel={t("settings.tags.add")}
+            removeLabel={(tag) => t("settings.tags.remove", { tag })}
+            countLabel={t("settings.tags.count", { count: props.settingsTags.length })}
+          />
         </div>
       </section>
 

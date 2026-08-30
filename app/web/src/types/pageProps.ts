@@ -42,6 +42,8 @@ export type KnowledgeLayoutProps = {
   setSettingsTargetBusiness: (value: string) => void;
   settingsTargetEquipment: string;
   setSettingsTargetEquipment: (value: string) => void;
+  settingsTags: string[];
+  setSettingsTags: (value: string[]) => void;
   settingsLanguage: Knowledge["language"];
   setSettingsLanguage: (value: Knowledge["language"]) => void;
   settingsDefaultModelId: string;
