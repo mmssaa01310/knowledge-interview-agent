@@ -6174,6 +6174,22 @@ html[dir="rtl"] .interview-page-title {
   }
 }
 
+@media (min-width: 768px) and (max-width: 1199px) {
+  .interview-record-main-content .interview-back-button {
+    width: 32px;
+    height: 28px;
+    min-width: 32px;
+    min-height: 0;
+    flex: 0 0 32px;
+    padding: 0;
+  }
+
+  .interview-record-main-content .interview-back-icon {
+    width: 18px;
+    height: 18px;
+  }
+}
+
 .dashboard-knowledge-status-section,
 .dashboard-knowledge-status-section .dashboard-knowledge-table,
 .dashboard-knowledge-status-section .dashboard-knowledge-cards,
