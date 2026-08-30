@@ -1,0 +1,145 @@
+{
+  "open": "知识分析",
+  "title": "知识分析",
+  "description": "综合查看记录，并确定复核和学习支持的优先顺序。",
+  "backToKnowledge": "返回知识库",
+  "activityNote": "活动量不代表理解程度、能力或表现。仅用于安排复核顺序。",
+  "loading": "正在准备仪表盘…",
+  "empty": "没有符合条件的数据。",
+  "filters": {
+    "from": "开始日期",
+    "to": "结束日期",
+    "knowledge": "知识",
+    "profile": "访谈用途",
+    "status": "记录状态",
+    "all": "全部",
+    "apply": "应用筛选",
+    "reset": "重置"
+  },
+  "tabs": {
+    "label": "知识分析视图",
+    "analysis": "分析",
+    "learningSupport": "学习支持"
+  },
+  "totals": {
+    "knowledge": "知识",
+    "records": "记录",
+    "pending": "待复核",
+    "priority": "复核优先级",
+    "priorityBreakdown": "高 {high} / 中 {medium}"
+  },
+  "trend": {
+    "eyebrow": "ACTIVITY",
+    "title": "记录趋势",
+    "empty": "此时间段没有记录。",
+    "created": "创建 {count}",
+    "submitted": "提交 {count}",
+    "approved": "批准 {count}",
+    "createdLabel": "创建",
+    "submittedLabel": "提交",
+    "approvedLabel": "批准"
+  },
+  "learning": {
+    "eyebrow": "LEARNING",
+    "title": "学习目标状态",
+    "description": "记录中没有证据，不表示本人不理解。",
+    "status": {
+      "confirmed": "已确认",
+      "partiallyConfirmed": "部分确认",
+      "notEvidenced": "没有证据",
+      "needsFollowUp": "需要跟进",
+      "notApplicable": "不适用"
+    }
+  },
+  "knowledge": {
+    "eyebrow": "KNOWLEDGE",
+    "title": "按知识查看状态",
+    "name": "知识",
+    "records": "记录数",
+    "statuses": "进行中 / 待复核 / 已批准",
+    "priority": "需要复核"
+  },
+  "activity": {
+    "eyebrow": "PEOPLE",
+    "title": "按受访者查看回答",
+    "empty": "没有活动数据。",
+    "records": "记录 {count} 条",
+    "answersLabel": "回答",
+    "submittedLabel": "提交",
+    "confirmedLabel": "已确认",
+    "partiallyConfirmedLabel": "部分确认",
+    "notEvidencedLabel": "无依据",
+    "needsFollowUpLabel": "需跟进",
+    "notApplicableLabel": "不适用"
+  },
+  "review": {
+    "eyebrow": "REVIEW",
+    "title": "需要复核的记录",
+    "description": "{count} 条基于证据的复核对象",
+    "empty": "目前没有需要追加复核的记录。",
+    "open": "打开记录",
+    "reasonCount": "{count} 个原因"
+  },
+  "priority": {
+    "high": "高优先级",
+    "medium": "中优先级",
+    "low": "低优先级"
+  },
+  "reasons": {
+    "returned_record": "管理者提出了修改请求。",
+    "contradiction_detected": "检测到矛盾：{label}",
+    "open_issue": "存在未解决事项：{label}",
+    "required_item_unconfirmed": "必填项目尚未确认：{label}",
+    "requirement_unconfirmed": "要求尚未确认：{label}",
+    "applicability_unconfirmed": "适用性尚未确认：{label}"
+  },
+  "analysis": {
+    "eyebrow": "LEARNING SUPPORT",
+    "title": "学习支持分析",
+    "description": "根据所选知识的多条记录，整理需要反复确认的主题和后续行动。",
+    "safety": "AI生成的分析草案，不用于评价或排名受访者。",
+    "knowledgeLabel": "分析对象知识",
+    "selectKnowledge": "请选择知识",
+    "scopeRecords": "分析范围 {count} 条记录",
+    "scopeSelectFirst": "请选择知识以查看分析范围。",
+    "selectKnowledgeHelp": "请先选择一个知识，再运行分析。",
+    "requiresMultipleRecords": "需要同一知识下至少两条记录。",
+    "generate": "运行学习支持分析",
+    "generating": "正在分析…",
+    "savedLabel": "已保存的分析",
+    "savedMeta": "{count} 条记录 · {date}",
+    "editorTitle": "确认分析草案",
+    "editorMeta": "{count} 条记录 · 模型：{model}",
+    "summary": "整体摘要",
+    "trendSummary": "记录整体趋势",
+    "learner": "给受访者的学习说明",
+    "instructor": "给指导者的支持方案",
+    "trendsTitle": "按学习目标查看状态",
+    "trendsDescription": "数量表示所选记录中的状态分布。",
+    "trendRecords": "{count} 条记录",
+    "trendCountTitle": "已确认 / 部分确认 / 无依据 / 需跟进 / 不适用",
+    "themesTitle": "需要反复确认的主题",
+    "themeEvidence": "相关记录 {count} 条",
+    "personalTitle": "按回答者提供学习建议",
+    "personalDescription": "结合整体趋势和每位回答者自身的记录生成的草案。",
+    "personalEmpty": "没有设置回答者的记录，因此没有个人建议。",
+    "personalRecords": "范围内记录 {count} 条",
+    "personalFocusTitle": "重点确认",
+    "personalEvidence": "依据记录 {count} 条",
+    "personalNextSteps": "下一步学习或确认",
+    "personalQuestions": "后续确认问题",
+    "review": "标记为已确认",
+    "reviewing": "正在确认…",
+    "status": {
+      "draft": "待确认",
+      "reviewed": "已确认"
+    }
+  },
+  "errors": {
+    "permission": "管理员或知识管理员可以使用知识分析。",
+    "load": "无法加载知识分析。",
+    "analysisGenerate": "无法创建学习支持分析，请稍后重试。",
+    "analysisSave": "无法保存学习支持分析。",
+    "analysisReview": "无法将学习支持分析标记为已确认。"
+  }
+}

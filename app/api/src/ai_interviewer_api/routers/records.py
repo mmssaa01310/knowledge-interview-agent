@@ -58,6 +58,13 @@ def create_record(
         **payload_data,
     )
     store.upsert("records", item.model_dump())
+    write_audit_log(
+        user,
+        "create",
+        "record",
+        item.id,
+        {"knowledgeId": knowledge_id, "status": item.status},
+    )
     return item.model_dump()
 
 

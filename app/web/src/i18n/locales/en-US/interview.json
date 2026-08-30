@@ -76,6 +76,14 @@
   },
   "chatDescription": "Organize your answers through a conversation with AI.",
   "selectedRecordNone": "Select a record.",
+  "learningGuidance": {
+    "title": "Learning guidance",
+    "description": "Published guidance for what to review and learn next.",
+    "summary": "Summary",
+    "next": "What to review or learn next",
+    "followUp": "Follow-up question",
+    "evidence": "{count} pieces of evidence"
+  },
   "process": {
     "ariaLabel": "Business process and sequence diagram",
     "unknown": "Checking whether this request includes a business process.",

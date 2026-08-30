@@ -1,0 +1,145 @@
+{
+  "open": "Knowledge analysis",
+  "title": "Knowledge analysis",
+  "description": "Review records together and prioritize follow-up and learning support.",
+  "backToKnowledge": "Back to knowledge",
+  "activityNote": "Activity volume does not represent understanding, ability, or performance. Use it only to order reviews.",
+  "loading": "Preparing the dashboard…",
+  "empty": "No matching data.",
+  "filters": {
+    "from": "From",
+    "to": "To",
+    "knowledge": "Knowledge",
+    "profile": "Interview purpose",
+    "status": "Record status",
+    "all": "All",
+    "apply": "Apply filters",
+    "reset": "Reset"
+  },
+  "tabs": {
+    "label": "Knowledge analysis views",
+    "analysis": "Analysis",
+    "learningSupport": "Learning support"
+  },
+  "totals": {
+    "knowledge": "Knowledge",
+    "records": "Records",
+    "pending": "Awaiting review",
+    "priority": "Review priority",
+    "priorityBreakdown": "High {high} / Medium {medium}"
+  },
+  "trend": {
+    "eyebrow": "ACTIVITY",
+    "title": "Record activity",
+    "empty": "No records in this period.",
+    "created": "Created {count}",
+    "submitted": "Submitted {count}",
+    "approved": "Approved {count}",
+    "createdLabel": "Created",
+    "submittedLabel": "Submitted",
+    "approvedLabel": "Approved"
+  },
+  "learning": {
+    "eyebrow": "LEARNING",
+    "title": "Learning objective status",
+    "description": "No evidence in a record does not mean that a person lacks understanding.",
+    "status": {
+      "confirmed": "Confirmed",
+      "partiallyConfirmed": "Partially confirmed",
+      "notEvidenced": "Not evidenced",
+      "needsFollowUp": "Follow-up needed",
+      "notApplicable": "Not applicable"
+    }
+  },
+  "knowledge": {
+    "eyebrow": "KNOWLEDGE",
+    "title": "Status by knowledge",
+    "name": "Knowledge",
+    "records": "Records",
+    "statuses": "In progress / Awaiting review / Approved",
+    "priority": "Needs review"
+  },
+  "activity": {
+    "eyebrow": "PEOPLE",
+    "title": "Responses by respondent",
+    "empty": "No activity data.",
+    "records": "{count} records",
+    "answersLabel": "Answers",
+    "submittedLabel": "Submitted",
+    "confirmedLabel": "Confirmed",
+    "partiallyConfirmedLabel": "Partial",
+    "notEvidencedLabel": "No evidence",
+    "needsFollowUpLabel": "Follow-up",
+    "notApplicableLabel": "N/A"
+  },
+  "review": {
+    "eyebrow": "REVIEW",
+    "title": "Records needing review",
+    "description": "{count} evidence-based review targets",
+    "empty": "There are no records requiring additional review.",
+    "open": "Open record",
+    "reasonCount": "{count} reasons"
+  },
+  "priority": {
+    "high": "High priority",
+    "medium": "Medium priority",
+    "low": "Low priority"
+  },
+  "reasons": {
+    "returned_record": "A manager requested corrections.",
+    "contradiction_detected": "A contradiction was detected: {label}",
+    "open_issue": "An unresolved issue remains: {label}",
+    "required_item_unconfirmed": "A required item is not confirmed: {label}",
+    "requirement_unconfirmed": "A requirement is not confirmed: {label}",
+    "applicability_unconfirmed": "Applicability is not confirmed: {label}"
+  },
+  "analysis": {
+    "eyebrow": "LEARNING SUPPORT",
+    "title": "Learning support analysis",
+    "description": "Analyze multiple records for the selected knowledge and organize recurring topics for follow-up.",
+    "safety": "AI-generated analysis draft. It does not evaluate or rank respondents.",
+    "knowledgeLabel": "Knowledge to analyze",
+    "selectKnowledge": "Select a knowledge",
+    "scopeRecords": "{count} records in scope",
+    "scopeSelectFirst": "Select a knowledge to see the records in scope.",
+    "selectKnowledgeHelp": "Select one knowledge before running the analysis.",
+    "requiresMultipleRecords": "At least two records from the same knowledge are required.",
+    "generate": "Run learning support analysis",
+    "generating": "Analyzing…",
+    "savedLabel": "Saved analyses",
+    "savedMeta": "{count} records · {date}",
+    "editorTitle": "Review analysis draft",
+    "editorMeta": "{count} records · Model: {model}",
+    "summary": "Overall summary",
+    "trendSummary": "Cross-record trend",
+    "learner": "Learning guidance for respondents",
+    "instructor": "Support plan for instructors",
+    "trendsTitle": "Status by learning objective",
+    "trendsDescription": "Counts show the status distribution across the selected records.",
+    "trendRecords": "{count} records",
+    "trendCountTitle": "Confirmed / Partial / No evidence / Follow-up / N/A",
+    "themesTitle": "Recurring topics for follow-up",
+    "themeEvidence": "Related records: {count}",
+    "personalTitle": "Learning advice by respondent",
+    "personalDescription": "Draft advice based on the overall trend and each respondent's own records.",
+    "personalEmpty": "No respondent-assigned records are available for individual advice.",
+    "personalRecords": "{count} records in scope",
+    "personalFocusTitle": "Focus areas",
+    "personalEvidence": "Evidence records: {count}",
+    "personalNextSteps": "Next learning or review steps",
+    "personalQuestions": "Follow-up questions",
+    "review": "Mark as reviewed",
+    "reviewing": "Reviewing…",
+    "status": {
+      "draft": "Needs review",
+      "reviewed": "Reviewed"
+    }
+  },
+  "errors": {
+    "permission": "Administrators and knowledge managers can use knowledge analysis.",
+    "load": "Knowledge analysis could not be loaded.",
+    "analysisGenerate": "The learning support analysis could not be created. Try again later.",
+    "analysisSave": "The learning support analysis could not be saved.",
+    "analysisReview": "The learning support analysis could not be marked as reviewed."
+  }
+}

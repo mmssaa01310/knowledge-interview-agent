@@ -51,6 +51,7 @@ Frontendは`GET /api/me`で取得したロールを使用し、ワークスペ�
 | `/knowledge-dbs/{knowledge_db_id}/knowledges/{knowledge_id}/interview` | 設定状態を確認し、記録を作成するインタビュー画面 |
 | `/knowledge-dbs/{knowledge_db_id}/knowledges/{knowledge_id}/records` | 全記録の一覧、インタビュー結果の確認・編集、差し戻し、承認 |
 | `/knowledge-dbs/{knowledge_db_id}/knowledges/{knowledge_id}/settings` | 主タブ外のナレッジ情報、質問項目、実行設定、事前知識 |
+| `/dashboard` | `admin`と`knowledge_manager`のテナント内集計、確認優先度、教育支援案レビュー |
 | `/settings` | システム設定 |
 
 全ロールは左サイドバーの権限範囲内のナレッジ一覧から`Knowledge`を選択し、ナレッジ配下の「インタビュー」「記録」をメイン画面上部の主導線として使用する。`interviewer`と`viewer`には担当または閲覧許可された記録が存在するナレッジだけを表示する。`interviewer`と`viewer`には設定画面、文書管理、ナレッジ作成を表示しない。Frontendの`/records`と`/records/{record_id}`ルートは提供しない。設定画面は主タブに表示せず、ナレッジヘッダーから開く補助画面とする。
@@ -105,6 +106,8 @@ ProcessModelの手動保存と編集指示は、`admin`と`knowledge_manager`だ
 
 `viewer`が記録の状態を表示する場合、Backendは表示用の一時スナップショットだけを返す。状態の初期化、移行、更新を保存してはいけない。
 
+`GET /api/admin/dashboard`は`admin`または`knowledge_manager`に許可し、所属テナント内の記録を集計する。画面上の名称は「ナレッジ分析」とし、内部APIのパスは互換性のため維持する。現行の権限モデルでは`knowledge_manager`にナレッジ単位の割当がないため、集計範囲はテナント内とする。`POST /api/admin/learning-analysis`、`GET /api/admin/learning-analysis`、学習支援分析の編集・確認済み化は`admin`または`knowledge_manager`だけに許可する。学習支援分析は選択した1ナレッジの2件以上の記録に限定し、対象者の比較・点数化・順位付け・理解度や能力の断定を行わない。`POST /api/admin/records/{record_id}/guidance`、`GET /api/admin/records/{record_id}/guidance`、教育支援案の編集・公開・非公開は、`admin`または対象ナレッジを管理する`knowledge_manager`だけに許可する。`GET /api/records/{record_id}/guidance`は担当`interviewer`本人に対し、公開済みの学習案内だけを返す。`viewer`には教育支援案を返さない。教育支援案の公開レスポンスからは指導者向けメモを除外する。
+
 ## 7. テスト要件
 
 ロール分離の実装では、各ユーザー向けに少なくとも次を確認する。
@@ -117,3 +120,8 @@ ProcessModelの手動保存と編集指示は、`admin`と`knowledge_manager`だ
 * `approved`状態の記録を対象者が変更できない。
 * `interviewer`と`viewer`がProcessModelの手動保存・編集指示を実行できない。
 * 管理者系ロールがProcessModelを保存でき、古いバージョンは409で拒否される。
+* `interviewer`と`viewer`がナレッジ分析画面（集計API）を取得できない。
+* `interviewer`と`viewer`がナレッジ分析または学習支援分析を取得・生成できない。
+* 学習支援分析が異なるナレッジの記録を混在させず、2件未満の記録では生成できない。
+* `knowledge_manager`が管理対象外ナレッジの教育支援案を取得・公開できない。
+* 公開前の教育支援案と指導者向けメモが`interviewer`へ返らない。

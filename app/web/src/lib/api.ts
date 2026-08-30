@@ -1,5 +1,13 @@
 import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb, UserRole } from "@ai-interviewer/shared-types";
 import type { ChatMessage, InterviewState, ProcessModelState } from "../types/app";
+import type {
+  AdminDashboard,
+  DashboardFilters,
+  GuidanceDraft,
+  GuidanceUpdatePayload,
+  LearningAnalysisDraft,
+  LearningAnalysisUpdatePayload,
+} from "../types/dashboard";
 
 export const API_BASE_URL = "";
 export const DEV_TOKEN_STORAGE_KEY = "ai-interviewer-dev-token";
@@ -255,6 +263,75 @@ export async function fetchRecords(knowledgeId: string) {
 
 export async function fetchAccessibleRecords() {
   return apiRequest<InterviewRecord[]>("/api/records");
+}
+
+export async function fetchAdminDashboard(filters: DashboardFilters = {}) {
+  const query = new URLSearchParams();
+  if (filters.dateFrom) query.set("dateFrom", filters.dateFrom);
+  if (filters.dateTo) query.set("dateTo", filters.dateTo);
+  if (filters.knowledgeId) query.set("knowledgeId", filters.knowledgeId);
+  if (filters.profile) query.set("profile", filters.profile);
+  if (filters.recordStatus) query.set("recordStatus", filters.recordStatus);
+  const queryString = query.toString();
+  return apiRequest<AdminDashboard>(`/api/admin/dashboard${queryString ? `?${queryString}` : ""}`);
+}
+
+export async function fetchLearningAnalyses(knowledgeId?: string) {
+  const query = knowledgeId ? `?knowledgeId=${encodeURIComponent(knowledgeId)}` : "";
+  return apiRequest<LearningAnalysisDraft[]>(`/api/admin/learning-analysis${query}`);
+}
+
+export async function generateLearningAnalysis(filters: DashboardFilters) {
+  return apiRequest<LearningAnalysisDraft>("/api/admin/learning-analysis", {
+    method: "POST",
+    body: filters,
+  });
+}
+
+export async function updateLearningAnalysis(
+  analysisId: string,
+  payload: LearningAnalysisUpdatePayload,
+) {
+  return apiRequest<LearningAnalysisDraft>(`/api/admin/learning-analysis/${analysisId}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export async function reviewLearningAnalysis(analysisId: string) {
+  return apiRequest<LearningAnalysisDraft>(`/api/admin/learning-analysis/${analysisId}/review`, {
+    method: "POST",
+  });
+}
+
+export async function fetchManagementGuidance(recordId: string) {
+  return apiRequest<GuidanceDraft[]>(`/api/admin/records/${recordId}/guidance`);
+}
+
+export async function fetchPublishedGuidance(recordId: string) {
+  return apiRequest<GuidanceDraft[]>(`/api/records/${recordId}/guidance`);
+}
+
+export async function generateGuidanceDraft(recordId: string) {
+  return apiRequest<GuidanceDraft>(`/api/admin/records/${recordId}/guidance`, { method: "POST" });
+}
+
+export async function updateGuidanceDraft(
+  draftId: string,
+  payload: GuidanceUpdatePayload,
+) {
+  return apiRequest<GuidanceDraft>(`/api/admin/guidance/${draftId}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export async function publishGuidanceDraft(draftId: string) {
+  return apiRequest<GuidanceDraft>(`/api/admin/guidance/${draftId}/publish`, { method: "POST" });
+}
+
+export async function unpublishGuidanceDraft(draftId: string) {
+  return apiRequest<GuidanceDraft>(`/api/admin/guidance/${draftId}/unpublish`, { method: "POST" });
 }
 
 export async function fetchRecordInterviewContext(recordId: string) {

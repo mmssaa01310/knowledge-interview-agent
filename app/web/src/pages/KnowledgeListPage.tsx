@@ -6,6 +6,7 @@ type KnowledgeListPageProps = {
   knowledges: Knowledge[];
   onNavigate: (path: string) => void;
   onOpenCreateKnowledge: () => void;
+  onOpenDashboard?: () => void;
   canManage?: boolean;
   isPreparingKnowledgeCreation?: boolean;
   knowledgeCreationError?: string;
@@ -15,6 +16,7 @@ export function KnowledgeListPage({
   knowledges,
   onNavigate,
   onOpenCreateKnowledge,
+  onOpenDashboard,
   canManage = true,
   isPreparingKnowledgeCreation = false,
   knowledgeCreationError = ""
@@ -26,16 +28,23 @@ export function KnowledgeListPage({
         <div>
           <h2>{t("knowledge.listTitle")}</h2>
         </div>
-        {canManage ? (
-          <button
-            type="button"
-            className="primary"
-            onClick={onOpenCreateKnowledge}
-            disabled={isPreparingKnowledgeCreation}
-          >
-            {isPreparingKnowledgeCreation ? t("knowledge.preparingCreate") : t("knowledge.createButton")}
-          </button>
-        ) : null}
+        <div className="panel-header-actions">
+          {onOpenDashboard ? (
+            <button type="button" className="ghost" onClick={onOpenDashboard}>
+              {t("dashboard.open")}
+            </button>
+          ) : null}
+          {canManage ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={onOpenCreateKnowledge}
+              disabled={isPreparingKnowledgeCreation}
+            >
+              {isPreparingKnowledgeCreation ? t("knowledge.preparingCreate") : t("knowledge.createButton")}
+            </button>
+          ) : null}
+        </div>
       </div>
       {knowledgeCreationError && <p className="notice error">{knowledgeCreationError}</p>}
       <div className="table-list">

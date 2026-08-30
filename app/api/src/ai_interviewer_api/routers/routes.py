@@ -7,6 +7,7 @@ from ai_interviewer_api.routers.documents import (
     router as documents_router,
     update_read_status,
 )
+from ai_interviewer_api.routers.admin_dashboard import router as admin_dashboard_router
 from ai_interviewer_api.routers.dev_tools import router as dev_tools_router
 from ai_interviewer_api.routers.health import health, me, router as health_router
 from ai_interviewer_api.routers.interview_prompt_profiles import (
@@ -87,6 +88,7 @@ router.include_router(voice_sessions_router)
 router.include_router(proposals_router)
 router.include_router(documents_router)
 router.include_router(internal_voice_router)
+router.include_router(admin_dashboard_router)
 
 __all__ = [
     "acknowledge_document",

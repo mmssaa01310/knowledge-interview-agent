@@ -1,13 +1,15 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { AppShell } from "../layouts/AppShell";
 import { KnowledgeLayout } from "../layouts/KnowledgeLayout";
 import { LoginPage } from "../pages/LoginPage";
-import { SettingsPage } from "../pages/SettingsPage";
 import { useI18n } from "../i18n";
 import { useAppRouterController } from "./useAppRouterController";
 
+const SettingsPage = lazy(() => import("../pages/SettingsPage").then(({ SettingsPage: page }) => ({ default: page })));
+const AdminDashboardPage = lazy(() => import("../pages/AdminDashboardPage").then(({ AdminDashboardPage: page }) => ({ default: page })));
+
 export function AppRouter() {
-  const { setProfileLocale } = useI18n();
+  const { setProfileLocale, t } = useI18n();
   const {
     route,
     currentSection,
@@ -37,7 +39,13 @@ export function AppRouter() {
         isPreparingKnowledgeCreation={knowledgeLayoutProps.isPreparingKnowledgeCreation}
         knowledgeCreationError={knowledgeLayoutProps.knowledgeCreationError}
       >
-      {currentSection === "settings" ? <SettingsPage /> : <KnowledgeLayout {...knowledgeLayoutProps} />}
+      <Suspense fallback={<p className="empty" role="status">{t("common.loading")}</p>}>
+        {currentSection === "settings"
+          ? <SettingsPage />
+            : route.name === "dashboard"
+            ? <AdminDashboardPage user={user} knowledges={knowledgeLayoutProps.knowledges} onNavigate={navigate} />
+            : <KnowledgeLayout {...knowledgeLayoutProps} />}
+      </Suspense>
       </AppShell>
     </>
   );

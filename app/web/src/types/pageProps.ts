@@ -9,6 +9,7 @@ import type {
   InterviewStreamMetadata,
   ProcessModelState
 } from "./app";
+import type { GuidanceDraft, GuidanceUpdatePayload } from "./dashboard";
 
 export type PromptProfile = {
   id: string;
@@ -61,6 +62,7 @@ export type KnowledgeLayoutProps = {
     nextState: DocumentReadState["readStatus"]
   ) => void;
   selectedRecord: InterviewRecord | null;
+  publishedGuidance: GuidanceDraft[];
   proposals: AiProposal[];
   chatInput: string;
   setChatInput: (value: string) => void;

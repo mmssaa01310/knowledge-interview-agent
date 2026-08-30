@@ -1,27 +1,32 @@
+import { lazy, Suspense } from "react";
 import { useI18n } from "../i18n";
 import { KnowledgeSubNav } from "../features/knowledge/components/KnowledgeSubNav";
 import { PageHeader } from "./PageHeader";
-import { InterviewRecordPage } from "../pages/InterviewRecordPage";
-import { KnowledgeDocumentsPage } from "../pages/KnowledgeDocumentsPage";
-import { KnowledgeCollectionPage } from "../pages/KnowledgeCollectionPage";
-import { KnowledgeListPage } from "../pages/KnowledgeListPage";
-import { KnowledgeInterviewPage } from "../pages/KnowledgeInterviewPage";
-import { KnowledgeRecordsPage } from "../pages/KnowledgeRecordsPage";
-import { KnowledgeSettingsPage } from "../pages/KnowledgeSettingsPage";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
+
+const InterviewRecordPage = lazy(() => import("../pages/InterviewRecordPage").then(({ InterviewRecordPage: page }) => ({ default: page })));
+const KnowledgeDocumentsPage = lazy(() => import("../pages/KnowledgeDocumentsPage").then(({ KnowledgeDocumentsPage: page }) => ({ default: page })));
+const KnowledgeCollectionPage = lazy(() => import("../pages/KnowledgeCollectionPage").then(({ KnowledgeCollectionPage: page }) => ({ default: page })));
+const KnowledgeListPage = lazy(() => import("../pages/KnowledgeListPage").then(({ KnowledgeListPage: page }) => ({ default: page })));
+const KnowledgeInterviewPage = lazy(() => import("../pages/KnowledgeInterviewPage").then(({ KnowledgeInterviewPage: page }) => ({ default: page })));
+const KnowledgeRecordsPage = lazy(() => import("../pages/KnowledgeRecordsPage").then(({ KnowledgeRecordsPage: page }) => ({ default: page })));
+const KnowledgeSettingsPage = lazy(() => import("../pages/KnowledgeSettingsPage").then(({ KnowledgeSettingsPage: page }) => ({ default: page })));
 
 export function KnowledgeLayout(props: KnowledgeLayoutProps) {
   const { t } = useI18n();
   if (props.route.name === "knowledge-dbs") {
     return (
-      <KnowledgeListPage
-        knowledges={props.knowledges}
-        onNavigate={props.navigate}
-        onOpenCreateKnowledge={props.onOpenCreateKnowledge}
-        canManage={props.user?.role === "admin" || props.user?.role === "knowledge_manager"}
-        isPreparingKnowledgeCreation={props.isPreparingKnowledgeCreation}
-        knowledgeCreationError={props.knowledgeCreationError}
-      />
+      <Suspense fallback={<p className="empty" role="status">{t("common.loading")}</p>}>
+        <KnowledgeListPage
+          knowledges={props.knowledges}
+          onNavigate={props.navigate}
+          onOpenCreateKnowledge={props.onOpenCreateKnowledge}
+          onOpenDashboard={props.user && ["admin", "knowledge_manager"].includes(props.user.role) ? () => props.navigate("/dashboard") : undefined}
+          canManage={props.user?.role === "admin" || props.user?.role === "knowledge_manager"}
+          isPreparingKnowledgeCreation={props.isPreparingKnowledgeCreation}
+          knowledgeCreationError={props.knowledgeCreationError}
+        />
+      </Suspense>
     );
   }
 
@@ -32,7 +37,11 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
   const canManageKnowledge = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
 
   if (props.route.name === "knowledge-db" || props.route.name === "knowledge-new") {
-    return <KnowledgeCollectionPage {...props} />;
+    return (
+      <Suspense fallback={<p className="empty" role="status">{t("common.loading")}</p>}>
+        <KnowledgeCollectionPage {...props} />
+      </Suspense>
+    );
   }
 
   if (!props.selectedKnowledge) {
@@ -77,17 +86,19 @@ export function KnowledgeLayout(props: KnowledgeLayoutProps) {
         activePath={activeKnowledgePath}
         onNavigate={props.navigate}
       />
-      {props.route.name === "knowledge-record-detail" ? (
-        <InterviewRecordPage {...props} />
-      ) : props.route.name === "knowledge-records" ? (
-        <KnowledgeRecordsPage {...props} />
-      ) : props.route.name === "knowledge-settings" ? (
-        <KnowledgeSettingsPage {...props} />
-      ) : props.route.name === "knowledge-documents" ? (
-        <KnowledgeDocumentsPage {...props} />
-      ) : (
-        <KnowledgeInterviewPage {...props} />
-      )}
+      <Suspense fallback={<p className="empty" role="status">{t("common.loading")}</p>}>
+        {props.route.name === "knowledge-record-detail" ? (
+          <InterviewRecordPage {...props} />
+        ) : props.route.name === "knowledge-records" ? (
+          <KnowledgeRecordsPage {...props} />
+        ) : props.route.name === "knowledge-settings" ? (
+          <KnowledgeSettingsPage {...props} />
+        ) : props.route.name === "knowledge-documents" ? (
+          <KnowledgeDocumentsPage {...props} />
+        ) : (
+          <KnowledgeInterviewPage {...props} />
+        )}
+      </Suspense>
     </>
   );
 }

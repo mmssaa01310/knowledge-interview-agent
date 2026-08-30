@@ -21,7 +21,10 @@ import {
   fetchDocuments,
   type DocumentSummary
 } from "../features/documents/api/documentApi";
-import { ApiError } from "../lib/api";
+import {
+  ApiError,
+  fetchPublishedGuidance,
+} from "../lib/api";
 import { useI18n, type Translate } from "../i18n";
 import {
   approveAllProposals,
@@ -55,6 +58,7 @@ import type {
   InterviewStreamMetadata,
   ProcessModelState,
 } from "../types/app";
+import type { GuidanceDraft } from "../types/dashboard";
 import { getRouteKnowledgeDbId, getRouteKnowledgeId } from "./routeUtils";
 import type { Route } from "./routeTypes";
 
@@ -162,6 +166,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [fields, setFields] = useState<KnowledgeField[]>([]);
   const [proposals, setProposals] = useState<AiProposal[]>([]);
+  const [publishedGuidance, setPublishedGuidance] = useState<GuidanceDraft[]>([]);
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [newRecordTitle, setNewRecordTitle] = useState("");
   const [newDocumentName, setNewDocumentName] = useState("");
@@ -227,6 +232,19 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       return;
     }
     setProposals(await fetchProposals(recordId));
+  }
+
+  async function refreshPublishedGuidance(recordId: string) {
+    if (user?.role !== "interviewer") {
+      setPublishedGuidance([]);
+      return;
+    }
+    try {
+      setPublishedGuidance(await fetchPublishedGuidance(recordId));
+    } catch {
+      // 学習案内の取得失敗で、インタビュー記録の表示を止めない。
+      setPublishedGuidance([]);
+    }
   }
 
   async function loadInterviewSnapshot(recordId: string) {
@@ -491,6 +509,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       return;
     }
 
+    if (args.route.name === "dashboard" && !["admin", "knowledge_manager"].includes(profile.role)) {
+      args.navigate("/knowledge-dbs");
+      return;
+    }
+
     if (args.route.name === "settings") {
       if (profile.role === "admin") return;
       args.navigate("/knowledge-dbs");
@@ -499,6 +522,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     const dbs = await fetchKnowledgeDbs();
     setKnowledgeDbs(dbs);
     const knowledgeIndex = await loadKnowledgeIndex(dbs);
+    if (args.route.name === "dashboard") {
+      setRecords([]);
+      setDocuments([]);
+      setFields([]);
+      setDraftFields([]);
+      setProposals([]);
+      return;
+    }
     const routeKnowledgeDbExists = routeKnowledgeDbId
       ? dbs.some((db: KnowledgeDb) => db.id === routeKnowledgeDbId)
       : false;
@@ -1042,6 +1073,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setStreamingInterviewReply("");
     setInterviewError(false);
     if (!selectedRecord?.id) {
+      setPublishedGuidance([]);
       setInterviewState(null);
       setStructuredDraft({});
       setInterviewAnswerOverrides({});
@@ -1059,10 +1091,12 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setInterviewMessages([]);
     setInterviewStreamMetadata(null);
     pendingInterviewSubmissionRef.current = null;
+    setPublishedGuidance([]);
     loadInterviewSnapshot(selectedRecord.id).catch(() => {
       setRecordNotice(t("errors.interviewStateLoadFailed"));
     });
-  }, [selectedKnowledge?.id, selectedRecord?.id]);
+    void refreshPublishedGuidance(selectedRecord.id);
+  }, [selectedKnowledge?.id, selectedRecord?.id, user?.role]);
 
   useEffect(() => {
     setDocumentReadStates((current) => ({
@@ -1122,6 +1156,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     documentReadStates,
     onUpdateDocumentReadState: handleUpdateDocumentReadState,
     selectedRecord,
+    publishedGuidance,
     proposals,
     chatInput,
     setChatInput,

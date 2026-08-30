@@ -76,6 +76,14 @@
   },
   "chatDescription": "AIと会話しながら、回答を整理します。",
   "selectedRecordNone": "記録を選択してください。",
+  "learningGuidance": {
+    "title": "学習案内",
+    "description": "公開された案内です。次に確認・学習する内容を整理します。",
+    "summary": "概要",
+    "next": "次に確認・学習する内容",
+    "followUp": "再確認する質問",
+    "evidence": "根拠 {count}件"
+  },
   "process": {
     "ariaLabel": "業務フローとシーケンス図",
     "unknown": "この要望に業務フローがあるか確認しています。",

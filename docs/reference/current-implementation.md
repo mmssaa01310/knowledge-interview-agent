@@ -18,6 +18,7 @@
 ### 2.1 アプリケーション
 
 * `app/web`: React + ViteのWebアプリ
+  * 画面ページは`React.lazy`によるルート単位の遅延読み込みを使用し、インタビュー画面のReact Flow・音声機能を初期バンドルへ含めない。
 * `app/api`: FastAPI API
 * `app/voice`: 音声セッション用FastAPIサービス
 * `app/worker`: ドキュメント取り込み用Worker
@@ -38,6 +39,8 @@
 APIの現在のローカル実装は`InMemoryStore`を使用する。APIプロセスを再起動すると保存内容は失われる。
 
 `ELASTICSEARCH_URL`、SQS、Cognitoの設定項目は存在するが、現在のローカル実装ではそれぞれメモリ保存、メモリキュー、開発トークン認証を使用する。
+
+ナレッジ分析の集計結果は既存データから都度計算し、教育支援案と学習支援分析の下書きは現在`InMemoryStore`へ保存する。APIプロセスを再起動すると、集計対象の記録と同様に下書きも失われる。
 
 ## 3. 認証・認可
 
@@ -87,7 +90,9 @@ deletedAt?
 | `AiProposal` | AIが作成した未承認候補 | Recordに属する |
 | `Document` | ナレッジに紐づく文書メタデータ | `Knowledge`に属する |
 | `DocumentReadStatus` | ユーザー別の文書既読状態 | Documentとユーザーに属する |
-| `AuditLog` | 作成・更新・削除・承認の監査情報 | 操作対象を参照する |
+| `AuditLog` | 作成・更新・削除・承認、教育支援案の生成・公開の監査情報 | 操作対象を参照する |
+| `GuidanceDraft` | 教育目標ごとの学習案内・指導案の下書きと公開状態 | `InterviewRecord`、`Knowledge`に属する |
+| `LearningAnalysisDraft` | 同一ナレッジの複数記録を横断した学習支援分析、全体傾向、回答者別アドバイスの下書きと確認状態 | `Knowledge`に属し、対象記録IDをスコープへ保持する |
 
 ### 4.2 インタビュー設定
 
@@ -221,6 +226,28 @@ AI提案は`draft`または`needs_review`で保存し、人の操作なしに`ap
 * `POST /api/dev/voice-demo/reset`
 * `POST /api/dev/system-requirement-demo/reset`
 
+### 5.10 ナレッジ分析と教育支援
+
+* `GET /api/admin/dashboard`
+* `POST /api/admin/learning-analysis`
+* `GET /api/admin/learning-analysis`
+* `PATCH /api/admin/learning-analysis/{analysis_id}`
+* `POST /api/admin/learning-analysis/{analysis_id}/review`
+* `POST /api/admin/records/{record_id}/guidance`
+* `GET /api/admin/records/{record_id}/guidance`
+* `PATCH /api/admin/guidance/{draft_id}`
+* `POST /api/admin/guidance/{draft_id}/publish`
+* `POST /api/admin/guidance/{draft_id}/unpublish`
+* `GET /api/records/{record_id}/guidance`
+
+`GET /api/admin/dashboard`は`admin`または`knowledge_manager`が利用できる。画面上の名称は「ナレッジ分析」とし、内部APIのパスは互換性のため維持している。現行の権限モデルでは`knowledge_manager`にナレッジ単位の割当がないため、所属テナント内を集計する。期間、ナレッジ、インタビュー用途、記録状態で絞り込み、記録状態、時系列、回答者ごとの記録・回答・提出・教育目標状態の内訳、根拠付き確認優先度、教育目標の状態を返す。既存API互換のため教育支援案の公開状態もレスポンスへ含めるが、ナレッジ分析画面では表示しない。会話本文と音声原本は返さない。確認優先度は回答量や利用頻度だけでは上げず、必須項目の未確認、矛盾、未解決事項、差し戻しなどの保存済み状態から計算する。
+
+教育支援案の生成、編集、公開、非公開は`admin`または対象ナレッジを管理する`knowledge_manager`だけが実行できる。AI生成結果は`draft`として保存し、Backendが対象教育目標と根拠IDを検証する。`GET /api/records/{record_id}/guidance`は担当`interviewer`本人に対して公開済みの学習案内だけを返し、指導者向けメモを除外する。すべての生成・編集・公開・非公開操作を監査ログへ保存する。
+
+`POST /api/admin/learning-analysis`は、選択した1つのナレッジに属する2件以上の記録を対象として、`dateFrom`、`dateTo`、`profile`、`recordStatus`で範囲を指定する。Backendが教育目標ごとの状態件数を計算し、選択された実行モデルへ全体分析を依頼した後、その結果と回答者ごとの自身の記録を同じモデルへ渡して個人アドバイスを生成する。AIの構造化出力から複数記録に共通するテーマ、全体向け学習案内、指導者向け支援案、回答者別アドバイスを作成する。AI結果は`draft`として保存し、テーマと個人重点確認の教育目標ID・記録IDをBackendが検証する。回答者IDは分析入力では一時的な`respondentKey`へ置き換え、保存時にBackendで復元する。`PATCH`は文章を編集して再び`draft`に戻し、`POST .../review`は管理者が確認済みであることを保存する。回答者が設定されていない記録は個人アドバイスの対象外とする。集計分析は対象者へ公開せず、対象者の比較・点数化・順位付け・理解度や能力の断定を行わない。
+
+学習支援用システムプロンプトは、`app/api/src/ai_interviewer_api/agents/learning_support/prompts/overall_analysis.md`（全体分析）と`app/api/src/ai_interviewer_api/agents/learning_support/prompts/personal_advice.md`（回答者別アドバイス）で開発者が管理する。`prompt_loader.py`がUTF-8のMarkdownを読み込み、AI呼び出しへ渡す。IDの存在確認、対象者単位の記録分離、認可、下書き・確認済み状態はBackendが保証する。
+
 ## 6. 構造化インタビューの責務
 
 確定したユーザー発話は、テキスト経路と音声経路で共通のインタビュー状態へ渡す。
@@ -246,6 +273,8 @@ Question Generator
 LLMは意味解釈、候補抽出、矛盾・Applicabilityの判定、質問文生成を担当する。BackendはStructured Output検証、状態遷移、完了判定、質問対象の優先順位、重複防止、承認境界を担当する。
 
 ProcessModel、フローチャート、シーケンス図はProcessStateから生成する派生ビューである。フローチャートは端子・長方形・ひし形・平行四辺形などの標準記号へ変換し、シーケンス図は参加者ボックス・破線ライフライン・時系列メッセージ矢印で描画する。LLMにMermaidコードやReact Flowの座標を生成させない。フローチャートまたはシーケンス図の生成後は全画面で確認でき、管理者系ロールは全画面の編集・保存と要件・処理モデルへのコンパクトな編集指示入力を利用できる。編集指示は`RequirementState`とProcessStateを同時に対象にでき、手動修正と指示編集はBackendで検証する。要件だけの編集ではProcessStateのバージョンを更新せず、Process要素を変更した場合だけProcessStateのバージョンを更新する。承認済み記録は直接編集しない。
+
+管理者は`/knowledge-dbs`のヘッダーから`/dashboard`を開く。ナレッジ分析はフィルター直下の「分析」「学習支援」タブで表示を分ける。「分析」には確認優先度の理由付き一覧、回答者ごとの状態集計、教育目標の状態を表示し、「学習支援」には複数記録を横断した学習支援分析のレビュー・編集操作を表示する。個別記録の教育支援案はナレッジ分析画面に表示しない。公開済みの個別学習案内は、担当`interviewer`が自分の記録詳細で確認できる。対象者には、指導者向けメモ、他者の記録、未公開の案、横断分析、対象者間の比較を表示しない。確認優先度一覧は折りたたみ可能な1行表示とスクロール領域を使用し、記録数が増えても画面全体が無制限に縦へ伸びない。
 
 ## 7. ローカル動作確認
 

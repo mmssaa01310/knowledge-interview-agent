@@ -278,6 +278,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     : props.interviewMessages.length > 0
       ? t("interview.organizing")
       : t("interview.startPrompt");
+  const publishedLearningGuidance = props.user?.role === "interviewer"
+    ? props.publishedGuidance
+    : [];
 
   return (
     <section className="panel interview-page">
@@ -555,6 +558,61 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               {props.recordNotice ? <p className="notice interview-inline-notice">{props.recordNotice}</p> : null}
             </div>
           </div>
+
+          {publishedLearningGuidance.length ? (
+            <section className="published-learning-guidance" aria-labelledby="published-learning-guidance-title">
+              <div className="published-learning-guidance-header">
+                <div>
+                  <p className="eyebrow">KIKIORI</p>
+                  <h2 id="published-learning-guidance-title">{t("interview.learningGuidance.title")}</h2>
+                  <p>{t("interview.learningGuidance.description")}</p>
+                </div>
+              </div>
+              <div className="published-learning-guidance-list">
+                {publishedLearningGuidance.map((guidance) => (
+                  <article className="published-learning-guidance-item" key={guidance.id}>
+                    <div className="published-learning-guidance-summary">
+                      <strong>{t("interview.learningGuidance.summary")}</strong>
+                      <p>{guidance.summary}</p>
+                    </div>
+                    <div className="published-learning-guidance-next">
+                      <strong>{t("interview.learningGuidance.next")}</strong>
+                      <p>{guidance.learnerGuidance}</p>
+                    </div>
+                    {guidance.assessments.length ? (
+                      <div className="published-learning-guidance-assessments">
+                        {guidance.assessments.map((assessment) => {
+                          const statusKey = assessment.status === "partially_confirmed"
+                            ? "partiallyConfirmed"
+                            : assessment.status === "not_evidenced"
+                              ? "notEvidenced"
+                              : assessment.status === "needs_follow_up"
+                                ? "needsFollowUp"
+                                : assessment.status === "not_applicable"
+                                  ? "notApplicable"
+                                  : "confirmed";
+                          return (
+                            <div className="published-learning-guidance-assessment" key={assessment.objectiveId}>
+                              <div className="published-learning-guidance-assessment-heading">
+                                <strong>{assessment.label}</strong>
+                                <span className={`dashboard-assessment-status ${assessment.status}`}>
+                                  {t(`dashboard.learning.status.${statusKey}`)}
+                                </span>
+                              </div>
+                              <small>{t("interview.learningGuidance.evidence", { count: formatNumber(assessment.evidenceIds.length, locale) })}</small>
+                              {assessment.followUpQuestion ? (
+                                <p><strong>{t("interview.learningGuidance.followUp")}：</strong>{assessment.followUpQuestion}</p>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
         </div>
       </div>

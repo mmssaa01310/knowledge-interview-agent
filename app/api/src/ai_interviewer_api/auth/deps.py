@@ -8,6 +8,7 @@ class UserContext:
     tenant_id: str
     role: str
     display_name: str
+    timezone: str = "Asia/Tokyo"
 
 
 DEV_TOKENS = {

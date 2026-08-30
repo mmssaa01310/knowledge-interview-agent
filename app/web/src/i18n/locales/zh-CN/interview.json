@@ -76,6 +76,14 @@
   },
   "chatDescription": "通过与AI对话整理回答。",
   "selectedRecordNone": "请选择记录。",
+  "learningGuidance": {
+    "title": "学习指引",
+    "description": "这是已发布的指引，用于整理下一步需要确认和学习的内容。",
+    "summary": "概要",
+    "next": "下一步确认或学习的内容",
+    "followUp": "复核问题",
+    "evidence": "依据 {count} 条"
+  },
   "process": {
     "ariaLabel": "业务流程和时序图",
     "unknown": "正在确认此请求是否包含业务流程。",

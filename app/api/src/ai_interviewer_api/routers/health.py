@@ -17,4 +17,5 @@ def me(user: UserContext = Depends(get_current_user)) -> dict:
         "tenantId": user.tenant_id,
         "role": user.role,
         "displayName": user.display_name,
+        "timezone": user.timezone,
     }
