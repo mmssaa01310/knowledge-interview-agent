@@ -540,20 +540,56 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
             ) : null}
           </section>
 
-          <section className="dashboard-card">
+          <section className="dashboard-card dashboard-knowledge-status-section">
             <div className="dashboard-section-heading"><div><p className="eyebrow">{t("dashboard.knowledge.eyebrow")}</p><h2>{t("dashboard.knowledge.title")}</h2></div></div>
             {dashboard.knowledgeSummaries.length === 0 ? <p className="empty">{t("dashboard.empty")}</p> : (
-              <div className="dashboard-table dashboard-knowledge-table">
-                <div className="dashboard-table-row dashboard-table-head"><span>{t("dashboard.knowledge.name")}</span><span>{t("dashboard.knowledge.records")}</span><span>{t("dashboard.knowledge.statuses")}</span><span>{t("dashboard.knowledge.priority")}</span></div>
-                {dashboard.knowledgeSummaries.map((knowledge) => (
-                  <div className="dashboard-table-row" key={knowledge.knowledgeId}>
-                    <span><strong>{knowledge.knowledgeName}</strong><small>{knowledge.profile ? t(`interview.profile.${knowledge.profile}`) : t("interview.profile.notSet")}</small></span>
-                    <span>{formatNumber(knowledge.recordCount, locale)}</span>
-                    <span>{formatNumber(knowledge.inProgressCount, locale)} / {formatNumber(knowledge.submittedCount, locale)} / {formatNumber(knowledge.approvedCount, locale)}</span>
-                    <span>{formatNumber(knowledge.highPriorityCount + knowledge.mediumPriorityCount, locale)}</span>
-                  </div>
-                ))}
-              </div>
+              <>
+                <div className="dashboard-table dashboard-knowledge-table" aria-label={t("dashboard.knowledge.title")}>
+                  <div className="dashboard-table-row dashboard-table-head"><span>{t("dashboard.knowledge.name")}</span><span>{t("dashboard.knowledge.records")}</span><span>{t("dashboard.knowledge.statuses")}</span><span>{t("dashboard.knowledge.priority")}</span></div>
+                  {dashboard.knowledgeSummaries.map((knowledge) => (
+                    <div className="dashboard-table-row" key={knowledge.knowledgeId}>
+                      <span><strong>{knowledge.knowledgeName}</strong><small>{knowledge.profile ? t(`interview.profile.${knowledge.profile}`) : t("interview.profile.notSet")}</small></span>
+                      <span>{formatNumber(knowledge.recordCount, locale)}</span>
+                      <span>{formatNumber(knowledge.inProgressCount, locale)} / {formatNumber(knowledge.submittedCount, locale)} / {formatNumber(knowledge.approvedCount, locale)}</span>
+                      <span>{formatNumber(knowledge.highPriorityCount + knowledge.mediumPriorityCount, locale)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="dashboard-knowledge-cards" aria-label={t("dashboard.knowledge.title")}>
+                  {dashboard.knowledgeSummaries.map((knowledge) => (
+                    <article className="dashboard-knowledge-card" key={knowledge.knowledgeId}>
+                      <div className="dashboard-knowledge-card-copy">
+                        <h3 title={knowledge.knowledgeName}>{knowledge.knowledgeName}</h3>
+                        <p title={knowledge.profile ? t(`interview.profile.${knowledge.profile}`) : t("interview.profile.notSet")}>
+                          {knowledge.profile ? t(`interview.profile.${knowledge.profile}`) : t("interview.profile.notSet")}
+                        </p>
+                      </div>
+                      <dl className="dashboard-knowledge-card-metrics">
+                        <div>
+                          <dt>{t("dashboard.knowledge.records")}</dt>
+                          <dd>{formatNumber(knowledge.recordCount, locale)}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("interview.status.in_progress")}</dt>
+                          <dd>{formatNumber(knowledge.inProgressCount, locale)}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("interview.status.submitted")}</dt>
+                          <dd>{formatNumber(knowledge.submittedCount, locale)}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("interview.status.approved")}</dt>
+                          <dd>{formatNumber(knowledge.approvedCount, locale)}</dd>
+                        </div>
+                        <div>
+                          <dt>{t("dashboard.knowledge.priority")}</dt>
+                          <dd>{formatNumber(knowledge.highPriorityCount + knowledge.mediumPriorityCount, locale)}</dd>
+                        </div>
+                      </dl>
+                    </article>
+                  ))}
+                </div>
+              </>
             )}
           </section>
 

@@ -6012,3 +6012,112 @@ html[dir="rtl"] .interview-page-title {
     max-height: 20dvh;
   }
 }
+
+.dashboard-knowledge-status-section,
+.dashboard-knowledge-status-section .dashboard-knowledge-table,
+.dashboard-knowledge-status-section .dashboard-knowledge-cards,
+.dashboard-knowledge-card,
+.dashboard-knowledge-card-copy,
+.dashboard-knowledge-card-metrics,
+.dashboard-knowledge-card-metrics > div {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.dashboard-knowledge-status-section .dashboard-knowledge-table {
+  width: 100%;
+  min-width: 0;
+}
+
+.dashboard-knowledge-cards {
+  display: none;
+}
+
+.dashboard-knowledge-card-copy h3,
+.dashboard-knowledge-card-copy p {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-knowledge-card-copy h3 {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ki-ink);
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.dashboard-knowledge-card-copy p {
+  display: -webkit-box;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--ki-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.dashboard-knowledge-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.dashboard-knowledge-card-metrics > div {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--ki-border);
+  border-radius: 8px;
+  background: var(--ki-surface-subtle);
+}
+
+.dashboard-knowledge-card-metrics dt {
+  min-width: 0;
+  color: var(--ki-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-knowledge-card-metrics dd {
+  margin: 0;
+  color: var(--ki-ink);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+@media (max-width: 767px) {
+  .dashboard-knowledge-status-section {
+    padding: 12px;
+  }
+
+  .dashboard-knowledge-status-section .dashboard-knowledge-table {
+    display: none;
+  }
+
+  .dashboard-knowledge-cards {
+    display: grid;
+    width: 100%;
+    gap: 8px;
+  }
+
+  .dashboard-knowledge-card {
+    display: grid;
+    width: 100%;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--ki-border);
+    border-radius: var(--ki-radius-md);
+    background: var(--ki-surface-subtle);
+  }
+}
