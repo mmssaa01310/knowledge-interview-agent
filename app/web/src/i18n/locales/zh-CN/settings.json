@@ -3,6 +3,8 @@
   "returnToInterview": "返回访谈",
   "save": "保存设置",
   "saving": "保存中…",
+  "detailsSave": "保存详细设置",
+  "unsavedChangesConfirm": "有未保存的更改。确定要离开此页面吗？",
   "setupNotice": "开始访谈前，请保存用途和执行模型。",
   "knowledgeInfo": "知识库详情",
   "knowledgeInfoDetails": "详细设置",
@@ -30,6 +32,7 @@
   "menuAria": "访谈设置菜单",
   "execution": {
     "title": "执行设置",
+    "save": "保存执行设置",
     "purpose": "用途",
     "purposeAria": "访谈用途",
     "model": "访谈执行模型",
@@ -63,6 +66,7 @@
   },
   "fields": {
     "title": "问题项目",
+    "save": "保存问题项目",
     "description": "定义AI需要询问的信息和审核结构。",
     "count": "{count}项",
     "add": "添加项目",

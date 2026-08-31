@@ -16,6 +16,8 @@ export type PromptProfile = {
   prompt: string;
 };
 
+export type KnowledgeSettingsSaveScope = "details" | "fields" | "execution";
+
 export type KnowledgeLayoutProps = {
   route: Route;
   user: UserProfile | null;
@@ -55,6 +57,7 @@ export type KnowledgeLayoutProps = {
   setSettingsInterviewPlan: (value: Knowledge["interviewPlan"]) => void;
   settingsNotice: string;
   settingsSaveState: "idle" | "saving" | "success" | "error";
+  settingsSaveScope: KnowledgeSettingsSaveScope | null;
   newRecordTitle: string;
   setNewRecordTitle: (value: string) => void;
   newDocumentFile: File | null;
@@ -98,7 +101,7 @@ export type KnowledgeLayoutProps = {
     tags?: string[];
   }, knowledgeDbId?: string) => void;
   onDeleteKnowledge: (knowledgeId: string) => void;
-  onSaveSettings: (activeTab: "fields" | "execution") => void;
+  onSaveSettings: (scope: KnowledgeSettingsSaveScope) => void;
   onClearSettingsNotice: () => void;
   onCreatePromptProfile?: (payload: { name: string; prompt: string }) => Promise<PromptProfile>;
   onUploadDocument: () => void;

@@ -3,6 +3,8 @@
   "returnToInterview": "インタビューに戻る",
   "save": "設定を保存",
   "saving": "保存中…",
+  "detailsSave": "詳細設定を保存",
+  "unsavedChangesConfirm": "保存されていない変更があります。このページを離れてもよいですか？",
   "setupNotice": "インタビューを開始するには、用途と実行モデルの保存が必要です。",
   "knowledgeInfo": "ナレッジ情報",
   "knowledgeInfoDetails": "詳細設定",
@@ -30,6 +32,7 @@
   "menuAria": "インタビュー設定メニュー",
   "execution": {
     "title": "実行設定",
+    "save": "実行設定を保存",
     "purpose": "用途",
     "purposeAria": "インタビュー用途",
     "model": "インタビュー実行モデル",
@@ -63,6 +66,7 @@
   },
   "fields": {
     "title": "質問項目",
+    "save": "質問項目を保存",
     "description": "AIが聞き取る項目と、確認する情報の枠を定義します。",
     "count": "{count}件",
     "add": "項目追加",

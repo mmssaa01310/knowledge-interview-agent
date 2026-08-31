@@ -12,7 +12,7 @@ import {
 import { KnowledgeDocumentsContent } from "./KnowledgeDocumentsPage";
 import { useI18n, type Translate } from "../i18n";
 import { formatNumber } from "../lib/date";
-import type { KnowledgeLayoutProps } from "../types/pageProps";
+import type { KnowledgeLayoutProps, KnowledgeSettingsSaveScope } from "../types/pageProps";
 import { OptionPicker, type OptionPickerOption } from "../components/ui/OptionPicker";
 import { buildKnowledgeTagOptions } from "../features/knowledge/tagOptions";
 import { useGuide } from "../features/guides/GuideProvider";
@@ -54,10 +54,6 @@ function getStoredSettingsTab(): SettingsTab {
   if (savedTab === "execution" || savedTab === "knowledge") return savedTab;
   if (savedTab === "assist") return "execution";
   return "fields";
-}
-
-function getSettingsSaveTab(tab: SettingsTab): "fields" | "execution" {
-  return tab === "fields" ? "fields" : "execution";
 }
 
 function uniqueFields(fields: KnowledgeField[]) {
@@ -158,6 +154,40 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   function clearSettingsNotice() {
     if (!props.settingsNotice && props.settingsSaveState === "idle") return;
     props.onClearSettingsNotice();
+  }
+
+  function renderSettingsSaveAction(
+    scope: KnowledgeSettingsSaveScope,
+    label: string,
+    guideTarget?: string,
+  ) {
+    const isSavingThisScope = props.settingsSaveState === "saving" && props.settingsSaveScope === scope;
+    const showNotice = props.settingsSaveScope === scope && Boolean(props.settingsNotice);
+
+    return (
+      <div className="settings-save-actions">
+        <button
+          className="primary compact"
+          type="button"
+          data-guide={guideTarget}
+          onClick={() => props.onSaveSettings(scope)}
+          disabled={props.settingsSaveState === "saving"}
+          aria-busy={isSavingThisScope}
+        >
+          {isSavingThisScope ? t("settings.saving") : label}
+        </button>
+        {showNotice ? (
+          <span
+            className={`notice settings-save-status ${props.settingsSaveState}`}
+            role="status"
+            aria-live="polite"
+          >
+            {isSavingThisScope ? <span className="save-status-spinner" aria-hidden="true" /> : null}
+            {props.settingsNotice}
+          </span>
+        ) : null}
+      </div>
+    );
   }
 
   function deleteTag(option: OptionPickerOption) {
@@ -425,14 +455,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
           >
             {t("settings.returnToInterview")}
           </button>
-          <button
-            className="primary"
-            type="button"
-            onClick={() => props.onSaveSettings(getSettingsSaveTab(activeTab))}
-            disabled={props.settingsSaveState === "saving"}
-          >
-            {props.settingsSaveState === "saving" ? t("settings.saving") : t("settings.save")}
-          </button>
         </div>
       </div>
 
@@ -528,6 +550,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
               <textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} />
             </label>
           </div>
+          {renderSettingsSaveAction("details", t("settings.detailsSave"))}
         </div>
       </details>
 
@@ -547,6 +570,7 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                 <div>
                   <h3>{t("settings.execution.title")}</h3>
                 </div>
+                {renderSettingsSaveAction("execution", t("settings.execution.save"), "knowledge-confirm")}
               </div>
               <div className="interview-settings">
                 <div className="interview-setting-grid">
@@ -693,7 +717,10 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                     <h3>{t("settings.fields.title")}</h3>
                     <span className="counter">{t("settings.fields.count", { count: formatNumber(props.draftFields.length, locale) })}</span>
                   </div>
-                  <button className="ghost compact" type="button" data-guide="question-add" onClick={addField}>{t("settings.fields.add")}</button>
+                  <div className="settings-section-actions">
+                    <button className="ghost compact" type="button" data-guide="question-add" onClick={addField}>{t("settings.fields.add")}</button>
+                    {renderSettingsSaveAction("fields", t("settings.fields.save"), "knowledge-confirm")}
+                  </div>
                 </div>
                 <div className="field-list" data-guide="knowledge-edit">
                   {props.draftFields.length === 0 ? <p className="empty">{t("settings.fields.empty")}</p> : props.draftFields.map((field, index) => {
@@ -792,28 +819,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
             </section>
           ) : null}
 
-          <div className="actions sticky-actions">
-            <button
-              type="button"
-              className="primary"
-              data-guide="knowledge-confirm"
-              onClick={() => props.onSaveSettings(getSettingsSaveTab(activeTab))}
-              disabled={props.settingsSaveState === "saving"}
-              aria-busy={props.settingsSaveState === "saving"}
-            >
-              {props.settingsSaveState === "saving" ? t("settings.saving") : t("settings.save")}
-            </button>
-            {props.settingsNotice ? (
-              <span
-                className={`notice settings-save-status ${props.settingsSaveState}`}
-                role="status"
-                aria-live="polite"
-              >
-                {props.settingsSaveState === "saving" ? <span className="save-status-spinner" aria-hidden="true" /> : null}
-                {props.settingsNotice}
-              </span>
-            ) : null}
-          </div>
         </div>
       </div>
 

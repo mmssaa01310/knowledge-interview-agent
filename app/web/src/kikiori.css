@@ -1481,8 +1481,18 @@ textarea::placeholder {
 
 .option-picker-option-copy {
   display: grid;
+  flex: 1 1 auto;
   min-width: 0;
   gap: 2px;
+}
+
+.option-picker-option-trailing {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-inline-start: auto;
 }
 
 .option-picker-option.editing {
@@ -1522,7 +1532,6 @@ textarea::placeholder {
   flex: 0 0 auto;
   align-items: center;
   gap: 3px;
-  margin-inline-start: auto;
 }
 
 .option-picker-action {
@@ -1596,7 +1605,6 @@ textarea::placeholder {
 
 .option-picker-check {
   flex: 0 0 auto;
-  margin-inline-start: auto;
   color: var(--ki-primary);
   font-size: 14px;
   font-weight: 800;
@@ -2951,6 +2959,25 @@ label {
   border-radius: 10px;
   background: var(--ki-warning-soft);
   color: #765522;
+}
+
+.settings-section-actions,
+.settings-save-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.settings-save-actions .settings-save-status {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.knowledge-info-content > .settings-save-actions {
+  margin-top: 2px;
 }
 
 .sticky-actions {

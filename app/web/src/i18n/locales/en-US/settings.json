@@ -3,6 +3,8 @@
   "returnToInterview": "Back to interview",
   "save": "Save settings",
   "saving": "Saving…",
+  "detailsSave": "Save details",
+  "unsavedChangesConfirm": "There are unsaved changes. Are you sure you want to leave this page?",
   "setupNotice": "Save the purpose and execution model before starting an interview.",
   "knowledgeInfo": "Knowledge details",
   "knowledgeInfoDetails": "Details",
@@ -30,6 +32,7 @@
   "menuAria": "Interview settings menu",
   "execution": {
     "title": "Execution settings",
+    "save": "Save execution settings",
     "purpose": "Purpose",
     "purposeAria": "Interview purpose",
     "model": "Interview execution model",
@@ -63,6 +66,7 @@
   },
   "fields": {
     "title": "Question items",
+    "save": "Save question items",
     "description": "Define the information AI should ask about and the structure to review.",
     "count": "{count} items",
     "add": "Add item",

@@ -56,7 +56,7 @@ import {
   DEFAULT_INTERVIEW_MODEL_ID,
   isInterviewConfigurationComplete,
 } from "../features/interviews/interviewConfiguration";
-import type { KnowledgeLayoutProps } from "../types/pageProps";
+import type { KnowledgeLayoutProps, KnowledgeSettingsSaveScope } from "../types/pageProps";
 import type {
   ChatMessage,
   InterviewAnswerTarget,
@@ -71,6 +71,10 @@ import type { Route } from "./routeTypes";
 type UseKnowledgeWorkspaceControllerArgs = {
   route: Route;
   navigate: (path: string) => void;
+  registerNavigationGuard: (
+    guard: ((nextPath: string) => boolean) | null,
+    hasUnsavedChanges?: boolean,
+  ) => void;
 };
 
 function createInterviewClientMessageId() {
@@ -152,6 +156,43 @@ function getSettingsSaveErrorMessage(error: unknown, tabLabel: string, t: Transl
   return t("errors.settingsSave", { tab: tabLabel });
 }
 
+function normalizeSettingsTags(tags: readonly string[] | null | undefined) {
+  return (tags ?? [])
+    .map((tag) => tag.trim().replace(/^#+/, ""))
+    .filter(Boolean);
+}
+
+function normalizeComparableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeComparableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nestedValue]) => [key, normalizeComparableValue(nestedValue)]),
+    );
+  }
+  return value ?? null;
+}
+
+function serializeComparableValue(value: unknown) {
+  return JSON.stringify(normalizeComparableValue(value));
+}
+
+function serializeKnowledgeFields(fields: readonly KnowledgeField[]) {
+  return serializeComparableValue(fields.map((field) => ({
+    id: field.id ?? null,
+    name: field.name,
+    description: field.description ?? "",
+    inputType: field.inputType,
+    required: field.required,
+    askByAi: field.askByAi,
+    retrievalPolicy: field.retrievalPolicy ?? "auto",
+    aiQuestionExamples: field.aiQuestionExamples ?? [],
+    questionPlan: field.questionPlan ?? null,
+    displayOrder: field.displayOrder,
+  })));
+}
+
 export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceControllerArgs) {
   const { t, locale } = useI18n();
 
@@ -196,6 +237,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [draftFields, setDraftFields] = useState<KnowledgeField[]>([]);
   const [settingsNotice, setSettingsNotice] = useState("");
   const [settingsSaveState, setSettingsSaveState] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [settingsSaveScope, setSettingsSaveScope] = useState<KnowledgeSettingsSaveScope | null>(null);
   const [isPreparingKnowledgeCreation, setIsPreparingKnowledgeCreation] = useState(false);
   const [knowledgeCreationError, setKnowledgeCreationError] = useState("");
   const [newlyCreatedKnowledgeId, setNewlyCreatedKnowledgeId] = useState<string | null>(null);
@@ -226,6 +268,41 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     : null;
   const selectedRecordId = "recordId" in args.route ? args.route.recordId : undefined;
   const selectedRecord = selectedRecordId ? records.find((record) => record.id === selectedRecordId) ?? null : null;
+
+  const hasUnsavedSettingsChanges = useMemo(() => {
+    if (args.route.name !== "knowledge-settings" || !selectedKnowledge) return false;
+
+    const detailsChanged = settingsName !== selectedKnowledge.name
+      || settingsDescription !== (selectedKnowledge.description ?? "")
+      || serializeComparableValue(normalizeSettingsTags(settingsTags))
+        !== serializeComparableValue(normalizeSettingsTags(selectedKnowledge.tags));
+    const executionChanged = settingsSystemPrompt !== (selectedKnowledge.systemPrompt ?? "")
+      || settingsCategory !== (selectedKnowledge.category ?? "")
+      || settingsTargetBusiness !== (selectedKnowledge.targetBusiness ?? "")
+      || settingsTargetEquipment !== (selectedKnowledge.targetEquipment ?? "")
+      || settingsLanguage !== selectedKnowledge.language
+      || settingsDefaultModelId !== (selectedKnowledge.defaultModelId ?? "")
+      || serializeComparableValue(settingsInterviewPlan ?? null)
+        !== serializeComparableValue(selectedKnowledge.interviewPlan ?? null);
+    const fieldsChanged = serializeKnowledgeFields(draftFields) !== serializeKnowledgeFields(fields);
+
+    return detailsChanged || executionChanged || fieldsChanged;
+  }, [
+    args.route.name,
+    draftFields,
+    fields,
+    selectedKnowledge,
+    settingsCategory,
+    settingsDefaultModelId,
+    settingsDescription,
+    settingsInterviewPlan,
+    settingsLanguage,
+    settingsName,
+    settingsSystemPrompt,
+    settingsTags,
+    settingsTargetBusiness,
+    settingsTargetEquipment,
+  ]);
 
   function markRecordAsSubmitted(recordId: string) {
     setRecords((currentRecords) => currentRecords.map((record) => (
@@ -733,52 +810,74 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     args.navigate(nextKnowledgeId ? `/knowledge-dbs/${selectedKnowledgeDb.id}/knowledges/${nextKnowledgeId}/interview` : `/knowledge-dbs/${selectedKnowledgeDb.id}`);
   }
 
-  async function handleSaveSettings(activeTab: "fields" | "execution") {
-    const tabLabel = activeTab === "execution"
-      ? t("settings.title")
-      : t("settings.tabs.fields");
+  async function handleSaveSettings(saveScope: KnowledgeSettingsSaveScope) {
+    const tabLabel = saveScope === "details"
+      ? t("settings.knowledgeInfo")
+      : saveScope === "execution"
+        ? t("settings.tabs.execution")
+        : t("settings.tabs.fields");
     if (!selectedKnowledgeDb || !selectedKnowledge || settingsSaveState === "saving") return;
 
     setSettingsSaveState("saving");
+    setSettingsSaveScope(saveScope);
     setSettingsNotice(t("settings.messages.saving", { tab: tabLabel }));
     try {
-      const interviewPlan = activeTab === "execution"
-        ? {
-            ...(settingsInterviewPlan ?? {}),
-            version: settingsInterviewPlan?.version ?? 1,
-            profile: settingsInterviewPlan?.profile ?? "fixed_form",
-            modelId: settingsInterviewPlan?.modelId ?? DEFAULT_INTERVIEW_MODEL_ID,
-          }
-        : settingsInterviewPlan ?? null;
-      await updateKnowledge(selectedKnowledge.id, {
-        name: settingsName,
-        description: settingsDescription,
-        systemPrompt: settingsSystemPrompt.trim() || null,
-        category: settingsCategory,
-        targetBusiness: settingsTargetBusiness,
-        targetEquipment: settingsTargetEquipment,
-        tags: settingsTags,
-        language: settingsLanguage,
-        defaultModelId: settingsDefaultModelId,
-        interviewPlan,
-      });
-      const existingIds = fields.map((field) => field.id).filter(Boolean);
-      const draftIds = draftFields.map((field) => field.id).filter(Boolean);
-      await Promise.all(
-        existingIds
-          .filter((fieldId) => fieldId && !draftIds.includes(fieldId))
-          .map((fieldId) => deleteKnowledgeField(fieldId as string))
-      );
-      await Promise.all(
-        draftFields.map((field, index) => {
-          const payload = { ...field, displayOrder: index + 1 };
-          return field.id
-            ? updateKnowledgeField(field.id, payload)
-            : createKnowledgeField(selectedKnowledge.id, payload);
-        })
-      );
-      await loadKnowledgeDbs();
-      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id, undefined, user?.role);
+      if (saveScope === "details") {
+        const updatedKnowledge = await updateKnowledge(selectedKnowledge.id, {
+          name: settingsName,
+          description: settingsDescription,
+          tags: settingsTags,
+        });
+        setKnowledges((current) => current.map((knowledge) => (
+          knowledge.id === updatedKnowledge.id ? updatedKnowledge : knowledge
+        )));
+        setSettingsName(updatedKnowledge.name);
+        setSettingsDescription(updatedKnowledge.description ?? "");
+        setSettingsTags(updatedKnowledge.tags ?? []);
+      } else if (saveScope === "execution") {
+        const interviewPlan = {
+          ...(settingsInterviewPlan ?? {}),
+          version: settingsInterviewPlan?.version ?? 1,
+          profile: settingsInterviewPlan?.profile ?? "fixed_form",
+          modelId: settingsInterviewPlan?.modelId ?? DEFAULT_INTERVIEW_MODEL_ID,
+        };
+        const updatedKnowledge = await updateKnowledge(selectedKnowledge.id, {
+          systemPrompt: settingsSystemPrompt.trim() || null,
+          category: settingsCategory,
+          targetBusiness: settingsTargetBusiness,
+          targetEquipment: settingsTargetEquipment,
+          language: settingsLanguage,
+          defaultModelId: settingsDefaultModelId,
+          interviewPlan,
+        });
+        setKnowledges((current) => current.map((knowledge) => (
+          knowledge.id === updatedKnowledge.id ? updatedKnowledge : knowledge
+        )));
+        setSettingsSystemPrompt(updatedKnowledge.systemPrompt ?? "");
+        setSettingsCategory(updatedKnowledge.category ?? "");
+        setSettingsTargetBusiness(updatedKnowledge.targetBusiness ?? "");
+        setSettingsTargetEquipment(updatedKnowledge.targetEquipment ?? "");
+        setSettingsLanguage(updatedKnowledge.language);
+        setSettingsDefaultModelId(updatedKnowledge.defaultModelId ?? "");
+        setSettingsInterviewPlan(updatedKnowledge.interviewPlan ?? undefined);
+      } else {
+        const existingIds = fields.map((field) => field.id).filter(Boolean);
+        const draftIds = draftFields.map((field) => field.id).filter(Boolean);
+        await Promise.all(
+          existingIds
+            .filter((fieldId) => fieldId && !draftIds.includes(fieldId))
+            .map((fieldId) => deleteKnowledgeField(fieldId as string))
+        );
+        await Promise.all(
+          draftFields.map((field, index) => {
+            const payload = { ...field, displayOrder: index + 1 };
+            return field.id
+              ? updateKnowledgeField(field.id, payload)
+              : createKnowledgeField(selectedKnowledge.id, payload);
+          })
+        );
+        await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id, undefined, user?.role);
+      }
       setSettingsSaveState("success");
       setSettingsNotice(t("settings.messages.saved", { tab: tabLabel }));
     } catch (error) {
@@ -1203,6 +1302,20 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   }
 
   useEffect(() => {
+    if (args.route.name !== "knowledge-settings") {
+      args.registerNavigationGuard(null, false);
+      return;
+    }
+
+    const guard = (nextPath: string) => {
+      if (!hasUnsavedSettingsChanges || nextPath === window.location.pathname) return true;
+      return window.confirm(t("settings.unsavedChangesConfirm"));
+    };
+    args.registerNavigationGuard(guard, hasUnsavedSettingsChanges);
+    return () => args.registerNavigationGuard(null, false);
+  }, [args.route.name, args.registerNavigationGuard, hasUnsavedSettingsChanges, t]);
+
+  useEffect(() => {
     refresh().catch(() => undefined);
   }, [args.route.name, routeKnowledgeDbId, routeKnowledgeId, selectedRecordId]);
 
@@ -1220,6 +1333,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsInterviewPlan(selectedKnowledge.interviewPlan ?? undefined);
     setSettingsNotice("");
     setSettingsSaveState("idle");
+    setSettingsSaveScope(null);
   }, [selectedKnowledge?.id]);
 
   useEffect(() => {
@@ -1227,6 +1341,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     const timeoutId = window.setTimeout(() => {
       setSettingsNotice("");
       setSettingsSaveState("idle");
+      setSettingsSaveScope(null);
     }, 3000);
     return () => window.clearTimeout(timeoutId);
   }, [settingsNotice, settingsSaveState]);
@@ -1312,6 +1427,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsInterviewPlan,
     settingsNotice,
     settingsSaveState,
+    settingsSaveScope,
     newRecordTitle,
     setNewRecordTitle,
     newDocumentFile,
@@ -1354,6 +1470,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onClearSettingsNotice: () => {
       setSettingsNotice("");
       setSettingsSaveState("idle");
+      setSettingsSaveScope(null);
     },
     onUploadDocument: handleUploadDocument,
     onOpenDocument: handleOpenDocument,
