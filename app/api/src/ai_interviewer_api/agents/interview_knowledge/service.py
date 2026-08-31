@@ -14,6 +14,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     confirm_tentative_target,
     evaluate_completion,
     is_current_question_confirmation_target,
+    process_patch_validation_errors,
     resolve_profile,
     select_next_question_target,
     sync_structured_state_fields,
@@ -34,6 +35,7 @@ from ai_interviewer_api.core.interview_locale import (
     localized_interview_confirmation_question,
     localized_interview_document_confirmation_question,
     localized_interview_fallbacks,
+    localized_interview_proposal_question,
     localized_interview_tentative_transition,
     resolve_interview_locale,
 )
@@ -78,18 +80,38 @@ def generate_structured_interview_result(
     interview_locale = resolve_interview_locale(record, knowledge)
 
     if state.get("status") == "completed":
-        return _build_result(
-            record=record,
-            state=state,
-            messages=messages,
-            fields=fields,
-            reply=_completion_reply(interview_locale),
-            question=None,
-            action="finish",
-            status="completed",
+        completion = evaluate_completion(state, profile, fields)
+        if completion["complete"]:
+            return _build_result(
+                record=record,
+                state=state,
+                messages=messages,
+                fields=fields,
+                reply=_completion_reply(interview_locale),
+                question=None,
+                action="finish",
+                status="completed",
+            )
+        logger.warning(
+            "structured_completed_state_reopened record_id=%s missing_required_targets=%s "
+            "unknown_applicability=%s",
+            record.get("id"),
+            [
+                str(item.get("targetId") or item.get("label") or "")
+                for item in completion["missingRequiredTargets"]
+            ],
+            completion["unknownApplicabilityTopics"],
         )
+        state["status"] = "in_progress"
+        state["currentFieldId"] = None
+        state["currentQuestionId"] = None
+        state["nextQuestionTarget"] = None
+        _persist_state(state, user)
 
     current_question = _get_current_question(state)
+    if _repair_current_confirmation_question(state, locale=interview_locale):
+        _persist_state(state, user)
+        current_question = _get_current_question(state)
     latest_user_message = _latest_answer_message(messages, current_question)
     last_processed_id = state.get("lastProcessedUserMessageId")
 
@@ -173,6 +195,21 @@ def generate_structured_interview_result(
                         reasoning_effort=settings.structured_interview_medium_reasoning_effort,
                     )
                     selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
+            valid_evidence_ids = {
+                str(message.get("id"))
+                for message in messages
+                if message.get("id")
+            }
+            output, selected_reasoning_effort = _repair_invalid_process_patch(
+                output=output,
+                provider=structured_provider,
+                profile=profile,
+                state=state,
+                context=interpreter_context,
+                record_id=str(record.get("id") or ""),
+                valid_evidence_ids=valid_evidence_ids,
+                selected_reasoning_effort=selected_reasoning_effort,
+            )
             if output.dialogueAct in {
                 "ANSWER",
                 "CORRECTION",
@@ -187,11 +224,7 @@ def generate_structured_interview_result(
                     latest_message_id=str(latest_user_message.get("id") or ""),
                     fields=fields,
                     profile=profile,
-                    valid_evidence_ids={
-                        str(message.get("id"))
-                        for message in messages
-                        if message.get("id")
-                    },
+                    valid_evidence_ids=valid_evidence_ids,
                     current_question=current_question,
                 )
                 if _should_implicitly_confirm_tentative_target(
@@ -619,6 +652,150 @@ def _requires_medium_reasoning(
     )
 
 
+_PROCESS_PATCH_OPERATION_NAMES: tuple[str, ...] = (
+    "addParticipants",
+    "updateParticipants",
+    "addNodes",
+    "updateNodes",
+    "addEdges",
+    "updateEdges",
+    "removeEdges",
+    "addInteractions",
+    "updateInteractions",
+    "removeInteractions",
+)
+
+
+def _has_process_patch_operations(patch: Any) -> bool:
+    return any(getattr(patch, name) for name in _PROCESS_PATCH_OPERATION_NAMES)
+
+
+def _process_patch_repair_is_allowed(
+    state: Mapping[str, Any],
+    output: StructuredInterviewOutput,
+    profile: InterviewProfile,
+    valid_evidence_ids: set[str],
+) -> bool:
+    if profile == "business_process":
+        return True
+    if profile != "system_requirement":
+        return False
+    process_updates = [
+        update
+        for update in output.applicability
+        if update.topic == "process"
+        and set(update.evidenceTranscriptIds).issubset(valid_evidence_ids)
+        and update.evidenceTranscriptIds
+    ]
+    if any(update.status == "not_applicable" for update in process_updates):
+        return False
+    return bool(
+        state.get("applicabilityState", {}).get("process", {}).get("status") == "present"
+        or any(update.status == "present" for update in process_updates)
+    )
+
+
+def _process_patch_validation_errors_for_state(
+    state: Mapping[str, Any],
+    patch: Any,
+    valid_evidence_ids: set[str],
+) -> list[str]:
+    if not _has_process_patch_operations(patch):
+        return []
+    process_state = state.get("processState") or {}
+    errors = process_patch_validation_errors(
+        process_state,
+        patch,
+        valid_evidence_ids=valid_evidence_ids,
+    )
+    current_version = int(process_state.get("version", state.get("processVersion", 0)) or 0)
+    if patch.baseProcessVersion != current_version:
+        errors.insert(
+            0,
+            f"base_process_version_mismatch:{patch.baseProcessVersion}:{current_version}",
+        )
+    return list(dict.fromkeys(errors))
+
+
+def _repair_invalid_process_patch(
+    *,
+    output: StructuredInterviewOutput,
+    provider: StructuredInterviewProvider,
+    profile: InterviewProfile,
+    state: Mapping[str, Any],
+    context: Mapping[str, Any],
+    record_id: str,
+    valid_evidence_ids: set[str],
+    selected_reasoning_effort: str,
+) -> tuple[StructuredInterviewOutput, str]:
+    """Repair one rejected AI patch without reapplying other extracted values."""
+
+    initial_errors = _process_patch_validation_errors_for_state(
+        state,
+        output.processPatch,
+        valid_evidence_ids,
+    )
+    if not initial_errors or not _process_patch_repair_is_allowed(
+        state,
+        output,
+        profile,
+        valid_evidence_ids,
+    ):
+        return output, selected_reasoning_effort
+
+    logger.warning(
+        "structured_process_patch_validation_failed record_id=%s errors=%s",
+        record_id,
+        initial_errors,
+    )
+    repair_context = {
+        **context,
+        "processPatchRepair": {
+            "previousProcessPatch": output.processPatch.model_dump(),
+            "validationErrors": initial_errors,
+        },
+    }
+    logger.info(
+        "structured_process_patch_repair_started record_id=%s reasoning_effort=%s",
+        record_id,
+        settings.structured_interview_medium_reasoning_effort,
+    )
+    try:
+        repaired_output = provider.interpret(
+            profile=profile,
+            context=repair_context,
+            reasoning_effort=settings.structured_interview_medium_reasoning_effort,
+        )
+    except Exception:
+        logger.exception("structured_process_patch_repair_failed record_id=%s", record_id)
+        return output, selected_reasoning_effort
+
+    repaired_errors = _process_patch_validation_errors_for_state(
+        state,
+        repaired_output.processPatch,
+        valid_evidence_ids,
+    )
+    if not _has_process_patch_operations(repaired_output.processPatch):
+        repaired_errors.append("empty_repaired_process_patch")
+    if repaired_errors:
+        logger.warning(
+            "structured_process_patch_repair_rejected record_id=%s errors=%s",
+            record_id,
+            list(dict.fromkeys(repaired_errors)),
+        )
+        return output, selected_reasoning_effort
+
+    logger.info(
+        "structured_process_patch_repaired record_id=%s reasoning_effort=%s",
+        record_id,
+        settings.structured_interview_medium_reasoning_effort,
+    )
+    return (
+        output.model_copy(update={"processPatch": repaired_output.processPatch}),
+        settings.structured_interview_medium_reasoning_effort,
+    )
+
+
 def _has_structured_updates(output: StructuredInterviewOutput) -> bool:
     """Allow a semantically useful output even when its dialogue act is conversational."""
 
@@ -833,6 +1010,19 @@ def _generate_question_text(
     if (
         candidate_value
         and _is_awaiting_confirmation_target(target, state)
+        and candidate_source == "assistant_proposal"
+    ):
+        return (
+            localized_interview_proposal_question(
+                resolve_interview_locale(record, knowledge),
+                candidate_value,
+            ),
+            retrieved_context,
+            None,
+        )
+    if (
+        candidate_value
+        and _is_awaiting_confirmation_target(target, state)
         and not _contains_question_candidate(question_text, candidate_value)
     ):
         logger.warning(
@@ -922,20 +1112,25 @@ def _repair_current_confirmation_question(
         candidate_source = target_state.get("candidateSource")
     else:
         return False
-    if not is_pending or not candidate_value or _contains_question_candidate(
-        str(current_question.get("text") or ""),
-        candidate_value,
-    ):
+    if not is_pending or not candidate_value:
         return False
 
-    if candidate_source == "document_reference":
-        current_question["text"] = localized_interview_document_confirmation_question(
+    if candidate_source == "assistant_proposal":
+        question_text = localized_interview_proposal_question(locale, candidate_value)
+    elif candidate_source == "document_reference":
+        question_text = localized_interview_document_confirmation_question(
             locale,
             str(current_question.get("targetLabel") or current_question.get("label") or "").strip(),
             candidate_value,
         )
+    elif _contains_question_candidate(str(current_question.get("text") or ""), candidate_value):
+        return False
     else:
-        current_question["text"] = localized_interview_confirmation_question(locale, candidate_value)
+        question_text = localized_interview_confirmation_question(locale, candidate_value)
+
+    if str(current_question.get("text") or "") == question_text:
+        return False
+    current_question["text"] = question_text
     return True
 
 

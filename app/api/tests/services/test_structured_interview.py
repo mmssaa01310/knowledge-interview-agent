@@ -39,8 +39,10 @@ from ai_interviewer_api.repositories.store import store
 class FakeStructuredProvider:
     def __init__(self, outputs: list[StructuredInterviewOutput]) -> None:
         self.outputs = iter(outputs)
+        self.interpret_calls: list[dict[str, object]] = []
 
-    def interpret(self, **_: object) -> StructuredInterviewOutput:
+    def interpret(self, **kwargs: object) -> StructuredInterviewOutput:
+        self.interpret_calls.append(kwargs)
         return next(self.outputs)
 
     def generate_question(self, *, target: Mapping[str, object], **_: object) -> QuestionGenerationOutput:
@@ -832,6 +834,172 @@ def test_proposal_request_can_use_conversational_dialogue_act_and_labels_questio
     assert candidate["candidateProposalMessageId"] == result["assistantMessage"]["id"]
 
 
+def test_assistant_proposal_uses_standard_prompt_and_advances_after_acceptance() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {"id": "record-standard-proposal", "knowledgeId": "knowledge-standard-proposal", "title": "受注実績CSV出力"}
+    knowledge = {
+        "id": "knowledge-standard-proposal",
+        "name": "受注実績CSV出力要件",
+        "interviewPlan": {"profile": "system_requirement"},
+    }
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    question = {
+        "questionId": "q-purpose",
+        "questionType": "structured",
+        "fieldId": None,
+        "text": "受注実績CSV出力を必要とする目的、または現在解決したい課題を教えてください。",
+        "targetType": "requirement",
+        "targetId": "requirement.purpose_problem",
+        "targetLabel": "目的・課題",
+    }
+    state = build_initial_structured_state("system_requirement", [])
+    for requirement_id in ("requirement.users", "requirement.request"):
+        state["requirementStates"][requirement_id].update(status="CONFIRMED", value="確認済み")
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "currentQuestionId": question["questionId"],
+            "nextQuestionTarget": {
+                "targetType": "requirement",
+                "targetId": "requirement.purpose_problem",
+                "label": "目的・課題",
+                "priority": 3,
+            },
+            "askedQuestions": [question],
+        }
+    )
+    store.upsert("interview_states", state)
+    store.upsert(
+        "messages",
+        {
+            "id": "standard-proposal-request",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "考えて",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+        },
+    )
+    proposal_value = "受注実績をCSV形式で出力し、集計・分析や他システムでの利用をしやすくすることを目的とする"
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                dialogueAct="QUESTION_TO_ASSISTANT",
+                requirementUpdates=[
+                    RequirementUpdate(
+                        requirementId="requirement.purpose_problem",
+                        value=proposal_value,
+                        candidateSource="assistant_proposal",
+                        evidenceTranscriptIds=["standard-proposal-request"],
+                    )
+                ],
+            )
+        ]
+    )
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    expected_prompt = f"AIの案です。{proposal_value}という内容でよいですか。修正や拒否もできます。"
+    assert first["reply"] == expected_prompt
+    assert first["question"]["candidateSource"] == "assistant_proposal"
+    assert first["assistantMessage"]["content"] == expected_prompt
+    assert first["question"]["targetId"] == "requirement.purpose_problem"
+
+    store.upsert(
+        "messages",
+        {
+            "id": "standard-proposal-acceptance",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "はい",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": first["question"]["questionId"],
+            "targetType": "requirement",
+            "targetId": "requirement.purpose_problem",
+        },
+    )
+
+    second = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert len(provider.interpret_calls) == 1
+    assert second["interviewState"]["requirementStates"]["requirement.purpose_problem"]["status"] == "CONFIRMED"
+    assert second["question"]["targetId"] == "requirement.expected_result"
+    assert second["question"]["text"] != expected_prompt
+
+
+def test_persisted_assistant_proposal_is_normalized_before_replay() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {
+        "id": "record-persisted-standard-proposal",
+        "knowledgeId": "knowledge-persisted-standard-proposal",
+        "title": "受注実績CSV出力",
+    }
+    knowledge = {
+        "id": "knowledge-persisted-standard-proposal",
+        "name": "受注実績CSV出力要件",
+        "interviewPlan": {"profile": "system_requirement"},
+    }
+    proposal_value = "営業が受注実績を検索し、検索結果をCSV形式で出力できるようにする"
+    question = {
+        "questionId": "q-persisted-proposal",
+        "questionType": "structured",
+        "fieldId": None,
+        "text": f'「{proposal_value}」でよろしいですか？',
+        "targetType": "requirement",
+        "targetId": "requirement.request",
+        "targetLabel": "要求内容",
+        "candidateSource": "assistant_proposal",
+        "candidateValue": proposal_value,
+    }
+    state = build_initial_structured_state("system_requirement", [])
+    state["requirementStates"]["requirement.request"].update(
+        {
+            "status": "AWAITING_CONFIRMATION",
+            "answerResolution": "CONFIRM_REQUIRED",
+            "candidateValue": proposal_value,
+            "candidateSource": "assistant_proposal",
+        }
+    )
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "currentQuestionId": question["questionId"],
+            "nextQuestionTarget": {
+                "targetType": "requirement",
+                "targetId": "requirement.request",
+                "label": "要求内容",
+                "priority": 2,
+                "candidateSource": "assistant_proposal",
+            },
+            "askedQuestions": [question],
+        }
+    )
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    store.upsert("interview_states", state)
+
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=FakeStructuredProvider([]),
+    )
+
+    expected_prompt = f"AIの案です。{proposal_value}という内容でよいですか。修正や拒否もできます。"
+    assert result["reply"] == expected_prompt
+    assert result["question"]["text"] == expected_prompt
+    assert store.get("interview_states", state["id"])["askedQuestions"][0]["text"] == expected_prompt
+
+
 def test_purpose_proposal_waits_for_users_and_request_context() -> None:
     user: UserContext = DEV_TOKENS["dev-manager"]
     record = {"id": "record-purpose-context", "knowledgeId": "knowledge-purpose-context", "title": "CSV出力"}
@@ -1053,6 +1221,300 @@ def test_process_patch_is_atomic_and_removals_keep_history() -> None:
     assert state["processState"]["version"] == 2
     assert state["processState"]["edges"][0]["lifecycle"] == "superseded"
     assert state["processState"]["interactions"][0]["lifecycle"] == "superseded"
+
+
+def test_invalid_process_patch_logs_the_rejection_reason(caplog: pytest.LogCaptureFixture) -> None:
+    state = build_initial_structured_state("business_process", [])
+    state["recordId"] = "record-invalid-process-patch"
+    patch = ProcessPatch(
+        addNodes=[
+            ProcessNode(
+                nodeId="search",
+                label="検索する",
+                evidenceTranscriptIds=["message-1"],
+            )
+        ],
+        addEdges=[
+            ProcessEdge(
+                edgeId="search-to-missing",
+                sourceNodeId="search",
+                targetNodeId="missing",
+                evidenceTranscriptIds=["message-1"],
+            )
+        ],
+    )
+
+    with caplog.at_level("WARNING"):
+        apply_structured_output(
+            state,
+            StructuredInterviewOutput(processPatch=patch),
+            latest_message_id="message-1",
+            fields=[],
+            profile="business_process",
+            valid_evidence_ids={"message-1"},
+        )
+
+    assert state["processState"]["nodes"] == []
+    assert "structured_process_patch_rejected" in caplog.text
+    assert "unknown_target_node_reference:edge:search-to-missing:missing" in caplog.text
+
+
+def test_invalid_process_patch_is_repaired_before_apply() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {
+        "id": "record-process-patch-repair",
+        "knowledgeId": "knowledge-process-patch-repair",
+        "title": "CSV出力",
+    }
+    knowledge = {
+        "id": "knowledge-process-patch-repair",
+        "name": "CSV出力要件",
+        "interviewPlan": {"profile": "system_requirement"},
+    }
+    question = {
+        "questionId": "q-process",
+        "questionType": "structured",
+        "fieldId": None,
+        "text": "処理の流れを教えてください。",
+        "targetType": "applicability",
+        "targetId": "process",
+        "targetLabel": "処理の流れがあるか",
+    }
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    state = build_initial_structured_state("system_requirement", [])
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "currentQuestionId": question["questionId"],
+            "nextQuestionTarget": {
+                "targetType": "applicability",
+                "targetId": "process",
+                "label": "処理の流れがあるか",
+                "priority": 4,
+            },
+            "askedQuestions": [question],
+        }
+    )
+    store.upsert("interview_states", state)
+    store.upsert(
+        "messages",
+        {
+            "id": "process-patch-answer",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "あります。検索してCSVを出力します。",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+        },
+    )
+    invalid_patch = ProcessPatch(
+        addNodes=[
+            ProcessNode(
+                nodeId="search",
+                label="検索する",
+                evidenceTranscriptIds=["process-patch-answer"],
+            )
+        ],
+        addEdges=[
+            ProcessEdge(
+                edgeId="search-to-missing",
+                sourceNodeId="search",
+                targetNodeId="missing",
+                evidenceTranscriptIds=["process-patch-answer"],
+            )
+        ],
+    )
+    repaired_patch = ProcessPatch(
+        addNodes=[
+            ProcessNode(
+                nodeId="search",
+                label="検索する",
+                evidenceTranscriptIds=["process-patch-answer"],
+            ),
+            ProcessNode(
+                nodeId="download",
+                label="CSVを出力する",
+                nodeType="end",
+                evidenceTranscriptIds=["process-patch-answer"],
+            ),
+        ],
+        addEdges=[
+            ProcessEdge(
+                edgeId="search-to-download",
+                sourceNodeId="search",
+                targetNodeId="download",
+                evidenceTranscriptIds=["process-patch-answer"],
+            )
+        ],
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                applicability=[
+                    ApplicabilityUpdate(
+                        topic="process",
+                        status="present",
+                        evidenceTranscriptIds=["process-patch-answer"],
+                    )
+                ],
+                processPatch=invalid_patch,
+            ),
+            StructuredInterviewOutput(processPatch=repaired_patch),
+        ]
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert len(provider.interpret_calls) == 2
+    assert provider.interpret_calls[1]["reasoning_effort"] == "medium"
+    assert provider.interpret_calls[1]["context"]["processPatchRepair"]["validationErrors"]
+    assert result["interviewState"]["processState"]["version"] == 1
+    assert [node["nodeId"] for node in result["interviewState"]["processState"]["nodes"]] == [
+        "search",
+        "download",
+    ]
+    assert result["interviewState"]["openIssues"] == []
+
+
+def test_failed_process_patch_does_not_complete_interview() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {
+        "id": "record-process-patch-failed",
+        "knowledgeId": "knowledge-process-patch-failed",
+        "title": "CSV出力",
+    }
+    knowledge = {
+        "id": "knowledge-process-patch-failed",
+        "name": "CSV出力要件",
+        "interviewPlan": {"profile": "system_requirement"},
+    }
+    question = {
+        "questionId": "q-main-flow",
+        "questionType": "structured",
+        "fieldId": None,
+        "text": "処理の流れを教えてください。",
+        "targetType": "process",
+        "targetId": "process.main_flow",
+        "targetLabel": "処理の流れ",
+    }
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    state = build_initial_structured_state("system_requirement", [])
+    for requirement_state in state["requirementStates"].values():
+        requirement_state.update(status="CONFIRMED", value="確認済み")
+    for topic, applicability_state in state["applicabilityState"].items():
+        applicability_state.update(
+            status="present" if topic == "process" else "not_applicable",
+            evidenceTranscriptIds=["process-retry-answer"],
+        )
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "currentQuestionId": question["questionId"],
+            "nextQuestionTarget": {
+                "targetType": "process",
+                "targetId": "process.main_flow",
+                "label": "処理の流れ",
+                "priority": 3,
+            },
+            "askedQuestions": [question],
+        }
+    )
+    store.upsert("interview_states", state)
+    store.upsert(
+        "messages",
+        {
+            "id": "process-retry-answer",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "検索してCSVを出力します。",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+        },
+    )
+    invalid_patch = ProcessPatch(
+        addNodes=[
+            ProcessNode(
+                nodeId="search",
+                label="検索する",
+                evidenceTranscriptIds=["process-retry-answer"],
+            )
+        ],
+        addEdges=[
+            ProcessEdge(
+                edgeId="invalid-edge",
+                sourceNodeId="search",
+                targetNodeId="missing",
+                evidenceTranscriptIds=["process-retry-answer"],
+            )
+        ],
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(processPatch=invalid_patch),
+            StructuredInterviewOutput(processPatch=invalid_patch),
+        ]
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["status"] == "in_progress"
+    assert result["interviewState"]["status"] == "in_progress"
+    assert result["question"]["targetId"] == "process.main_flow"
+    assert result["interviewState"]["processState"]["nodes"] == []
+
+
+def test_completed_state_with_missing_process_model_is_reopened() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {
+        "id": "record-completed-without-process-model",
+        "knowledgeId": "knowledge-completed-without-process-model",
+        "title": "CSV出力",
+    }
+    knowledge = {
+        "id": "knowledge-completed-without-process-model",
+        "name": "CSV出力要件",
+        "interviewPlan": {"profile": "system_requirement"},
+    }
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    state = build_initial_structured_state("system_requirement", [])
+    for requirement_state in state["requirementStates"].values():
+        requirement_state.update(status="CONFIRMED", value="確認済み")
+    for topic, applicability_state in state["applicabilityState"].items():
+        applicability_state.update(
+            status="present" if topic == "process" else "not_applicable",
+            evidenceTranscriptIds=["previous-answer"],
+        )
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "status": "completed",
+        }
+    )
+    store.upsert("interview_states", state)
+
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=FakeStructuredProvider([]),
+    )
+
+    assert result["status"] == "in_progress"
+    assert result["question"]["targetId"] == "process.main_flow"
+    assert result["interviewState"]["status"] == "in_progress"
 
 
 def test_system_requirement_does_not_force_process_when_process_is_not_present() -> None:

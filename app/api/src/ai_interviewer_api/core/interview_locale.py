@@ -79,6 +79,18 @@ def localized_interview_confirmation_question(locale: InterviewLocale, candidate
     }[locale]
 
 
+def localized_interview_proposal_question(locale: InterviewLocale, candidate: str) -> str:
+    """Render one consistent confirmation prompt for an AI-generated proposal."""
+
+    candidate_text = candidate.strip()
+    return {
+        "ja-JP": f"AIの案です。{candidate_text}という内容でよいですか。修正や拒否もできます。",
+        "en-US": f"This is an AI suggestion: {candidate_text}. Is this acceptable? You can modify or reject it.",
+        "zh-CN": f"这是AI的建议：{candidate_text}。这样可以吗？您也可以修改或拒绝。",
+        "pt-BR": f"Esta é uma sugestão da IA: {candidate_text}. Está de acordo? Você também pode alterar ou rejeitar.",
+    }[locale]
+
+
 def localized_interview_document_confirmation_question(
     locale: InterviewLocale,
     field_label: str,

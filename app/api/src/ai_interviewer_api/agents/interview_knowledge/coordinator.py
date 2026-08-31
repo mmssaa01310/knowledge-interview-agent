@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping, Sequence, Set
 from copy import deepcopy
 from typing import Any
@@ -43,6 +44,8 @@ PROFILE_LABELS: dict[InterviewProfile, str] = {
     "business_process": "業務フローを整理する",
     "system_requirement": "システム要件を整理する",
 }
+
+logger = logging.getLogger(__name__)
 
 REQUIREMENT_DEFINITIONS: dict[InterviewProfile, tuple[tuple[str, str, str], ...]] = {
     "fixed_form": (),
@@ -482,10 +485,15 @@ def select_next_question_target(
         fields,
         include_tentative=False,
     )
-    if missing_required:
-        return missing_required[0]
-
     unknown_applicability = list_unknown_applicability(state, profile)
+    if missing_required:
+        process_model_only = all(
+            target.get("targetId") == "process.main_flow"
+            for target in missing_required
+        )
+        if not (process_model_only and unknown_applicability):
+            return missing_required[0]
+
     if unknown_applicability:
         if profile == "system_requirement" and "process" in unknown_applicability:
             return _target("applicability", "process", "処理の流れがあるか", 4)
@@ -593,7 +601,46 @@ def list_missing_required_targets(
             include_tentative=include_tentative,
         )
     )
+    process_model_target = _process_model_recovery_target(state, profile, targets)
+    if process_model_target is not None:
+        targets.append(process_model_target)
     return targets
+
+
+def _process_model_recovery_target(
+    state: Mapping[str, Any],
+    profile: InterviewProfile,
+    existing_targets: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Return the required flow target when extraction left no usable graph."""
+
+    if profile == "fixed_form" or not _process_is_present(state, profile):
+        return None
+    if _has_renderable_flowchart(state):
+        return None
+    if any(target.get("targetId") == "process.main_flow" for target in existing_targets):
+        return None
+    for target_id, label, kind in REQUIREMENT_DEFINITIONS[profile]:
+        if target_id == "process.main_flow":
+            return _target(kind, target_id, label, 3)
+    return None
+
+
+def _has_renderable_flowchart(state: Mapping[str, Any]) -> bool:
+    process_state = state.get("processState") or {}
+    active_nodes = {
+        str(node.get("nodeId"))
+        for node in process_state.get("nodes", [])
+        if node.get("lifecycle") != "superseded" and str(node.get("nodeId") or "").strip()
+    }
+    active_edges = [
+        edge
+        for edge in process_state.get("edges", [])
+        if edge.get("lifecycle") != "superseded"
+        and str(edge.get("sourceNodeId") or "") in active_nodes
+        and str(edge.get("targetNodeId") or "") in active_nodes
+    ]
+    return len(active_nodes) >= 2 and len(active_edges) >= 1
 
 
 def list_unknown_applicability(state: Mapping[str, Any], profile: InterviewProfile) -> list[str]:
@@ -1127,6 +1174,17 @@ def _apply_process_patch(
     current_version = int(process_state.get("version", state.get("processVersion", 0)) or 0)
     if patch.baseProcessVersion != current_version:
         if _has_process_operations(patch):
+            logger.warning(
+                "structured_process_patch_rejected record_id=%s message_id=%s "
+                "base_process_version=%s current_process_version=%s "
+                "errors=%s operation_counts=%s",
+                state.get("recordId"),
+                message_id,
+                patch.baseProcessVersion,
+                current_version,
+                [f"base_process_version_mismatch:{patch.baseProcessVersion}:{current_version}"],
+                _process_patch_operation_counts(patch),
+            )
             _upsert_open_issues(
                 state,
                 [
@@ -1141,7 +1199,23 @@ def _apply_process_patch(
             )
         return False
 
-    if not _validate_process_patch(process_state, patch, valid_evidence_ids=valid_evidence_ids):
+    validation_errors = process_patch_validation_errors(
+        process_state,
+        patch,
+        valid_evidence_ids=valid_evidence_ids,
+    )
+    if validation_errors:
+        logger.warning(
+            "structured_process_patch_rejected record_id=%s message_id=%s "
+            "base_process_version=%s current_process_version=%s errors=%s "
+            "operation_counts=%s",
+            state.get("recordId"),
+            message_id,
+            patch.baseProcessVersion,
+            current_version,
+            validation_errors,
+            _process_patch_operation_counts(patch),
+        )
         _upsert_open_issues(
             state,
             [
@@ -1194,6 +1268,21 @@ def _apply_process_patch(
         process_state.clear()
         process_state.update(next_process_state)
         state["processVersion"] = current_version
+        state["openIssues"] = [
+            issue
+            for issue in state.get("openIssues", [])
+            if not str(issue.get("issueId") or "").startswith(
+                ("invalid-process-patch-", "process-version-")
+            )
+        ]
+        logger.info(
+            "structured_process_patch_applied record_id=%s message_id=%s "
+            "process_version=%s operation_counts=%s",
+            state.get("recordId"),
+            message_id,
+            current_version,
+            _process_patch_operation_counts(patch),
+        )
     return changed
 
 
@@ -1239,12 +1328,12 @@ def _allows_process_patch(
     )
 
 
-def _validate_process_patch(
+def process_patch_validation_errors(
     process_state: Mapping[str, Any],
     patch: ProcessPatch,
     *,
     valid_evidence_ids: Set[str] | None = None,
-) -> bool:
+) -> list[str]:
     participants = process_state.get("participants", [])
     nodes = process_state.get("nodes", [])
     edges = process_state.get("edges", [])
@@ -1253,96 +1342,204 @@ def _validate_process_patch(
     node_ids = {item.get("nodeId") for item in nodes}
     edge_ids = {item.get("edgeId") for item in edges}
     interaction_ids = {item.get("interactionId") for item in interactions}
+    errors: list[str] = []
 
-    if any(
-        not str(getattr(entity, identifier, "")).strip()
-        for entity_group, identifier in (
-            ([*patch.addParticipants, *patch.updateParticipants], "participantId"),
-            ([*patch.addNodes, *patch.updateNodes], "nodeId"),
-            ([*patch.addEdges, *patch.updateEdges], "edgeId"),
-            ([*patch.addInteractions, *patch.updateInteractions], "interactionId"),
-        )
-        for entity in entity_group
-    ):
-        return False
-    if any(not entity.name.strip() for entity in [*patch.addParticipants, *patch.updateParticipants]):
-        return False
-    if any(not entity.label.strip() for entity in [*patch.addNodes, *patch.updateNodes]):
-        return False
-    if any(
-        not entity.sourceNodeId.strip() or not entity.targetNodeId.strip()
-        for entity in [*patch.addEdges, *patch.updateEdges]
-    ):
-        return False
-    if any(
-        not entity.sourceParticipantId.strip()
-        or not entity.targetParticipantId.strip()
-        or not entity.action.strip()
-        for entity in [*patch.addInteractions, *patch.updateInteractions]
-    ):
-        return False
-    if any(
-        entity.lifecycle != "active"
-        for entity in [*patch.addParticipants, *patch.addNodes, *patch.addEdges, *patch.addInteractions]
-    ):
-        return False
+    _append_required_identifier_errors(
+        errors,
+        patch.addParticipants,
+        patch.updateParticipants,
+        "participantId",
+        "participant",
+    )
+    _append_required_identifier_errors(
+        errors,
+        patch.addNodes,
+        patch.updateNodes,
+        "nodeId",
+        "node",
+    )
+    _append_required_identifier_errors(
+        errors,
+        patch.addEdges,
+        patch.updateEdges,
+        "edgeId",
+        "edge",
+    )
+    _append_required_identifier_errors(
+        errors,
+        patch.addInteractions,
+        patch.updateInteractions,
+        "interactionId",
+        "interaction",
+    )
 
-    if not _validate_add_update_ids(
+    for entity_type, entities, attribute in (
+        ("participant", [*patch.addParticipants, *patch.updateParticipants], "name"),
+        ("node", [*patch.addNodes, *patch.updateNodes], "label"),
+    ):
+        for entity in entities:
+            if not str(getattr(entity, attribute, "") or "").strip():
+                errors.append(f"empty_{attribute}:{entity_type}:{_entity_identifier(entity)}")
+    for entity in [*patch.addEdges, *patch.updateEdges]:
+        if not entity.sourceNodeId.strip() or not entity.targetNodeId.strip():
+            errors.append(f"empty_edge_endpoint:edge:{_entity_identifier(entity)}")
+    for entity in [*patch.addInteractions, *patch.updateInteractions]:
+        if (
+            not entity.sourceParticipantId.strip()
+            or not entity.targetParticipantId.strip()
+            or not entity.action.strip()
+        ):
+            errors.append(f"empty_interaction_endpoint_or_action:interaction:{_entity_identifier(entity)}")
+    for entity_type, entities in (
+        ("participant", patch.addParticipants),
+        ("node", patch.addNodes),
+        ("edge", patch.addEdges),
+        ("interaction", patch.addInteractions),
+    ):
+        for entity in entities:
+            if entity.lifecycle != "active":
+                errors.append(f"non_active_lifecycle:{entity_type}:{_entity_identifier(entity)}")
+
+    _append_id_validation_errors(
+        errors,
         patch.addParticipants,
         patch.updateParticipants,
         "participantId",
         participant_ids,
-    ):
-        return False
+        "participant",
+    )
     participant_ids.update(item.participantId for item in patch.addParticipants)
-    if not _validate_add_update_ids(patch.addNodes, patch.updateNodes, "nodeId", node_ids):
-        return False
+    _append_id_validation_errors(errors, patch.addNodes, patch.updateNodes, "nodeId", node_ids, "node")
     node_ids.update(item.nodeId for item in patch.addNodes)
-    if not _validate_add_update_ids(patch.addEdges, patch.updateEdges, "edgeId", edge_ids):
-        return False
-    if not _validate_add_update_ids(
+    _append_id_validation_errors(errors, patch.addEdges, patch.updateEdges, "edgeId", edge_ids, "edge")
+    _append_id_validation_errors(
+        errors,
         patch.addInteractions,
         patch.updateInteractions,
         "interactionId",
         interaction_ids,
-    ):
-        return False
-    if any(edge_id not in edge_ids for edge_id in patch.removeEdges):
-        return False
-    if any(interaction_id not in interaction_ids for interaction_id in patch.removeInteractions):
-        return False
-
-    if any(
-        participant_id not in participant_ids
-        for node in [*patch.addNodes, *patch.updateNodes]
-        for participant_id in node.participantIds
-    ):
-        return False
-    if any(
-        edge.sourceNodeId not in node_ids or edge.targetNodeId not in node_ids
-        for edge in [*patch.addEdges, *patch.updateEdges]
-    ):
-        return False
-    if any(
-        interaction.sourceParticipantId not in participant_ids
-        or interaction.targetParticipantId not in participant_ids
-        for interaction in [*patch.addInteractions, *patch.updateInteractions]
-    ):
-        return False
-    return all(
-        entity.confirmationStatus == "candidate"
-        and _has_valid_evidence(entity.evidenceTranscriptIds, valid_evidence_ids)
-        for entity in [
-            *patch.addParticipants,
-            *patch.updateParticipants,
-            *patch.addNodes,
-            *patch.updateNodes,
-            *patch.addEdges,
-            *patch.updateEdges,
-            *patch.addInteractions,
-            *patch.updateInteractions,
-        ]
+        "interaction",
     )
+    if any(edge_id not in edge_ids for edge_id in patch.removeEdges):
+        errors.extend(
+            f"remove_edge_not_found:edge:{edge_id}"
+            for edge_id in patch.removeEdges
+            if edge_id not in edge_ids
+        )
+    if any(interaction_id not in interaction_ids for interaction_id in patch.removeInteractions):
+        errors.extend(
+            f"remove_interaction_not_found:interaction:{interaction_id}"
+            for interaction_id in patch.removeInteractions
+            if interaction_id not in interaction_ids
+        )
+
+    for node in [*patch.addNodes, *patch.updateNodes]:
+        for participant_id in node.participantIds:
+            if participant_id not in participant_ids:
+                errors.append(
+                    f"unknown_participant_reference:node:{_entity_identifier(node)}:{participant_id}"
+                )
+    for edge in [*patch.addEdges, *patch.updateEdges]:
+        if edge.sourceNodeId not in node_ids:
+            errors.append(f"unknown_source_node_reference:edge:{_entity_identifier(edge)}:{edge.sourceNodeId}")
+        if edge.targetNodeId not in node_ids:
+            errors.append(f"unknown_target_node_reference:edge:{_entity_identifier(edge)}:{edge.targetNodeId}")
+    for interaction in [*patch.addInteractions, *patch.updateInteractions]:
+        if interaction.sourceParticipantId not in participant_ids:
+            errors.append(
+                f"unknown_source_participant_reference:interaction:{_entity_identifier(interaction)}:{interaction.sourceParticipantId}"
+            )
+        if interaction.targetParticipantId not in participant_ids:
+            errors.append(
+                f"unknown_target_participant_reference:interaction:{_entity_identifier(interaction)}:{interaction.targetParticipantId}"
+            )
+    for entity_type, entities in (
+        ("participant", [*patch.addParticipants, *patch.updateParticipants]),
+        ("node", [*patch.addNodes, *patch.updateNodes]),
+        ("edge", [*patch.addEdges, *patch.updateEdges]),
+        ("interaction", [*patch.addInteractions, *patch.updateInteractions]),
+    ):
+        for entity in entities:
+            if entity.confirmationStatus != "candidate":
+                errors.append(f"non_candidate_confirmation_status:{entity_type}:{_entity_identifier(entity)}")
+            if not _has_valid_evidence(entity.evidenceTranscriptIds, valid_evidence_ids):
+                errors.append(f"invalid_evidence:{entity_type}:{_entity_identifier(entity)}")
+    return list(dict.fromkeys(errors))
+
+
+def _validate_process_patch(
+    process_state: Mapping[str, Any],
+    patch: ProcessPatch,
+    *,
+    valid_evidence_ids: Set[str] | None = None,
+) -> bool:
+    """Keep a boolean compatibility helper for existing callers and tests."""
+
+    return not process_patch_validation_errors(
+        process_state,
+        patch,
+        valid_evidence_ids=valid_evidence_ids,
+    )
+
+
+def _append_required_identifier_errors(
+    errors: list[str],
+    added: Sequence[Any],
+    updated: Sequence[Any],
+    identifier: str,
+    entity_type: str,
+) -> None:
+    for entity in [*added, *updated]:
+        if not str(getattr(entity, identifier, "") or "").strip():
+            errors.append(f"missing_{identifier}:{entity_type}")
+
+
+def _append_id_validation_errors(
+    errors: list[str],
+    added: Sequence[Any],
+    updated: Sequence[Any],
+    identifier: str,
+    existing_ids: set[Any],
+    entity_type: str,
+) -> None:
+    added_ids = [getattr(item, identifier) for item in added]
+    updated_ids = [getattr(item, identifier) for item in updated]
+    for item_id in {item for item in added_ids if item in existing_ids}:
+        errors.append(f"added_id_already_exists:{entity_type}:{item_id}")
+    if len(added_ids) != len(set(added_ids)):
+        errors.append(f"duplicate_added_id:{entity_type}")
+    if len(updated_ids) != len(set(updated_ids)):
+        errors.append(f"duplicate_updated_id:{entity_type}")
+    for item_id in set(added_ids) & set(updated_ids):
+        errors.append(f"id_in_add_and_update:{entity_type}:{item_id}")
+    for item_id in set(updated_ids) - existing_ids:
+        errors.append(f"updated_id_not_found:{entity_type}:{item_id}")
+
+
+def _entity_identifier(entity: Any) -> str:
+    for identifier in ("participantId", "nodeId", "edgeId", "interactionId"):
+        value = str(getattr(entity, identifier, "") or "").strip()
+        if value:
+            return value
+    return "<missing>"
+
+
+def _process_patch_operation_counts(patch: ProcessPatch) -> dict[str, int]:
+    return {
+        name: len(getattr(patch, name))
+        for name in (
+            "addParticipants",
+            "updateParticipants",
+            "addNodes",
+            "updateNodes",
+            "addEdges",
+            "updateEdges",
+            "removeEdges",
+            "addInteractions",
+            "updateInteractions",
+            "removeInteractions",
+        )
+    }
 
 
 def _validate_add_update_ids(
