@@ -25,9 +25,14 @@ type OptionPickerProps = {
   selectedValueLabel?: (value: string) => string;
   showOptionActions?: (option: OptionPickerOption) => boolean;
   onEditOption?: (option: OptionPickerOption) => void;
+  onUpdateOption?: (option: OptionPickerOption, value: string) => Promise<void>;
   onDeleteOption?: (option: OptionPickerOption) => void;
   editOptionLabel?: (option: OptionPickerOption) => string;
   deleteOptionLabel?: (option: OptionPickerOption) => string;
+  editOptionInputLabel?: (option: OptionPickerOption) => string;
+  saveOptionLabel?: string;
+  cancelOptionEditLabel?: string;
+  optionUpdateErrorLabel?: string;
   placement?: "bottom" | "top";
   className?: string;
 };
@@ -48,9 +53,14 @@ export function OptionPicker({
   selectedValueLabel,
   showOptionActions,
   onEditOption,
+  onUpdateOption,
   onDeleteOption,
   editOptionLabel,
   deleteOptionLabel,
+  editOptionInputLabel,
+  saveOptionLabel = "Save",
+  cancelOptionEditLabel = "Cancel",
+  optionUpdateErrorLabel = "Could not update option",
   placement = "bottom",
   className = "",
 }: OptionPickerProps) {
@@ -58,6 +68,10 @@ export function OptionPicker({
   const listboxId = `${pickerId}-options`;
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [editingOptionId, setEditingOptionId] = useState<string | null>(null);
+  const [editingOptionValue, setEditingOptionValue] = useState("");
+  const [isUpdatingOption, setIsUpdatingOption] = useState(false);
+  const [optionUpdateError, setOptionUpdateError] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -156,7 +170,40 @@ export function OptionPicker({
   function closeMenu(restoreFocus = true) {
     setIsOpen(false);
     setSearchQuery("");
+    setEditingOptionId(null);
+    setEditingOptionValue("");
+    setOptionUpdateError(false);
     if (restoreFocus) triggerRef.current?.focus();
+  }
+
+  function startInlineEdit(option: OptionPickerOption) {
+    if (!option.id || !onUpdateOption) return;
+    setEditingOptionId(option.id);
+    setEditingOptionValue(option.value);
+    setOptionUpdateError(false);
+  }
+
+  function cancelInlineEdit() {
+    if (isUpdatingOption) return;
+    setEditingOptionId(null);
+    setEditingOptionValue("");
+    setOptionUpdateError(false);
+  }
+
+  async function saveInlineEdit(option: OptionPickerOption) {
+    if (!option.id || !onUpdateOption || !editingOptionValue.trim() || isUpdatingOption) return;
+    setIsUpdatingOption(true);
+    setOptionUpdateError(false);
+    try {
+      await onUpdateOption(option, editingOptionValue.trim());
+      setEditingOptionId(null);
+      setEditingOptionValue("");
+    } catch (error) {
+      console.error("Failed to update option", error);
+      setOptionUpdateError(true);
+    } finally {
+      setIsUpdatingOption(false);
+    }
   }
 
   function selectOption(option: OptionPickerOption) {
@@ -264,61 +311,147 @@ export function OptionPicker({
           <div id={listboxId} className="option-picker-options" role="listbox" aria-label={ariaLabel}>
             {filteredOptions.length === 0 && !canCreateOption ? (
               <p className="option-picker-empty">{emptyLabel}</p>
-            ) : filteredOptions.map((option, index) => (
-              <div
-                ref={(element) => { optionRefs.current[index] = element; }}
-                key={option.value}
-                className={`option-picker-option${option.value === value ? " selected" : ""}${option.disabled ? " disabled" : ""}`}
-                role="option"
-                aria-selected={option.value === value}
-                aria-disabled={option.disabled || undefined}
-                tabIndex={option.disabled ? -1 : 0}
-                onClick={() => selectOption(option)}
-                onKeyDown={(event) => handleOptionKeyDown(event, index)}
-              >
-                <span className="option-picker-option-copy">
-                  <strong>{option.label}</strong>
-                  {option.description ? <small>{option.description}</small> : null}
-                </span>
-                {showOptionActions?.(option) ? (
-                  <span className="option-picker-actions">
-                    {onEditOption ? (
-                      <button
-                        type="button"
-                        className="option-picker-action"
-                        aria-label={editOptionLabel?.(option) ?? "Edit option"}
-                        title={editOptionLabel?.(option) ?? "Edit option"}
-                        onClick={(event) => {
+            ) : filteredOptions.map((option, index) => {
+              const isEditing = editingOptionId === option.id && Boolean(onUpdateOption);
+              return (
+                <div
+                  ref={(element) => { optionRefs.current[index] = element; }}
+                  key={option.value}
+                  className={`option-picker-option${option.value === value ? " selected" : ""}${option.disabled ? " disabled" : ""}${isEditing ? " editing" : ""}`}
+                  role="option"
+                  aria-selected={option.value === value}
+                  aria-disabled={option.disabled || undefined}
+                  tabIndex={isEditing || option.disabled ? -1 : 0}
+                  onClick={(event) => {
+                    if (isEditing) {
+                      event.stopPropagation();
+                      return;
+                    }
+                    selectOption(option);
+                  }}
+                  onKeyDown={(event) => {
+                    if (isEditing) {
+                      event.stopPropagation();
+                      return;
+                    }
+                    handleOptionKeyDown(event, index);
+                  }}
+                >
+                  {isEditing ? (
+                    <>
+                      <input
+                        className="option-picker-inline-edit-input"
+                        value={editingOptionValue}
+                        autoFocus
+                        aria-label={editOptionInputLabel?.(option) ?? editOptionLabel?.(option) ?? "Edit option"}
+                        onChange={(event) => setEditingOptionValue(event.target.value)}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
                           event.stopPropagation();
-                          onEditOption(option);
-                          closeMenu(false);
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void saveInlineEdit(option);
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelInlineEdit();
+                          }
                         }}
-                        onKeyDown={(event) => event.stopPropagation()}
-                      >
-                        ✎
-                      </button>
-                    ) : null}
-                    {onDeleteOption ? (
-                      <button
-                        type="button"
-                        className="option-picker-action danger"
-                        aria-label={deleteOptionLabel?.(option) ?? "Delete option"}
-                        title={deleteOptionLabel?.(option) ?? "Delete option"}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onDeleteOption(option);
-                          closeMenu(false);
-                        }}
-                        onKeyDown={(event) => event.stopPropagation()}
-                      >
-                        ×
-                      </button>
-                    ) : null}
-                  </span>
-                ) : null}
-                {option.value === value ? <span className="option-picker-check" aria-hidden="true">✓</span> : null}
-              </div>
-            ))}
+                      />
+                      <span className="option-picker-inline-edit-actions">
+                        <button
+                          type="button"
+                          className="option-picker-action option-picker-action-save"
+                          aria-label={saveOptionLabel}
+                          title={saveOptionLabel}
+                          disabled={!editingOptionValue.trim() || isUpdatingOption}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void saveInlineEdit(option);
+                          }}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <svg className="option-picker-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="m5 12 4 4L19 6" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          className="option-picker-action option-picker-action-cancel"
+                          aria-label={cancelOptionEditLabel}
+                          title={cancelOptionEditLabel}
+                          disabled={isUpdatingOption}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            cancelInlineEdit();
+                          }}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <svg className="option-picker-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                            <path d="m6 6 12 12" />
+                            <path d="m18 6-12 12" />
+                          </svg>
+                        </button>
+                      </span>
+                      {optionUpdateError ? <small className="option-picker-inline-edit-error">{optionUpdateErrorLabel}</small> : null}
+                    </>
+                  ) : (
+                    <>
+                      <span className="option-picker-option-copy">
+                        <strong>{option.label}</strong>
+                        {option.description ? <small>{option.description}</small> : null}
+                      </span>
+                      {showOptionActions?.(option) ? (
+                        <span className="option-picker-actions">
+                          {onEditOption || onUpdateOption ? (
+                            <button
+                              type="button"
+                              className="option-picker-action edit"
+                              aria-label={editOptionLabel?.(option) ?? "Edit option"}
+                              title={editOptionLabel?.(option) ?? "Edit option"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (onUpdateOption && option.id) {
+                                  startInlineEdit(option);
+                                  return;
+                                }
+                                onEditOption?.(option);
+                                closeMenu(false);
+                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
+                            >
+                              <svg className="option-picker-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M12 20h9" />
+                                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                              </svg>
+                            </button>
+                          ) : null}
+                          {onDeleteOption ? (
+                            <button
+                              type="button"
+                              className="option-picker-action danger"
+                              aria-label={deleteOptionLabel?.(option) ?? "Delete option"}
+                              title={deleteOptionLabel?.(option) ?? "Delete option"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onDeleteOption(option);
+                                closeMenu(false);
+                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
+                            >
+                              <svg className="option-picker-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                                <path d="m6 6 12 12" />
+                                <path d="m18 6-12 12" />
+                              </svg>
+                            </button>
+                          ) : null}
+                        </span>
+                      ) : null}
+                      {option.value === value ? <span className="option-picker-check" aria-hidden="true">✓</span> : null}
+                    </>
+                  )}
+                </div>
+              );
+            })}
             {canCreateOption ? (
               <div
                 className="option-picker-option option-picker-create"

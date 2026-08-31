@@ -12,10 +12,8 @@ import {
 import { KnowledgeDocumentsContent } from "./KnowledgeDocumentsPage";
 import { useI18n, type Translate } from "../i18n";
 import { formatNumber } from "../lib/date";
-import type { KnowledgeTag } from "@ai-interviewer/shared-types";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import { OptionPicker, type OptionPickerOption } from "../components/ui/OptionPicker";
-import { TagEditDialog } from "../components/ui/TagEditDialog";
 import { buildKnowledgeTagOptions } from "../features/knowledge/tagOptions";
 import { useGuide } from "../features/guides/GuideProvider";
 
@@ -132,7 +130,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const [savePromptTemplateName, setSavePromptTemplateName] = useState("");
   const [dontShowCreationGuideAgain, setDontShowCreationGuideAgain] = useState(false);
   const [expandedFieldIndex, setExpandedFieldIndex] = useState<number | null>(null);
-  const [editingTag, setEditingTag] = useState<KnowledgeTag | null>(null);
   const [tagOperationError, setTagOperationError] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const assistInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -161,15 +158,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   function clearSettingsNotice() {
     if (!props.settingsNotice && props.settingsSaveState === "idle") return;
     props.onClearSettingsNotice();
-  }
-
-  function editTag(option: OptionPickerOption) {
-    if (!option.id) return;
-    const tag = props.availableTags.find((candidate) => candidate.id === option.id);
-    if (tag) {
-      setTagOperationError(false);
-      setEditingTag(tag);
-    }
   }
 
   function deleteTag(option: OptionPickerOption) {
@@ -523,10 +511,14 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
                 createOptionLabel={(tag) => t("settings.tags.create", { tag: `#${tag.trim().replace(/^#+/, "")}` })}
                 selectedValueLabel={(tag) => `#${tag.trim().replace(/^#+/, "")}`}
                 showOptionActions={(option) => Boolean(option.id)}
-                onEditOption={editTag}
+                onUpdateOption={(option, tag) => option.id ? props.onUpdateTag(option.id, tag) : Promise.resolve()}
                 onDeleteOption={deleteTag}
                 editOptionLabel={(option) => t("settings.tags.editAria", { tag: option.label })}
                 deleteOptionLabel={(option) => t("settings.tags.deleteAria", { tag: option.label })}
+                editOptionInputLabel={() => t("settings.tags.editLabel")}
+                saveOptionLabel={t("common.save")}
+                cancelOptionEditLabel={t("common.cancel")}
+                optionUpdateErrorLabel={t("settings.tags.operationFailed")}
                 className="knowledge-tag-picker"
               />
             </label>
@@ -538,19 +530,6 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
           </div>
         </div>
       </details>
-
-      {editingTag ? (
-        <TagEditDialog
-          tag={editingTag}
-          title={t("settings.tags.editTitle")}
-          inputLabel={t("settings.tags.editLabel")}
-          saveLabel={t("common.save")}
-          cancelLabel={t("common.cancel")}
-          errorLabel={t("settings.tags.operationFailed")}
-          onClose={() => setEditingTag(null)}
-          onSave={(value) => props.onUpdateTag(editingTag.id, value)}
-        />
-      ) : null}
 
       <div className="settings-tabs-row" data-guide="settings-tabs">
         <div className="settings-tabs" role="tablist" aria-label={t("settings.menuAria")}>
