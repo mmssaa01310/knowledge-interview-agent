@@ -12,6 +12,13 @@ def test_confirmation_accepts_common_speech_recognition_variants() -> None:
     assert is_unambiguous_confirmation("問題ありません") is True
 
 
+def test_confirmation_accepts_localized_english_affirmations() -> None:
+    assert is_unambiguous_confirmation("Yes", locale="en-US") is True
+    assert is_unambiguous_confirmation("Yes, it's correct.", locale="en-US") is True
+    assert is_unambiguous_confirmation("Correct.", locale="en-US") is True
+    assert is_unambiguous_confirmation("Yes, but that is wrong.", locale="en-US") is False
+
+
 def test_confirmation_leaves_mixed_or_negative_replies_to_ai() -> None:
     assert is_unambiguous_confirmation("はい、でも違います") is False
     assert is_unambiguous_confirmation("うん、だから") is False
@@ -33,6 +40,24 @@ def test_voice_confirmation_fast_path_does_not_need_a_model_call(monkeypatch) ->
 
     assert result.outcome == "CONFIRM"
     assert result.record_answer == "バスケです"
+
+
+def test_voice_confirmation_fast_path_uses_interview_locale(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def fail_model(**_: object) -> None:
+        raise AssertionError("an English confirmation must not call the model")
+
+    monkeypatch.setattr(voice_interview, "_run_voice_json_output", fail_model)
+
+    result = voice_interview._evaluate_confirmation_response(
+        current_question={"questionId": "q-001", "text": "Please tell me your name."},
+        candidate_answer="Masa Miyazaki",
+        user_reply="Correct.",
+        field_state={"answerState": "AWAITING_CONFIRMATION"},
+        interview_locale="en-US",
+    )
+
+    assert result.outcome == "CONFIRM"
+    assert result.record_answer == "Masa Miyazaki"
 
 
 def test_interview_locale_is_record_scoped_and_supports_portuguese() -> None:

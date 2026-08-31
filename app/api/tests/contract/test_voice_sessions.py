@@ -193,7 +193,11 @@ def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _create_record_with_field(user: UserContext) -> dict:
+def _create_record_with_field(
+    user: UserContext,
+    *,
+    interview_locale: str | None = None,
+) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
@@ -216,7 +220,11 @@ def _create_record_with_field(user: UserContext) -> dict:
         ),
         user,
     )
-    return create_record(knowledge["id"], RecordCreate(title="朝一の荷重ばらつき"), user)
+    return create_record(
+        knowledge["id"],
+        RecordCreate(title="朝一の荷重ばらつき", interviewLocale=interview_locale),
+        user,
+    )
 
 
 def _create_record_with_name_and_role_fields(user: UserContext) -> dict:
@@ -386,6 +394,19 @@ def test_create_get_and_stop_voice_session() -> None:
     stopped = stop_record_voice_session(session["id"], user)
     assert stopped["status"] == "stopped"
     assert stopped["connectionStatus"] == "closed"
+
+
+def test_voice_session_initial_reply_uses_record_interview_locale() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user, interview_locale="en-US")
+
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    assert session["interviewLocale"] == "en-US"
+    assert (session["initialReplyText"] or "").startswith(
+        "We are about to start the interview."
+    )
+    assert "Please tell me about 現象." in (session["initialReplyText"] or "")
 
 
 def test_voice_session_preserves_transcribe_polly_provider() -> None:

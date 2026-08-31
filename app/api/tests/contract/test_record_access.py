@@ -103,6 +103,19 @@ def test_assigned_interviewer_can_select_locale_before_interview_starts() -> Non
     assert exc_info.value.detail == "interview_locale_locked_after_start"
 
 
+def test_locale_can_be_selected_after_pristine_interview_state_was_loaded() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    interviewer = DEV_TOKENS["dev-interviewer"]
+    record = _create_record(manager, owner_user_id=interviewer.user_id)
+
+    snapshot = get_record_interview_state(record["id"], interviewer)
+    assert snapshot["interviewState"]["currentQuestionId"] is None
+
+    updated = update_record(record["id"], RecordUpdate(interviewLocale="en-US"), interviewer)
+
+    assert updated["interviewLocale"] == "en-US"
+
+
 def test_record_creation_requires_saved_interview_configuration() -> None:
     manager = DEV_TOKENS["dev-manager"]
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="設定未完了テストDB"), manager)

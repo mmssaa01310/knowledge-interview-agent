@@ -606,7 +606,11 @@ def _ask_next_configured_field(
             interview_locale=interview_locale or resolve_interview_locale(record, {}),
         )
 
-    question = _build_configured_question(next_field, interview_state)
+    question = _build_configured_question(
+        next_field,
+        interview_state,
+        interview_locale=interview_locale or resolve_interview_locale(record, {}),
+    )
     reply_text = _compose_assistant_content("", question["text"])
     assistant_message = (
         _save_assistant_message(
@@ -678,9 +682,10 @@ def _process_text_answer_turn(
     current_field = field_lookup.get(current_field_id) or {"id": current_field_id, "name": current_field_id}
     field_state = interview_state.setdefault("fieldStates", {}).setdefault(current_field_id, {})
     latest_transcript = str(latest_user_message.get("content") or "")
+    interview_locale = resolve_interview_locale(record, knowledge)
     if (
         field_state.get("answerState") == "AWAITING_CONFIRMATION"
-        and is_unambiguous_confirmation(latest_transcript)
+        and is_unambiguous_confirmation(latest_transcript, locale=interview_locale)
     ):
         interpretation = DialogueInterpretation(
             act="CONFIRMATION",
@@ -694,7 +699,7 @@ def _process_text_answer_turn(
             field_state=field_state,
             recent_messages=messages,
             last_assistant_message=_latest_assistant_message(messages),
-            interview_locale=resolve_interview_locale(record, knowledge),
+            interview_locale=interview_locale,
         )
     latest_user_message["dialogueAct"] = interpretation.act
     store.upsert("messages", latest_user_message)
@@ -714,7 +719,7 @@ def _process_text_answer_turn(
             user=user,
             persist_assistant_message=persist_assistant_message,
             retrieval_policy=retrieval_policy,
-            interview_locale=resolve_interview_locale(record, knowledge),
+            interview_locale=interview_locale,
         )
     evaluation_retrieval_executed = False
 
@@ -759,7 +764,7 @@ def _process_text_answer_turn(
         )
 
     def evaluate_text_confirmation(**_: Any) -> ConfirmationEvaluation:
-        if is_unambiguous_confirmation(latest_transcript):
+        if is_unambiguous_confirmation(latest_transcript, locale=interview_locale):
             return ConfirmationEvaluation(
                 outcome="CONFIRM",
                 record_answer=str(field_state.get("candidateAnswer") or "").strip() or None,
@@ -1037,13 +1042,22 @@ def _resolve_next_pending_field(knowledge_fields: list[dict], interview_state: d
     return None
 
 
-def _build_configured_question(field: dict[str, Any], interview_state: dict[str, Any]) -> dict[str, Any]:
+def _build_configured_question(
+    field: dict[str, Any],
+    interview_state: dict[str, Any],
+    *,
+    interview_locale: InterviewLocale = "ja-JP",
+) -> dict[str, Any]:
     examples = [
         str(example).strip()
         for example in field.get("aiQuestionExamples") or []
         if str(example).strip()
     ]
-    text = examples[0] if examples else _fallback_field_question(str(field.get("name") or ""))
+    text = (
+        examples[0]
+        if interview_locale == "ja-JP" and examples
+        else _fallback_field_question(str(field.get("name") or ""), interview_locale)
+    )
     return {
         "questionId": _next_question_id(interview_state),
         "questionType": "configured_field",
@@ -1117,8 +1131,14 @@ def _next_question_id(interview_state: dict[str, Any]) -> str:
     return f"q-{len(interview_state.get('askedQuestions', [])) + 1:03d}"
 
 
-def _fallback_field_question(field_name: str) -> str:
+def _fallback_field_question(field_name: str, interview_locale: InterviewLocale = "ja-JP") -> str:
     text = field_name.strip()
+    if interview_locale == "en-US":
+        return f"Please tell me about {text or 'this item'}."
+    if interview_locale == "zh-CN":
+        return f"请告诉我有关{text or '这一项目'}的信息。"
+    if interview_locale == "pt-BR":
+        return f"Fale-me sobre {text or 'este item'}."
     if not text:
         return "この項目について教えてください。"
     if text.endswith(("か", "か？", "か。", "ください。", "ください")):

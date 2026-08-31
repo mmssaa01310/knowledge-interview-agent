@@ -29,6 +29,7 @@ from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     interview_language_instruction,
+    localized_interview_confirmation_question,
     localized_interview_fallbacks,
     resolve_interview_locale,
 )
@@ -128,7 +129,8 @@ def generate_structured_interview_result(
             if (
                 is_current_question_confirmation_target(state, current_question)
                 and is_unambiguous_confirmation(
-                    str(latest_user_message.get("content") or "")
+                    str(latest_user_message.get("content") or ""),
+                    locale=interview_locale,
                 )
             ):
                 logger.info(
@@ -338,6 +340,10 @@ def load_structured_interview_state(
         if state_profile != profile:
             state["interviewProfile"] = profile
         changed = _backfill_state(state, profile, fields or ())
+        changed |= _repair_current_confirmation_question(
+            state,
+            locale=resolve_interview_locale(record, knowledge),
+        )
         if changed and persist:
             _persist_state(state, user)
         return state
@@ -664,7 +670,78 @@ def _generate_question_text(
         settings.structured_interview_reasoning_effort,
         round((monotonic() - started_at) * 1000),
     )
-    return generated.questionText.strip()
+    question_text = generated.questionText.strip()
+    candidate_value = _candidate_value_for_target(target, state)
+    if candidate_value and not _contains_question_candidate(question_text, candidate_value):
+        logger.warning(
+            "structured_confirmation_question_candidate_missing target_type=%s target_id=%s",
+            target.get("targetType") or target.get("kind"),
+            target.get("targetId"),
+        )
+        return localized_interview_confirmation_question(
+            resolve_interview_locale(record, knowledge),
+            candidate_value,
+        )
+    return question_text
+
+
+def _repair_current_confirmation_question(
+    state: dict[str, Any],
+    *,
+    locale: InterviewLocale,
+) -> bool:
+    """Repair persisted questions that lost their confirmation candidate.
+
+    Older turns could persist a generic field question while the field was
+    already awaiting confirmation. Keep the question ID and audit history, but
+    restore the domain-independent confirmation wording for the next client
+    render or voice session.
+    """
+
+    current_question = _get_current_question(state)
+    if not current_question:
+        return False
+    target_type = str(current_question.get("targetType") or current_question.get("kind") or "")
+    target_id = str(current_question.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        is_pending = target_state.get("answerState") == "AWAITING_CONFIRMATION"
+        candidate_value = str(target_state.get("candidateAnswer") or "").strip()
+    elif target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        is_pending = target_state.get("status") == "AWAITING_CONFIRMATION"
+        candidate_value = str(target_state.get("candidateValue") or "").strip()
+    else:
+        return False
+    if not is_pending or not candidate_value or _contains_question_candidate(
+        str(current_question.get("text") or ""),
+        candidate_value,
+    ):
+        return False
+
+    current_question["text"] = localized_interview_confirmation_question(locale, candidate_value)
+    return True
+
+
+def _candidate_value_for_target(
+    target: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> str:
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        return str(target_state.get("candidateAnswer") or "").strip()
+    if target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        return str(target_state.get("candidateValue") or "").strip()
+    return ""
+
+
+def _contains_question_candidate(question_text: str, candidate_value: str) -> bool:
+    compact_question = "".join(question_text.casefold().split())
+    compact_candidate = "".join(candidate_value.casefold().split())
+    return bool(compact_candidate and compact_candidate in compact_question)
 
 
 def _get_structured_provider(

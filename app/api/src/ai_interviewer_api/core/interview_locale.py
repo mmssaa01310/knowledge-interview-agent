@@ -60,6 +60,25 @@ def interview_language_instruction(locale: InterviewLocale) -> str:
     )
 
 
+def localized_interview_greeting(locale: InterviewLocale) -> str:
+    return {
+        "ja-JP": "これからインタビューを開始します。",
+        "en-US": "We are about to start the interview.",
+        "zh-CN": "现在开始访谈。",
+        "pt-BR": "Vamos começar a entrevista.",
+    }[locale]
+
+
+def localized_interview_confirmation_question(locale: InterviewLocale, candidate: str) -> str:
+    candidate_text = candidate.strip()
+    return {
+        "ja-JP": f"「{candidate_text}」でよろしいですか？",
+        "en-US": f"To confirm, is your answer “{candidate_text}”?",
+        "zh-CN": f"请确认，您的回答是“{candidate_text}”吗？",
+        "pt-BR": f"Para confirmar, sua resposta é “{candidate_text}”?",
+    }[locale]
+
+
 def localized_interview_fallbacks(locale: InterviewLocale) -> dict[str, str]:
     """Small set of backend fallback replies used when an AI reply is unavailable."""
 

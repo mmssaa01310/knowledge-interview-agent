@@ -51,6 +51,34 @@ from ai_interviewer_api.services.record_lifecycle import (
 router = APIRouter(prefix="/api")
 
 
+def _has_started_interview(record_id: str, tenant_id: str) -> bool:
+    """Return whether the record has progressed past its persisted empty state."""
+    if any(
+        row.get("recordId") == record_id
+        for row in store.list("messages", tenant_id)
+    ):
+        return True
+
+    state = store.get("interview_states", f"interview-state-{record_id}")
+    if not state:
+        return False
+    return bool(
+        state.get("status") == "completed"
+        or state.get("currentQuestionId")
+        or state.get("askedQuestions")
+        or state.get("lastProcessedUserMessageId")
+        or state.get("completedFieldIds")
+        or any(
+            field_state.get("answerState") not in {None, "UNANSWERED"}
+            for field_state in (state.get("fieldStates") or {}).values()
+        )
+        or any(
+            requirement_state.get("status") not in {None, "UNANSWERED"}
+            for requirement_state in (state.get("requirementStates") or {}).values()
+        )
+    )
+
+
 @router.post("/knowledges/{knowledge_id}/records")
 def create_record(
     knowledge_id: str,
@@ -167,9 +195,7 @@ def update_record(
         require_management_role(user)
 
     if "interviewLocale" in requested_updates:
-        if store.get("interview_states", f"interview-state-{record_id}"):
-            raise HTTPException(status_code=409, detail="interview_locale_locked_after_start")
-        if any(row.get("recordId") == record_id for row in store.list("messages", user.tenant_id)):
+        if _has_started_interview(record_id, user.tenant_id):
             raise HTTPException(status_code=409, detail="interview_locale_locked_after_start")
 
     if requested_status is not None:

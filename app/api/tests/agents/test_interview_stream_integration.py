@@ -186,6 +186,17 @@ def test_generate_interview_reply_first_turn_adds_configured_question_metadata()
     assert any(message.get("questionType") == "configured_field" for message in saved_messages)
 
 
+def test_legacy_initial_question_uses_record_interview_locale() -> None:
+    record, user = _seed_stream_context()
+    record["interviewLocale"] = "en-US"
+
+    result = ai_interview.generate_interview_reply(record, user)
+
+    assert result.metadata is not None
+    assert result.metadata["reply"] == "Please tell me about 現象."
+    assert "どのような現象" not in result.metadata["reply"]
+
+
 def test_legacy_summary_is_migrated_from_actual_user_utterance() -> None:
     record, user = _seed_stream_context()
     store.upsert(

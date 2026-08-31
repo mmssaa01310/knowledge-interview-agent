@@ -52,9 +52,27 @@ def resolve_transcribe_polly_locale(locale: str | None) -> VoiceLocaleConfig:
     return config
 
 
+def localized_nova_sonic_system_prompt(base_prompt: str, locale: str) -> str:
+    locale_config = resolve_transcribe_polly_locale(locale)
+    language_name = {
+        "ja-JP": "Japanese",
+        "en-US": "English",
+        "zh-CN": "Simplified Chinese",
+        "pt-BR": "Brazilian Portuguese",
+    }[locale_config.interview_locale]
+    return (
+        f"{base_prompt.rstrip()}\n\n"
+        "The following language rule is authoritative and overrides any conflicting language rule above. "
+        f"The selected interview conversation language is {language_name} ({locale_config.interview_locale}). "
+        "Speak every user-facing response, including the first greeting and question, in that language. "
+        "Do not switch languages or add a translation."
+    )
+
+
 def localized_runtime_texts(locale: str) -> dict[str, str]:
     return {
         "ja-JP": {
+            "greeting": "これからインタビューを開始します。",
             "listen_ack": "はい。",
             "processing_ack": "回答を確認しています。",
             "long_processing": "確認に少し時間がかかっています。",
@@ -63,6 +81,7 @@ def localized_runtime_texts(locale: str) -> dict[str, str]:
             "unauthorized": "認証を確認できませんでした。セッションを終了します。",
         },
         "en-US": {
+            "greeting": "We are about to start the interview.",
             "listen_ack": "Okay.",
             "processing_ack": "I am checking your answer.",
             "long_processing": "This is taking a little longer than expected.",
@@ -71,6 +90,7 @@ def localized_runtime_texts(locale: str) -> dict[str, str]:
             "unauthorized": "I could not verify the session. The session will end.",
         },
         "zh-CN": {
+            "greeting": "现在开始访谈。",
             "listen_ack": "好的。",
             "processing_ack": "我正在确认您的回答。",
             "long_processing": "确认时间比预想的稍长。",
@@ -79,6 +99,7 @@ def localized_runtime_texts(locale: str) -> dict[str, str]:
             "unauthorized": "无法验证身份。会话将结束。",
         },
         "pt-BR": {
+            "greeting": "Vamos começar a entrevista.",
             "listen_ack": "Certo.",
             "processing_ack": "Estou verificando sua resposta.",
             "long_processing": "Isso está demorando um pouco mais do que o esperado.",

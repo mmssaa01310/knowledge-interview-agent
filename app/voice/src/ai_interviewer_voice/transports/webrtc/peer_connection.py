@@ -30,6 +30,7 @@ from aiortc import (
     RTCSessionDescription,
 )
 
+from ai_interviewer_voice.interview_locale import localized_runtime_texts
 from ai_interviewer_voice.runtimes.base import RealtimeVoiceRuntime
 from ai_interviewer_voice.runtimes.nova_sonic.protocol.payloads import AUDIO_OUTPUT_CHANNELS
 from ai_interviewer_voice.runtimes.nova_sonic.protocol.payloads import AUDIO_OUTPUT_SAMPLE_SIZE_BITS
@@ -106,7 +107,7 @@ class VoicePeerConnection:
         self._session_state = session
         self._runtime = (
             runtime_factory(session.provider, session.interview_locale)
-            if session.provider == "transcribe_polly"
+            if session.provider in {"transcribe_polly", "nova_sonic"}
             else runtime_factory(session.provider)
         )
         runtime_output_rate_hz = int(getattr(self._runtime, "output_sample_rate_hz", 24000))
@@ -198,8 +199,12 @@ class VoicePeerConnection:
         prepare = getattr(self._runtime, "prepare_initial_reply", None)
         if not callable(prepare):
             return
-        question_text = _extract_initial_question_text(initial_reply_text)
-        spoken_text = f"{INITIAL_VOICE_GREETING}{question_text}"
+        question_text = _extract_initial_question_text(
+            initial_reply_text,
+            self._session_state.interview_locale,
+        )
+        greeting_text = localized_runtime_texts(self._session_state.interview_locale)["greeting"]
+        spoken_text = f"{greeting_text}{question_text}"
         self._initial_reply_preload_task = asyncio.create_task(prepare(spoken_text))
         self._initial_reply_preload_task.add_done_callback(
             self._handle_initial_reply_preload_done
@@ -394,7 +399,10 @@ class VoicePeerConnection:
         )
         self._initial_reply_sent = True
         try:
-            greeting_text = _extract_initial_greeting_text(initial_reply_text)
+            greeting_text = _extract_initial_greeting_text(
+                initial_reply_text,
+                self._session_state.interview_locale,
+            )
             if hasattr(self._runtime, "start_initial_reply"):
                 await getattr(self._runtime, "start_initial_reply")(
                     reply_text=greeting_text,
@@ -432,7 +440,10 @@ class VoicePeerConnection:
                 claim.initial_question_id,
                 "sending",
             )
-            question_text = _extract_initial_question_text(claim.initial_reply_text)
+            question_text = _extract_initial_question_text(
+                claim.initial_reply_text,
+                self._session_state.interview_locale,
+            )
             if question_text:
                 if hasattr(self._runtime, "queue_initial_followup_reply"):
                     await getattr(self._runtime, "queue_initial_followup_reply")(
@@ -1084,14 +1095,22 @@ class VoicePeerConnection:
         return "new"
 
 
-def _extract_initial_greeting_text(initial_reply_text: str) -> str:
-    return INITIAL_VOICE_GREETING
+def _extract_initial_greeting_text(_initial_reply_text: str, interview_locale: str = "ja-JP") -> str:
+    return localized_runtime_texts(interview_locale)["greeting"]
 
 
-def _extract_initial_question_text(initial_reply_text: str | None) -> str:
+def _extract_initial_question_text(
+    initial_reply_text: str | None,
+    interview_locale: str = "ja-JP",
+) -> str:
     text = str(initial_reply_text or "").strip()
     if not text:
         return ""
-    if text.startswith(INITIAL_VOICE_GREETING):
-        return text[len(INITIAL_VOICE_GREETING) :].strip()
+    greetings = (
+        localized_runtime_texts(interview_locale)["greeting"],
+        INITIAL_VOICE_GREETING,
+    )
+    for greeting in dict.fromkeys(greetings):
+        if text.startswith(greeting):
+            return text[len(greeting) :].strip()
     return text

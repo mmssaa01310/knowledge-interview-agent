@@ -2,6 +2,7 @@ from ai_interviewer_voice.clients.interview_api import InterviewApiClient
 from ai_interviewer_voice.config import settings
 from ai_interviewer_voice.interview_locale import (
     localized_runtime_texts,
+    localized_nova_sonic_system_prompt,
     resolve_transcribe_polly_locale,
 )
 from ai_interviewer_voice.runtimes.base import RealtimeVoiceRuntime
@@ -24,6 +25,8 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
             raise ValueError("fake runtime is only available in local/test environments")
         return FakeRuntime()
     if normalized == "nova_sonic":
+        locale_config = resolve_transcribe_polly_locale(interview_locale)
+        runtime_texts = localized_runtime_texts(locale_config.interview_locale)
         bridge = InterviewBridge(
             InterviewApiClient(
                 settings.api_base_url,
@@ -40,14 +43,18 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
                 endpointing_sensitivity=settings.nova_sonic_endpointing_sensitivity,
                 invoke_timeout_seconds=settings.nova_sonic_invoke_timeout_seconds,
                 await_output_timeout_seconds=settings.nova_sonic_await_output_timeout_seconds,
-                system_prompt=settings.nova_sonic_system_prompt,
+                system_prompt=localized_nova_sonic_system_prompt(
+                    settings.nova_sonic_system_prompt,
+                    locale_config.interview_locale,
+                ),
                 enable_forced_tool_use=True,
                 forced_tool_result_delay_ms=settings.forced_tool_result_delay_ms,
                 normal_turn_tool_result_target_ms=settings.normal_turn_tool_result_target_ms,
                 normal_turn_tool_result_budget_ms=settings.normal_turn_tool_result_budget_ms,
-                interview_timeout_reply_text=settings.interview_timeout_reply_text,
-                interview_error_reply_text=settings.interview_error_reply_text,
-                interview_unauthorized_reply_text=settings.interview_unauthorized_reply_text,
+                forced_tool_result_reply_text=runtime_texts["processing_ack"],
+                interview_timeout_reply_text=runtime_texts["timeout"],
+                interview_error_reply_text=runtime_texts["error"],
+                interview_unauthorized_reply_text=runtime_texts["unauthorized"],
             ),
             interview_bridge=bridge,
         )

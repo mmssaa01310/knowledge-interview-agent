@@ -18,7 +18,12 @@ from ai_interviewer_voice.transports.webrtc.audio_input_track import AudioInputT
 from ai_interviewer_voice.transports.webrtc.data_channel import VoiceEventContext, _serialize_runtime_event
 from ai_interviewer_voice.transports.webrtc.playback_buffer import PlaybackBuffer
 from ai_interviewer_voice.transports.webrtc.playback_buffer import PlaybackBufferCapacityExceeded
-from ai_interviewer_voice.transports.webrtc.peer_connection import INITIAL_VOICE_GREETING, VoicePeerConnection
+from ai_interviewer_voice.transports.webrtc.peer_connection import (
+    INITIAL_VOICE_GREETING,
+    VoicePeerConnection,
+    _extract_initial_greeting_text,
+    _extract_initial_question_text,
+)
 from ai_interviewer_voice.transports.webrtc.registry import DuplicatePeerConnectionError, PeerConnectionRegistry
 
 
@@ -79,6 +84,15 @@ class StubRuntime:
     async def events(self):
         for event in ():
             yield event
+
+
+def test_initial_reply_is_split_using_selected_interview_locale() -> None:
+    initial_reply = "We are about to start the interview.Please tell me about 現象."
+
+    assert _extract_initial_greeting_text(initial_reply, "en-US") == (
+        "We are about to start the interview."
+    )
+    assert _extract_initial_question_text(initial_reply, "en-US") == "Please tell me about 現象."
 
 
 class BurstAudioTrack(MediaStreamTrack):

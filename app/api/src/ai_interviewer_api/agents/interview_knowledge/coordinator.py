@@ -191,6 +191,10 @@ def apply_structured_output(
     changed_topics: list[str] = []
     field_ids = {str(field.get("id")) for field in fields if field.get("id")}
     current_target = _target_for_current_question(state, current_question)
+    confirmation_target = current_target
+    if confirmation_target is None and output.dialogueAct in {"CONFIRMATION", "REJECTION"}:
+        pending_targets = list_pending_confirmation_targets(state)
+        confirmation_target = pending_targets[0] if pending_targets else None
     confirmation_applied = _apply_confirmation_or_rejection(
         state,
         output,
@@ -224,6 +228,14 @@ def apply_structured_output(
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
             continue
+        if (
+            confirmation_applied
+            and output.dialogueAct == "CONFIRMATION"
+            and _target_matches(confirmation_target, "field", update.fieldId)
+        ):
+            # Some providers repeat the confirmed candidate in fieldUpdates.
+            # Applying it after _confirm_target would reopen the same field.
+            continue
         _apply_field_update(
             state,
             update,
@@ -248,6 +260,18 @@ def apply_structured_output(
             and update.requirementId.startswith("process.")
             and not process_is_present
         ):
+            continue
+        if (
+            confirmation_applied
+            and output.dialogueAct == "CONFIRMATION"
+            and _target_matches(
+                confirmation_target,
+                "requirement" if update.requirementId.startswith("requirement.") else "process",
+                update.requirementId,
+            )
+        ):
+            # See the field-update guard above. A repeated requirement update
+            # must not undo the confirmation that was just applied.
             continue
         _apply_requirement_update(
             state,
@@ -592,6 +616,12 @@ def _target_for_current_question(
 def _is_confirmation_target(state: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
     target_type = target.get("targetType") or target.get("kind")
     target_id = str(target.get("targetId") or "")
+    if target_type == "contradiction":
+        return any(
+            str(item.get("contradictionId") or "") == target_id
+            and item.get("status", "open") == "open"
+            for item in state.get("contradictions", [])
+        )
     if target_type == "field":
         return state.get("fieldStates", {}).get(target_id, {}).get("answerState") == "AWAITING_CONFIRMATION"
     if target_type in {"requirement", "process"}:
@@ -663,6 +693,14 @@ def _confirm_target(
 ) -> None:
     kind = target.get("targetType") or target.get("kind")
     target_id = str(target.get("targetId") or "")
+    if kind == "contradiction":
+        _resolve_contradictions(state, [target_id], confirmation_message_id or "")
+        _confirm_candidate_for_contradiction(
+            state,
+            target_id,
+            confirmation_message_id=confirmation_message_id,
+        )
+        return
     if kind == "field":
         field_state = state.get("fieldStates", {}).get(target_id)
         if field_state and field_state.get("candidateAnswer"):
@@ -677,6 +715,8 @@ def _confirm_target(
                 [confirmation_message_id] if confirmation_message_id else []
             )
             field_state["candidateSource"] = None
+            field_state["candidateAnswer"] = None
+            field_state["candidateItems"] = []
             field_state["candidateProposalMessageId"] = None
             _mark_field_completed(state, target_id)
         return
@@ -693,6 +733,81 @@ def _confirm_target(
         requirement_state["candidateSource"] = None
         requirement_state["candidateProposalMessageId"] = None
         _maybe_confirm_process_entities(state)
+
+
+def _confirm_candidate_for_contradiction(
+    state: dict[str, Any],
+    contradiction_id: str,
+    *,
+    confirmation_message_id: str | None = None,
+) -> None:
+    """Commit the sole candidate backed by a contradiction being confirmed.
+
+    A contradiction question can itself be the confirmation of a newly spoken
+    candidate (for example, "is X rather than Y?"). The interpreter may only
+    resolve the contradiction, while the candidate remains pending. Evidence
+    IDs provide the safe link between that contradiction and its candidate;
+    ambiguous matches are deliberately left pending for an explicit question.
+    """
+
+    contradiction = next(
+        (
+            item
+            for item in state.get("contradictions", [])
+            if str(item.get("contradictionId") or "") == contradiction_id
+        ),
+        None,
+    )
+    if not contradiction:
+        return
+    contradiction_evidence_ids = {
+        str(evidence_id).strip()
+        for evidence_id in contradiction.get("evidenceTranscriptIds", [])
+        if str(evidence_id).strip()
+    }
+    if not contradiction_evidence_ids:
+        return
+
+    topic = str(contradiction.get("topic") or "").strip().lower()
+    candidates: list[tuple[str, str]] = []
+    if topic == "field" or topic.startswith("field:"):
+        for field_id, field_state in state.get("fieldStates", {}).items():
+            if field_state.get("answerState") != "AWAITING_CONFIRMATION":
+                continue
+            candidate_evidence_ids = {
+                str(evidence_id).strip()
+                for item in field_state.get("candidateItems", [])
+                if isinstance(item, Mapping)
+                for evidence_id in item.get("evidenceTranscriptIds", [])
+                if str(evidence_id).strip()
+            }
+            candidate_evidence_ids.update(
+                str(evidence_id).strip()
+                for evidence_id in field_state.get("candidateEvidenceTranscriptIds", [])
+                if str(evidence_id).strip()
+            )
+            if contradiction_evidence_ids & candidate_evidence_ids:
+                candidates.append(("field", str(field_id)))
+    elif topic in {"requirement", "process"} or topic.startswith(("requirement:", "process:")):
+        for requirement_id, requirement_state in state.get("requirementStates", {}).items():
+            if requirement_state.get("status") != "AWAITING_CONFIRMATION":
+                continue
+            candidate_evidence_ids = {
+                str(evidence_id).strip()
+                for evidence_id in requirement_state.get("evidenceTranscriptIds", [])
+                if str(evidence_id).strip()
+            }
+            if contradiction_evidence_ids & candidate_evidence_ids:
+                candidates.append(("requirement", str(requirement_id)))
+
+    if len(candidates) != 1:
+        return
+    candidate_type, candidate_id = candidates[0]
+    _confirm_target(
+        state,
+        {"targetType": candidate_type, "targetId": candidate_id},
+        confirmation_message_id=confirmation_message_id,
+    )
 
 
 def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:

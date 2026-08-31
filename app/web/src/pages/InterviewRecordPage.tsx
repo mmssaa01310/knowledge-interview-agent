@@ -242,7 +242,18 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     ) {
       return;
     }
-    props.onSendInterviewMessage(resolveInterviewAnswerTarget());
+    void props.onSendInterviewMessage(
+      resolveInterviewAnswerTarget(),
+      undefined,
+      selectedInterviewLocale,
+    );
+  }
+
+  async function handleStartVoiceInterview() {
+    if (!(await props.onSaveInterviewLocale(selectedInterviewLocale))) {
+      return;
+    }
+    await realtimeVoice.start();
   }
 
   function proposalTarget(message: KnowledgeLayoutProps["interviewMessages"][number]) {
@@ -649,7 +660,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                     <VoiceConversationButton
                       status={realtimeVoice.status}
                       disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || realtimeVoice.status === "completed"}
-                      onStart={() => void realtimeVoice.start()}
+                      onStart={() => void handleStartVoiceInterview()}
                       onStop={() => void realtimeVoice.stop()}
                     />
                   </div>

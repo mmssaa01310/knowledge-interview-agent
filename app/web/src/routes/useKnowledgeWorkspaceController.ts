@@ -908,21 +908,29 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setRecordNotice(t("errors.chatDeleted"));
   }
 
+  async function handleSaveInterviewLocale(interviewLocale: InterviewLocale): Promise<boolean> {
+    if (!selectedRecord || selectedRecord.interviewLocale === interviewLocale) {
+      return Boolean(selectedRecord);
+    }
+    try {
+      const updatedRecord = await updateRecord(selectedRecord.id, { interviewLocale });
+      setRecords((currentRecords) => currentRecords.map((record) => (
+        record.id === updatedRecord.id ? updatedRecord : record
+      )));
+      return true;
+    } catch (error) {
+      console.error("Failed to save interview locale", error);
+      setRecordNotice(t("errors.interviewLanguageUpdateFailed"));
+      return false;
+    }
+  }
+
   async function handleStartInterview(interviewLocale?: InterviewLocale) {
     if (!selectedRecord || isInterviewStreaming) return;
 
     let recordId = selectedRecord.id;
-    if (interviewLocale && selectedRecord.interviewLocale !== interviewLocale) {
-      try {
-        const updatedRecord = await updateRecord(selectedRecord.id, { interviewLocale });
-        setRecords((currentRecords) => currentRecords.map((record) => (
-          record.id === updatedRecord.id ? updatedRecord : record
-        )));
-      } catch (error) {
-        console.error("Failed to save interview locale", error);
-        setRecordNotice(t("errors.interviewLanguageUpdateFailed"));
-        return;
-      }
+    if (interviewLocale && !(await handleSaveInterviewLocale(interviewLocale))) {
+      return;
     }
     pendingInterviewSubmissionRef.current = null;
     setStreamingInterviewReply("");
@@ -936,9 +944,19 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   async function handleSendInterviewMessage(
     target?: InterviewAnswerTarget | null,
     contentOverride?: string,
+    interviewLocale?: InterviewLocale,
   ) {
     const content = (contentOverride ?? chatInput).trim();
     if (!selectedRecord || !content || isInterviewStreaming) return;
+    const interviewHasStarted = Boolean(
+      interviewMessages.length
+        || interviewState?.currentQuestionId
+        || interviewState?.askedQuestions.length
+        || interviewState?.lastProcessedUserMessageId,
+    );
+    if (interviewLocale && !interviewHasStarted && !(await handleSaveInterviewLocale(interviewLocale))) {
+      return;
+    }
     const previousPending = pendingInterviewSubmissionRef.current;
     const isRetry = previousPending?.content === content
       && (!target || isSameInterviewAnswerTarget(previousPending.target, target));
@@ -1223,6 +1241,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onSaveInterviewAnswer: handleSaveInterviewAnswer,
     onDeleteInterviewAnswers: handleDeleteInterviewAnswers,
     onDeleteInterviewChat: handleDeleteInterviewChat,
+    onSaveInterviewLocale: handleSaveInterviewLocale,
     onStartInterview: handleStartInterview,
     onSendInterviewMessage: handleSendInterviewMessage,
     onAppendInterviewMessage: appendRealtimeVoiceInterviewMessage,

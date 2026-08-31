@@ -115,8 +115,13 @@ export type KnowledgeLayoutProps = {
   onSaveInterviewAnswer: (fieldId: string, recordAnswer: string) => Promise<void>;
   onDeleteInterviewAnswers: () => void;
   onDeleteInterviewChat: () => void;
+  onSaveInterviewLocale: (interviewLocale: InterviewLocale) => Promise<boolean>;
   onStartInterview: (interviewLocale?: InterviewLocale) => Promise<void>;
-  onSendInterviewMessage: (target?: InterviewAnswerTarget | null, content?: string) => void;
+  onSendInterviewMessage: (
+    target?: InterviewAnswerTarget | null,
+    content?: string,
+    interviewLocale?: InterviewLocale,
+  ) => Promise<void>;
   onAppendInterviewMessage: (message: ChatMessage) => void;
   onRefreshInterviewSnapshot: () => void;
   onSaveProcessModel: (

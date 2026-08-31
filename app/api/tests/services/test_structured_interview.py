@@ -29,6 +29,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
+    get_structured_interview_state_snapshot,
     resolve_structured_model_id,
 )
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
@@ -354,7 +355,12 @@ def test_structured_interview_extracts_candidate_then_requires_confirmation() ->
 
 def test_structured_interview_confirms_explicit_affirmation_without_provider_retry() -> None:
     user: UserContext = DEV_TOKENS["dev-manager"]
-    record = {"id": "record-explicit-confirm", "knowledgeId": "knowledge-explicit-confirm", "title": "申請"}
+    record = {
+        "id": "record-explicit-confirm",
+        "knowledgeId": "knowledge-explicit-confirm",
+        "title": "申請",
+        "interviewLocale": "en-US",
+    }
     knowledge = {
         "id": "knowledge-explicit-confirm",
         "name": "申請要件",
@@ -401,7 +407,7 @@ def test_structured_interview_confirms_explicit_affirmation_without_provider_ret
             "tenantId": user.tenant_id,
             "recordId": record["id"],
             "role": "user",
-            "content": "はい、大丈夫です。",
+            "content": "Correct.",
             "isActualUtterance": True,
             "turnType": "ANSWER",
             "answerToQuestionId": confirmation_question["questionId"],
@@ -461,6 +467,245 @@ def test_confirmation_is_applied_to_the_current_question_target_not_pending_list
 
     assert state["requirementStates"]["requirement.purpose_problem"]["status"] == "AWAITING_CONFIRMATION"
     assert state["requirementStates"]["requirement.users"]["status"] == "CONFIRMED"
+
+
+def test_confirmation_does_not_reopen_field_when_provider_repeats_field_update() -> None:
+    state = build_initial_structured_state("fixed_form", [{"id": "field-name"}])
+    field_state = state["fieldStates"]["field-name"]
+    field_state.update(
+        {
+            "answerState": "AWAITING_CONFIRMATION",
+            "status": "asking",
+            "candidateAnswer": "Masa Miyazaki",
+            "candidateSource": "user_statement",
+            "candidateItems": [
+                {
+                    "itemId": "field-name",
+                    "value": "Masa Miyazaki",
+                    "evidenceTranscriptIds": ["answer-1"],
+                }
+            ],
+        }
+    )
+
+    apply_structured_output(
+        state,
+        StructuredInterviewOutput(
+            dialogueAct="CONFIRMATION",
+            fieldUpdates=[
+                {
+                    "fieldId": "field-name",
+                    "value": "Masa Miyazaki",
+                    "evidenceTranscriptIds": ["confirmation-1"],
+                }
+            ],
+        ),
+        latest_message_id="confirmation-1",
+        fields=[{"id": "field-name"}],
+        profile="fixed_form",
+        valid_evidence_ids={"answer-1", "confirmation-1"},
+        current_question={
+            "questionId": "q-name-confirm",
+            "targetType": "field",
+            "targetId": "field-name",
+        },
+    )
+
+    assert field_state["answerState"] == "CONFIRMED"
+    assert field_state["status"] == "completed"
+    assert field_state["recordAnswer"] == "Masa Miyazaki"
+    assert field_state["candidateAnswer"] is None
+    assert field_state["candidateItems"] == []
+    assert state["completedFieldIds"] == ["field-name"]
+
+
+def test_confirmation_of_field_contradiction_confirms_candidate_and_advances() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {
+        "id": "record-contradiction-confirm",
+        "knowledgeId": "knowledge-contradiction-confirm",
+        "title": "Profile",
+        "interviewLocale": "en-US",
+    }
+    knowledge = {
+        "id": "knowledge-contradiction-confirm",
+        "name": "Profile",
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    fields = [
+        {
+            "id": "field-name",
+            "knowledgeId": knowledge["id"],
+            "tenantId": user.tenant_id,
+            "name": "Name",
+            "required": True,
+            "displayOrder": 1,
+        },
+        {
+            "id": "field-role",
+            "knowledgeId": knowledge["id"],
+            "tenantId": user.tenant_id,
+            "name": "Role",
+            "required": True,
+            "displayOrder": 2,
+        },
+    ]
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    for field in fields:
+        store.upsert("knowledge_fields", field)
+
+    state = build_initial_structured_state("fixed_form", fields)
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "createdByUserId": user.user_id,
+            "updatedByUserId": user.user_id,
+            "createdAt": "2026-01-01T00:00:00+00:00",
+            "updatedAt": "2026-01-01T00:00:00+00:00",
+            "currentQuestionId": "q-contradiction",
+            "nextQuestionTarget": {
+                "targetType": "contradiction",
+                "targetId": "name-conflict",
+                "label": "Name",
+                "priority": 1,
+            },
+            "askedQuestions": [
+                {
+                    "questionId": "q-contradiction",
+                    "questionType": "structured",
+                    "fieldId": None,
+                    "text": "To confirm, is your name Miyazaki Masashi rather than Masa Miyazaki?",
+                    "targetType": "contradiction",
+                    "targetId": "name-conflict",
+                }
+            ],
+            "contradictions": [
+                {
+                    "contradictionId": "name-conflict",
+                    "topic": "field",
+                    "description": "The name differs from the earlier answer.",
+                    "status": "open",
+                    "evidenceTranscriptIds": ["name-answer"],
+                }
+            ],
+        }
+    )
+    state["fieldStates"]["field-name"].update(
+        {
+            "answerState": "AWAITING_CONFIRMATION",
+            "status": "asking",
+            "candidateAnswer": "Miyazaki Masashi",
+            "candidateSource": "user_statement",
+            "candidateItems": [
+                {
+                    "itemId": "field-name",
+                    "value": "Miyazaki Masashi",
+                    "evidenceTranscriptIds": ["name-answer"],
+                }
+            ],
+        }
+    )
+    store.upsert("interview_states", state)
+    store.upsert(
+        "messages",
+        {
+            "id": "name-confirmation",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "Yes.",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": "q-contradiction",
+        },
+    )
+
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=FakeStructuredProvider([]),
+        persist_assistant_messages=False,
+    )
+
+    confirmed_state = result["interviewState"]["fieldStates"]["field-name"]
+    assert confirmed_state["answerState"] == "CONFIRMED"
+    assert confirmed_state["recordAnswer"] == "Miyazaki Masashi"
+    assert confirmed_state["candidateAnswer"] is None
+    assert result["interviewState"]["contradictions"][0]["status"] == "resolved"
+    assert result["question"]["targetId"] == "field-role"
+
+
+def test_state_snapshot_repairs_generic_question_for_pending_candidate() -> None:
+    user: UserContext = DEV_TOKENS["dev-manager"]
+    record = {
+        "id": "record-repair-confirmation-question",
+        "knowledgeId": "knowledge-repair-confirmation-question",
+        "title": "Profile",
+        "interviewLocale": "en-US",
+    }
+    knowledge = {
+        "id": "knowledge-repair-confirmation-question",
+        "name": "Profile",
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    field = {
+        "id": "field-name",
+        "knowledgeId": knowledge["id"],
+        "tenantId": user.tenant_id,
+        "name": "Name",
+        "required": True,
+        "displayOrder": 1,
+    }
+    store.upsert("records", {**record, "tenantId": user.tenant_id})
+    store.upsert("knowledges", {**knowledge, "tenantId": user.tenant_id})
+    store.upsert("knowledge_fields", field)
+
+    state = build_initial_structured_state("fixed_form", [field])
+    state.update(
+        {
+            "id": f"interview-state-{record['id']}",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "createdByUserId": user.user_id,
+            "updatedByUserId": user.user_id,
+            "createdAt": "2026-01-01T00:00:00+00:00",
+            "updatedAt": "2026-01-01T00:00:00+00:00",
+            "currentQuestionId": "q-name",
+            "askedQuestions": [
+                {
+                    "questionId": "q-name",
+                    "questionType": "structured",
+                    "fieldId": "field-name",
+                    "targetType": "field",
+                    "targetId": "field-name",
+                    "text": "Please introduce yourself.",
+                }
+            ],
+        }
+    )
+    state["fieldStates"]["field-name"].update(
+        {
+            "answerState": "AWAITING_CONFIRMATION",
+            "candidateAnswer": "Miyazaki Masashi",
+            "candidateSource": "user_statement",
+        }
+    )
+    store.upsert("interview_states", state)
+
+    snapshot = get_structured_interview_state_snapshot(record, knowledge, user)
+    current_question = next(
+        question
+        for question in snapshot["interviewState"]["askedQuestions"]
+        if question["questionId"] == "q-name"
+    )
+
+    assert current_question["text"] == 'To confirm, is your answer “Miyazaki Masashi”?'
+    persisted_state = store.get("interview_states", state["id"])
+    assert persisted_state["askedQuestions"][0]["text"] == current_question["text"]
 
 
 def test_assistant_proposal_is_kept_as_candidate_until_explicit_acceptance() -> None:

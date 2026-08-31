@@ -14,6 +14,14 @@ def test_create_runtime_returns_nova_runtime() -> None:
     assert runtime.provider_name == "nova_sonic"
 
 
+def test_create_runtime_configures_nova_for_selected_interview_locale() -> None:
+    runtime = create_runtime("nova_sonic", "en-US")
+
+    assert isinstance(runtime, NovaSonicRuntime)
+    assert "English (en-US)" in runtime._config.system_prompt
+    assert runtime._config.interview_error_reply_text == "Something went wrong. Please try again."
+
+
 def test_create_runtime_returns_transcribe_polly_runtime() -> None:
     runtime = create_runtime("transcribe_polly")
 

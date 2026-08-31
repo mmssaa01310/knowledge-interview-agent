@@ -30,6 +30,7 @@ from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     interview_language_instruction,
     localized_interview_fallbacks,
+    localized_interview_greeting,
     resolve_interview_locale,
 )
 from ai_interviewer_api.core.permissions import require_record_action
@@ -84,7 +85,6 @@ from ai_interviewer_api.services.voice_evaluation_deadline import (
 
 logger = logging.getLogger(__name__)
 
-INITIAL_VOICE_GREETING = "これからインタビューを開始します。"
 VOICE_CONFIRM_PREFIX = "確認します。"
 ANSWER_STATE_UNANSWERED = "UNANSWERED"
 ANSWER_STATE_CANDIDATE_PENDING = "CANDIDATE_PENDING"
@@ -303,7 +303,11 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
     interview_locale = resolve_interview_locale(record, knowledge)
     if not _has_voice_interview_fields(record, user):
         raise HTTPException(status_code=409, detail="voice_session_missing_questions")
-    initial_reply = _initialize_initial_question(record, user)
+    initial_reply = _initialize_initial_question(
+        record,
+        user,
+        interview_locale=interview_locale,
+    )
     snapshot = get_interview_state_snapshot(record, user)
     interview_state = snapshot.get("interviewState", {})
     current_question_id = interview_state.get("currentQuestionId")
@@ -1107,8 +1111,15 @@ def create_connection_event(voice_session_id: str, payload: ConnectionEventCreat
     return item
 
 
-def _initialize_initial_question(record: dict, user: UserContext) -> str | None:
+def _initialize_initial_question(
+    record: dict,
+    user: UserContext,
+    *,
+    interview_locale: InterviewLocale | None = None,
+) -> str | None:
     started_at = monotonic()
+    locale = interview_locale or resolve_interview_locale(record, {})
+    greeting = localized_interview_greeting(locale)
     snapshot = get_interview_state_snapshot(record, user)
     interview_state = snapshot.get("interviewState", {})
     current_question_text = _find_current_question_text(interview_state)
@@ -1119,7 +1130,7 @@ def _initialize_initial_question(record: dict, user: UserContext) -> str | None:
             interview_state.get("currentQuestionId"),
             round((monotonic() - started_at) * 1000),
         )
-        return f"{INITIAL_VOICE_GREETING}{current_question_text}"
+        return f"{greeting}{current_question_text}"
     if interview_state.get("status") == "completed":
         return None
     result = generate_interview_reply(record, user, persist_assistant_messages=False)
@@ -1131,7 +1142,7 @@ def _initialize_initial_question(record: dict, user: UserContext) -> str | None:
         record.get("id"),
         round((monotonic() - started_at) * 1000),
     )
-    return f"{INITIAL_VOICE_GREETING}{initial_question}"
+    return f"{greeting}{initial_question}"
 
 
 def _find_current_question_text(interview_state: dict) -> str | None:
@@ -2049,7 +2060,7 @@ def _evaluate_confirmation_response(
     field_state: dict[str, Any],
     interview_locale: InterviewLocale = "ja-JP",
 ) -> VoiceConfirmationEvaluation:
-    if is_unambiguous_confirmation(user_reply):
+    if is_unambiguous_confirmation(user_reply, locale=interview_locale):
         logger.info(
             "voice_confirmation_fast_path outcome=CONFIRM candidate_length=%s",
             len(candidate_answer),
