@@ -16,6 +16,8 @@ from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     localized_interview_fallbacks,
+    localized_interview_confirmation_question,
+    localized_interview_tentative_transition,
     resolve_interview_locale,
 )
 from ai_interviewer_api.models.base import utc_now
@@ -30,6 +32,7 @@ from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
     ConfirmationEvaluation,
     InterviewAnswerProcessor,
+    confirm_tentative_field,
     compose_record_answer,
 )
 from ai_interviewer_api.services.interview_confirmation import (
@@ -591,7 +594,39 @@ def _ask_next_configured_field(
     persist_assistant_message: bool = True,
     interview_locale: InterviewLocale | None = None,
 ) -> dict[str, Any]:
-    next_field = _resolve_current_field(knowledge_fields, interview_state)
+    locale = interview_locale or resolve_interview_locale(record, {})
+    tentative_field_id = str(interview_state.get("tentativeBridgeFieldId") or "").strip()
+    question: dict[str, Any] | None = None
+    tentative_bridge_shown = bool(interview_state.get("tentativeBridgeShown"))
+    next_field = (
+        _resolve_next_pending_field(
+            knowledge_fields,
+            interview_state,
+            excluded_field_ids={tentative_field_id},
+        )
+        if tentative_field_id
+        else _resolve_current_field(knowledge_fields, interview_state)
+    )
+    if next_field is None and tentative_field_id:
+        tentative_state = interview_state.get("fieldStates", {}).get(tentative_field_id, {})
+        candidate = str(tentative_state.get("candidateAnswer") or "").strip()
+        tentative_field = next(
+            (field for field in knowledge_fields if str(field.get("id") or "") == tentative_field_id),
+            None,
+        )
+        if candidate and tentative_field is not None:
+            tentative_state["answerState"] = "AWAITING_CONFIRMATION"
+            tentative_state["answerResolution"] = "CONFIRM_REQUIRED"
+            next_field = tentative_field
+            question = _build_follow_up_question(
+                tentative_field_id,
+                localized_interview_confirmation_question(locale, candidate),
+                question_plan=tentative_field.get("questionPlan"),
+                retrieval_policy=_field_retrieval_policy(tentative_field).value,
+            )
+            interview_state["tentativeBridgeShown"] = False
+        else:
+            interview_state["tentativeBridgeFieldId"] = None
     if next_field is None:
         interview_state["status"] = "completed"
         interview_state["currentFieldId"] = None
@@ -603,14 +638,32 @@ def _ask_next_configured_field(
             interview_state,
             messages,
             _build_field_lookup(knowledge_fields),
-            interview_locale=interview_locale or resolve_interview_locale(record, {}),
+            interview_locale=locale,
         )
 
-    question = _build_configured_question(
-        next_field,
-        interview_state,
-        interview_locale=interview_locale or resolve_interview_locale(record, {}),
-    )
+    if question is None:
+        question = _build_configured_question(
+            next_field,
+            interview_state,
+            interview_locale=locale,
+        )
+        if tentative_field_id:
+            candidate = str(
+                interview_state.get("fieldStates", {})
+                .get(tentative_field_id, {})
+                .get("candidateAnswer")
+                or ""
+            ).strip()
+            if candidate and not tentative_bridge_shown:
+                tentative_bridge = localized_interview_tentative_transition(
+                    locale,
+                    candidate,
+                    str(next_field.get("name") or "").strip(),
+                )
+                question["text"] = (
+                    f"{tentative_bridge}{question['text']}"
+                )
+                interview_state["tentativeBridgeShown"] = True
     reply_text = _compose_assistant_content("", question["text"])
     assistant_message = (
         _save_assistant_message(
@@ -681,6 +734,9 @@ def _process_text_answer_turn(
     field_lookup = _build_field_lookup(knowledge_fields)
     current_field = field_lookup.get(current_field_id) or {"id": current_field_id, "name": current_field_id}
     field_state = interview_state.setdefault("fieldStates", {}).setdefault(current_field_id, {})
+    prior_tentative_field_id = str(
+        interview_state.get("tentativeBridgeFieldId") or ""
+    ).strip()
     latest_transcript = str(latest_user_message.get("content") or "")
     interview_locale = resolve_interview_locale(record, knowledge)
     if (
@@ -747,6 +803,7 @@ def _process_text_answer_turn(
                 decision = "NOT_ANSWER"
         return AnswerEvaluation(
             decision=decision,
+            answer_resolution=evaluation.get("answerResolution"),
             normalized_answer=normalized_answer,
             record_answer=record_answer,
             is_relevant=evaluation.get("isRelevant"),
@@ -816,6 +873,19 @@ def _process_text_answer_turn(
     )
     interview_state["lastProcessedUserMessageId"] = latest_user_message["id"]
 
+    if (
+        prior_tentative_field_id
+        and prior_tentative_field_id != turn_result.field_id
+        and turn_result.action in {"confirmed", "tentative"}
+    ):
+        _confirm_tentative_field_from_following_answer(
+            interview_state=interview_state,
+            tentative_field_id=prior_tentative_field_id,
+            record_id=record["id"],
+            fallback_question_id=turn_result.question_id,
+            user=user,
+        )
+
     if turn_result.action == "confirmed":
         confirmed_field_id = turn_result.confirmed_field_id or current_field_id
         _save_confirmed_answer_message(
@@ -831,6 +901,24 @@ def _process_text_answer_turn(
             ),
             user=user,
         )
+        interview_state["currentFieldId"] = None
+        interview_state["currentQuestionId"] = None
+        _persist_interview_state(interview_state, user)
+        return _ask_next_configured_field(
+            record,
+            knowledge_fields,
+            interview_state,
+            messages,
+            user,
+            persist_assistant_message=persist_assistant_message,
+            interview_locale=resolve_interview_locale(record, knowledge),
+        )
+
+    if turn_result.action == "tentative":
+        # Keep the candidate available for implicit confirmation while moving
+        # the conversation to the next unanswered configured field.
+        interview_state["tentativeBridgeFieldId"] = turn_result.field_id
+        interview_state["tentativeBridgeShown"] = False
         interview_state["currentFieldId"] = None
         interview_state["currentQuestionId"] = None
         _persist_interview_state(interview_state, user)
@@ -1034,10 +1122,16 @@ def _resolve_current_field(knowledge_fields: list[dict], interview_state: dict[s
     return _resolve_next_pending_field(knowledge_fields, interview_state)
 
 
-def _resolve_next_pending_field(knowledge_fields: list[dict], interview_state: dict[str, Any]) -> dict[str, Any] | None:
+def _resolve_next_pending_field(
+    knowledge_fields: list[dict],
+    interview_state: dict[str, Any],
+    *,
+    excluded_field_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
     pending_field_ids = list(interview_state.get("pendingFieldIds", []))
+    excluded = excluded_field_ids or set()
     for field in knowledge_fields:
-        if field.get("id") in pending_field_ids:
+        if field.get("id") in pending_field_ids and str(field.get("id")) not in excluded:
             return field
     return None
 
@@ -1254,6 +1348,29 @@ def _save_confirmed_answer_message(
     }
     store.upsert("messages", message)
     return message
+
+
+def _confirm_tentative_field_from_following_answer(
+    *,
+    interview_state: dict[str, Any],
+    tentative_field_id: str,
+    record_id: str,
+    fallback_question_id: str,
+    user: UserContext,
+) -> None:
+    tentative_state = interview_state.get("fieldStates", {}).get(tentative_field_id, {})
+    question_id = str(
+        tentative_state.get("pendingQuestionId") or fallback_question_id
+    ).strip()
+    candidate = confirm_tentative_field(interview_state, tentative_field_id)
+    if candidate and question_id:
+        _save_confirmed_answer_message(
+            record_id=record_id,
+            question_id=question_id,
+            field_id=tentative_field_id,
+            content=candidate,
+            user=user,
+        )
 
 
 def _persist_interview_state(interview_state: dict[str, Any], user: UserContext) -> None:

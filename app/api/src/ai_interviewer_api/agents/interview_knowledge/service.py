@@ -10,6 +10,7 @@ from uuid import uuid4
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     apply_structured_output,
     build_initial_structured_state,
+    confirm_tentative_target,
     evaluate_completion,
     is_current_question_confirmation_target,
     resolve_profile,
@@ -30,6 +31,7 @@ from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     interview_language_instruction,
     localized_interview_confirmation_question,
+    localized_interview_tentative_transition,
     localized_interview_fallbacks,
     resolve_interview_locale,
 )
@@ -115,6 +117,7 @@ def generate_structured_interview_result(
                 for field_id, field_state in state.get("fieldStates", {}).items()
                 if field_state.get("answerState") == "CONFIRMED"
             }
+            tentative_target_before = deepcopy(state.get("lastTentativeTarget"))
             structured_provider = _get_structured_provider(provider, model_id=model_id)
             interpreter_context = _build_interpreter_context(
                 record=record,
@@ -180,6 +183,12 @@ def generate_structured_interview_result(
                     },
                     current_question=current_question,
                 )
+                if _should_implicitly_confirm_tentative_target(
+                    output,
+                    tentative_target_before,
+                    current_question,
+                ):
+                    confirm_tentative_target(state, tentative_target_before)
                 _save_newly_confirmed_field_messages(
                     record=record,
                     state=state,
@@ -479,6 +488,8 @@ def _build_interpreter_context(
                 "name": field.get("name"),
                 "description": field.get("description"),
                 "required": field.get("required"),
+                "inputType": field.get("inputType"),
+                "aiAssistPrompt": field.get("aiAssistPrompt"),
                 "questionPlan": field.get("questionPlan"),
             }
             for field in fields
@@ -492,6 +503,7 @@ def _build_interpreter_context(
                 "content": message.get("content"),
                 "questionId": message.get("questionId"),
                 "answerToQuestionId": message.get("answerToQuestionId"),
+                "sttConfidence": message.get("sttConfidence"),
             }
             for message in messages[-30:]
             if message.get("isActualUtterance") is not False
@@ -591,6 +603,53 @@ def _has_structured_updates(output: StructuredInterviewOutput) -> bool:
     )
 
 
+def _should_implicitly_confirm_tentative_target(
+    output: StructuredInterviewOutput,
+    tentative_target: Mapping[str, Any] | None,
+    current_question: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether this turn answered a different target normally.
+
+    A correction or rejection must keep the tentative target open. Likewise,
+    an update that mentions the tentative target may itself be a correction,
+    so it is left to the next evaluation instead of being auto-confirmed here.
+    """
+
+    if not isinstance(tentative_target, Mapping) or output.dialogueAct != "ANSWER":
+        return False
+    tentative_type = str(
+        tentative_target.get("targetType") or tentative_target.get("kind") or ""
+    )
+    tentative_id = str(tentative_target.get("targetId") or "")
+    current_type = str(
+        (current_question or {}).get("targetType")
+        or (current_question or {}).get("kind")
+        or ""
+    )
+    current_id = str((current_question or {}).get("targetId") or "")
+    if tentative_type == current_type and tentative_id == current_id:
+        return False
+
+    for update in [*output.fieldUpdates, *output.requirementUpdates]:
+        update_id = str(
+            getattr(update, "fieldId", None)
+            or getattr(update, "requirementId", None)
+            or ""
+        )
+        update_type = (
+            "field"
+            if hasattr(update, "fieldId")
+            else "requirement" if update_id.startswith("requirement.") else "process"
+        )
+        if update_type == tentative_type and update_id == tentative_id:
+            return False
+        if str(getattr(update, "value", "") or "").strip() and getattr(
+            update, "answerResolution", None
+        ) != "RETRY":
+            return True
+    return False
+
+
 def _has_multiple_process_components(
     process_state: Mapping[str, Any],
     patch: Any,
@@ -655,6 +714,7 @@ def _generate_question_text(
             if message.get("isActualUtterance") is not False
         ],
         "fields": [{"id": field.get("id"), "name": field.get("name")} for field in fields],
+        "tentativeCandidates": _list_tentative_candidates(state),
     }
     generated = provider.generate_question(
         profile=profile,
@@ -672,7 +732,11 @@ def _generate_question_text(
     )
     question_text = generated.questionText.strip()
     candidate_value = _candidate_value_for_target(target, state)
-    if candidate_value and not _contains_question_candidate(question_text, candidate_value):
+    if (
+        candidate_value
+        and _is_awaiting_confirmation_target(target, state)
+        and not _contains_question_candidate(question_text, candidate_value)
+    ):
         logger.warning(
             "structured_confirmation_question_candidate_missing target_type=%s target_id=%s",
             target.get("targetType") or target.get("kind"),
@@ -682,6 +746,22 @@ def _generate_question_text(
             resolve_interview_locale(record, knowledge),
             candidate_value,
         )
+    tentative = _tentative_candidate_for_state(state)
+    if tentative and not _is_awaiting_confirmation_target(target, state):
+        tentative_value, _ = tentative
+        if (
+            not state.get("tentativeBridgeShown")
+            and not _contains_question_candidate(question_text, tentative_value)
+        ):
+            question_text = (
+                f"{localized_interview_tentative_transition(
+                    resolve_interview_locale(record, knowledge),
+                    tentative_value,
+                    str(target.get("label") or "").strip(),
+                )}{question_text}"
+            )
+        if isinstance(state, dict):
+            state["tentativeBridgeShown"] = True
     return question_text
 
 
@@ -736,6 +816,52 @@ def _candidate_value_for_target(
         target_state = state.get("requirementStates", {}).get(target_id, {})
         return str(target_state.get("candidateValue") or "").strip()
     return ""
+
+
+def _is_awaiting_confirmation_target(
+    target: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> bool:
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        return state.get("fieldStates", {}).get(target_id, {}).get("answerState") == "AWAITING_CONFIRMATION"
+    if target_type in {"requirement", "process"}:
+        return state.get("requirementStates", {}).get(target_id, {}).get("status") == "AWAITING_CONFIRMATION"
+    return False
+
+
+def _tentative_candidate_for_state(
+    state: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    reference = state.get("lastTentativeTarget")
+    if not isinstance(reference, Mapping):
+        return None
+    target_type = str(reference.get("targetType") or "")
+    target_id = str(reference.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        if target_state.get("answerResolution") != "TENTATIVE":
+            return None
+        value = str(target_state.get("candidateAnswer") or "").strip()
+        label = str(target_state.get("fieldId") or target_id).strip()
+    elif target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        if target_state.get("answerResolution") != "TENTATIVE":
+            return None
+        value = str(target_state.get("candidateValue") or "").strip()
+        label = str(target_state.get("label") or target_id).strip()
+    else:
+        return None
+    return (value, label) if value else None
+
+
+def _list_tentative_candidates(state: Mapping[str, Any]) -> list[dict[str, str]]:
+    candidate = _tentative_candidate_for_state(state)
+    if candidate is None:
+        return []
+    value, label = candidate
+    return [{"label": label, "value": value}]
 
 
 def _contains_question_candidate(question_text: str, candidate_value: str) -> bool:
@@ -893,6 +1019,7 @@ def _save_newly_confirmed_field_messages(
         content = str(field_state.get("recordAnswer") or "").strip()
         if not content:
             continue
+        answer_question_id = _latest_field_question_id(state, field_id) or question.get("questionId")
         message = {
             "id": f"structured-confirmed-msg-{record['id']}-{field_id}",
             "tenantId": user.tenant_id,
@@ -904,11 +1031,21 @@ def _save_newly_confirmed_field_messages(
             "turnType": "ANSWER",
             "createdAt": utc_now(),
             "updatedAt": utc_now(),
-            "answerToQuestionId": question.get("questionId"),
+            "answerToQuestionId": answer_question_id,
             "answerToFieldId": field_id,
             "questionType": "structured",
         }
         store.upsert("messages", message)
+
+
+def _latest_field_question_id(state: Mapping[str, Any], field_id: str) -> str | None:
+    for asked_question in reversed(state.get("askedQuestions", [])):
+        if asked_question.get("fieldId") != field_id:
+            continue
+        question_id = str(asked_question.get("questionId") or "").strip()
+        if question_id:
+            return question_id
+    return None
 
 
 def _persist_state(state: dict[str, Any], user: UserContext) -> None:

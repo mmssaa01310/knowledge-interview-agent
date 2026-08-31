@@ -121,6 +121,10 @@ test("draft fallback is hidden until the field is confirmed", () => {
 test("status labels follow answer state machine", () => {
   assert.equal(getInterviewAnswerStatusLabel({ answerState: "UNANSWERED" }), "未回答");
   assert.equal(getInterviewAnswerStatusLabel({ answerState: "CANDIDATE_PENDING" }), "追加確認中");
+  assert.equal(
+    getInterviewAnswerStatusLabel({ answerState: "CANDIDATE_PENDING", answerResolution: "TENTATIVE" }),
+    "仮確定",
+  );
   assert.equal(getInterviewAnswerStatusLabel({ answerState: "AWAITING_CONFIRMATION" }), "確認中");
   assert.equal(getInterviewAnswerStatusLabel({ answerState: "CONFIRMED" }), "回答済み");
 });

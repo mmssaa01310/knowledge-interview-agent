@@ -524,13 +524,16 @@ Backendは`openIssues`をそのまま質問対象にせず、Profileの必須条
 
 ### 8.1 共通の回答状態
 
-Field、Requirement、Processの候補は、次の状態を使用する。
+Field、Requirement、Processの候補は、共通の`answerResolution`判定と次の状態を使用する。判定は、質問と回答の意味的一致、対象の型・用途、必要情報量、前後の矛盾、音声の場合のSTT confidenceを合わせて行う。
 
 ```text
 UNANSWERED
   ↓ 発話から候補を抽出
 CANDIDATE_PENDING
-  ↓ Backendが確認質問を出す
+  ├ AUTO_CONFIRM → CONFIRMED
+  ├ TENTATIVE → 次の質問へ進み、次の発話で自然に確認・訂正
+  ├ RETRY → 候補を保存せず聞き直し
+  └ CONFIRM_REQUIRED → Backendが確認質問を出す
 AWAITING_CONFIRMATION
   ├ 明示的に肯定 → CONFIRMED
   ├ 内容を含む訂正 → CANDIDATE_PENDING
@@ -538,9 +541,9 @@ AWAITING_CONFIRMATION
   └ 不明確 → AWAITING_CONFIRMATION
 ```
 
-`confirmed`への遷移は、インタビュー対象者の確認をBackendが判定した場合だけ許可する。LLMの出力に`confirmed`が含まれていても受け入れてはならない。
+`AUTO_CONFIRM`は、ユーザーの事実回答についてBackendが妥当性を検証したうえで確認質問なしに`CONFIRMED`へ遷移させる判定である。`TENTATIVE`は候補を`CANDIDATE_PENDING`に残し、次の質問を止めない。`RETRY`は候補値と候補根拠を保存しない。LLMの出力に`confirmed`状態が含まれていても受け入れてはならず、`answerResolution`だけをBackendの状態遷移入力として検証する。`assistant_proposal`由来の値はこの限りではなく、対象者の明示的な採用・修正まで`CONFIRM_REQUIRED`として扱う。
 
-同時に`AWAITING_CONFIRMATION`へ遷移できる対象は1件だけとする。同じターンから抽出した他の候補は`CANDIDATE_PENDING`で保持し、優先順位に従って順番に確認する。
+同時に`AWAITING_CONFIRMATION`へ遷移できる対象は1件だけとする。同じターンから抽出した他の候補は`CANDIDATE_PENDING`で保持する。`TENTATIVE`候補は優先順位上の確認対象にせず、次の会話へ自然に引き継ぐ。明示確認が必要な候補だけを優先順位に従って確認する。
 
 #### 8.1.1 質問と回答の固定対応
 
@@ -552,7 +555,7 @@ Backendは質問を発行するとき、`questionId`、`targetType`、`targetId`
 
 肯定が処理済みの場合、直前の質問と同じ`targetType`および`targetId`の確認質問を新規発行してはならない。同じ対象を再質問できるのは、内容を含む訂正、明示的な否定、不明確な回答、または技術エラー後の明示再試行だけとする。
 
-`CANDIDATE_PENDING`の対象に確認質問を発行してはならない。Backendは対象を`AWAITING_CONFIRMATION`へ昇格してから質問を発行する。
+`TENTATIVE`の`CANDIDATE_PENDING`対象に確認質問を発行してはならない。Backendは次質問へ候補の解釈を織り込む。その他の`CANDIDATE_PENDING`を明示確認する場合だけ、Backendは対象を`AWAITING_CONFIRMATION`へ昇格してから質問を発行する。
 
 ### 8.2 FieldState
 

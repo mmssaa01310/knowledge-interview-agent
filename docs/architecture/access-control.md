@@ -22,7 +22,7 @@ InterviewRecord
 質問ごとの回答状態と記録のレビュー状態は別の状態機械とする。
 
 ```text
-質問ごとの回答: UNANSWERED → CANDIDATE_PENDING → AWAITING_CONFIRMATION → CONFIRMED
+質問ごとの回答: UNANSWERED → (AUTO_CONFIRM → CONFIRMED / TENTATIVE → CANDIDATE_PENDING / RETRY → UNANSWERED / CONFIRM_REQUIRED → AWAITING_CONFIRMATION → CONFIRMED)
 記録のレビュー: in_progress → submitted → returned → in_progress → submitted → approved
 ```
 

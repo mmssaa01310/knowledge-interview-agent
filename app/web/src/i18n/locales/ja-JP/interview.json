@@ -8,6 +8,7 @@
   },
   "answerStatus": {
     "candidate": "追加確認中",
+    "tentative": "仮確定",
     "awaiting": "確認中",
     "confirmed": "回答済み",
     "pending": "未回答"
@@ -159,6 +160,7 @@
     "currentTarget": "現在の確認対象",
     "statusConfirmed": "確定",
     "statusChecking": "確認中",
+    "statusTentative": "仮確定",
     "statusCandidate": "候補",
     "statusPending": "未確認",
     "statusPresent": "あり",

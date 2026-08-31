@@ -76,7 +76,7 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 
 `system_requirement`の実行画面はテキストチャット専用とする。音声会話の開始操作、音声接続状態、音声再生操作を表示してはならない。これは音声経路とテキスト経路の状態処理を分けることを意味しない。将来このProfileへ音声入力を提供する場合も、同じ共通Interview Coordinatorを使用する。
 
-回答処理はテキスト・音声共通の状態機械を使用する。生発話は監査用会話履歴として保持し、AI評価後の候補は明示確認まで正式回答へ保存しない。状態は`UNANSWERED`、`CANDIDATE_PENDING`、`AWAITING_CONFIRMATION`、`CONFIRMED`の順で管理し、`answerSummary`と`completedFieldIds`を更新できるのは`CONFIRMED`への遷移時だけとする。
+回答処理はテキスト・音声共通の契約（入力、意味解釈、回答妥当性評価、`answerResolution`判定、チャネル別応答）を使用する。生発話は監査用会話履歴として保持する。`answerResolution`は、意味的一致、対象フィールドの型・用途、必要情報量、前後の矛盾、音声の場合のSTT信頼度を合わせて、会話を止める必要性を判定する。`AUTO_CONFIRM`はユーザーの事実回答を確認質問なしで`CONFIRMED`へ遷移し、`TENTATIVE`は候補を`CANDIDATE_PENDING`で保持して次の質問へ進み、`RETRY`は候補を保存せず聞き直す。`CONFIRM_REQUIRED`は重大な矛盾など例外的に会話を止める場合だけ使用する。状態は`UNANSWERED`、`CANDIDATE_PENDING`、`AWAITING_CONFIRMATION`、`CONFIRMED`で管理し、`answerSummary`と`completedFieldIds`を更新できるのは`CONFIRMED`への遷移時だけとする。`assistant_proposal`由来のAI提案は、`AUTO_CONFIRM`や`TENTATIVE`の判定にかかわらず、対象者の明示的な採用・修正を経てから確定候補とする。
 
 `retrievalPolicy`は外部ナレッジ検索の実行可否だけを制御する。`never`でも発話意図、質問との関連性、十分性、正規化のAI評価を省略してはいけない。
 
@@ -148,7 +148,7 @@ AI提案は必ず`draft`または`needs_review`として保存する。
 * AI提案値
 * 人の修正値
 
-テキスト経路と音声経路で、承認仕様を変更してはいけない。
+テキスト経路と音声経路で、回答妥当性の判定契約を変更してはいけない。両経路とも`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を共通で扱い、音声経路だけが追加情報としてSTT confidenceを渡せる。これはAI提案や正式ナレッジの人による承認を不要にするものではない。
 
 音声インタビューから生成されたAI提案についても、人による承認を必須とする。
 
@@ -915,9 +915,9 @@ Interpreterの出力は、Backendの検証後も候補またはAI提案として
 
 ### 9.12 会話進行、提案、図表示
 
-確認質問には、発行した`questionId`、質問対象の`targetType`、`targetId`を必ず紐付ける。確認への回答は、その`questionId`が示す現在の対象だけに適用する。確認待ち一覧の先頭項目や、LLMが再抽出した別候補へ適用してはならない。
+`CONFIRM_REQUIRED`の確認質問には、発行した`questionId`、質問対象の`targetType`、`targetId`を必ず紐付ける。確認への回答は、その`questionId`が示す現在の対象だけに適用する。確認待ち一覧の先頭項目や、LLMが再抽出した別候補へ適用してはならない。`TENTATIVE`の候補には確認質問を発行せず、次の質問文へ候補の解釈を自然に織り込む。
 
-利用者が候補を明示的に肯定した場合、Backendは対象を`CONFIRMED`へ遷移させ、候補値を確定値へ移し、次の質問対象を再評価する。肯定の直後に、同じ`targetType`と`targetId`の確認質問を新規発行してはならない。訂正、否定、不明確な回答、または技術エラーからの明示再試行だけは同じ対象を再質問できる。
+`AUTO_CONFIRM`と評価されたユーザー回答は、Backendが対象を`CONFIRMED`へ遷移させ、候補値を確定値へ移し、次の質問対象を再評価する。`TENTATIVE`の候補に対する次の発話がそのまま続く場合は、その解釈を自然に確認できたものとして扱う。ユーザーが訂正した場合は、古い候補を破棄し、新しい発話で候補を更新する。`CONFIRM_REQUIRED`で利用者が候補を明示的に肯定した場合も、Backendは対象を`CONFIRMED`へ遷移させる。肯定の直後に、同じ`targetType`と`targetId`の確認質問を新規発行してはならない。訂正、否定、不明確な回答、または技術エラーからの明示再試行だけは同じ対象を再質問できる。
 
 利用者が「提案して」「例を出して」など、値の提案を求めた場合、AIが示す値は`assistant_proposal`由来の候補として扱う。利用者の発話から抽出した事実として保存してはならない。提案には「AIの案」であることを表示し、利用者の明示的な採用または修正を受けてから確定候補として扱う。提案を採用しても正式承認にはならない。
 

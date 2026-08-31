@@ -13,6 +13,9 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     RequirementUpdate,
     StructuredInterviewOutput,
 )
+from ai_interviewer_api.services.interview_answer_resolution import (
+    normalize_answer_resolution,
+)
 
 
 APPLICABILITY_TOPICS: tuple[str, ...] = (
@@ -148,6 +151,8 @@ def build_initial_structured_state(
         "fieldStates": field_states,
         "lastProcessedUserMessageId": None,
         "nextQuestionTarget": None,
+        "lastTentativeTarget": None,
+        "tentativeBridgeShown": False,
         "deferredProposalTarget": None,
         "requirementStates": requirement_states,
         "processState": process_state,
@@ -228,6 +233,8 @@ def apply_structured_output(
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
             continue
+        if normalize_answer_resolution(update.answerResolution) == "RETRY":
+            continue
         if (
             confirmation_applied
             and output.dialogueAct == "CONFIRMATION"
@@ -254,6 +261,8 @@ def apply_structured_output(
             or not update.value.strip()
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
+            continue
+        if normalize_answer_resolution(update.answerResolution) == "RETRY":
             continue
         if (
             profile == "system_requirement"
@@ -380,7 +389,10 @@ def select_next_question_target(
 ) -> dict[str, Any] | None:
     """Select exactly one target using the fixed backend priority."""
 
-    _promote_one_candidate(state)
+    # Preserve the legacy queue of ordinary candidates, but deliberately leave
+    # TENTATIVE candidates in the conversation so a later answer can confirm
+    # them implicitly.
+    _promote_one_candidate(state, include_tentative=False)
     contradictions = [
         item for item in state.get("contradictions", []) if item.get("status", "open") == "open"
     ]
@@ -396,7 +408,14 @@ def select_next_question_target(
     if deferred_context:
         return deferred_context
 
-    missing_required = list_missing_required_targets(state, profile, fields)
+    # A TENTATIVE candidate is intentionally excluded here. This lets the
+    # interview collect the next answer and use it as natural confirmation.
+    missing_required = list_missing_required_targets(
+        state,
+        profile,
+        fields,
+        include_tentative=False,
+    )
     if missing_required:
         return missing_required[0]
 
@@ -432,6 +451,13 @@ def select_next_question_target(
     optional = _select_optional_target(state, profile)
     if optional:
         return optional
+    # Once there is no other useful question, fall back to an explicit stop
+    # only for the remaining candidate. This is the exceptional confirmation
+    # path, not the default after every answer.
+    _promote_one_candidate(state, include_tentative=True)
+    pending_confirmations = list_pending_confirmation_targets(state)
+    if pending_confirmations:
+        return pending_confirmations[0]
     return None
 
 
@@ -466,6 +492,8 @@ def list_missing_required_targets(
     state: Mapping[str, Any],
     profile: InterviewProfile,
     fields: Sequence[Mapping[str, Any]],
+    *,
+    include_tentative: bool = True,
 ) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
     if profile == "fixed_form":
@@ -474,7 +502,11 @@ def list_missing_required_targets(
             if not field_id or not field.get("required"):
                 continue
             field_state = state.get("fieldStates", {}).get(field_id, {})
-            if field_state.get("answerState") != "CONFIRMED":
+            if field_state.get("answerState") != "CONFIRMED" and not (
+                not include_tentative
+                and field_state.get("answerState") == "CANDIDATE_PENDING"
+                and field_state.get("answerResolution") == "TENTATIVE"
+            ):
                 targets.append(_target("field", field_id, str(field.get("name") or field_id), 3))
 
     process_is_present = _process_is_present(state, profile)
@@ -482,9 +514,19 @@ def list_missing_required_targets(
         if kind == "process" and profile == "system_requirement" and not process_is_present:
             continue
         requirement_state = state.get("requirementStates", {}).get(target_id, {})
-        if requirement_state.get("status") != "CONFIRMED":
+        if requirement_state.get("status") != "CONFIRMED" and not (
+            not include_tentative
+            and requirement_state.get("status") == "CANDIDATE_PENDING"
+            and requirement_state.get("answerResolution") == "TENTATIVE"
+        ):
             targets.append(_target(kind, target_id, label, 3))
-    targets.extend(_list_missing_present_optional_targets(state, profile))
+    targets.extend(
+        _list_missing_present_optional_targets(
+            state,
+            profile,
+            include_tentative=include_tentative,
+        )
+    )
     return targets
 
 
@@ -511,6 +553,7 @@ def _new_field_state(field_id: str) -> dict[str, Any]:
         "answerSummary": None,
         "missingInformation": [],
         "answerState": "UNANSWERED",
+        "answerResolution": None,
         "candidateAnswer": None,
         "candidateSource": None,
         "candidateProposalMessageId": None,
@@ -534,6 +577,7 @@ def _new_requirement_state(target_id: str, label: str, kind: str) -> dict[str, A
         "label": label,
         "kind": kind,
         "status": "UNANSWERED",
+        "answerResolution": None,
         "candidateValue": None,
         "candidateSource": None,
         "candidateProposalMessageId": None,
@@ -705,6 +749,7 @@ def _confirm_target(
         field_state = state.get("fieldStates", {}).get(target_id)
         if field_state and field_state.get("candidateAnswer"):
             field_state["answerState"] = "CONFIRMED"
+            field_state["answerResolution"] = "AUTO_CONFIRM"
             field_state["status"] = "completed"
             field_state["recordAnswer"] = field_state["candidateAnswer"]
             field_state["answerSummary"] = None
@@ -718,11 +763,15 @@ def _confirm_target(
             field_state["candidateAnswer"] = None
             field_state["candidateItems"] = []
             field_state["candidateProposalMessageId"] = None
+            if _target_matches(state.get("lastTentativeTarget"), "field", target_id):
+                state["lastTentativeTarget"] = None
+                state["tentativeBridgeShown"] = False
             _mark_field_completed(state, target_id)
         return
     requirement_state = state.get("requirementStates", {}).get(target_id)
     if requirement_state and requirement_state.get("candidateValue"):
         requirement_state["status"] = "CONFIRMED"
+        requirement_state["answerResolution"] = "AUTO_CONFIRM"
         requirement_state["value"] = requirement_state["candidateValue"]
         requirement_state["confirmedSource"] = requirement_state.get("candidateSource")
         requirement_state["confirmedProposalMessageId"] = requirement_state.get("candidateProposalMessageId")
@@ -732,6 +781,13 @@ def _confirm_target(
         requirement_state["candidateValue"] = None
         requirement_state["candidateSource"] = None
         requirement_state["candidateProposalMessageId"] = None
+        if _target_matches(
+            state.get("lastTentativeTarget"),
+            "requirement" if kind == "requirement" else "process",
+            target_id,
+        ):
+            state["lastTentativeTarget"] = None
+            state["tentativeBridgeShown"] = False
         _maybe_confirm_process_entities(state)
 
 
@@ -817,19 +873,29 @@ def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
         field_state = state.get("fieldStates", {}).get(target_id)
         if field_state:
             field_state["answerState"] = "UNANSWERED"
+            field_state["answerResolution"] = None
             field_state["status"] = "asking"
             field_state["candidateAnswer"] = None
             field_state["candidateSource"] = None
             field_state["candidateProposalMessageId"] = None
             field_state["candidateItems"] = []
             field_state["recordAnswer"] = None
+            if _target_matches(state.get("lastTentativeTarget"), "field", target_id):
+                state["lastTentativeTarget"] = None
         return
     requirement_state = state.get("requirementStates", {}).get(target_id)
     if requirement_state:
         requirement_state["status"] = "UNANSWERED"
+        requirement_state["answerResolution"] = None
         requirement_state["candidateValue"] = None
         requirement_state["candidateSource"] = None
         requirement_state["candidateProposalMessageId"] = None
+        if _target_matches(
+            state.get("lastTentativeTarget"),
+            "requirement" if kind == "requirement" else "process",
+            target_id,
+        ):
+            state["lastTentativeTarget"] = None
 
 
 def _apply_field_update(
@@ -841,18 +907,42 @@ def _apply_field_update(
     force_awaiting_confirmation: bool = False,
 ) -> None:
     field_state = state.setdefault("fieldStates", {}).setdefault(update.fieldId, _new_field_state(update.fieldId))
-    current_pending = bool(list_pending_confirmation_targets(state))
-    field_state["answerState"] = (
-        "AWAITING_CONFIRMATION"
-        if force_awaiting_confirmation or not current_pending
-        else "CANDIDATE_PENDING"
-    )
+    resolution = normalize_answer_resolution(update.answerResolution)
+    if update.candidateSource == "assistant_proposal" and resolution in {"AUTO_CONFIRM", "TENTATIVE"}:
+        # Backend guarantee: an assistant proposal always needs an explicit
+        # confirmation even if the model marked the proposal as reliable.
+        resolution = "CONFIRM_REQUIRED"
+    was_confirmed = field_state.get("answerState") == "CONFIRMED"
+    if was_confirmed:
+        field_state["recordAnswer"] = None
+        field_state["confirmedItems"] = []
+        state["completedFieldIds"] = [
+            item for item in state.get("completedFieldIds", []) if item != update.fieldId
+        ]
+        pending = state.setdefault("pendingFieldIds", [])
+        if update.fieldId not in pending:
+            pending.append(update.fieldId)
+    if resolution == "AUTO_CONFIRM":
+        answer_state = "AWAITING_CONFIRMATION"
+    elif resolution == "TENTATIVE":
+        answer_state = "CANDIDATE_PENDING"
+    elif resolution == "CONFIRM_REQUIRED" or force_awaiting_confirmation:
+        answer_state = "AWAITING_CONFIRMATION"
+    else:
+        current_pending = bool(list_pending_confirmation_targets(state))
+        answer_state = "AWAITING_CONFIRMATION" if not current_pending else "CANDIDATE_PENDING"
+        resolution = "CONFIRM_REQUIRED" if answer_state == "AWAITING_CONFIRMATION" else None
+    field_state["answerState"] = answer_state
+    field_state["answerResolution"] = resolution
     field_state["status"] = "asking"
+    field_state["recordAnswer"] = None
     field_state["candidateAnswer"] = update.value.strip()
     field_state["candidateSource"] = update.candidateSource
     field_state["candidateProposalMessageId"] = None
     field_state["rawAnswer"] = update.value.strip()
-    field_state.setdefault("rawAnswerHistory", []).append(update.value.strip())
+    raw_history = field_state.setdefault("rawAnswerHistory", [])
+    if not raw_history or raw_history[-1] != update.value.strip():
+        raw_history.append(update.value.strip())
     field_state["candidateItems"] = [
         {
             "itemId": update.itemId or update.fieldId,
@@ -865,6 +955,18 @@ def _apply_field_update(
         }
     ]
     field_state["capturedItems"] = list(field_state["candidateItems"])
+    if resolution == "TENTATIVE":
+        state["lastTentativeTarget"] = {"targetType": "field", "targetId": update.fieldId}
+        state["tentativeBridgeShown"] = False
+    elif _target_matches(state.get("lastTentativeTarget"), "field", update.fieldId):
+        state["lastTentativeTarget"] = None
+        state["tentativeBridgeShown"] = False
+    if resolution == "AUTO_CONFIRM":
+        _confirm_target(
+            state,
+            {"targetType": "field", "targetId": update.fieldId},
+            confirmation_message_id=None,
+        )
 
 
 def _apply_requirement_update(
@@ -876,12 +978,24 @@ def _apply_requirement_update(
     force_awaiting_confirmation: bool = False,
 ) -> None:
     requirement_state = state["requirementStates"][update.requirementId]
-    current_pending = bool(list_pending_confirmation_targets(state))
-    requirement_state["status"] = (
-        "AWAITING_CONFIRMATION"
-        if force_awaiting_confirmation or not current_pending
-        else "CANDIDATE_PENDING"
-    )
+    resolution = normalize_answer_resolution(update.answerResolution)
+    if update.candidateSource == "assistant_proposal" and resolution in {"AUTO_CONFIRM", "TENTATIVE"}:
+        resolution = "CONFIRM_REQUIRED"
+    if requirement_state.get("status") == "CONFIRMED":
+        requirement_state["value"] = None
+    if resolution == "AUTO_CONFIRM":
+        status = "AWAITING_CONFIRMATION"
+    elif resolution == "TENTATIVE":
+        status = "CANDIDATE_PENDING"
+    elif resolution == "CONFIRM_REQUIRED" or force_awaiting_confirmation:
+        status = "AWAITING_CONFIRMATION"
+    else:
+        current_pending = bool(list_pending_confirmation_targets(state))
+        status = "AWAITING_CONFIRMATION" if not current_pending else "CANDIDATE_PENDING"
+        resolution = "CONFIRM_REQUIRED" if status == "AWAITING_CONFIRMATION" else None
+    requirement_state["status"] = status
+    requirement_state["answerResolution"] = resolution
+    requirement_state["value"] = None
     requirement_state["candidateValue"] = update.value.strip()
     requirement_state["candidateSource"] = update.candidateSource
     requirement_state["candidateProposalMessageId"] = None
@@ -890,6 +1004,28 @@ def _apply_requirement_update(
         message_id,
         valid_evidence_ids,
     )
+    if resolution == "TENTATIVE":
+        state["lastTentativeTarget"] = {
+            "targetType": "requirement" if update.requirementId.startswith("requirement.") else "process",
+            "targetId": update.requirementId,
+        }
+        state["tentativeBridgeShown"] = False
+    elif _target_matches(
+        state.get("lastTentativeTarget"),
+        "requirement" if update.requirementId.startswith("requirement.") else "process",
+        update.requirementId,
+    ):
+        state["lastTentativeTarget"] = None
+        state["tentativeBridgeShown"] = False
+    if resolution == "AUTO_CONFIRM":
+        _confirm_target(
+            state,
+            {
+                "targetType": "requirement" if update.requirementId.startswith("requirement.") else "process",
+                "targetId": update.requirementId,
+            },
+            confirmation_message_id=None,
+        )
 
 
 def _apply_process_patch(
@@ -1261,20 +1397,41 @@ def _mark_field_completed(state: dict[str, Any], field_id: str) -> None:
         pending.remove(field_id)
 
 
-def _promote_one_candidate(state: dict[str, Any]) -> None:
+def _promote_one_candidate(
+    state: dict[str, Any],
+    *,
+    include_tentative: bool = False,
+) -> None:
     if list_pending_confirmation_targets(state):
         return
     for field_state in state.get("fieldStates", {}).values():
-        if field_state.get("answerState") == "CANDIDATE_PENDING":
+        if (
+            field_state.get("answerState") == "CANDIDATE_PENDING"
+            and (
+                include_tentative
+                or field_state.get("answerResolution") != "TENTATIVE"
+            )
+        ):
             field_state["answerState"] = "AWAITING_CONFIRMATION"
+            field_state["answerResolution"] = "CONFIRM_REQUIRED"
             return
     for requirement_state in state.get("requirementStates", {}).values():
-        if requirement_state.get("status") == "CANDIDATE_PENDING":
+        if (
+            requirement_state.get("status") == "CANDIDATE_PENDING"
+            and (
+                include_tentative
+                or requirement_state.get("answerResolution") != "TENTATIVE"
+            )
+        ):
             requirement_state["status"] = "AWAITING_CONFIRMATION"
+            requirement_state["answerResolution"] = "CONFIRM_REQUIRED"
             return
 
 
-def _select_optional_target(state: Mapping[str, Any], profile: InterviewProfile) -> dict[str, Any] | None:
+def _select_optional_target(
+    state: Mapping[str, Any],
+    profile: InterviewProfile,
+) -> dict[str, Any] | None:
     if profile == "system_requirement" and not _process_is_present(state, profile):
         return None
     for target_id, label in OPTIONAL_TARGETS[profile]:
@@ -1284,7 +1441,7 @@ def _select_optional_target(state: Mapping[str, Any], profile: InterviewProfile)
             return _target("applicability", topic, label, 5)
         if applicability.get("status") == "present":
             target_state = state.get("requirementStates", {}).get(target_id, {})
-            if target_state.get("status") != "CONFIRMED":
+            if target_state.get("status") != "CONFIRMED" and not _is_tentative_state(target_state):
                 return _target("process", target_id, label, 5)
     return None
 
@@ -1323,6 +1480,8 @@ def _select_deferred_proposal_context(
 def _list_missing_present_optional_targets(
     state: Mapping[str, Any],
     profile: InterviewProfile,
+    *,
+    include_tentative: bool = True,
 ) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
     if profile == "system_requirement" and not _process_is_present(state, profile):
@@ -1332,9 +1491,49 @@ def _list_missing_present_optional_targets(
         if state.get("applicabilityState", {}).get(topic, {}).get("status") != "present":
             continue
         requirement_state = state.get("requirementStates", {}).get(target_id, {})
-        if requirement_state.get("status") != "CONFIRMED":
+        if requirement_state.get("status") != "CONFIRMED" and not (
+            not include_tentative and _is_tentative_state(requirement_state)
+        ):
             targets.append(_target("process", target_id, label, 3))
     return targets
+
+
+def _is_tentative_state(state: Mapping[str, Any]) -> bool:
+    return bool(
+        state.get("answerResolution") == "TENTATIVE"
+        and (
+            state.get("answerState") == "CANDIDATE_PENDING"
+            or state.get("status") == "CANDIDATE_PENDING"
+        )
+    )
+
+
+def confirm_tentative_target(
+    state: dict[str, Any],
+    target: Mapping[str, Any] | None,
+) -> bool:
+    """Commit one tentative target after a meaningful answer to the next target."""
+
+    if target is None or not _is_tentative_target(state, target):
+        return False
+    _confirm_target(state, target, confirmation_message_id=None)
+    state["tentativeBridgeShown"] = False
+    return True
+
+
+def _is_tentative_target(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any],
+) -> bool:
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+    elif target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+    else:
+        return False
+    return _is_tentative_state(target_state)
 
 
 def _maybe_confirm_process_entities(state: dict[str, Any]) -> None:

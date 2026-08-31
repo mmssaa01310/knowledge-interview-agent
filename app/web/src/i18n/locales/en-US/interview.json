@@ -8,6 +8,7 @@
   },
   "answerStatus": {
     "candidate": "Needs follow-up",
+    "tentative": "Tentatively accepted",
     "awaiting": "Checking",
     "confirmed": "Answered",
     "pending": "Not answered"
@@ -159,6 +160,7 @@
     "currentTarget": "Current item",
     "statusConfirmed": "Confirmed",
     "statusChecking": "Checking",
+    "statusTentative": "Tentatively accepted",
     "statusCandidate": "Suggestion",
     "statusPending": "Not confirmed",
     "statusPresent": "Present",

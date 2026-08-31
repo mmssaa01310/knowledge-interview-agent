@@ -72,8 +72,10 @@ from ai_interviewer_api.services.interview_answer_processor import (
     AnswerEvaluation,
     ConfirmationEvaluation,
     InterviewAnswerProcessor,
+    confirm_tentative_field,
     compose_record_answer,
 )
+from ai_interviewer_api.services.interview_answer_resolution import AnswerResolution
 from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
 )
@@ -105,6 +107,7 @@ class VoiceAnswerEvaluation:
     missing_information: list[str]
     follow_up_question: str | None
     evidence_transcript_ids: list[str]
+    answer_resolution: AnswerResolution | None = None
     record_answer: str = ""
     confirmation_question: str | None = None
     retrieval_needed: bool = False
@@ -154,6 +157,7 @@ def _normalize_captured_items(value: Any) -> list[Any]:
 
 class VoiceAnswerEvaluationOutput(BaseModel):
     decision: Literal["CONFIRMABLE", "NEEDS_MORE_INFORMATION", "NOT_ANSWER", "UNCLEAR"]
+    answerResolution: AnswerResolution | None = None
     normalized_answer: str = ""
     is_relevant: bool = False
     is_sufficient: bool = False
@@ -196,6 +200,7 @@ class VoiceTurnEvaluationOutput(BaseModel):
     responseText: str | None = None
     reason: str | None = None
     decision: Literal["CONFIRMABLE", "NEEDS_MORE_INFORMATION", "NOT_ANSWER", "UNCLEAR"] = "UNCLEAR"
+    answerResolution: AnswerResolution | None = None
     normalizedAnswer: str = ""
     isRelevant: bool = False
     isSufficient: bool = False
@@ -264,11 +269,12 @@ _VOICE_TURN_EVALUATION_SYSTEM_PROMPT = """
 固定キーワードだけで判断しないでください。
 turnTypeはANSWERまたはCONTROL。CONTROLは開始・終了・一時停止・再開・音声操作など回答以外の進行操作です。
 actはANSWER, CLARIFICATION_REQUEST, QUESTION_TO_ASSISTANT, CONVERSATION_REQUEST, BACKCHANNEL, HESITATION, CORRECTION, REJECTION, CONFIRMATION, IRRELEVANT, OTHERのいずれかです。
-回答ならdecisionはCONFIRMABLE, NEEDS_MORE_INFORMATION, NOT_ANSWER, UNCLEARのいずれかです。
+回答ならdecisionはCONFIRMABLE, NEEDS_MORE_INFORMATION, NOT_ANSWER, UNCLEARのいずれかです。answerResolutionはAUTO_CONFIRM, TENTATIVE, RETRY, CONFIRM_REQUIREDのいずれかです。
+AUTO_CONFIRMは意味・対象項目の型・必要情報・前後の整合性・音声認識信頼度が十分で、確認なしに次へ進める場合です。TENTATIVEは回答として成立するものの少し曖昧で、候補を保持したまま次の質問へ自然につなぐ場合です。RETRYは質問への回答として成立しない、意味が矛盾する、または誤認識の可能性が高く、候補を保存せず聞き直す場合です。CONFIRM_REQUIREDは重大な矛盾など、会話を止める必要がある例外だけです。
 recordAnswer等の文章値は文字列またはnull、isRelevant/isSufficient/retrievalNeededはboolean、missingInformation/capturedItemsは配列です。
 capturedItemsは[{"itemId":"...","value":"..."}]形式で、取得できなければ[]です。questionPlanの不足・完了・正式確定はbackendが判断します。
-回答処理へ渡すactはANSWER、確認待ちの訂正はCORRECTION、否定はREJECTION、承認はCONFIRMATIONです。それ以外はresponseTextに短い返答を入れてください。
-JSON以外、Markdown、コードフェンスは禁止です。例: {"turnType":"ANSWER","act":"ANSWER","decision":"CONFIRMABLE","recordAnswer":"山田","isRelevant":true,"isSufficient":true,"missingInformation":[],"capturedItems":[],"confirmationQuestion":"山田さんでよろしいですか？"}
+回答処理へ渡すactはANSWER、確認待ちの訂正はCORRECTION、否定はREJECTION、承認はCONFIRMATIONです。それ以外はresponseTextに短い返答を入れてください。confirmationQuestionはCONFIRM_REQUIREDの場合だけ返してください。
+JSON以外、Markdown、コードフェンスは禁止です。例: {"turnType":"ANSWER","act":"ANSWER","decision":"CONFIRMABLE","answerResolution":"AUTO_CONFIRM","recordAnswer":"med900","isRelevant":true,"isSufficient":true,"missingInformation":[],"capturedItems":[]}
 """.strip()
 
 
@@ -485,6 +491,7 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         recordId=session["recordId"],
         sequence=int(session.get("lastTurnSequence") or 0) + 1,
         transcript=payload.transcript.strip(),
+        sttConfidence=payload.sttConfidence,
         turnType=turn_type,
         clientTurnId=payload.clientTurnId,
         expectedStateVersion=payload.expectedStateVersion,
@@ -744,12 +751,13 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             )
             try:
                 combined_evaluation = run_with_evaluation_deadline(
-                    lambda: _evaluate_voice_turn_candidate(
+                    lambda: _evaluate_voice_turn_candidate_with_confidence(
                         transcript=str(turn.get("transcript") or ""),
                         current_question=current_question,
                         current_field=current_field,
                         field_state=field_state,
                         evidence_message_id=user_message["id"],
+                        stt_confidence=turn.get("sttConfidence"),
                         interview_locale=resolve_interview_locale(session, {}),
                     ),
                     request=evaluation_request,
@@ -1301,6 +1309,7 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
             "tenantId": user.tenant_id,
             "recordId": record["id"],
             "content": turn["transcript"],
+            "sttConfidence": turn.get("sttConfidence"),
             "role": "user",
             "isActualUtterance": True,
             "turnType": "CONTROL",
@@ -1324,6 +1333,7 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
         "tenantId": user.tenant_id,
         "recordId": record["id"],
         "content": turn["transcript"],
+        "sttConfidence": turn.get("sttConfidence"),
         "role": "user",
         "isActualUtterance": True,
         "turnType": "ANSWER",
@@ -1350,11 +1360,12 @@ def _save_confirmed_voice_answer_message(
     question_type: str | None,
     content: str,
     user: UserContext,
+    message_id: str | None = None,
 ) -> dict:
     if not question_id or not field_id:
         raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
     message = {
-        "id": f"voice-confirmed-msg-{turn['id']}",
+        "id": message_id or f"voice-confirmed-msg-{turn['id']}",
         "tenantId": user.tenant_id,
         "recordId": record["id"],
         "content": content,
@@ -1371,6 +1382,43 @@ def _save_confirmed_voice_answer_message(
         "voiceTurnId": turn["id"],
     }
     return store.upsert("messages", message)
+
+
+def _confirm_tentative_voice_field_from_following_answer(
+    *,
+    interview_state: dict[str, Any],
+    tentative_field_id: str,
+    record: dict,
+    session: dict,
+    turn: dict,
+    fallback_question_id: str | None,
+    user: UserContext,
+) -> None:
+    tentative_state = interview_state.get("fieldStates", {}).get(tentative_field_id, {})
+    question_id = str(
+        tentative_state.get("pendingQuestionId") or fallback_question_id or ""
+    ).strip()
+    candidate = confirm_tentative_field(interview_state, tentative_field_id)
+    if candidate and question_id:
+        question_type = next(
+            (
+                item.get("questionType")
+                for item in interview_state.get("askedQuestions", [])
+                if item.get("questionId") == question_id
+            ),
+            "configured_field",
+        )
+        _save_confirmed_voice_answer_message(
+            record=record,
+            session=session,
+            turn=turn,
+            question_id=question_id,
+            field_id=tentative_field_id,
+            question_type=question_type,
+            content=candidate,
+            user=user,
+            message_id=f"voice-confirmed-msg-{turn['id']}-{tentative_field_id}",
+        )
 
 
 def _save_voice_assistant_message(session: dict, payload: AssistantEventCreate) -> dict:
@@ -1450,6 +1498,9 @@ def _process_candidate_turn(
         "name": current_field_id,
     }
     retrieval_policy = _field_retrieval_policy(current_field).value
+    prior_tentative_field_id = str(
+        interview_state.get("tentativeBridgeFieldId") or ""
+    ).strip()
     field_state["status"] = "asking"
     field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
     field_state["answerSummary"] = None
@@ -1502,12 +1553,13 @@ def _process_candidate_turn(
     )
     try:
         evaluation = precomputed_evaluation or run_with_evaluation_deadline(
-            lambda: _evaluate_voice_answer_candidate(
+            lambda: _evaluate_voice_answer_candidate_with_confidence(
                 transcript=turn["transcript"],
                 current_question=current_question,
                 current_field=current_field,
                 field_state=field_state,
                 evidence_message_id=user_message["id"],
+                stt_confidence=turn.get("sttConfidence"),
                 interview_locale=resolve_interview_locale(session, {}),
             ),
             request=evaluation_request,
@@ -1594,6 +1646,7 @@ def _process_candidate_turn(
     def use_completed_evaluation(**_: Any) -> AnswerEvaluation:
         return AnswerEvaluation(
             decision=evaluation.decision,
+            answer_resolution=evaluation.answer_resolution,
             normalized_answer=evaluation.normalized_answer,
             record_answer=evaluation.record_answer,
             is_relevant=evaluation.is_relevant,
@@ -1630,6 +1683,64 @@ def _process_candidate_turn(
     field_state["followUpQuestion"] = (
         turn_result.reply_text if turn_result.decision in {"NEEDS_MORE_INFORMATION", "NEEDS_FOLLOWUP"} else None
     )
+    if (
+        prior_tentative_field_id
+        and prior_tentative_field_id != turn_result.field_id
+        and turn_result.action in {"confirmed", "tentative"}
+    ):
+        _confirm_tentative_voice_field_from_following_answer(
+            interview_state=interview_state,
+            tentative_field_id=prior_tentative_field_id,
+            record=record,
+            session=session,
+            turn=turn,
+            fallback_question_id=current_question_id,
+            user=user,
+        )
+    if turn_result.action == "confirmed":
+        confirmed_field_id = turn_result.confirmed_field_id or turn_result.field_id
+        confirmed_state = interview_state.get("fieldStates", {}).get(confirmed_field_id, {})
+        _save_confirmed_voice_answer_message(
+            record=record,
+            session=session,
+            turn=turn,
+            question_id=current_question_id,
+            field_id=confirmed_field_id,
+            question_type=current_question.get("questionType") if isinstance(current_question, dict) else None,
+            content=str(
+                confirmed_state.get("recordAnswer")
+                or compose_record_answer(list(confirmed_state.get("rawAnswerHistory") or []))
+                or ""
+            ).strip(),
+            user=user,
+        )
+        interview_state["lastProcessedUserMessageId"] = user_message["id"]
+        interview_state["currentQuestionId"] = None
+        interview_state["currentFieldId"] = None
+        _persist_interview_state(interview_state, user)
+        return _build_voice_next_question_result(
+            record=record,
+            session=session,
+            turn=turn,
+            user=user,
+            completed_question_id=current_question_id,
+            completed_field_id=confirmed_field_id,
+        )
+    if turn_result.action == "tentative":
+        interview_state["tentativeBridgeFieldId"] = turn_result.field_id
+        interview_state["tentativeBridgeShown"] = False
+        interview_state["lastProcessedUserMessageId"] = user_message["id"]
+        interview_state["currentQuestionId"] = None
+        interview_state["currentFieldId"] = None
+        _persist_interview_state(interview_state, user)
+        return _build_voice_next_question_result(
+            record=record,
+            session=session,
+            turn=turn,
+            user=user,
+            completed_question_id=current_question_id,
+            completed_field_id=turn_result.field_id,
+        )
     state_persist_started_at = monotonic()
     _persist_interview_state(interview_state, user)
     logger.info(
@@ -1675,6 +1786,9 @@ def _process_confirmation_turn(
         "name": current_field_id,
     }
     retrieval_policy = _field_retrieval_policy(current_field).value
+    prior_tentative_field_id = str(
+        interview_state.get("tentativeBridgeFieldId") or ""
+    ).strip()
 
     def unexpected_candidate_evaluation(**_: Any) -> AnswerEvaluation:
         raise RuntimeError("candidate evaluation called while awaiting confirmation")
@@ -1729,6 +1843,21 @@ def _process_confirmation_turn(
         evidence_transcript_id=user_message["id"],
         retrieval_policy=retrieval_policy,
     )
+
+    if (
+        prior_tentative_field_id
+        and prior_tentative_field_id != turn_result.field_id
+        and turn_result.action in {"confirmed", "tentative"}
+    ):
+        _confirm_tentative_voice_field_from_following_answer(
+            interview_state=interview_state,
+            tentative_field_id=prior_tentative_field_id,
+            record=record,
+            session=session,
+            turn=turn,
+            fallback_question_id=current_question_id,
+            user=user,
+        )
 
     if turn_result.action == "confirmed":
         confirmed_answer = str(
@@ -1840,6 +1969,29 @@ class VoiceTurnEvaluation:
     answer_evaluation: VoiceAnswerEvaluation | None = None
 
 
+def _evaluate_voice_turn_candidate_with_confidence(
+    *,
+    transcript: str,
+    current_question: dict[str, Any] | None,
+    current_field: dict[str, Any] | None,
+    field_state: dict[str, Any],
+    evidence_message_id: str,
+    stt_confidence: float | None,
+    interview_locale: InterviewLocale,
+) -> VoiceTurnEvaluation:
+    kwargs: dict[str, Any] = {
+        "transcript": transcript,
+        "current_question": current_question,
+        "current_field": current_field,
+        "field_state": field_state,
+        "evidence_message_id": evidence_message_id,
+        "interview_locale": interview_locale,
+    }
+    if stt_confidence is not None:
+        kwargs["stt_confidence"] = stt_confidence
+    return _evaluate_voice_turn_candidate(**kwargs)
+
+
 def _evaluate_voice_turn_candidate(
     *,
     transcript: str,
@@ -1847,6 +1999,7 @@ def _evaluate_voice_turn_candidate(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    stt_confidence: float | None = None,
     interview_locale: InterviewLocale = "ja-JP",
 ) -> VoiceTurnEvaluation:
     result = _run_voice_json_output(
@@ -1860,6 +2013,7 @@ def _evaluate_voice_turn_candidate(
             current_field=current_field,
             field_state=field_state,
             evidence_message_id=evidence_message_id,
+            stt_confidence=stt_confidence,
             interview_locale=interview_locale,
         ),
         output_model=VoiceTurnEvaluationOutput,
@@ -1877,6 +2031,7 @@ def _evaluate_voice_turn_candidate(
         )
     answer_evaluation = VoiceAnswerEvaluation(
         decision=result.decision,
+        answer_resolution=result.answerResolution,
         normalized_answer=result.normalizedAnswer.strip(),
         record_answer=result.recordAnswer.strip()
         if isinstance(result.recordAnswer, str)
@@ -1953,6 +2108,29 @@ def _ensure_voice_field_state(interview_state: dict[str, Any], field_id: str | N
     return field_state
 
 
+def _evaluate_voice_answer_candidate_with_confidence(
+    *,
+    transcript: str,
+    current_question: dict[str, Any] | None,
+    current_field: dict[str, Any] | None,
+    field_state: dict[str, Any],
+    evidence_message_id: str,
+    stt_confidence: float | None,
+    interview_locale: InterviewLocale,
+) -> VoiceAnswerEvaluation:
+    kwargs: dict[str, Any] = {
+        "transcript": transcript,
+        "current_question": current_question,
+        "current_field": current_field,
+        "field_state": field_state,
+        "evidence_message_id": evidence_message_id,
+        "interview_locale": interview_locale,
+    }
+    if stt_confidence is not None:
+        kwargs["stt_confidence"] = stt_confidence
+    return _evaluate_voice_answer_candidate(**kwargs)
+
+
 def _evaluate_voice_answer_candidate(
     *,
     transcript: str,
@@ -1960,6 +2138,7 @@ def _evaluate_voice_answer_candidate(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    stt_confidence: float | None = None,
     interview_locale: InterviewLocale = "ja-JP",
 ) -> VoiceAnswerEvaluation:
     prompt = _build_voice_answer_evaluation_prompt(
@@ -1968,6 +2147,7 @@ def _evaluate_voice_answer_candidate(
         current_field=current_field,
         field_state=field_state,
         evidence_message_id=evidence_message_id,
+        stt_confidence=stt_confidence,
         interview_locale=interview_locale,
     )
     result = _run_voice_json_output(
@@ -1978,6 +2158,7 @@ def _evaluate_voice_answer_candidate(
     )
     evaluation = VoiceAnswerEvaluation(
         decision=result.decision,
+        answer_resolution=result.answerResolution,
         normalized_answer=result.normalized_answer.strip(),
         record_answer=result.record_answer.strip() if isinstance(result.record_answer, str) else "",
         is_relevant=result.is_relevant,
@@ -2040,6 +2221,7 @@ def _stabilize_voice_answer_evaluation(
         missing_information=missing_information,
         follow_up_question=follow_up_question,
         evidence_transcript_ids=evaluation.evidence_transcript_ids,
+        answer_resolution=evaluation.answer_resolution,
         record_answer=record_answer,
         confirmation_question=evaluation.confirmation_question,
         retrieval_needed=evaluation.retrieval_needed,
@@ -2218,7 +2400,8 @@ def _voice_answer_evaluation_system_prompt(locale: InterviewLocale = "ja-JP") ->
     return (
         "あなたは音声インタビュー回答評価器です。\n"
         "ユーザーの生発話をそのまま回答確定してはいけません。\n"
-        "質問との適合性、回答の十分性、既存候補との統合要否を判断し、"
+        "質問との意味的一致、対象フィールドの型・用途、回答の十分性、前後の矛盾、"
+        "音声認識信頼度、既存候補との統合要否を判断し、"
         "構造化出力だけを返してください。\n"
         "questionPlanがある場合、今回の発話から取得できたcaptured_itemsだけを抽出し、"
         "過去の候補とのmerge、不足項目、COMPLETE/NEEDS_FOLLOWUPは判断しないでください。"
@@ -2229,6 +2412,10 @@ def _voice_answer_evaluation_system_prompt(locale: InterviewLocale = "ja-JP") ->
         "推測で補完せず、不要語や訂正前の誤情報を本文へ残さないこと。\n"
         "回答の必須要素は、questionとfieldに明示された説明、回答要件、"
         "aiAssistPromptだけを根拠にしてください。一般的な期待を勝手に必須要素へ追加してはいけません。\n"
+        "answerResolutionを必ず返してください。AUTO_CONFIRMは会話を止めずに採用、"
+        "TENTATIVEは候補を仮確定して次の質問へ、RETRYは候補を保存せず聞き直し、"
+        "CONFIRM_REQUIREDは重大な矛盾など例外的に停止が必要な場合だけです。"
+        "通常のCONFIRMABLE回答に確認質問を付けてはいけません。\n"
         "明示された必須要素がない場合、質問に関連する意味のある情報が含まれていれば、"
         "短い回答でもCONFIRMABLEにしてください。\n"
         "例えば質問が『自己紹介をお願いします。』で発話が『宮崎です』なら、"
@@ -2238,11 +2425,10 @@ def _voice_answer_evaluation_system_prompt(locale: InterviewLocale = "ja-JP") ->
         "これらをNOT_ANSWERやUNCLEARにしてはいけません。\n"
         "短い名詞回答は、意味を変えずに不要な文末の丁寧表現を除き、"
         "normalized_answerを簡潔な名詞句にしてください。\n"
-        "CONFIRMABLEでは、質問と項目の意味に合う自然なconfirmation_questionを返してください。"
+        "CONFIRM_REQUIREDの場合だけ、質問と項目の意味に合う自然なconfirmation_questionを返してください。"
         "固定の項目名辞書や定型的な引用表現に依存せず、候補の意味を変えてはいけません。"
         "confirmation_questionはユーザーがそのまま聞いて自然な質問文にし、"
-        "decisionがCONFIRMABLEの場合はconfirmation_questionを必ず省略せず返し、"
-        "空文字やnullにしないでください。"
+        "AUTO_CONFIRMまたはTENTATIVEではconfirmation_questionをnullにしてください。"
         "生発話を括弧や引用符でそのまま包んだ『という理解でよろしいですか』形式にしないでください。"
         "例えば趣味の候補がバスケなら『趣味はバスケでいいですか？』、"
         "氏名の候補が宮崎なら『宮崎さんでよろしいですか？』のように返してください。\n"
@@ -2262,6 +2448,7 @@ def _build_voice_answer_evaluation_prompt(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    stt_confidence: float | None,
     interview_locale: InterviewLocale,
 ) -> str:
     question_context = {
@@ -2274,6 +2461,7 @@ def _build_voice_answer_evaluation_prompt(
         "name": (current_field or {}).get("name"),
         "description": (current_field or {}).get("description"),
         "aiAssistPrompt": (current_field or {}).get("aiAssistPrompt"),
+        "inputType": (current_field or {}).get("inputType"),
         "questionPlan": (current_field or {}).get("questionPlan"),
     }
     has_explicit_requirements = any(
@@ -2291,6 +2479,7 @@ def _build_voice_answer_evaluation_prompt(
                 "answerState": field_state.get("answerState"),
             },
             "transcript": transcript,
+            "sttConfidence": stt_confidence,
             "evidenceTranscriptId": evidence_message_id,
             "interviewLocale": interview_locale,
             "languageInstruction": interview_language_instruction(interview_locale),
@@ -2306,7 +2495,8 @@ def _build_voice_answer_evaluation_prompt(
                 "requireSpecificFollowUpWhenNotConfirmable": True,
                 "mustIntegrateExistingCandidate": True,
                 "confirmationQuestionMustBeNatural": True,
-                "confirmationQuestionRequiredWhenConfirmable": True,
+                "confirmationQuestionOnlyWhenConfirmRequired": True,
+                "answerResolutionRequired": True,
                 "whenNoExplicitRequirements": (
                     "発話に質問に関連する具体的な事実が1つでもあればCONFIRMABLE。"
                     "一般論から不足項目を作らない。"
@@ -2317,18 +2507,18 @@ def _build_voice_answer_evaluation_prompt(
                     "transcript": "バスケです",
                     "question": "具体的な趣味を教えてください。",
                     "decision": "CONFIRMABLE",
+                    "answerResolution": "AUTO_CONFIRM",
                     "recordAnswer": "バスケです",
-                    "confirmationQuestion": "趣味はバスケでいいですか？",
                 },
                 {
                     "condition": "趣味の候補が『バスケです』",
                     "decision": "CONFIRMABLE",
-                    "confirmationQuestion": "趣味はバスケでいいですか？",
+                    "answerResolution": "TENTATIVE",
                 },
                 {
                     "condition": "氏名の候補が『宮崎です』",
                     "decision": "CONFIRMABLE",
-                    "confirmationQuestion": "宮崎さんでよろしいですか？",
+                    "answerResolution": "AUTO_CONFIRM",
                 },
                 {
                     "condition": "広い質問でhasExplicitAnswerRequirements=false、具体的な個人情報を回答",
@@ -2352,6 +2542,7 @@ def _build_voice_turn_evaluation_prompt(
     current_field: dict[str, Any] | None,
     field_state: dict[str, Any],
     evidence_message_id: str,
+    stt_confidence: float | None,
     interview_locale: InterviewLocale,
 ) -> str:
     return json.dumps(
@@ -2368,6 +2559,7 @@ def _build_voice_turn_evaluation_prompt(
                 "description": (current_field or {}).get("description"),
                 "aiAssistPrompt": (current_field or {}).get("aiAssistPrompt"),
                 "questionPlan": (current_field or {}).get("questionPlan"),
+                "inputType": (current_field or {}).get("inputType"),
             },
             "fieldState": {
                 "answerState": field_state.get("answerState"),
@@ -2379,6 +2571,7 @@ def _build_voice_turn_evaluation_prompt(
                 "pendingFieldId": field_state.get("pendingFieldId"),
             },
             "transcript": transcript,
+            "sttConfidence": stt_confidence,
             "evidenceTranscriptId": evidence_message_id,
             "interviewLocale": interview_locale,
             "languageInstruction": interview_language_instruction(interview_locale),

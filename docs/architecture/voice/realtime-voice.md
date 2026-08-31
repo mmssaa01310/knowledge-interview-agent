@@ -162,9 +162,9 @@ class AssistantReply:
 
 ### 4.1 回答確認と次質問
 
-確認待ちの返答は、保持中の候補に対する専用の確認判定へ1回だけ渡す。判定器は固定キーワードではなく文脈から`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返し、`app/api`が候補の確定・訂正・再確認を状態機械として保証する。
+音声の確定Transcriptは、テキスト経路と共通の意味解釈・回答妥当性評価へ渡す。判定器は質問との意味的一致、フィールドの型・用途、必要情報量、前後の矛盾、任意のSTT confidenceを合わせて`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を返す。`AUTO_CONFIRM`は確認質問なしで次へ進み、`TENTATIVE`は候補を保持したまま次質問へ自然につなぎ、`RETRY`は候補を保存せず聞き直す。`CONFIRM_REQUIRED`の場合だけ、保持中の候補に対する専用の確認判定（`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`）を1回行う。`app/api`が候補の確定・訂正・再確認を状態機械として保証する。
 
-回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
+回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。`TENTATIVE`の候補は次質問本文に自然に織り込む。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 
 ## 5. VoiceRuntimeEvent契約
 
@@ -249,8 +249,7 @@ POST /internal/voice-sessions/{voice_session_id}/connection-events
 ### 6.3.1 音声ターンの低遅延判定
 
 Transcribe + Pollyの確定Transcriptは、音声サービスで先行意図分類せず、`app/api`へ1回だけ送る。
-通常ターンでは、`turnType`、Dialogue Act、回答評価を同一のAI判定へ統合する。確認待ちターンでは、
-`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返す専用判定を1回だけ行う。
+通常ターンでは、`turnType`、Dialogue Act、回答評価を同一のAI判定へ統合する。回答評価は`answerResolution`を返し、確認質問は`CONFIRM_REQUIRED`の例外に限定する。`CONFIRM_REQUIRED`のターンでは、`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返す専用判定を1回だけ行う。
 
 この判定はBedrock Converseの短いテキストJSONを受け、backendでPydantic検証してから既存の
 `InterviewAnswerProcessor`へ渡す。確認、必須項目、不足項目、状態更新、正式保存の保証はbackendが持ち、
@@ -396,6 +395,7 @@ class VoiceTurn:
     sequence: int
     speaker: str
     transcript: str
+    stt_confidence: float | None
     answer_to_question_id: UUID | None
     processing_status: str
     response_text: str | None
@@ -413,6 +413,8 @@ UNIQUE(voice_session_id, sequence, speaker)
 ```
 
 `process`の冪等性は`turn_id`で保証する。
+
+`stt_confidence`は音声認識結果から取得できる場合だけ`0`から`1`の範囲で保持し、回答の意味的一致やフィールド整合性と合わせて評価する。これだけで回答を確定・棄却してはならない。
 
 `processing_status`は以下とする。
 
@@ -626,7 +628,7 @@ class RetrievalPolicy(str, Enum):
 
 `AUTO`では、まず検索なしの回答評価を行い、評価結果が検索を必要とする場合だけRAG検索を実行する。
 
-`NEVER`でも回答評価は省略しない。無効になるのは検索toolだけであり、生transcriptの意図判定、関連性・十分性評価、正規化、候補保存、明示確認はテキスト経路と同じ`InterviewAnswerProcessor`を通る。
+`NEVER`でも回答評価は省略しない。無効になるのは検索toolだけであり、生transcriptの意図判定、関連性・十分性評価、正規化、`answerResolution`判定、候補保存、必要な場合だけの明示確認はテキスト経路と同じ`InterviewAnswerProcessor`を通る。
 
 ```text
 User answer
@@ -796,7 +798,7 @@ shutdown probeで`completionEnd`が返る事実は、Session全体の終了時�
 
 Nova Sonic Runtimeは、Bedrockの双方向ストリームを音声インタビューの共通Runtime契約へ接続する。Assistant発話中は入力を遮断し、completion、response、generationを対応付けて承認済み出力だけをWebRTCへ渡す。
 
-通常回答では「確認します。」をNovaへ送らず、固定PCMのローカルsegmentとして先に再生する。固定PCMは本番と同じNova `matthew`が生成した24kHz mono s16音声を使用する。裏側の回答評価とBrowserでのpreface再生完了がそろった後、元の`toolUseId`へ本来の`toolResult`を1回だけ返し、Novaが同じcompletion内で生成する確認質問、再質問、追加質問を評価後replyとして扱う。
+通常回答では、候補確認を意味する質問を先に再生しない。評価待ちのローカルprefaceを使う場合も、それは処理中の応答待ちを示すためだけのsegmentとし、`AUTO_CONFIRM`・`TENTATIVE`では確認質問を生成しない。固定PCMのローカルsegmentを使う場合は、本番と同じNova `matthew`が生成した24kHz mono s16音声を使用する。裏側の回答評価とBrowserでのpreface再生完了がそろった後、元の`toolUseId`へ本来の`toolResult`を1回だけ返し、Novaが同じcompletion内で生成する次質問、再質問、`CONFIRM_REQUIRED`の確認質問を評価後replyとして扱う。
 
 ### 17.2 主要コンポーネント
 

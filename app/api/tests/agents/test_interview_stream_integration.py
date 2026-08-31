@@ -187,6 +187,254 @@ def test_generate_interview_reply_first_turn_adds_configured_question_metadata()
     assert any(message.get("questionType") == "configured_field" for message in saved_messages)
 
 
+def test_high_confidence_answer_is_committed_and_advances_to_next_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record, user = _seed_stream_context()
+    first = ai_interview.generate_interview_reply(record, user)
+    question = first.metadata["question"]
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-med900",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "med900",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+            "answerToFieldId": "field-1",
+        },
+    )
+    monkeypatch.setattr(
+        ai_interview,
+        "run_adapted_interview_turn",
+        lambda *_, **__: AdaptedInterviewTurnResult(
+            reply_text="",
+            field_evaluation={
+                "fieldId": "field-1",
+                "decision": "CONFIRMABLE",
+                "answerResolution": "AUTO_CONFIRM",
+                "isComplete": True,
+                "isRelevant": True,
+                "isSufficient": True,
+                "answerSummary": "med900",
+                "recordAnswer": "med900",
+                "missingInformation": [],
+                "nextAction": "next_field",
+            },
+            follow_up_question=None,
+            used_tools=[],
+        ),
+    )
+    result = ai_interview.generate_interview_reply(record, user)
+    state = result.metadata["interviewState"]
+
+    assert result.metadata["reply"] == "最初に何を原因候補として疑いましたか。"
+    assert "よろしい" not in result.metadata["reply"]
+    assert state["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
+    assert state["fieldStates"]["field-1"]["recordAnswer"] == "med900"
+    assert state["currentFieldId"] == "field-2"
+
+
+def test_tentative_answer_is_naturally_bridged_into_next_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record, user = _seed_stream_context()
+    first = ai_interview.generate_interview_reply(record, user)
+    question = first.metadata["question"]
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-morning",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "たぶん朝かな",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+            "answerToFieldId": "field-1",
+        },
+    )
+    monkeypatch.setattr(
+        ai_interview,
+        "run_adapted_interview_turn",
+        lambda *_, **__: AdaptedInterviewTurnResult(
+            reply_text="",
+            field_evaluation={
+                "fieldId": "field-1",
+                "decision": "CONFIRMABLE",
+                "answerResolution": "TENTATIVE",
+                "isComplete": True,
+                "isRelevant": True,
+                "isSufficient": True,
+                "answerSummary": "朝",
+                "recordAnswer": "朝",
+                "missingInformation": [],
+                "nextAction": "next_field",
+            },
+            follow_up_question=None,
+            used_tools=[],
+        ),
+    )
+
+    result = ai_interview.generate_interview_reply(record, user)
+    state = result.metadata["interviewState"]
+
+    assert result.metadata["reply"].startswith("「朝」なんですね。では、原因について教えてください。")
+    assert "よろしい" not in result.metadata["reply"]
+    assert state["fieldStates"]["field-1"]["answerState"] == "CANDIDATE_PENDING"
+    assert state["fieldStates"]["field-1"]["answerResolution"] == "TENTATIVE"
+    assert state["fieldStates"]["field-1"]["candidateAnswer"] == "朝"
+    assert state["currentFieldId"] == "field-2"
+
+
+def test_following_answer_implicitly_confirms_the_tentative_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record, user = _seed_stream_context()
+    first = ai_interview.generate_interview_reply(record, user)
+    first_question = first.metadata["question"]
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-morning-implicit",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "たぶん朝かな",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": first_question["questionId"],
+            "answerToFieldId": "field-1",
+        },
+    )
+    evaluations = iter(
+        [
+            AdaptedInterviewTurnResult(
+                reply_text="",
+                field_evaluation={
+                    "fieldId": "field-1",
+                    "decision": "CONFIRMABLE",
+                    "answerResolution": "TENTATIVE",
+                    "isComplete": True,
+                    "isRelevant": True,
+                    "isSufficient": True,
+                    "answerSummary": "朝",
+                    "recordAnswer": "朝",
+                    "missingInformation": [],
+                    "nextAction": "next_field",
+                },
+                follow_up_question=None,
+                used_tools=[],
+            ),
+            AdaptedInterviewTurnResult(
+                reply_text="",
+                field_evaluation={
+                    "fieldId": "field-2",
+                    "decision": "CONFIRMABLE",
+                    "answerResolution": "AUTO_CONFIRM",
+                    "isComplete": True,
+                    "isRelevant": True,
+                    "isSufficient": True,
+                    "answerSummary": "センサーの摩耗",
+                    "recordAnswer": "センサーの摩耗です",
+                    "missingInformation": [],
+                    "nextAction": "next_field",
+                },
+                follow_up_question=None,
+                used_tools=[],
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        ai_interview,
+        "run_adapted_interview_turn",
+        lambda *_, **__: next(evaluations),
+    )
+
+    first_result = ai_interview.generate_interview_reply(record, user)
+    next_question = first_result.metadata["question"]
+    assert next_question["fieldId"] == "field-2"
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-cause-implicit",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "センサーの摩耗です",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": next_question["questionId"],
+            "answerToFieldId": "field-2",
+        },
+    )
+
+    second_result = ai_interview.generate_interview_reply(record, user)
+    state = second_result.metadata["interviewState"]
+
+    assert state["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
+    assert state["fieldStates"]["field-1"]["recordAnswer"] == "朝"
+    assert state["fieldStates"]["field-2"]["answerState"] == "CONFIRMED"
+    assert state["fieldStates"]["field-2"]["recordAnswer"] == "センサーの摩耗です"
+    assert "よろしい" not in second_result.metadata["reply"]
+
+
+def test_retry_answer_is_reasked_without_confirming_the_transcription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record, user = _seed_stream_context()
+    first = ai_interview.generate_interview_reply(record, user)
+    question = first.metadata["question"]
+    store.upsert(
+        "messages",
+        {
+            "id": "msg-screen",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "画面",
+            "isActualUtterance": True,
+            "turnType": "ANSWER",
+            "answerToQuestionId": question["questionId"],
+            "answerToFieldId": "field-1",
+        },
+    )
+    monkeypatch.setattr(
+        ai_interview,
+        "run_adapted_interview_turn",
+        lambda *_, **__: AdaptedInterviewTurnResult(
+            reply_text="",
+            field_evaluation={
+                "fieldId": "field-1",
+                "decision": "UNCLEAR",
+                "answerResolution": "RETRY",
+                "isComplete": False,
+                "isRelevant": False,
+                "isSufficient": False,
+                "answerSummary": "",
+                "recordAnswer": "",
+                "missingInformation": [],
+                "nextAction": "follow_up",
+            },
+            follow_up_question="うまく聞き取れませんでした。現象について教えてください。",
+            used_tools=[],
+        ),
+    )
+
+    result = ai_interview.generate_interview_reply(record, user)
+    state = result.metadata["interviewState"]
+
+    assert result.metadata["reply"] == "うまく聞き取れませんでした。現象について教えてください。"
+    assert "画面でよろしい" not in result.metadata["reply"]
+    assert state["fieldStates"]["field-1"]["answerState"] == "UNANSWERED"
+    assert state["fieldStates"]["field-1"]["candidateAnswer"] is None
+    assert state["currentFieldId"] == "field-1"
+
+
 def test_legacy_initial_question_uses_record_interview_locale() -> None:
     record, user = _seed_stream_context()
     record["interviewLocale"] = "en-US"

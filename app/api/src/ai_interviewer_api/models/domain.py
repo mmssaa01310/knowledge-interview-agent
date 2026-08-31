@@ -96,6 +96,7 @@ class VoiceTurn(BaseEntity):
     sequence: int
     speaker: Literal["user", "assistant"] = "user"
     transcript: str
+    sttConfidence: float | None = None
     turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None
     answerToFieldId: str | None = None

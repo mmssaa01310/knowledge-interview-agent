@@ -8,6 +8,7 @@
   },
   "answerStatus": {
     "candidate": "追加确认中",
+    "tentative": "暂定确认",
     "awaiting": "确认中",
     "confirmed": "已回答",
     "pending": "未回答"
@@ -159,6 +160,7 @@
     "currentTarget": "当前确认内容",
     "statusConfirmed": "已确认",
     "statusChecking": "确认中",
+    "statusTentative": "暂定确认",
     "statusCandidate": "建议",
     "statusPending": "未确认",
     "statusPresent": "有",

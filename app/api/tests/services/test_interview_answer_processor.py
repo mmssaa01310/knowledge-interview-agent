@@ -77,6 +77,132 @@ def test_candidate_state_transitions(
     assert state["completedFieldIds"] == []
 
 
+def test_case_1_high_confidence_answer_is_auto_confirmed_without_confirmation() -> None:
+    state, result, _ = _process(
+        AnswerEvaluation(
+            decision="CONFIRMABLE",
+            answer_resolution="AUTO_CONFIRM",
+            normalized_answer="med900",
+            record_answer="med900",
+            is_relevant=True,
+            is_sufficient=True,
+        ),
+        transcript="med900",
+    )
+
+    field_state = state["fieldStates"]["field-1"]
+    assert result.action == "confirmed"
+    assert result.reply_text == ""
+    assert field_state["answerState"] == ANSWER_STATE_CONFIRMED
+    assert field_state["answerResolution"] == "AUTO_CONFIRM"
+    assert field_state["recordAnswer"] == "med900"
+    assert field_state["candidateAnswer"] is None
+    assert state["completedFieldIds"] == ["field-1"]
+
+
+def test_case_2_tentative_answer_is_carried_without_yes_no_confirmation() -> None:
+    state, result, _ = _process(
+        AnswerEvaluation(
+            decision="CONFIRMABLE",
+            answer_resolution="TENTATIVE",
+            normalized_answer="朝",
+            record_answer="朝",
+            is_relevant=True,
+            is_sufficient=True,
+        ),
+        transcript="たぶん朝かな",
+    )
+
+    field_state = state["fieldStates"]["field-1"]
+    assert result.action == "tentative"
+    assert "よろしい" not in result.reply_text
+    assert field_state["answerState"] == ANSWER_STATE_CANDIDATE_PENDING
+    assert field_state["answerResolution"] == "TENTATIVE"
+    assert field_state["candidateAnswer"] == "朝"
+    assert state["tentativeBridgeFieldId"] == "field-1"
+    assert state["completedFieldIds"] == []
+
+
+def test_case_3_retry_discards_semantically_invalid_transcript_without_confirmation() -> None:
+    state, result, _ = _process(
+        AnswerEvaluation(
+            decision="UNCLEAR",
+            answer_resolution="RETRY",
+            is_relevant=False,
+            follow_up_question="うまく聞き取れませんでした。発生条件を教えてください。",
+        ),
+        transcript="画面",
+    )
+
+    field_state = state["fieldStates"]["field-1"]
+    assert result.action == "ask_follow_up"
+    assert result.reply_text == "うまく聞き取れませんでした。発生条件を教えてください。"
+    assert "よろしい" not in result.reply_text
+    assert field_state["answerState"] == "UNANSWERED"
+    assert field_state["answerResolution"] is None
+    assert field_state["candidateAnswer"] is None
+    assert state["completedFieldIds"] == []
+
+
+def test_case_4_correction_replaces_tentative_candidate_from_previous_field() -> None:
+    evaluations = iter(
+        [
+            AnswerEvaluation(
+                decision="CONFIRMABLE",
+                answer_resolution="TENTATIVE",
+                normalized_answer="朝",
+                record_answer="朝",
+                is_relevant=True,
+                is_sufficient=True,
+            ),
+            AnswerEvaluation(
+                decision="CORRECT_PREVIOUS_FIELD",
+                answer_resolution="TENTATIVE",
+                normalized_answer="停止後に多い",
+                record_answer="停止後に多い",
+                target_field_id="field-1",
+                is_relevant=True,
+                is_sufficient=True,
+            ),
+        ]
+    )
+    processor = InterviewAnswerProcessor(evaluator=lambda **_: next(evaluations))
+    current_state = _state()
+
+    first = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-1",
+        field_id="field-1",
+        transcript="たぶん朝かな",
+        current_state=current_state,
+        question={"questionId": "question-1", "text": "発生条件を教えてください。"},
+        field={"id": "field-1", "name": "発生条件"},
+        evidence_transcript_id="message-1",
+        retrieval_policy="never",
+    )
+
+    second = processor.process_turn_sync(
+        record_id="record-1",
+        question_id="question-2",
+        field_id="field-2",
+        transcript="いや、停止後に多い",
+        current_state=current_state,
+        question={"questionId": "question-2", "text": "原因を教えてください。"},
+        field={"id": "field-2", "name": "原因"},
+        evidence_transcript_id="message-2",
+        retrieval_policy="never",
+    )
+
+    assert first.action == "tentative"
+    assert second.action == "tentative"
+    assert current_state["fieldStates"]["field-1"]["candidateAnswer"] == "停止後に多い"
+    assert current_state["fieldStates"]["field-1"]["answerResolution"] == "TENTATIVE"
+    assert current_state["fieldStates"]["field-1"]["rawAnswerHistory"] == [
+        "たぶん朝かな",
+        "いや、停止後に多い",
+    ]
+
+
 def test_retrieval_never_still_runs_initial_evaluation() -> None:
     state, result, calls = _process(
         AnswerEvaluation(

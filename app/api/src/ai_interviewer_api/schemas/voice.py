@@ -9,6 +9,7 @@ class VoiceSessionCreate(BaseModel):
 
 class VoiceTurnCreate(BaseModel):
     transcript: str
+    sttConfidence: float | None = Field(default=None, ge=0, le=1)
     turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None
     clientTurnId: str | None = None

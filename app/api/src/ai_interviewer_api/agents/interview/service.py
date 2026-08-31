@@ -61,7 +61,7 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         for message in interview_input.conversation_history
     ]
     field_lines = [
-        f"- {field.name} | field_id: {field.fieldId or 'none'} | question_examples: {', '.join(field.aiQuestionExamples) if field.aiQuestionExamples else 'none'} | question_plan: {_format_question_plan(field.questionPlan)}"
+        f"- {field.name} | field_id: {field.fieldId or 'none'} | input_type: {field.inputType or 'none'} | question_examples: {', '.join(field.aiQuestionExamples) if field.aiQuestionExamples else 'none'} | question_plan: {_format_question_plan(field.questionPlan)}"
         for field in interview_input.approved_fields
     ]
     field_state_lines = []
@@ -69,6 +69,7 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         for field_id, field_state in interview_input.interview_state.fieldStates.items():
             field_state_lines.append(
                 f"- {field_id}: status={field_state.status}, answer_state={field_state.answerState}, "
+                f"answer_resolution={field_state.answerResolution or 'none'}, "
                 f"candidate={field_state.candidateAnswer or 'none'}, "
                 f"record_answer={field_state.recordAnswer or 'none'}, "
                 f"answer_summary={field_state.answerSummary or 'none'}, "
@@ -102,6 +103,7 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         f"- id: {interview_input.current_field.fieldId if interview_input.current_field else 'none'}",
         f"- name: {interview_input.current_field.name if interview_input.current_field else 'none'}",
         f"- description: {interview_input.current_field.description if interview_input.current_field and interview_input.current_field.description else 'none'}",
+        f"- input_type: {interview_input.current_field.inputType if interview_input.current_field else 'none'}",
         f"- retrieval_policy: {interview_input.current_field.retrievalPolicy if interview_input.current_field else 'auto'}",
         f"- question_examples: {', '.join(interview_input.current_field.aiQuestionExamples) if interview_input.current_field and interview_input.current_field.aiQuestionExamples else 'none'}",
         f"- question_plan: {_format_question_plan(interview_input.current_field.questionPlan if interview_input.current_field else None)}",
@@ -126,6 +128,8 @@ def _build_turn_prompt(interview_input: InterviewTurnInput) -> str:
         "evaluation_contract:",
         "- Extract only capturedItems from the latest expert message and classify its meaning as ANSWERED, UNCLEAR, or IRRELEVANT.",
         "- Generate recordAnswer as the natural answer text that should be recorded for the current question. Never use a meta explanation such as '回答されました'.",
+        "- Return answerResolution for every answer: AUTO_CONFIRM when meaning, field type, required information, context, and transcription reliability are sufficiently consistent that the conversation should continue without a confirmation; TENTATIVE when the answer is valid but somewhat ambiguous and can be carried into the next question; RETRY when the utterance is not a meaningful answer or is likely mistranscribed; CONFIRM_REQUIRED only for a genuine contradiction or uncertainty that requires stopping.",
+        "- answerResolution is the decision about whether to stop the conversation, not a request to ask the user for yes/no. Never use CONFIRM_REQUIRED merely because an answer was received.",
         "- When answer_state is AWAITING_CONFIRMATION, classify the latest expert message in context using confirmationOutcome. For a correction, recordAnswer must contain only the corrected answer, not confirmation language.",
         "- For CONFIRM, return the current candidate as recordAnswer. For REVISE_WITH_CONTENT, return the latest consistent corrected answer and its capturedItems.",
         "- Do not merge with prior field state, calculate missing required items, or decide COMPLETE/NEEDS_FOLLOWUP. The backend does those deterministically from question_plan.",

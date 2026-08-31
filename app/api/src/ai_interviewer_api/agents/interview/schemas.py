@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import InterviewProfile
 from ai_interviewer_api.core.interview_locale import InterviewLocale
+from ai_interviewer_api.services.interview_answer_resolution import AnswerResolution
 from ai_interviewer_api.models.interview_plan import (
     CapturedInterviewItem,
     InterviewPlan,
@@ -57,6 +58,7 @@ class InterviewFieldState(BaseModel):
     answerSummary: str | None = None
     missingInformation: list[str] = Field(default_factory=list)
     answerState: Literal["UNANSWERED", "CANDIDATE_PENDING", "AWAITING_CONFIRMATION", "CONFIRMED"] = "UNANSWERED"
+    answerResolution: AnswerResolution | None = None
     candidateAnswer: str | None = None
     candidateSource: Literal["user_statement", "assistant_proposal"] | None = None
     candidateProposalMessageId: str | None = None
@@ -85,6 +87,8 @@ class InterviewState(BaseModel):
     fieldStates: dict[str, InterviewFieldState] = Field(default_factory=dict)
     lastProcessedUserMessageId: str | None = None
     nextQuestionTarget: dict[str, Any] | None = None
+    tentativeBridgeFieldId: str | None = None
+    tentativeBridgeShown: bool = False
     requirementStates: dict[str, dict[str, Any]] = Field(default_factory=dict)
     processState: dict[str, Any] = Field(default_factory=dict)
     applicabilityState: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -109,6 +113,7 @@ class InterviewFieldEvaluation(BaseModel):
         "REQUEST_GUIDANCE",
         "CORRECT_PREVIOUS_FIELD",
     ] | None = None
+    answerResolution: AnswerResolution | None = None
     isRelevant: bool | None = None
     isSufficient: bool | None = None
     targetFieldId: str | None = None

@@ -34,6 +34,7 @@ class TranscribeResult:
     stable_text: str
     is_partial: bool
     result_id: str | None = None
+    confidence: float | None = None
 
 
 class TranscribeCredentialsResolutionError(RuntimeError):
@@ -207,6 +208,7 @@ class AwsTranscribeStreamingPort:
                 if not text:
                     continue
                 stable_text = _stable_text(alternative.items or [], fallback=text if not result.is_partial else "")
+                confidence = _transcript_confidence(alternative)
                 if self._on_result is not None:
                     await self._on_result(
                         TranscribeResult(
@@ -214,6 +216,7 @@ class AwsTranscribeStreamingPort:
                             stable_text=stable_text,
                             is_partial=bool(result.is_partial),
                             result_id=result.result_id,
+                            confidence=confidence,
                         )
                     )
 
@@ -227,6 +230,32 @@ def _stable_text(items: list[Any], *, fallback: str) -> str:
     if not stable_items:
         return fallback
     return "".join(stable_items).strip()
+
+
+def _transcript_confidence(alternative: Any) -> float | None:
+    """Extract optional word confidence without making STT the sole decision."""
+
+    item_confidences: list[float] = []
+    for item in getattr(alternative, "items", []) or []:
+        raw_confidence = getattr(item, "confidence", None)
+        if raw_confidence is None:
+            continue
+        try:
+            confidence = float(raw_confidence)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= confidence <= 1:
+            item_confidences.append(confidence)
+    if item_confidences:
+        return sum(item_confidences) / len(item_confidences)
+    raw_confidence = getattr(alternative, "confidence", None)
+    if raw_confidence is None:
+        return None
+    try:
+        confidence = float(raw_confidence)
+    except (TypeError, ValueError):
+        return None
+    return confidence if 0 <= confidence <= 1 else None
 
 
 def _create_transcribe_client(config: TranscribePollyRuntimeConfig) -> TranscribeStreamingClient:

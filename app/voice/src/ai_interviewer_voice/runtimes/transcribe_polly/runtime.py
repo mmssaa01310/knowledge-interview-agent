@@ -157,6 +157,7 @@ class TranscribePollyRuntime:
         self._has_final_transcript = False
         self._stable_text = ""
         self._latest_partial_text = ""
+        self._latest_stt_confidence: float | None = None
         self._final_segments: dict[str, str] = {}
         self._anonymous_final_index = 0
         self._listen_ack_played = False
@@ -543,6 +544,7 @@ class TranscribePollyRuntime:
         self._voiced_duration_ms = initial_voiced_ms
         self._stable_text = ""
         self._latest_partial_text = ""
+        self._latest_stt_confidence = None
         self._final_segments.clear()
         self._listen_ack_played = False
         self._processing_ack_played = False
@@ -560,6 +562,7 @@ class TranscribePollyRuntime:
                 self._stable_text = result.stable_text
         else:
             self._has_final_transcript = True
+            self._latest_stt_confidence = result.confidence
             key = result.result_id
             if not key:
                 self._anonymous_final_index += 1
@@ -670,6 +673,7 @@ class TranscribePollyRuntime:
                 expected_state_version=self._state_version,
                 client_turn_id=uuid4().hex,
                 transcript_final_at_ms=transcript_final_at_ms,
+                stt_confidence=self._latest_stt_confidence,
             )
         )
 
@@ -681,6 +685,7 @@ class TranscribePollyRuntime:
         expected_state_version: int,
         client_turn_id: str,
         transcript_final_at_ms: int | None = None,
+        stt_confidence: float | None = None,
     ) -> None:
         if self._interview_bridge is None or self._context is None:
             await self._emit(RuntimeError(message="interview_bridge_unavailable", fatal=True))
@@ -713,6 +718,7 @@ class TranscribePollyRuntime:
                 turn_type="ANSWER",
                 expected_state_version=expected_state_version,
                 client_turn_id=client_turn_id,
+                stt_confidence=stt_confidence,
             )
             is_answer = result.turn_type == "ANSWER"
             await self._emit(

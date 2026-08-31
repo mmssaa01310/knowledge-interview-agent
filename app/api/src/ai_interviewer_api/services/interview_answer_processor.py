@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 from copy import deepcopy
 from typing import Any, Literal, Mapping, Protocol
 
+from ai_interviewer_api.services.interview_answer_resolution import (
+    AnswerResolution,
+    normalize_answer_resolution,
+)
+
 
 AnswerDecision = Literal[
     "CONFIRMABLE",
@@ -50,6 +55,7 @@ def compose_record_answer(raw_answers: list[str]) -> str:
 @dataclass(frozen=True)
 class AnswerEvaluation:
     decision: AnswerDecision
+    answer_resolution: AnswerResolution | None = None
     normalized_answer: str = ""
     record_answer: str = ""
     is_relevant: bool | None = None
@@ -80,7 +86,7 @@ class ConfirmationEvaluation:
 @dataclass(frozen=True)
 class InterviewTurnResult:
     decision: str
-    action: Literal["ask_confirmation", "ask_follow_up", "confirmed"]
+    action: Literal["ask_confirmation", "ask_follow_up", "tentative", "confirmed"]
     reply_text: str
     question_id: str
     field_id: str
@@ -224,6 +230,7 @@ class InterviewAnswerProcessor:
             if retrieval_policy == "never" or self._retriever is None:
                 evaluation = AnswerEvaluation(
                     decision="NEEDS_MORE_INFORMATION",
+                    answer_resolution=evaluation.answer_resolution,
                     normalized_answer=evaluation.normalized_answer,
                     record_answer=evaluation.record_answer,
                     is_relevant=evaluation.is_relevant,
@@ -268,6 +275,29 @@ class InterviewAnswerProcessor:
                 decision="EVALUATION_ERROR",
                 action="ask_follow_up",
                 reply_text="回答処理で一時的な問題が発生しました。もう一度お答えください。",
+                question_id=question_id,
+                field_id=field_id,
+                retrieval_policy=retrieval_policy,
+                retrieval_executed=retrieval_executed,
+                answer_disposition=evaluation.answer_disposition,
+            )
+
+        if normalize_answer_resolution(evaluation.answer_resolution) == "RETRY":
+            # A low-confidence/semantically invalid result must not become a
+            # candidate. Restore the state that existed before this turn so a
+            # late retry cannot erase a valid tentative answer.
+            field_state.clear()
+            field_state.update(previous_field_state)
+            field_state["status"] = "asking"
+            retry_question = evaluation.follow_up_question or _retry_prompt(
+                str(question.get("text") or "").strip()
+            )
+            field_state["followUpQuestion"] = retry_question
+            field_state["clarificationQuestion"] = retry_question
+            return InterviewTurnResult(
+                decision=evaluation.decision,
+                action="ask_follow_up",
+                reply_text=retry_question,
                 question_id=question_id,
                 field_id=field_id,
                 retrieval_policy=retrieval_policy,
@@ -329,6 +359,7 @@ class InterviewAnswerProcessor:
         field_state["missingInformation"] = list(evaluation.missing_information)
         field_state["evaluationReason"] = evaluation.evaluation_reason or evaluation.decision
         field_state["candidateEvidenceTranscriptIds"] = list(evaluation.evidence_transcript_ids)
+        resolution = _effective_answer_resolution(evaluation)
 
         if evaluation.captured_items:
             captured_items = _captured_items_by_id(field_state.get("capturedItems"))
@@ -366,14 +397,15 @@ class InterviewAnswerProcessor:
                 target["recordAnswer"] = None
                 target["candidateAnswer"] = (
                     evaluation.record_answer.strip()
+                    or evaluation.normalized_answer.strip()
                     or raw_answer.strip()
                     or target.get("candidateAnswer")
                 )
                 target["answerSummary"] = None
-                target["answerState"] = ANSWER_STATE_AWAITING_CONFIRMATION
                 target["status"] = "asking"
                 target["pendingQuestionId"] = question_id
                 target["pendingFieldId"] = target_field_id
+                target["answerResolution"] = resolution
                 current_state["completedFieldIds"] = [
                     item
                     for item in current_state.get("completedFieldIds", [])
@@ -382,6 +414,34 @@ class InterviewAnswerProcessor:
                 pending = current_state.setdefault("pendingFieldIds", [])
                 if target_field_id not in pending:
                     pending.append(target_field_id)
+                candidate = str(target.get("candidateAnswer") or "").strip()
+                if resolution == "AUTO_CONFIRM" and _is_auto_confirmable(evaluation, candidate):
+                    _commit_field_candidate(current_state, target_field_id, target)
+                    return InterviewTurnResult(
+                        decision=evaluation.decision,
+                        action="confirmed",
+                        reply_text="",
+                        question_id=question_id,
+                        field_id=target_field_id,
+                        confirmed_field_id=target_field_id,
+                        retrieval_policy=retrieval_policy,
+                        retrieval_executed=retrieval_executed,
+                        answer_disposition=evaluation.answer_disposition,
+                    )
+                if resolution == "TENTATIVE" and _is_tentative_candidate(evaluation, candidate):
+                    target["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
+                    _set_tentative_bridge(current_state, target_field_id)
+                    return InterviewTurnResult(
+                        decision=evaluation.decision,
+                        action="tentative",
+                        reply_text=evaluation.follow_up_question or "",
+                        question_id=question_id,
+                        field_id=target_field_id,
+                        retrieval_policy=retrieval_policy,
+                        retrieval_executed=retrieval_executed,
+                        answer_disposition=evaluation.answer_disposition,
+                    )
+                target["answerState"] = ANSWER_STATE_AWAITING_CONFIRMATION
                 return InterviewTurnResult(
                     decision=evaluation.decision,
                     action="ask_confirmation",
@@ -401,12 +461,64 @@ class InterviewAnswerProcessor:
                 retrieval_executed=retrieval_executed,
             )
 
+        if (
+            resolution == "TENTATIVE"
+            and raw_answer.strip()
+            and evaluation.decision != "CORRECT_PREVIOUS_FIELD"
+        ):
+            candidate = _candidate_value(raw_answer, evaluation)
+            if _is_tentative_candidate(evaluation, candidate):
+                field_state["candidateAnswer"] = candidate
+                field_state["answerResolution"] = resolution
+                field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
+                field_state["pendingQuestionId"] = question_id
+                field_state["pendingFieldId"] = field_id
+                _set_tentative_bridge(current_state, field_id)
+                return InterviewTurnResult(
+                    decision=evaluation.decision,
+                    action="tentative",
+                    reply_text=evaluation.follow_up_question or "",
+                    question_id=question_id,
+                    field_id=field_id,
+                    retrieval_policy=retrieval_policy,
+                    retrieval_executed=retrieval_executed,
+                    answer_disposition=evaluation.answer_disposition,
+                )
+
         if evaluation.decision == "CONFIRMABLE" and raw_answer.strip():
-            field_state["candidateAnswer"] = (
-                evaluation.record_answer.strip()
-                or raw_answer.strip()
-            )
+            candidate = _candidate_value(raw_answer, evaluation)
+            field_state["candidateAnswer"] = candidate
+            field_state["answerResolution"] = resolution
+            if resolution == "AUTO_CONFIRM" and _is_auto_confirmable(evaluation, candidate):
+                _commit_field_candidate(current_state, field_id, field_state)
+                return InterviewTurnResult(
+                    decision=evaluation.decision,
+                    action="confirmed",
+                    reply_text="",
+                    question_id=question_id,
+                    field_id=field_id,
+                    confirmed_field_id=field_id,
+                    retrieval_policy=retrieval_policy,
+                    retrieval_executed=retrieval_executed,
+                    answer_disposition=evaluation.answer_disposition,
+                )
+            if resolution == "TENTATIVE" and _is_tentative_candidate(evaluation, candidate):
+                field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
+                field_state["pendingQuestionId"] = question_id
+                field_state["pendingFieldId"] = field_id
+                _set_tentative_bridge(current_state, field_id)
+                return InterviewTurnResult(
+                    decision=evaluation.decision,
+                    action="tentative",
+                    reply_text=evaluation.follow_up_question or "",
+                    question_id=question_id,
+                    field_id=field_id,
+                    retrieval_policy=retrieval_policy,
+                    retrieval_executed=retrieval_executed,
+                    answer_disposition=evaluation.answer_disposition,
+                )
             field_state["answerState"] = ANSWER_STATE_AWAITING_CONFIRMATION
+            field_state["answerResolution"] = "CONFIRM_REQUIRED"
             field_state["pendingQuestionId"] = question_id
             field_state["pendingFieldId"] = field_id
             return InterviewTurnResult(
@@ -421,6 +533,7 @@ class InterviewAnswerProcessor:
                 field_id=field_id,
                 retrieval_policy=retrieval_policy,
                 retrieval_executed=retrieval_executed,
+                answer_disposition=evaluation.answer_disposition,
             )
 
         if raw_answer.strip() and evaluation.decision == "NEEDS_MORE_INFORMATION":
@@ -429,6 +542,7 @@ class InterviewAnswerProcessor:
                 or raw_answer.strip()
             )
         field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
+        field_state["answerResolution"] = resolution
         field_state["status"] = "asking"
         follow_up = evaluation.follow_up_question or _retry_prompt(question_text)
         field_state["followUpQuestion"] = follow_up
@@ -488,6 +602,7 @@ class InterviewAnswerProcessor:
         if not missing_ids:
             candidate = (
                 evaluation.record_answer.strip()
+                or evaluation.normalized_answer.strip()
                 or compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
                 or raw_answer.strip()
                 or _render_captured_items(captured_items, required_items)
@@ -495,7 +610,42 @@ class InterviewAnswerProcessor:
             )
             if candidate:
                 field_state["candidateAnswer"] = candidate
+                resolution = _effective_answer_resolution(evaluation)
+                field_state["answerResolution"] = resolution
+                if resolution == "AUTO_CONFIRM" and _is_auto_confirmable(evaluation, candidate):
+                    _commit_field_candidate(current_state, field_id, field_state)
+                    return InterviewTurnResult(
+                        decision="COMPLETE",
+                        action="confirmed",
+                        reply_text="",
+                        question_id=question_id,
+                        field_id=field_id,
+                        confirmed_field_id=field_id,
+                        retrieval_policy=retrieval_policy,
+                        retrieval_executed=retrieval_executed,
+                        completion_status="COMPLETE",
+                        missing_required_item_ids=[],
+                        answer_disposition=evaluation.answer_disposition,
+                    )
+                if resolution == "TENTATIVE" and _is_tentative_candidate(evaluation, candidate):
+                    field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
+                    field_state["pendingQuestionId"] = question_id
+                    field_state["pendingFieldId"] = field_id
+                    _set_tentative_bridge(current_state, field_id)
+                    return InterviewTurnResult(
+                        decision="COMPLETE",
+                        action="tentative",
+                        reply_text=evaluation.follow_up_question or "",
+                        question_id=question_id,
+                        field_id=field_id,
+                        retrieval_policy=retrieval_policy,
+                        retrieval_executed=retrieval_executed,
+                        completion_status="COMPLETE",
+                        missing_required_item_ids=[],
+                        answer_disposition=evaluation.answer_disposition,
+                    )
                 field_state["answerState"] = ANSWER_STATE_AWAITING_CONFIRMATION
+                field_state["answerResolution"] = "CONFIRM_REQUIRED"
                 field_state["pendingQuestionId"] = question_id
                 field_state["pendingFieldId"] = field_id
                 return InterviewTurnResult(
@@ -524,6 +674,7 @@ class InterviewAnswerProcessor:
             or None
         )
         field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
+        field_state["answerResolution"] = _effective_answer_resolution(evaluation)
         field_state["status"] = "asking"
         follow_up = _missing_items_prompt(missing_labels)
         field_state["followUpQuestion"] = follow_up
@@ -591,10 +742,6 @@ class InterviewAnswerProcessor:
                 or compose_record_answer(list(field_state.get("rawAnswerHistory") or []))
             ).strip()
             if candidate:
-                field_state["answerState"] = ANSWER_STATE_CONFIRMED
-                field_state["recordAnswer"] = candidate
-                field_state["status"] = "completed"
-                field_state["candidateAnswer"] = None
                 captured_items = _captured_items_by_id(
                     field_state.get("capturedItems")
                     or field_state.get("candidateItems")
@@ -603,16 +750,7 @@ class InterviewAnswerProcessor:
                 captured_items.update(_captured_items_by_id(confirmation.captured_items))
                 field_state["capturedItems"] = list(captured_items.values())
                 field_state["confirmedItems"] = list(captured_items.values())
-                field_state["candidateItems"] = []
-                field_state["missingRequiredItemIds"] = []
-                field_state["pendingQuestionId"] = None
-                field_state["pendingFieldId"] = None
-                completed = current_state.setdefault("completedFieldIds", [])
-                if field_id not in completed:
-                    completed.append(field_id)
-                current_state["pendingFieldIds"] = [
-                    item for item in current_state.get("pendingFieldIds", []) if item != field_id
-                ]
+                _commit_field_candidate(current_state, field_id, field_state, candidate=candidate)
                 return InterviewTurnResult(
                     decision="CONFIRM",
                     action="confirmed",
@@ -636,6 +774,7 @@ class InterviewAnswerProcessor:
             field_state["candidateItems"] = list(captured_items.values())
             field_state["answerSummary"] = None
             field_state["answerState"] = ANSWER_STATE_AWAITING_CONFIRMATION
+            field_state["answerResolution"] = "CONFIRM_REQUIRED"
             return InterviewTurnResult(
                 decision=confirmation.outcome,
                 action="ask_confirmation",
@@ -691,7 +830,110 @@ def _ensure_field_state(current_state: dict[str, Any], field_id: str) -> dict[st
     field_state.setdefault("confirmedItems", [])
     field_state.setdefault("missingRequiredItemIds", [])
     field_state.setdefault("answerDisposition", None)
+    field_state.setdefault("answerResolution", None)
     return field_state
+
+
+def _effective_answer_resolution(evaluation: AnswerEvaluation) -> AnswerResolution | None:
+    """Resolve the explicit triage value while keeping old evaluator contracts usable."""
+
+    resolution = normalize_answer_resolution(evaluation.answer_resolution)
+    if resolution is not None:
+        return resolution
+    # Existing evaluators only know CONFIRMABLE. Keep their safe, blocking
+    # behavior until they opt into the new contract explicitly.
+    if evaluation.decision == "CONFIRMABLE":
+        return "CONFIRM_REQUIRED"
+    return None
+
+
+def _candidate_value(raw_answer: str, evaluation: AnswerEvaluation) -> str:
+    return (
+        evaluation.record_answer.strip()
+        or evaluation.normalized_answer.strip()
+        or raw_answer.strip()
+    )
+
+
+def _is_auto_confirmable(evaluation: AnswerEvaluation, candidate: str) -> bool:
+    return bool(
+        candidate
+        and evaluation.is_relevant is True
+        and evaluation.is_sufficient
+        and evaluation.decision in {"CONFIRMABLE", "CORRECT_PREVIOUS_FIELD"}
+    )
+
+
+def _is_tentative_candidate(evaluation: AnswerEvaluation, candidate: str) -> bool:
+    return bool(
+        candidate
+        and evaluation.is_relevant is True
+        and evaluation.decision
+        in {"CONFIRMABLE", "NEEDS_MORE_INFORMATION", "CORRECT_PREVIOUS_FIELD"}
+    )
+
+
+def _commit_field_candidate(
+    current_state: dict[str, Any],
+    field_id: str,
+    field_state: dict[str, Any],
+    *,
+    candidate: str | None = None,
+) -> None:
+    value = str(candidate or field_state.get("candidateAnswer") or "").strip()
+    if not value:
+        return
+    field_state["answerState"] = ANSWER_STATE_CONFIRMED
+    field_state["recordAnswer"] = value
+    field_state["status"] = "completed"
+    field_state["answerSummary"] = None
+    field_state["candidateAnswer"] = None
+    field_state["answerResolution"] = "AUTO_CONFIRM"
+    field_state["confirmedItems"] = list(
+        field_state.get("candidateItems") or field_state.get("capturedItems") or []
+    )
+    field_state["candidateItems"] = []
+    field_state["missingRequiredItemIds"] = []
+    field_state["pendingQuestionId"] = None
+    field_state["pendingFieldId"] = None
+    if current_state.get("tentativeBridgeFieldId") == field_id:
+        current_state["tentativeBridgeFieldId"] = None
+        current_state["tentativeBridgeShown"] = False
+    completed = current_state.setdefault("completedFieldIds", [])
+    if field_id not in completed:
+        completed.append(field_id)
+    current_state["pendingFieldIds"] = [
+        item for item in current_state.get("pendingFieldIds", []) if item != field_id
+    ]
+
+
+def confirm_tentative_field(
+    current_state: dict[str, Any],
+    field_id: str,
+) -> str | None:
+    """Implicitly confirm a tentative field after the user answers the next field.
+
+    The caller decides whether the following turn is a meaningful answer or a
+    correction. This helper only applies the state transition once and returns
+    the value that should be recorded as a confirmed answer.
+    """
+
+    field_state = _ensure_field_state(current_state, field_id)
+    if (
+        field_state.get("answerState") != ANSWER_STATE_CANDIDATE_PENDING
+        or field_state.get("answerResolution") != "TENTATIVE"
+    ):
+        return None
+    candidate = str(field_state.get("candidateAnswer") or "").strip()
+    if not candidate:
+        return None
+    _commit_field_candidate(current_state, field_id, field_state, candidate=candidate)
+    return candidate
+
+
+def _set_tentative_bridge(current_state: dict[str, Any], field_id: str) -> None:
+    current_state["tentativeBridgeFieldId"] = field_id
+    current_state["tentativeBridgeShown"] = False
 
 
 def _resolve_question_plan(

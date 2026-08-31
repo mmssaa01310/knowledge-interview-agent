@@ -390,6 +390,9 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 - 最新の発話から取得できた情報は、複数項目でもすべて候補として抽出します。
 - 最新の発話に根拠がない情報を補いません。
 - candidateSourceは、最新の発話が事実を述べている場合はuser_statement、利用者が「提案して」「案を出して」などと求め、あなたが例示案を作る場合だけassistant_proposalにします。
+- user_statementのfieldUpdatesとrequirementUpdatesにはanswerResolutionを必ず設定します。意味的一致、対象フィールドの型・用途、必要情報量、前後の矛盾、音声の場合は認識信頼度を合わせて、会話を止める必要性を判定してください。
+- answerResolutionはAUTO_CONFIRM（十分に確かな回答。確認せず次の質問へ）、TENTATIVE（回答として成立するが曖昧。候補を保持して次の質問へ）、RETRY（意味的に成立しない、または誤認識の可能性が高い。値を抽出しない）、CONFIRM_REQUIRED（重大な矛盾や例外的な不確実性で停止が必要）のいずれかです。
+- 通常の回答を受け取っただけでCONFIRM_REQUIREDにしてはいけません。TENTATIVEでは「はい／いいえ」の確認を生成せず、次の質問生成器が候補を自然に織り込みます。
 - assistant_proposalの値は利用者の事実として確定していません。候補として返し、確認質問で採用・修正・拒否を促します。
 - assistant_proposalを返す場合も、候補を作るきっかけになった最新発話のevidenceTranscriptIdsを設定します。値そのものの根拠が利用者発話にあるとは扱いません。
 - 利用者が案を求めた発話では、dialogueActがQUESTION_TO_ASSISTANTでも、提案できる値をassistant_proposalの候補として返してください。提案できない場合は値を推測せず、更新を空にしてください。
@@ -414,7 +417,7 @@ Backendが選択したtargetについて、質問を1問だけ生成してくだ
 {interview_language_instruction(locale)}
 返却は{{\"questionText\":\"...\"}}だけにしてください。
 target以外の不足項目を同時に聞かないでください。
-確認対象には、候補内容を短く引用して確認してください。candidateSourceがassistant_proposalの場合は、冒頭に「AIの案です」と明示し、「この案でよいですか。修正や拒否もできます。」と尋ねてください。
+確認対象には、候補内容を短く引用して確認してください。candidateSourceがassistant_proposalの場合は、冒頭に「AIの案です」と明示し、「この案でよいですか。修正や拒否もできます。」と尋ねてください。answerResolutionがTENTATIVEの候補は確認せず、候補を自然に含めて次の質問へつなげてください。
 applicability対象には、存在するか、存在しないかを明示的に回答できる質問にしてください。
 ProcessModelや図のコードは生成しないでください。
 """.strip()

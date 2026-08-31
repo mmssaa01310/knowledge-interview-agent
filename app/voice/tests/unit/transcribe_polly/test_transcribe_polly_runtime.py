@@ -73,6 +73,7 @@ class FakeTranscribe:
         stable_text: str = "",
         is_partial: bool = True,
         result_id: str = "result-1",
+        confidence: float | None = None,
     ) -> None:
         assert self.on_result is not None
         await self.on_result(
@@ -81,6 +82,7 @@ class FakeTranscribe:
                 stable_text=stable_text,
                 is_partial=is_partial,
                 result_id=result_id,
+                confidence=confidence,
             )
         )
 
@@ -391,7 +393,7 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
     await asyncio.sleep(0)
     assert bridge.process_calls == []
 
-    await transcribe.result("最終回答です", is_partial=False)
+    await transcribe.result("最終回答です", is_partial=False, confidence=0.91)
     await runtime.push_audio(_frame(0))
     await asyncio.sleep(0.11)
 
@@ -399,6 +401,7 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
     assert bridge.process_calls[0]["transcript"] == "最終回答です"
     assert bridge.process_calls[0]["turn_type"] == "ANSWER"
     assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
+    assert bridge.process_calls[0]["stt_confidence"] == 0.91
     assert bridge.intent_calls == []
     assert "voice_turn_api_completed" in caplog.text
     assert "voice_turn_polly_started" in caplog.text

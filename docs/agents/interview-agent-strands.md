@@ -51,7 +51,7 @@ Bedrock を使う手動確認は `RUN_STRANDS_SMOKE=1` を付けた smoke script
 回答の意味解釈と聞き返し候補の生成はinterview agentに任せる。
 backendは`answer_status`と`draft_updates`の整合、次の質問対象、質問優先順位、完了判定を保証する。会話内容の意味をrule-basedに置き換えてはならない。
 
-`retrievalPolicy=never`はread-only検索toolを無効にするが、interview agent自体の回答評価は実行する。agentは発話意図、関連性、十分性、正規化済み候補、追加質問、確認質問を構造化出力し、backendは候補と確定回答の保存境界を保証する。
+`retrievalPolicy=never`はread-only検索toolを無効にするが、interview agent自体の回答評価は実行する。agentは発話意図、関連性、十分性、正規化済み候補、`answerResolution`（`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`）、追加質問、例外時の確認質問を構造化出力し、backendは候補と確定回答の保存境界を保証する。通常のユーザー回答に確認質問を付けるかどうかは、候補の有無ではなく、会話を止める必要性で判定する。
 
 確認質問の自然な表現はagentが現在質問と項目定義から生成する。backendのfallbackは項目名と候補を使うドメイン非依存の形式に限定し、特定の業務・項目名・回答語尾を条件分岐で列挙しない。
 

@@ -79,6 +79,28 @@ def localized_interview_confirmation_question(locale: InterviewLocale, candidate
     }[locale]
 
 
+def localized_interview_tentative_transition(
+    locale: InterviewLocale,
+    candidate: str,
+    next_topic: str,
+) -> str:
+    """Bridge a tentative interpretation into the next question without asking for yes/no."""
+
+    candidate_text = candidate.strip()
+    topic_text = next_topic.strip() or {
+        "ja-JP": "次の項目",
+        "en-US": "the next topic",
+        "zh-CN": "下一个问题",
+        "pt-BR": "o próximo tópico",
+    }[locale]
+    return {
+        "ja-JP": f"「{candidate_text}」なんですね。では、{topic_text}について教えてください。",
+        "en-US": f"So, it tends to be “{candidate_text}”. Now, please tell me about {topic_text}.",
+        "zh-CN": f"也就是说是“{candidate_text}”。那么，请告诉我关于{topic_text}的信息。",
+        "pt-BR": f"Entendi, tende a ser “{candidate_text}”. Agora, fale-me sobre {topic_text}.",
+    }[locale]
+
+
 def localized_interview_fallbacks(locale: InterviewLocale) -> dict[str, str]:
     """Small set of backend fallback replies used when an AI reply is unavailable."""
 

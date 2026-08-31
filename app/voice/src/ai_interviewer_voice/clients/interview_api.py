@@ -181,6 +181,7 @@ class InterviewApiClient:
         expected_state_version: int | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
+        stt_confidence: float | None = None,
         timeout_seconds: float = 5.0,
     ) -> VoiceTurnSaveResult:
         async with self._client() as client:
@@ -196,6 +197,7 @@ class InterviewApiClient:
                     "expectedStateVersion": expected_state_version,
                     "startedAtMs": started_at_ms,
                     "endedAtMs": ended_at_ms,
+                    "sttConfidence": stt_confidence,
                 },
                 timeout_seconds=timeout_seconds,
                 failure_code="turn_save_failed",

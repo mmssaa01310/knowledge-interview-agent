@@ -44,6 +44,9 @@ function statusForEntry(entry: RequirementEntry | undefined, t: Translate) {
     return { label: t("interview.system.statusChecking"), className: "active", symbol: "●" };
   }
   if (entry?.status === "CANDIDATE_PENDING") {
+    if (entry.answerResolution === "TENTATIVE") {
+      return { label: t("interview.system.statusTentative"), className: "candidate", symbol: "△" };
+    }
     return { label: t("interview.system.statusCandidate"), className: "candidate", symbol: "△" };
   }
   return { label: t("interview.system.statusPending"), className: "pending", symbol: "○" };

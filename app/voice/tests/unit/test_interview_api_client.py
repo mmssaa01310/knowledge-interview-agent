@@ -53,7 +53,12 @@ def test_interview_api_client_gets_session_and_processes_turn() -> None:
         )
 
         session = await client.get_voice_session("session-1")
-        saved = await client.save_turn("session-1", transcript="回答", answer_to_question_id="q-1")
+        saved = await client.save_turn(
+            "session-1",
+            transcript="回答",
+            answer_to_question_id="q-1",
+            stt_confidence=0.91,
+        )
         processed = await client.process_turn("session-1", "turn-1")
         return session, saved, processed, calls
 
@@ -64,6 +69,7 @@ def test_interview_api_client_gets_session_and_processes_turn() -> None:
     assert processed.reply_text == "確認します。"
     assert processed.question_id == "q-2"
     assert calls[1][2]["answerToQuestionId"] == "q-1"
+    assert calls[1][2]["sttConfidence"] == 0.91
 
 
 def test_interview_api_client_classifies_turn_intent() -> None:

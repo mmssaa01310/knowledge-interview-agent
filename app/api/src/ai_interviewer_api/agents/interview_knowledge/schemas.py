@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ai_interviewer_api.services.interview_answer_resolution import AnswerResolution
+
 
 InterviewProfile = Literal["fixed_form", "business_process", "system_requirement"]
 ApplicabilityStatus = Literal["unknown", "present", "not_applicable"]
@@ -36,6 +38,7 @@ class FieldUpdate(StrictModel):
     evidenceTranscriptIds: list[str] = Field(default_factory=list)
     itemId: str | None = None
     candidateSource: CandidateSource = "user_statement"
+    answerResolution: AnswerResolution | None = None
 
 
 class RequirementUpdate(StrictModel):
@@ -43,6 +46,7 @@ class RequirementUpdate(StrictModel):
     value: str
     evidenceTranscriptIds: list[str] = Field(default_factory=list)
     candidateSource: CandidateSource = "user_statement"
+    answerResolution: AnswerResolution | None = None
 
 
 class RequirementEdit(StrictModel):

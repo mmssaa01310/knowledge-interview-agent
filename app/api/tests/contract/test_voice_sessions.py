@@ -495,6 +495,130 @@ def test_voice_turn_requires_confirmation_before_answer_is_committed(
     assert messages[0]["voiceTurnId"] == turn["id"]
 
 
+def test_voice_high_confidence_answer_advances_without_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_name_and_role_fields(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+
+    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["stt_confidence"] == 0.96
+        return voice_interview_service.VoiceTurnEvaluation(
+            turn_type="ANSWER",
+            interpretation=DialogueInterpretation(act="ANSWER"),
+            answer_evaluation=voice_interview_service.VoiceAnswerEvaluation(
+                decision="CONFIRMABLE",
+                answer_resolution="AUTO_CONFIRM",
+                normalized_answer="med900",
+                record_answer="med900",
+                is_relevant=True,
+                is_sufficient=True,
+                missing_information=[],
+                follow_up_question=None,
+                evidence_transcript_ids=[kwargs["evidence_message_id"]],
+            ),
+        )
+
+    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="med900", sttConfidence=0.96),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    first_field_id = state["askedQuestions"][0]["fieldId"]
+
+    assert result["action"] == "ask_configured_field"
+    assert result["text"] == "あなたの担当は？"
+    assert "よろしい" not in result["text"]
+    assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
+    assert state["fieldStates"][first_field_id]["recordAnswer"] == "med900"
+    assert store.get("voice_turns", turn["id"])["sttConfidence"] == 0.96
+
+
+def test_voice_tentative_answer_is_bridged_into_the_next_question(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_name_and_role_fields(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+
+    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
+        return voice_interview_service.VoiceTurnEvaluation(
+            turn_type="ANSWER",
+            interpretation=DialogueInterpretation(act="ANSWER"),
+            answer_evaluation=voice_interview_service.VoiceAnswerEvaluation(
+                decision="CONFIRMABLE",
+                answer_resolution="TENTATIVE",
+                normalized_answer="朝",
+                record_answer="朝",
+                is_relevant=True,
+                is_sufficient=True,
+                missing_information=[],
+                follow_up_question=None,
+                evidence_transcript_ids=[kwargs["evidence_message_id"]],
+            ),
+        )
+
+    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
+    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="たぶん朝かな"))
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    first_field_id = state["askedQuestions"][0]["fieldId"]
+
+    assert result["action"] == "ask_configured_field"
+    assert result["text"].startswith("「朝」なんですね。では、担当について教えてください。")
+    assert "よろしい" not in result["text"]
+    assert state["fieldStates"][first_field_id]["answerState"] == "CANDIDATE_PENDING"
+    assert state["fieldStates"][first_field_id]["answerResolution"] == "TENTATIVE"
+    assert state["fieldStates"][first_field_id]["candidateAnswer"] == "朝"
+
+
+def test_voice_retry_answer_is_reasked_without_accepting_the_transcription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_name_and_role_fields(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+
+    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
+        return voice_interview_service.VoiceTurnEvaluation(
+            turn_type="ANSWER",
+            interpretation=DialogueInterpretation(act="ANSWER"),
+            answer_evaluation=voice_interview_service.VoiceAnswerEvaluation(
+                decision="UNCLEAR",
+                answer_resolution="RETRY",
+                normalized_answer="",
+                record_answer="",
+                is_relevant=False,
+                is_sufficient=False,
+                missing_information=[],
+                follow_up_question="うまく聞き取れませんでした。名前を教えてください。",
+                evidence_transcript_ids=[kwargs["evidence_message_id"]],
+            ),
+        )
+
+    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
+    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="画面"))
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    first_field_id = state["askedQuestions"][0]["fieldId"]
+
+    assert result["action"] == "ask_follow_up"
+    assert result["text"] == "うまく聞き取れませんでした。名前を教えてください。"
+    assert "画面でよろしい" not in result["text"]
+    assert state["fieldStates"][first_field_id]["candidateAnswer"] is None
+    assert state["fieldStates"][first_field_id]["recordAnswer"] is None
+    assert state["completedFieldIds"] == []
+
+
 def test_voice_turn_commits_only_after_explicit_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -749,10 +873,18 @@ def test_voice_answer_evaluation_deadline_returns_fallback_and_discards_late_res
     release_evaluator = Event()
 
     def delayed_evaluator(**kwargs):  # type: ignore[no-untyped-def]
-        release_evaluator.wait(timeout=30.0)
+        if kwargs.get("transcript") == "田中です":
+            release_evaluator.wait(timeout=30.0)
+            normalized_answer = "遅れて返った回答"
+            answer_resolution = None
+        else:
+            normalized_answer = "新しい回答"
+            answer_resolution = "AUTO_CONFIRM"
         answer_evaluation = voice_interview_service.VoiceAnswerEvaluation(
             decision="CONFIRMABLE",
-            normalized_answer="遅れて返った回答",
+            answer_resolution=answer_resolution,
+            normalized_answer=normalized_answer,
+            record_answer=normalized_answer,
             is_relevant=True,
             is_sufficient=True,
             missing_information=[],
@@ -782,10 +914,25 @@ def test_voice_answer_evaluation_deadline_returns_fallback_and_discards_late_res
     assert field_state["evaluationDegraded"] is True
     assert field_state["degradedReason"] == "bedrock_timeout"
 
+    following_turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="新しい回答"),
+    )
+    following_result = process_internal_voice_turn(session["id"], following_turn["id"])
+    state_after_following_answer = store.get(
+        "interview_states", f"interview-state-{record['id']}"
+    )
+    assert following_result["action"] == "finish"
+    assert (
+        state_after_following_answer["fieldStates"][field_id]["recordAnswer"]
+        == "新しい回答"
+    )
+
     release_evaluator.set()
     time.sleep(0.1)
     state_after_late_result = store.get("interview_states", f"interview-state-{record['id']}")
     late_field_state = state_after_late_result["fieldStates"][field_id]
+    assert late_field_state["recordAnswer"] == "新しい回答"
     assert late_field_state["candidateAnswer"] is None
     assert late_field_state["answerSummary"] is None
     assert "late_evaluation_result_discarded" in caplog.text

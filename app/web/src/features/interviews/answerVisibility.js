@@ -27,7 +27,9 @@ export function getInterviewDisplayAnswer(fieldState, editedValue) {
 
 export function getInterviewAnswerStatusLabel(fieldState, translate) {
   const keyByState = {
-    CANDIDATE_PENDING: "interview.answerStatus.candidate",
+    CANDIDATE_PENDING: fieldState?.answerResolution === "TENTATIVE"
+      ? "interview.answerStatus.tentative"
+      : "interview.answerStatus.candidate",
     AWAITING_CONFIRMATION: "interview.answerStatus.awaiting",
     CONFIRMED: "interview.answerStatus.confirmed",
   };
@@ -37,7 +39,7 @@ export function getInterviewAnswerStatusLabel(fieldState, translate) {
   }
   switch (fieldState?.answerState) {
     case "CANDIDATE_PENDING":
-      return "追加確認中";
+      return fieldState?.answerResolution === "TENTATIVE" ? "仮確定" : "追加確認中";
     case "AWAITING_CONFIRMATION":
       return "確認中";
     case "CONFIRMED":

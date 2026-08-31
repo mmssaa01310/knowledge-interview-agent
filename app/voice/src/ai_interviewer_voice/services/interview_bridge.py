@@ -106,6 +106,7 @@ class InterviewBridge:
         client_turn_id: str | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
+        stt_confidence: float | None = None,
     ) -> InterviewBridgeResult:
         if turn_type is None:
             intent = await self._client.classify_voice_turn_intent(
@@ -125,6 +126,7 @@ class InterviewBridge:
             client_turn_id=client_turn_id,
             started_at_ms=started_at_ms,
             ended_at_ms=ended_at_ms,
+            stt_confidence=stt_confidence,
         )
         return await self.process_saved_turn(
             voice_session_id=voice_session_id,
@@ -142,6 +144,7 @@ class InterviewBridge:
         client_turn_id: str | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
+        stt_confidence: float | None = None,
     ) -> VoiceTurnSaveResult:
         return await self._client.save_turn(
             voice_session_id,
@@ -152,6 +155,7 @@ class InterviewBridge:
             client_turn_id=client_turn_id,
             started_at_ms=started_at_ms,
             ended_at_ms=ended_at_ms,
+            stt_confidence=stt_confidence,
             timeout_seconds=self._turn_save_timeout_seconds,
         )
 

@@ -29,12 +29,15 @@ export type InterviewQuestion = {
   candidateSource?: "user_statement" | "assistant_proposal" | null;
 };
 
+export type InterviewAnswerResolution = "AUTO_CONFIRM" | "TENTATIVE" | "RETRY" | "CONFIRM_REQUIRED";
+
 export type InterviewFieldState = {
   fieldId: string;
   status: "pending" | "asking" | "completed";
   answerSummary: string | null;
   missingInformation: string[];
   answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+  answerResolution?: InterviewAnswerResolution | null;
   candidateAnswer?: string | null;
   candidateSource?: "user_statement" | "assistant_proposal" | null;
   candidateProposalMessageId?: string | null;
@@ -69,11 +72,15 @@ export type InterviewState = {
     candidateSource?: "user_statement" | "assistant_proposal" | null;
   } | null;
   deferredProposalTarget?: string | null;
+  tentativeBridgeFieldId?: string | null;
+  tentativeBridgeShown?: boolean;
+  lastTentativeTarget?: { targetType: string; targetId: string } | null;
   requirementStates?: Record<string, {
     requirementId: string;
     label: string;
     kind: string;
     status: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
+    answerResolution?: InterviewAnswerResolution | null;
     candidateValue?: string | null;
     candidateSource?: "user_statement" | "assistant_proposal" | null;
     candidateProposalMessageId?: string | null;

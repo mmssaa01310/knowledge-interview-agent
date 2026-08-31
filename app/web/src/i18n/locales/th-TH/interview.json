@@ -8,6 +8,7 @@
   },
   "answerStatus": {
     "candidate": "ต้องยืนยันเพิ่มเติม",
+    "tentative": "ยืนยันเบื้องต้น",
     "awaiting": "กำลังตรวจสอบ",
     "confirmed": "ตอบแล้ว",
     "pending": "ยังไม่ได้ตอบ"
@@ -159,6 +160,7 @@
     "currentTarget": "รายการปัจจุบัน",
     "statusConfirmed": "ยืนยันแล้ว",
     "statusChecking": "กำลังตรวจสอบ",
+    "statusTentative": "ยืนยันเบื้องต้น",
     "statusCandidate": "ข้อเสนอ",
     "statusPending": "ยังไม่ยืนยัน",
     "statusPresent": "มี",
