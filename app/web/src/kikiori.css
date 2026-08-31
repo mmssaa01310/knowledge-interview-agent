@@ -180,7 +180,8 @@ body {
 }
 
 .app-shell {
-  grid-template-columns: 252px minmax(0, 1fr);
+  --sidebar-resize-cursor: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='24'%20height='24'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M7%205%202%2012l5%207'%20fill='none'%20stroke='%23195fd7'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3Cpath%20d='m17%205%205%207-5%207'%20fill='none'%20stroke='%23195fd7'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3Cpath%20d='M3%2012h18'%20fill='none'%20stroke='%23195fd7'%20stroke-width='1.5'%20stroke-linecap='round'/%3E%3C/svg%3E") 12 12, ew-resize;
+  grid-template-columns: var(--workspace-sidebar-width, 252px) minmax(0, 1fr);
   min-height: 100svh;
   background: transparent;
 }
@@ -200,6 +201,54 @@ body {
   box-shadow: 8px 0 30px rgba(23, 53, 66, 0.025);
   backdrop-filter: blur(14px);
   gap: 14px;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  z-index: 20;
+  inset-block: 0;
+  inset-inline-end: -6px;
+  width: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: var(--sidebar-resize-cursor);
+}
+
+.sidebar-resize-handle::after {
+  position: absolute;
+  inset-block: 50% auto;
+  inset-inline-start: 5px;
+  width: 2px;
+  height: 52px;
+  border-radius: 999px;
+  background: transparent;
+  content: "";
+  transform: translateY(-50%);
+  transition: background-color 140ms ease, height 140ms ease;
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after,
+.app-shell.sidebar-resizing .sidebar-resize-handle::after {
+  height: 72px;
+  background: var(--ki-primary);
+}
+
+.sidebar-resize-handle:focus-visible {
+  outline: none;
+}
+
+.app-shell.sidebar-resizing,
+.app-shell.sidebar-resizing * {
+  cursor: var(--sidebar-resize-cursor) !important;
+  user-select: none;
+}
+
+.app-shell.sidebar-resizing .app-sidebar {
+  backdrop-filter: none;
+  box-shadow: none;
 }
 
 .app-sidebar.collapsed {
@@ -3433,6 +3482,10 @@ label {
 @media (max-width: 1199px) {
   body.nav-drawer-open {
     overflow: hidden;
+  }
+
+  .sidebar-resize-handle {
+    display: none;
   }
 
   .app-shell,

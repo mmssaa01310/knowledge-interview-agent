@@ -1,4 +1,5 @@
 import type { Knowledge } from "@ai-interviewer/shared-types";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { UserProfile } from "../lib/api";
 import { KnowledgeWorkspaceNav } from "../features/knowledge/components/KnowledgeWorkspaceNav";
 import { UserMenu } from "../components/ui/UserMenu";
@@ -19,6 +20,9 @@ type WorkspaceNavProps = {
   isCollapsed: boolean;
   isResponsiveOpen?: boolean;
   onToggleCollapsed: () => void;
+  sidebarWidth: number;
+  onSidebarResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onSidebarResizeKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onStartGuide: () => void;
   onLogout: () => void;
 };
@@ -36,6 +40,9 @@ export function WorkspaceNav({
   isCollapsed,
   isResponsiveOpen = false,
   onToggleCollapsed,
+  sidebarWidth,
+  onSidebarResizeStart,
+  onSidebarResizeKeyDown,
   onStartGuide,
   onLogout,
 }: WorkspaceNavProps) {
@@ -119,6 +126,19 @@ export function WorkspaceNav({
           onLogout={onLogout}
         />
       </div>
+      <div
+        className="sidebar-resize-handle"
+        role="separator"
+        tabIndex={0}
+        aria-orientation="vertical"
+        aria-valuemin={220}
+        aria-valuemax={420}
+        aria-valuenow={sidebarWidth}
+        aria-label={t("navigation.sidebarResize")}
+        title={t("navigation.sidebarResize")}
+        onPointerDown={onSidebarResizeStart}
+        onKeyDown={onSidebarResizeKeyDown}
+      />
     </aside>
   );
 }
