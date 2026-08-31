@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from ai_interviewer_api.agents.interview.adapter import AdaptedInterviewTurnResult
 from ai_interviewer_api.auth.deps import DEV_TOKENS
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers import records as records_router
@@ -278,7 +279,7 @@ def test_retrieval_never_still_evaluates_and_requires_confirmation(monkeypatch: 
 
     def fake_run_adapted_interview_turn(*args: Any, **kwargs: Any):
         calls.append("evaluated")
-        return ai_interview.AdaptedInterviewTurnResult(
+        return AdaptedInterviewTurnResult(
             reply_text="",
             field_evaluation={
                 "fieldId": "field-1",
@@ -378,7 +379,7 @@ async def test_stream_record_follow_up_is_saved_as_follow_up(monkeypatch: pytest
     monkeypatch.setattr(records_router.asyncio, "sleep", _no_sleep)
 
     def fake_run_adapted_interview_turn(*args: Any, **kwargs: Any):
-        return ai_interview.AdaptedInterviewTurnResult(
+        return AdaptedInterviewTurnResult(
             reply_text="確認します。",
             field_evaluation={
                 "fieldId": "field-1",
