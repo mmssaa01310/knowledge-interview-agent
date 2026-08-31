@@ -38,7 +38,14 @@
   "createKnowledge": "Create knowledge",
   "knowledgeSelected": "Selected knowledge",
   "untaggedKnowledge": "Untagged",
+  "pinnedKnowledgeGroup": "Pinned",
+  "expandPinnedKnowledgeGroup": "Expand the pinned knowledge group",
+  "collapsePinnedKnowledgeGroup": "Collapse the pinned knowledge group",
   "tagGroup": "Knowledge tagged {tag}",
   "expandTagGroup": "Expand the {tag} tag group",
-  "collapseTagGroup": "Collapse the {tag} tag group"
+  "collapseTagGroup": "Collapse the {tag} tag group",
+  "pinnedKnowledge": "Pinned",
+  "pinKnowledge": "Pin {name} to the sidebar",
+  "unpinKnowledge": "Unpin {name} from the sidebar",
+  "dragKnowledge": "Drag {name} to reorder"
 }

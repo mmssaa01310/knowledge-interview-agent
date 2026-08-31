@@ -38,7 +38,14 @@
   "createKnowledge": "ナレッジを作成",
   "knowledgeSelected": "選択中のナレッジ",
   "untaggedKnowledge": "タグなし",
+  "pinnedKnowledgeGroup": "ピン留め",
+  "expandPinnedKnowledgeGroup": "ピン留めしたナレッジのグループを開く",
+  "collapsePinnedKnowledgeGroup": "ピン留めしたナレッジのグループを閉じる",
   "tagGroup": "タグ {tag} のナレッジ",
   "expandTagGroup": "タグ {tag} のグループを開く",
-  "collapseTagGroup": "タグ {tag} のグループを閉じる"
+  "collapseTagGroup": "タグ {tag} のグループを閉じる",
+  "pinnedKnowledge": "ピン留め済み",
+  "pinKnowledge": "「{name}」をサイドバーにピン留め",
+  "unpinKnowledge": "「{name}」のピン留めを解除",
+  "dragKnowledge": "「{name}」をドラッグして並べ替え"
 }

@@ -101,6 +101,8 @@ export function WorkspaceNav({
             selectedKnowledgeId={selectedKnowledgeId}
             onNavigate={onNavigate}
             onOpenCreateKnowledge={onOpenCreateKnowledge}
+            userId={user?.userId}
+            tenantId={user?.tenantId}
             canManage={canManageKnowledge}
             isPreparingKnowledgeCreation={isPreparingKnowledgeCreation}
             knowledgeCreationError={knowledgeCreationError}

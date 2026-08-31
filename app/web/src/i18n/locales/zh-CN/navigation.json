@@ -38,7 +38,14 @@
   "createKnowledge": "创建知识库",
   "knowledgeSelected": "当前知识库",
   "untaggedKnowledge": "无标签",
+  "pinnedKnowledgeGroup": "已置顶",
+  "expandPinnedKnowledgeGroup": "展开已置顶知识组",
+  "collapsePinnedKnowledgeGroup": "收起已置顶知识组",
   "tagGroup": "标签为 {tag} 的知识",
   "expandTagGroup": "展开 {tag} 标签组",
-  "collapseTagGroup": "收起 {tag} 标签组"
+  "collapseTagGroup": "收起 {tag} 标签组",
+  "pinnedKnowledge": "已置顶",
+  "pinKnowledge": "将 {name} 置顶到侧边栏",
+  "unpinKnowledge": "取消 {name} 的侧边栏置顶",
+  "dragKnowledge": "拖动 {name} 以重新排序"
 }

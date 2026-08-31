@@ -38,7 +38,14 @@
   "createKnowledge": "สร้างคลังความรู้",
   "knowledgeSelected": "คลังความรู้ที่เลือก",
   "untaggedKnowledge": "ไม่มีแท็ก",
+  "pinnedKnowledgeGroup": "ปักหมุด",
+  "expandPinnedKnowledgeGroup": "ขยายกลุ่มคลังความรู้ที่ปักหมุด",
+  "collapsePinnedKnowledgeGroup": "ยุบกลุ่มคลังความรู้ที่ปักหมุด",
   "tagGroup": "คลังความรู้ที่มีแท็ก {tag}",
   "expandTagGroup": "ขยายกลุ่มแท็ก {tag}",
-  "collapseTagGroup": "ยุบกลุ่มแท็ก {tag}"
+  "collapseTagGroup": "ยุบกลุ่มแท็ก {tag}",
+  "pinnedKnowledge": "ปักหมุดแล้ว",
+  "pinKnowledge": "ปักหมุด {name} ในแถบด้านข้าง",
+  "unpinKnowledge": "เลิกปักหมุด {name} จากแถบด้านข้าง",
+  "dragKnowledge": "ลาก {name} เพื่อจัดลำดับใหม่"
 }
