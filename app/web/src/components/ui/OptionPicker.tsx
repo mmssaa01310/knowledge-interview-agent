@@ -4,6 +4,7 @@ import type { KeyboardEvent } from "react";
 export type OptionPickerOption = {
   value: string;
   label: string;
+  id?: string;
   description?: string;
   disabled?: boolean;
 };
@@ -18,6 +19,15 @@ type OptionPickerProps = {
   emptyLabel?: string;
   disabled?: boolean;
   searchable?: boolean;
+  creatable?: boolean;
+  onCreateOption?: (value: string) => void;
+  createOptionLabel?: (value: string) => string;
+  selectedValueLabel?: (value: string) => string;
+  showOptionActions?: (option: OptionPickerOption) => boolean;
+  onEditOption?: (option: OptionPickerOption) => void;
+  onDeleteOption?: (option: OptionPickerOption) => void;
+  editOptionLabel?: (option: OptionPickerOption) => string;
+  deleteOptionLabel?: (option: OptionPickerOption) => string;
   placement?: "bottom" | "top";
   className?: string;
 };
@@ -32,6 +42,15 @@ export function OptionPicker({
   emptyLabel = "No options",
   disabled = false,
   searchable = false,
+  creatable = false,
+  onCreateOption,
+  createOptionLabel,
+  selectedValueLabel,
+  showOptionActions,
+  onEditOption,
+  onDeleteOption,
+  editOptionLabel,
+  deleteOptionLabel,
   placement = "bottom",
   className = "",
 }: OptionPickerProps) {
@@ -43,7 +62,10 @@ export function OptionPicker({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const optionRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const selectedOption = options.find((option) => option.value === value);
+  const selectedOption = options.find((option) => option.value === value)
+    ?? (creatable && value
+      ? { value, label: selectedValueLabel?.(value) ?? value }
+      : undefined);
   const filteredOptions = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
     if (!normalizedQuery) return options;
@@ -52,6 +74,14 @@ export function OptionPicker({
       || option.description?.toLocaleLowerCase().includes(normalizedQuery)
     ));
   }, [options, searchQuery]);
+  const normalizedCreateValue = searchQuery.trim();
+  const normalizedCreateValueForComparison = normalizedCreateValue.toLocaleLowerCase();
+  const canCreateOption = creatable
+    && normalizedCreateValue.length > 0
+    && !options.some((option) => (
+      option.value.trim().toLocaleLowerCase() === normalizedCreateValueForComparison
+      || option.label.trim().toLocaleLowerCase() === normalizedCreateValueForComparison
+    ));
 
   useEffect(() => {
     if (!isOpen) return;
@@ -135,6 +165,15 @@ export function OptionPicker({
     closeMenu();
   }
 
+  function createOption() {
+    if (!canCreateOption) return;
+    onCreateOption?.(normalizedCreateValue);
+    selectOption({
+      value: normalizedCreateValue,
+      label: createOptionLabel?.(normalizedCreateValue) ?? normalizedCreateValue,
+    });
+  }
+
   function handleTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -146,6 +185,18 @@ export function OptionPicker({
     if (event.key === "ArrowDown") {
       event.preventDefault();
       focusOption(0);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+      const exactOption = filteredOptions.find((option) => (
+        option.value.trim().toLocaleLowerCase() === normalizedQuery
+        || option.label.trim().toLocaleLowerCase() === normalizedQuery
+      ));
+      if (exactOption) {
+        selectOption(exactOption);
+      } else {
+        createOption();
+      }
     } else if (event.key === "Escape") {
       event.preventDefault();
       closeMenu();
@@ -211,7 +262,7 @@ export function OptionPicker({
             </div>
           ) : null}
           <div id={listboxId} className="option-picker-options" role="listbox" aria-label={ariaLabel}>
-            {filteredOptions.length === 0 ? (
+            {filteredOptions.length === 0 && !canCreateOption ? (
               <p className="option-picker-empty">{emptyLabel}</p>
             ) : filteredOptions.map((option, index) => (
               <div
@@ -229,9 +280,63 @@ export function OptionPicker({
                   <strong>{option.label}</strong>
                   {option.description ? <small>{option.description}</small> : null}
                 </span>
+                {showOptionActions?.(option) ? (
+                  <span className="option-picker-actions">
+                    {onEditOption ? (
+                      <button
+                        type="button"
+                        className="option-picker-action"
+                        aria-label={editOptionLabel?.(option) ?? "Edit option"}
+                        title={editOptionLabel?.(option) ?? "Edit option"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onEditOption(option);
+                          closeMenu(false);
+                        }}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        ✎
+                      </button>
+                    ) : null}
+                    {onDeleteOption ? (
+                      <button
+                        type="button"
+                        className="option-picker-action danger"
+                        aria-label={deleteOptionLabel?.(option) ?? "Delete option"}
+                        title={deleteOptionLabel?.(option) ?? "Delete option"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteOption(option);
+                          closeMenu(false);
+                        }}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        ×
+                      </button>
+                    ) : null}
+                  </span>
+                ) : null}
                 {option.value === value ? <span className="option-picker-check" aria-hidden="true">✓</span> : null}
               </div>
             ))}
+            {canCreateOption ? (
+              <div
+                className="option-picker-option option-picker-create"
+                role="option"
+                aria-selected="false"
+                tabIndex={0}
+                onClick={createOption}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  createOption();
+                }}
+              >
+                <span className="option-picker-option-copy">
+                  <strong>{createOptionLabel?.(normalizedCreateValue) ?? normalizedCreateValue}</strong>
+                </span>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

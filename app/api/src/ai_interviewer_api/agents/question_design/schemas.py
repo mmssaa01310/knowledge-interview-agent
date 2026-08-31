@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
 from ai_interviewer_api.models.interview_plan import InterviewPlan
+from ai_interviewer_api.schemas.retrieval import RetrievedKnowledgeContext
 
 
 class ExistingQuestionField(BaseModel):
@@ -19,20 +20,6 @@ class ExistingQuestionField(BaseModel):
 class QuestionDesignMessage(BaseModel):
     role: str
     content: str
-
-
-class RetrievedKnowledgeContext(BaseModel):
-    source_type: Literal[
-        "knowledge_field",
-        "approved_record",
-        "approved_proposal",
-        "document",
-        "document_chunk",
-    ]
-    source_id: str
-    title: str
-    content: str
-    score: float = 0.0
 
 
 class QuestionDesignInput(BaseModel):

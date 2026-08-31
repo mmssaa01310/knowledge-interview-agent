@@ -7,16 +7,15 @@ export type ChatMessageEvidence = {
   status?: string;
 };
 
-export type DocumentReadState = {
-  readStatus: "unread" | "opened" | "reading" | "read" | "acknowledged";
-  readProgress: number;
-  acknowledged: boolean;
-  lastOpenedAt?: string;
-  readAt?: string;
-  acknowledgedAt?: string;
-};
-
 export type InterviewQuestionType = "configured_field" | "follow_up" | "structured";
+export type InterviewCandidateSource = "user_statement" | "assistant_proposal" | "document_reference";
+
+export type RetrievedSourceReference = {
+  sourceType: "document" | "document_chunk";
+  sourceId: string;
+  title: string;
+  score: number;
+};
 
 export type InterviewQuestion = {
   questionId: string;
@@ -26,7 +25,11 @@ export type InterviewQuestion = {
   retrievalPolicy?: "never" | "auto" | "required";
   targetType?: string | null;
   targetId?: string | null;
-  candidateSource?: "user_statement" | "assistant_proposal" | null;
+  targetLabel?: string | null;
+  candidateSource?: InterviewCandidateSource | null;
+  candidateValue?: string | null;
+  candidateSourceIds?: string[];
+  retrievedSources?: RetrievedSourceReference[];
 };
 
 export type InterviewAnswerResolution = "AUTO_CONFIRM" | "TENTATIVE" | "RETRY" | "CONFIRM_REQUIRED";
@@ -39,9 +42,11 @@ export type InterviewFieldState = {
   answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
   answerResolution?: InterviewAnswerResolution | null;
   candidateAnswer?: string | null;
-  candidateSource?: "user_statement" | "assistant_proposal" | null;
+  candidateSource?: InterviewCandidateSource | null;
+  candidateSourceIds?: string[];
   candidateProposalMessageId?: string | null;
-  confirmedSource?: "user_statement" | "assistant_proposal" | "management_edit" | null;
+  confirmedSource?: "user_statement" | "assistant_proposal" | "document_reference" | "management_edit" | null;
+  confirmedSourceIds?: string[];
   confirmedProposalMessageId?: string | null;
   confirmationEvidenceTranscriptIds?: string[];
   rawAnswer?: string | null;
@@ -69,7 +74,9 @@ export type InterviewState = {
     targetId: string;
     label: string;
     priority: number;
-    candidateSource?: "user_statement" | "assistant_proposal" | null;
+    candidateSource?: InterviewCandidateSource | null;
+    candidateValue?: string | null;
+    candidateSourceIds?: string[];
   } | null;
   deferredProposalTarget?: string | null;
   tentativeBridgeFieldId?: string | null;
@@ -82,9 +89,11 @@ export type InterviewState = {
     status: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
     answerResolution?: InterviewAnswerResolution | null;
     candidateValue?: string | null;
-    candidateSource?: "user_statement" | "assistant_proposal" | null;
+    candidateSource?: InterviewCandidateSource | null;
+    candidateSourceIds?: string[];
     candidateProposalMessageId?: string | null;
-    confirmedSource?: "user_statement" | "assistant_proposal" | "management_edit" | null;
+    confirmedSource?: "user_statement" | "assistant_proposal" | "document_reference" | "management_edit" | null;
+    confirmedSourceIds?: string[];
     confirmedProposalMessageId?: string | null;
     confirmationEvidenceTranscriptIds?: string[];
     value?: string | null;
@@ -131,7 +140,8 @@ export type ChatMessage = {
   isLegacy?: boolean;
   targetType?: string | null;
   targetId?: string | null;
-  candidateSource?: "user_statement" | "assistant_proposal" | null;
+  candidateSource?: InterviewCandidateSource | null;
+  retrievedSources?: RetrievedSourceReference[];
 };
 
 export type InterviewAnswerTarget = {
@@ -157,6 +167,9 @@ export type InterviewStreamMetadata = {
   interviewState?: InterviewState | null;
   structuredDraft?: Record<string, string>;
   nextQuestionTarget?: InterviewState["nextQuestionTarget"];
+  retrievalPolicy?: "never" | "auto" | "required";
+  retrievalExecuted?: boolean;
+  retrievedSources?: RetrievedSourceReference[];
   completionStatus?: "in_progress" | "completed";
   missingRequiredTargets?: Array<Record<string, unknown>>;
   error?: string;

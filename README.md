@@ -31,6 +31,8 @@ docs/
 Vite dev server が `/api` を `app/api`、`/voice` を `app/voice` へproxyするため、FrontendコードでAPI/Voiceのポートを直接指定しません。
 APIの保存先はComposeで起動するPostgreSQLです。データベース接続先は`DATABASE_URL`で変更できます。
 
+文書本文・チャンクの検索先は`DOCUMENT_KNOWLEDGE_BACKEND=postgres`（既定）です。Elastic Cloudを使用する場合は、`.env`へ`DOCUMENT_KNOWLEDGE_BACKEND=elasticsearch`、`ELASTICSEARCH_CLOUD_ID`、`ELASTICSEARCH_API_KEY`を設定してAPIを再起動してください。Knowledge・Recordなどの業務データと文書メタデータは引き続きPostgreSQLが正本です。Backend切替後に既存文書を使う場合は、対象の文書を再アップロードしてインデックスを作り直してください。
+
 ## Docker Compose (Development)
 
 - 初回ビルド込み起動: `docker compose -f infra/docker-compose.yml up --build`

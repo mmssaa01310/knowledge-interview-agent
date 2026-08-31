@@ -35,6 +35,10 @@ export type KnowledgeDb = BaseEntity & {
   knowledgeCount: number;
 };
 
+export type KnowledgeTag = BaseEntity & {
+  name: string;
+};
+
 export type InterviewPlan = {
   version?: number;
   purpose?: string | null;

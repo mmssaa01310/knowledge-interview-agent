@@ -7,22 +7,36 @@ from uuid import uuid4
 
 from ai_interviewer_api.agents.interview.adapter import run_adapted_interview_turn as _run_adapted_interview_turn
 from ai_interviewer_api.agents.interview.schemas import InterviewAgentResult, InterviewQuestion, InterviewState
+from ai_interviewer_api.agents.interview_knowledge.coordinator import apply_document_candidate
+from ai_interviewer_api.agents.interview_knowledge.provider import (
+    BedrockResponsesStructuredProvider,
+    StructuredInterviewProviderError,
+)
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
     get_structured_interview_state_snapshot,
     is_structured_interview_enabled,
+    resolve_structured_model_id,
 )
 from ai_interviewer_api.auth.deps import UserContext
+from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
+    interview_language_instruction,
     localized_interview_fallbacks,
     localized_interview_confirmation_question,
+    localized_interview_document_confirmation_question,
     localized_interview_tentative_transition,
     resolve_interview_locale,
 )
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
+from ai_interviewer_api.schemas.retrieval import (
+    DocumentQuestionCandidate,
+    RetrievedKnowledgeContext,
+    source_references,
+)
 from ai_interviewer_api.services.dialogue_interpreter import (
     DialogueInterpretation,
     interpret_dialogue_act,
@@ -37,6 +51,10 @@ from ai_interviewer_api.services.interview_answer_processor import (
 )
 from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
+)
+from ai_interviewer_api.services.interview_document_retrieval import (
+    retrieve_interview_document_context,
+    validate_document_question_candidate,
 )
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 
@@ -641,11 +659,73 @@ def _ask_next_configured_field(
             interview_locale=locale,
         )
 
+    retrieved_context: list[RetrievedKnowledgeContext] = []
+    question_retrieval_policy = _field_retrieval_policy(next_field)
+    if question is None:
+        knowledge = store.get("knowledges", record["knowledgeId"]) or {}
+        question_retrieval_policy = _question_retrieval_policy(next_field)
+        retrieved_context = retrieve_interview_document_context(
+            record=record,
+            knowledge=knowledge,
+            user=user,
+            current_field=next_field,
+            state=interview_state,
+            messages=messages,
+            retrieval_policy=question_retrieval_policy.value,
+        )
+
+    if question is None:
+        effective_retrieval_policy = (
+            question_retrieval_policy
+            if retrieved_context
+            else _field_retrieval_policy(next_field)
+        )
+        document_candidate = _generate_document_candidate_question(
+            record=record,
+            knowledge=knowledge,
+            field=next_field,
+            state=interview_state,
+            messages=messages,
+            retrieved_context=retrieved_context,
+            interview_locale=locale,
+        )
+        if document_candidate is not None:
+            candidate_target = {
+                "targetType": "field",
+                "targetId": str(next_field.get("id") or ""),
+                "label": str(next_field.get("name") or "").strip(),
+            }
+            if apply_document_candidate(
+                interview_state,
+                candidate_target,
+                value=document_candidate.value,
+                source_ids=document_candidate.source_ids,
+            ):
+                question = _build_configured_question(
+                    next_field,
+                    interview_state,
+                    interview_locale=locale,
+                    retrieval_policy=effective_retrieval_policy.value,
+                    retrieved_sources=source_references(retrieved_context),
+                )
+                question["text"] = localized_interview_document_confirmation_question(
+                    locale,
+                    str(next_field.get("name") or "").strip(),
+                    document_candidate.value,
+                )
+                question["candidateSource"] = "document_reference"
+                question["candidateValue"] = document_candidate.value
+                question["candidateSourceIds"] = list(document_candidate.source_ids)
+            else:
+                document_candidate = None
+
     if question is None:
         question = _build_configured_question(
             next_field,
             interview_state,
             interview_locale=locale,
+            retrieval_policy=effective_retrieval_policy.value,
+            retrieved_sources=source_references(retrieved_context),
         )
         if tentative_field_id:
             candidate = str(
@@ -695,6 +775,9 @@ def _ask_next_configured_field(
         },
     )
     interview_state["fieldStates"][next_field["id"]]["status"] = "asking"
+    if interview_state["fieldStates"][next_field["id"]].get("answerState") == "AWAITING_CONFIRMATION":
+        interview_state["fieldStates"][next_field["id"]]["pendingQuestionId"] = question["questionId"]
+        interview_state["fieldStates"][next_field["id"]]["pendingFieldId"] = next_field["id"]
     _persist_interview_state(interview_state, user)
     all_messages = [*messages, assistant_message] if assistant_message else messages
     return _build_agent_result_payload(
@@ -707,7 +790,7 @@ def _ask_next_configured_field(
         missing_information=[],
         used_tools=[],
         retrieval_policy=question["retrievalPolicy"],
-        retrieval_executed=False,
+        retrieval_executed=bool(retrieved_context),
         interview_state=interview_state,
         assistant_message=assistant_message,
         structured_draft=_build_structured_draft(interview_state, _build_field_lookup(knowledge_fields)),
@@ -739,6 +822,16 @@ def _process_text_answer_turn(
     ).strip()
     latest_transcript = str(latest_user_message.get("content") or "")
     interview_locale = resolve_interview_locale(record, knowledge)
+    retrieved_context = retrieve_interview_document_context(
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        current_question=current_question,
+        current_field=current_field,
+        state=interview_state,
+        messages=messages,
+        retrieval_policy=retrieval_policy,
+    )
     if (
         field_state.get("answerState") == "AWAITING_CONFIRMATION"
         and is_unambiguous_confirmation(latest_transcript, locale=interview_locale)
@@ -777,7 +870,7 @@ def _process_text_answer_turn(
             retrieval_policy=retrieval_policy,
             interview_locale=interview_locale,
         )
-    evaluation_retrieval_executed = False
+    evaluation_retrieval_executed = bool(retrieved_context)
 
     def evaluate_text_answer(**_: Any) -> AnswerEvaluation:
         nonlocal evaluation_retrieval_executed
@@ -788,8 +881,9 @@ def _process_text_answer_turn(
             knowledge_fields,
             interview_state=interview_state,
             current_question=current_question,
+            retrieved_context=retrieved_context,
         )
-        evaluation_retrieval_executed = bool(adapted_result.used_tools)
+        evaluation_retrieval_executed = bool(retrieved_context or adapted_result.used_tools)
         evaluation = adapted_result.field_evaluation
         normalized_answer = str(evaluation.get("answerSummary") or "").strip()
         record_answer = str(evaluation.get("recordAnswer") or "").strip()
@@ -833,6 +927,7 @@ def _process_text_answer_turn(
             knowledge_fields,
             interview_state=interview_state,
             current_question=current_question,
+            retrieved_context=retrieved_context,
         )
         evaluation = adapted_result.field_evaluation
         outcome = evaluation.get("confirmationOutcome")
@@ -937,6 +1032,7 @@ def _process_text_answer_turn(
         turn_result.reply_text,
         question_plan=current_field.get("questionPlan"),
         retrieval_policy=turn_result.retrieval_policy,
+        retrieved_sources=source_references(retrieved_context),
     )
     assistant_message = (
         _save_assistant_message(user, record["id"], turn_result.reply_text, question=follow_up_question)
@@ -1107,6 +1203,10 @@ def _build_agent_result_payload(
     payload["assistantMessage"] = assistant_message
     payload["retrievalPolicy"] = retrieval_policy
     payload["retrievalExecuted"] = retrieval_executed
+    payload["retrievedSources"] = [
+        dict(source)
+        for source in ((question or {}).get("retrievedSources") or [])
+    ]
     payload["interviewState"] = interview_state
     payload["structuredDraft"] = structured_draft
     payload["messages"] = messages
@@ -1141,6 +1241,8 @@ def _build_configured_question(
     interview_state: dict[str, Any],
     *,
     interview_locale: InterviewLocale = "ja-JP",
+    retrieval_policy: str | None = None,
+    retrieved_sources: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
     examples = [
         str(example).strip()
@@ -1157,9 +1259,94 @@ def _build_configured_question(
         "questionType": "configured_field",
         "fieldId": field.get("id"),
         "text": text,
-        "retrievalPolicy": _field_retrieval_policy(field).value,
+        "retrievalPolicy": retrieval_policy or _field_retrieval_policy(field).value,
+        "targetType": "field",
+        "targetId": field.get("id"),
+        "targetLabel": str(field.get("name") or "").strip() or None,
         "questionPlan": field.get("questionPlan"),
+        "retrievedSources": [dict(source) for source in (retrieved_sources or [])],
     }
+
+
+def _question_retrieval_policy(field: dict[str, Any]) -> RetrievalPolicy:
+    """Allow document lookup for candidate extraction when auto is configured.
+
+    The legacy answer evaluator still uses ``_field_retrieval_policy`` for
+    direct-capture fields. Question generation has a separate concern: an
+    indexed prior-knowledge document can already contain the value to verify.
+    An explicit ``never`` setting continues to disable both paths.
+    """
+
+    return _parse_retrieval_policy(field.get("retrievalPolicy"))
+
+
+def _generate_document_candidate_question(
+    *,
+    record: dict[str, Any],
+    knowledge: dict[str, Any],
+    field: dict[str, Any],
+    state: dict[str, Any],
+    messages: list[dict],
+    retrieved_context: list[RetrievedKnowledgeContext],
+    interview_locale: InterviewLocale,
+) -> DocumentQuestionCandidate | None:
+    """Ask the question generator to extract a grounded value for legacy flow."""
+
+    if not retrieved_context or not settings.bedrock_enabled:
+        return None
+    provider = BedrockResponsesStructuredProvider(
+        model_id=resolve_structured_model_id(knowledge),
+    )
+    context = {
+        "knowledgeName": knowledge.get("name"),
+        "recordTitle": record.get("title"),
+        "customPrompt": knowledge.get("systemPrompt"),
+        "interviewLocale": interview_locale,
+        "languageInstruction": interview_language_instruction(interview_locale),
+        "currentState": {
+            "currentFieldId": state.get("currentFieldId"),
+            "completedFieldIds": state.get("completedFieldIds", []),
+            "pendingFieldIds": state.get("pendingFieldIds", []),
+        },
+        "recentConversation": [
+            {"role": message.get("role"), "content": message.get("content")}
+            for message in messages[-12:]
+            if message.get("isActualUtterance") is not False
+        ],
+        "fields": [
+            {
+                "id": field.get("id"),
+                "name": field.get("name"),
+                "description": field.get("description"),
+                "inputType": field.get("inputType"),
+            }
+        ],
+        "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
+    }
+    target = {
+        "targetType": "field",
+        "targetId": field.get("id"),
+        "label": field.get("name"),
+    }
+    try:
+        generated = provider.generate_question(
+            profile="fixed_form",
+            context=context,
+            target=target,
+            reasoning_effort=settings.structured_interview_reasoning_effort,
+        )
+    except (StructuredInterviewProviderError, ValueError):
+        logger.exception(
+            "legacy_document_candidate_generation_failed record_id=%s field_id=%s",
+            record.get("id"),
+            field.get("id"),
+        )
+        return None
+    return validate_document_question_candidate(
+        value=generated.documentCandidateValue,
+        source_ids=generated.documentCandidateSourceIds,
+        contexts=retrieved_context,
+    )
 
 
 def _build_follow_up_question(
@@ -1168,6 +1355,7 @@ def _build_follow_up_question(
     *,
     question_plan: dict[str, Any] | None = None,
     retrieval_policy: str = RetrievalPolicy.AUTO.value,
+    retrieved_sources: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
     return {
         "questionId": f"q-{uuid4().hex[:12]}",
@@ -1176,6 +1364,7 @@ def _build_follow_up_question(
         "text": text.strip(),
         "retrievalPolicy": retrieval_policy,
         "questionPlan": question_plan,
+        "retrievedSources": [dict(source) for source in (retrieved_sources or [])],
     }
 
 
@@ -1319,6 +1508,16 @@ def _save_assistant_message(
         "questionId": question.get("questionId") if question else None,
         "questionType": question.get("questionType") if question else None,
         "fieldId": question.get("fieldId") if question else None,
+        "targetType": question.get("targetType") if question else None,
+        "targetId": question.get("targetId") if question else None,
+        "targetLabel": question.get("targetLabel") if question else None,
+        "candidateSource": question.get("candidateSource") if question else None,
+        "candidateValue": question.get("candidateValue") if question else None,
+        "candidateSourceIds": list((question or {}).get("candidateSourceIds") or []),
+        "retrievedSources": [
+            dict(source)
+            for source in ((question or {}).get("retrievedSources") or [])
+        ],
     }
     store.upsert("messages", message)
     return message

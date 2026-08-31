@@ -16,6 +16,10 @@ class KnowledgeDb(BaseEntity):
     knowledgeCount: int = 0
 
 
+class KnowledgeTag(BaseEntity):
+    name: str
+
+
 class Knowledge(BaseEntity):
     knowledgeDbId: str
     name: str
@@ -121,6 +125,7 @@ class VoiceTurn(BaseEntity):
     stateVersion: int | None = None
     responseId: str | None = None
     questionId: str | None = None
+    retrievedSources: list[dict] = Field(default_factory=list)
     startedAtMs: int | None = None
     endedAtMs: int | None = None
 

@@ -79,6 +79,28 @@ def localized_interview_confirmation_question(locale: InterviewLocale, candidate
     }[locale]
 
 
+def localized_interview_document_confirmation_question(
+    locale: InterviewLocale,
+    field_label: str,
+    candidate: str,
+) -> str:
+    """Ask the user to verify a value found in the uploaded prior knowledge."""
+
+    label_text = field_label.strip() or {
+        "ja-JP": "この項目",
+        "en-US": "this item",
+        "zh-CN": "这一项",
+        "pt-BR": "este item",
+    }[locale]
+    candidate_text = candidate.strip()
+    return {
+        "ja-JP": f"事前知識では{label_text}は「{candidate_text}」となっています。この内容で合っていますか？",
+        "en-US": f"The prior knowledge lists {label_text} as “{candidate_text}”. Is that correct?",
+        "zh-CN": f"根据现有资料，{label_text}是“{candidate_text}”。这个内容正确吗？",
+        "pt-BR": f"O conhecimento prévio indica {label_text} como “{candidate_text}”. Está correto?",
+    }[locale]
+
+
 def localized_interview_tentative_transition(
     locale: InterviewLocale,
     candidate: str,

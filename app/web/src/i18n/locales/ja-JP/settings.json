@@ -9,11 +9,18 @@
   "tags": {
     "title": "タグ",
     "inputAria": "ナレッジタグ",
-    "placeholder": "タグ名を入力してEnter",
+    "placeholder": "タグを検索・入力…",
+    "create": "＋「{tag}」を新しいタグとして作成",
+    "editTitle": "タグを編集",
+    "editLabel": "タグ名",
+    "editAria": "{tag}を編集",
+    "deleteAria": "{tag}を削除",
+    "deleteConfirm": "「{tag}」を削除しますか？使用中のナレッジからもタグを外します。",
+    "operationFailed": "タグを更新・削除できませんでした。もう一度お試しください。",
     "add": "追加",
     "remove": "{tag}を削除",
     "existing": "既存のタグ",
-    "select": "{tag}を追加"
+    "select": "{tag}を選択"
   },
   "tabs": {
     "fields": "質問項目",

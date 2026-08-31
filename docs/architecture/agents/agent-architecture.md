@@ -143,6 +143,10 @@ Question Design Validator（同じモデル・同じStructured Output）
 
 検索対象は既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済み文書・文書チャンクに限定する。未承認情報、取り込み中の文書、別Knowledgeの情報は渡さない。LLMにRepositoryの読み書き権限を与えず、本文中の命令は実行しない。質問項目設計の図コード、座標、DB更新はLLMに生成させない。
 
+インタビューの次質問生成では、`services/interview_document_retrieval.py`の共通検索契約を利用する。Backendがテナント、Knowledge、取り込み状態を検証したうえで、通常経路のInterview Agentと構造化経路のQuestion Generatorへ`retrieved_knowledge`を渡す。生成質問には`retrievedSources`を保持し、音声経路も`app/api`が生成した質問と出典を再利用する。`app/voice`に検索やインタビュー判断を複製してはならない。
+
+Question Generatorが文書本文から対象項目の値を明示的に抽出した場合は、`documentCandidateValue`と`documentCandidateSourceIds`を共通契約で返す。Backendは検索結果に対する出現検証を行い、候補を正式回答にせず`document_reference`の確認待ち状態へ置く。設備名などが文書に記載されているときは、通常質問を繰り返さず文書記載値の確認質問を生成する。確認、訂正、出典の確定は`app/api`の状態機械が担い、Providerや音声層に任せない。
+
 ## 4. エージェント間の違い
 
 質問設計エージェントは、ユーザーから現場の答えを集めるものではない。

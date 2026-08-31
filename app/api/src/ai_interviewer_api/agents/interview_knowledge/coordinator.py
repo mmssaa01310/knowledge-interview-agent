@@ -181,6 +181,70 @@ def sync_structured_state_fields(
     return changed
 
 
+def apply_document_candidate(
+    state: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    value: str,
+    source_ids: Sequence[str],
+) -> bool:
+    """Put a document-grounded value into the confirmation-only state.
+
+    Document content is not a user statement and must never become a formal
+    answer before the interviewee explicitly accepts it. This transition is
+    intentionally separate from ``apply_structured_output`` because the
+    candidate comes from Question Generator context, not from a transcript.
+    """
+
+    candidate_value = str(value or "").strip()
+    normalized_source_ids = tuple(
+        dict.fromkeys(str(source_id).strip() for source_id in source_ids if str(source_id).strip())
+    )
+    if not candidate_value or not normalized_source_ids:
+        return False
+
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id)
+        candidate_key = "candidateAnswer"
+        status_key = "answerState"
+        pending_state = "AWAITING_CONFIRMATION"
+        if not isinstance(target_state, dict) or target_state.get(status_key) == "CONFIRMED":
+            return False
+    elif target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id)
+        candidate_key = "candidateValue"
+        status_key = "status"
+        pending_state = "AWAITING_CONFIRMATION"
+        if not isinstance(target_state, dict) or target_state.get(status_key) == "CONFIRMED":
+            return False
+    else:
+        return False
+
+    existing_candidate = str(target_state.get(candidate_key) or "").strip()
+    existing_source = target_state.get("candidateSource")
+    if existing_candidate and existing_source != "document_reference":
+        return False
+
+    target_state[status_key] = pending_state
+    target_state["answerResolution"] = "CONFIRM_REQUIRED"
+    target_state["candidateSource"] = "document_reference"
+    target_state["candidateSourceIds"] = list(normalized_source_ids)
+    target_state[candidate_key] = candidate_value
+    if target_type == "field":
+        target_state["status"] = "asking"
+        target_state["recordAnswer"] = None
+        target_state["candidateItems"] = []
+    else:
+        target_state["value"] = None
+
+    target["candidateSource"] = "document_reference"
+    target["candidateValue"] = candidate_value
+    target["candidateSourceIds"] = list(normalized_source_ids)
+    return True
+
+
 def apply_structured_output(
     state: dict[str, Any],
     output: StructuredInterviewOutput,
@@ -230,6 +294,7 @@ def apply_structured_output(
         if (
             update.fieldId not in field_ids
             or not update.value.strip()
+            or update.candidateSource == "document_reference"
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
             continue
@@ -259,6 +324,7 @@ def apply_structured_output(
         if (
             update.requirementId not in state.setdefault("requirementStates", {})
             or not update.value.strip()
+            or update.candidateSource == "document_reference"
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
             continue
@@ -556,8 +622,10 @@ def _new_field_state(field_id: str) -> dict[str, Any]:
         "answerResolution": None,
         "candidateAnswer": None,
         "candidateSource": None,
+        "candidateSourceIds": [],
         "candidateProposalMessageId": None,
         "confirmedSource": None,
+        "confirmedSourceIds": [],
         "confirmedProposalMessageId": None,
         "confirmationEvidenceTranscriptIds": [],
         "rawAnswer": None,
@@ -580,8 +648,10 @@ def _new_requirement_state(target_id: str, label: str, kind: str) -> dict[str, A
         "answerResolution": None,
         "candidateValue": None,
         "candidateSource": None,
+        "candidateSourceIds": [],
         "candidateProposalMessageId": None,
         "confirmedSource": None,
+        "confirmedSourceIds": [],
         "confirmedProposalMessageId": None,
         "confirmationEvidenceTranscriptIds": [],
         "value": None,
@@ -596,6 +666,8 @@ def _target(
     priority: int,
     *,
     candidate_source: str | None = None,
+    candidate_value: str | None = None,
+    candidate_source_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     target = {
         "targetType": kind,
@@ -603,8 +675,12 @@ def _target(
         "label": label,
         "priority": priority,
     }
-    if candidate_source == "assistant_proposal":
+    if candidate_source in {"assistant_proposal", "document_reference"}:
         target["candidateSource"] = candidate_source
+    if candidate_value:
+        target["candidateValue"] = str(candidate_value).strip()
+    if candidate_source_ids:
+        target["candidateSourceIds"] = list(candidate_source_ids)
     return target
 
 
@@ -651,9 +727,13 @@ def _target_for_current_question(
     if target_type == "field":
         field_state = state.get("fieldStates", {}).get(target_id, {})
         target["candidateSource"] = field_state.get("candidateSource")
+        target["candidateValue"] = field_state.get("candidateAnswer")
+        target["candidateSourceIds"] = list(field_state.get("candidateSourceIds") or [])
     else:
         requirement_state = state.get("requirementStates", {}).get(target_id, {})
         target["candidateSource"] = requirement_state.get("candidateSource")
+        target["candidateValue"] = requirement_state.get("candidateValue")
+        target["candidateSourceIds"] = list(requirement_state.get("candidateSourceIds") or [])
     return target
 
 
@@ -755,11 +835,13 @@ def _confirm_target(
             field_state["answerSummary"] = None
             field_state["confirmedItems"] = list(field_state.get("candidateItems", []))
             field_state["confirmedSource"] = field_state.get("candidateSource")
+            field_state["confirmedSourceIds"] = list(field_state.get("candidateSourceIds") or [])
             field_state["confirmedProposalMessageId"] = field_state.get("candidateProposalMessageId")
             field_state["confirmationEvidenceTranscriptIds"] = (
                 [confirmation_message_id] if confirmation_message_id else []
             )
             field_state["candidateSource"] = None
+            field_state["candidateSourceIds"] = []
             field_state["candidateAnswer"] = None
             field_state["candidateItems"] = []
             field_state["candidateProposalMessageId"] = None
@@ -774,12 +856,14 @@ def _confirm_target(
         requirement_state["answerResolution"] = "AUTO_CONFIRM"
         requirement_state["value"] = requirement_state["candidateValue"]
         requirement_state["confirmedSource"] = requirement_state.get("candidateSource")
+        requirement_state["confirmedSourceIds"] = list(requirement_state.get("candidateSourceIds") or [])
         requirement_state["confirmedProposalMessageId"] = requirement_state.get("candidateProposalMessageId")
         requirement_state["confirmationEvidenceTranscriptIds"] = (
             [confirmation_message_id] if confirmation_message_id else []
         )
         requirement_state["candidateValue"] = None
         requirement_state["candidateSource"] = None
+        requirement_state["candidateSourceIds"] = []
         requirement_state["candidateProposalMessageId"] = None
         if _target_matches(
             state.get("lastTentativeTarget"),
@@ -877,6 +961,7 @@ def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
             field_state["status"] = "asking"
             field_state["candidateAnswer"] = None
             field_state["candidateSource"] = None
+            field_state["candidateSourceIds"] = []
             field_state["candidateProposalMessageId"] = None
             field_state["candidateItems"] = []
             field_state["recordAnswer"] = None
@@ -889,6 +974,7 @@ def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
         requirement_state["answerResolution"] = None
         requirement_state["candidateValue"] = None
         requirement_state["candidateSource"] = None
+        requirement_state["candidateSourceIds"] = []
         requirement_state["candidateProposalMessageId"] = None
         if _target_matches(
             state.get("lastTentativeTarget"),
@@ -938,6 +1024,7 @@ def _apply_field_update(
     field_state["recordAnswer"] = None
     field_state["candidateAnswer"] = update.value.strip()
     field_state["candidateSource"] = update.candidateSource
+    field_state["candidateSourceIds"] = []
     field_state["candidateProposalMessageId"] = None
     field_state["rawAnswer"] = update.value.strip()
     raw_history = field_state.setdefault("rawAnswerHistory", [])
@@ -998,6 +1085,7 @@ def _apply_requirement_update(
     requirement_state["value"] = None
     requirement_state["candidateValue"] = update.value.strip()
     requirement_state["candidateSource"] = update.candidateSource
+    requirement_state["candidateSourceIds"] = []
     requirement_state["candidateProposalMessageId"] = None
     requirement_state["evidenceTranscriptIds"] = _ensure_latest_evidence(
         update.evidenceTranscriptIds,

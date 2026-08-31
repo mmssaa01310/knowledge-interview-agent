@@ -52,9 +52,9 @@ AWS CDKの雛形は`infra/cdk`にある。ECS Fargate上のFrontend、API、Voic
 
 ## 6. データベース方針
 
-アプリケーションの構造化データはPostgreSQLを正本とする。ローカル開発ではDocker Composeの`postgres:16-alpine`を使用し、APIは`DATABASE_URL`で接続する。
+アプリケーションの構造化データはPostgreSQLを正本とする。ローカル開発ではDocker Composeの`postgres:16-alpine`を使用し、APIは`DATABASE_URL`で接続する。文書本文・チャンクの検索Repositoryだけは`DOCUMENT_KNOWLEDGE_BACKEND`でPostgreSQLまたはElastic Cloudへ切り替えられる。Elastic Cloud接続時は公式Elasticsearch Python ClientのCloud ID/API Key接続を使用し、Knowledge・テナント・取り込み状態をRepositoryの検索filterへ含める。
 
-検索と保存は同じPostgreSQLのRepository境界へ集約する。ドメインの拡張に追従できるよう、現在の互換Storeは`kikiori.entity_store`のJSONB payloadへ保存し、テナント・論理エンティティ・関連IDの検索インデックスを持つ。
+通常の構造化データの検索と保存はPostgreSQLのRepository境界へ集約する。文書本文・チャンクは専用の文書Repository境界へ集約し、PostgreSQLでは`kikiori.entity_store`の`documents`/`document_chunks` payload、Elastic Cloudでは明示mappingの`documents`/`document_chunks`インデックスを使用する。
 
 本番環境のPostgreSQL提供方式、バックアップ、冗長化はデプロイ環境ごとに決定する。ローカルと本番でアプリケーションの保存契約を分けない。
 

@@ -3,8 +3,11 @@ from fastapi import APIRouter
 from ai_interviewer_api.routers.documents import (
     acknowledge_document,
     create_document,
+    delete_document,
+    get_document_content,
     list_documents,
     router as documents_router,
+    upload_document,
     update_read_status,
 )
 from ai_interviewer_api.routers.admin_dashboard import router as admin_dashboard_router
@@ -40,6 +43,13 @@ from ai_interviewer_api.routers.knowledge_fields import (
     router as knowledge_fields_router,
     suggest_fields,
     update_field,
+)
+from ai_interviewer_api.routers.knowledge_tags import (
+    create_knowledge_tag,
+    delete_knowledge_tag,
+    list_knowledge_tags,
+    router as knowledge_tags_router,
+    update_knowledge_tag,
 )
 from ai_interviewer_api.routers.knowledges import (
     create_knowledge,
@@ -83,6 +93,7 @@ router.include_router(interview_prompt_profiles_router)
 router.include_router(knowledge_dbs_router)
 router.include_router(knowledges_router)
 router.include_router(knowledge_fields_router)
+router.include_router(knowledge_tags_router)
 router.include_router(records_router)
 router.include_router(voice_sessions_router)
 router.include_router(proposals_router)
@@ -96,11 +107,15 @@ __all__ = [
     "approve_proposal",
     "bulk_approve",
     "create_document",
+    "delete_document",
+    "get_document_content",
+    "upload_document",
     "create_field",
     "create_internal_assistant_event",
     "create_internal_connection_event",
     "create_internal_voice_turn",
     "create_knowledge_db",
+    "create_knowledge_tag",
     "create_knowledge",
     "create_record",
     "create_record_message",
@@ -108,6 +123,7 @@ __all__ = [
     "delete_field",
     "delete_knowledge_db",
     "delete_knowledge",
+    "delete_knowledge_tag",
     "delete_record",
     "generate_fields",
     "get_knowledge_db",
@@ -123,6 +139,7 @@ __all__ = [
     "list_fields",
     "list_interview_prompt_profiles",
     "list_knowledge_dbs",
+    "list_knowledge_tags",
     "list_knowledges",
     "list_proposals",
     "list_records",
@@ -137,6 +154,7 @@ __all__ = [
     "update_field",
     "update_knowledge_db",
     "update_knowledge",
+    "update_knowledge_tag",
     "update_read_status",
     "update_record",
 ]

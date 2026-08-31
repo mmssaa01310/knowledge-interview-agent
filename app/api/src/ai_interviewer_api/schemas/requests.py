@@ -19,6 +19,14 @@ class KnowledgeDbUpdate(BaseModel):
     status: str | None = None
 
 
+class KnowledgeTagCreate(BaseModel):
+    name: str
+
+
+class KnowledgeTagUpdate(BaseModel):
+    name: str
+
+
 class KnowledgeCreate(BaseModel):
     name: str
     description: str | None = None

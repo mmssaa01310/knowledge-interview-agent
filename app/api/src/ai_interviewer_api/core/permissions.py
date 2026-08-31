@@ -21,6 +21,11 @@ def ensure_tenant_scope(user: UserContext, tenant_id: str) -> None:
         raise HTTPException(status_code=403, detail="tenant_scope_mismatch")
 
 
+def is_active_record(record: dict) -> bool:
+    """Return whether a record is visible to list and interview entry points."""
+    return not record.get("deletedAt")
+
+
 def require_management_role(user: UserContext) -> None:
     require_roles(user, MANAGEMENT_ROLES)
 
@@ -102,6 +107,8 @@ def require_record_action(record: dict, user: UserContext, action: str) -> None:
 def accessible_records(records: list[dict], user: UserContext) -> list[dict]:
     result: list[dict] = []
     for record in records:
+        if not is_active_record(record):
+            continue
         try:
             ensure_record_access(record, user, operation="read")
         except HTTPException:

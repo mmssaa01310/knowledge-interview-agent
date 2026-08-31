@@ -166,6 +166,8 @@ class AssistantReply:
 
 回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。`TENTATIVE`の候補は次質問本文に自然に織り込む。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 
+次質問の対象値がBackendの検索した`indexed`文書に明示されている場合、APIは`document_reference`の候補を`AWAITING_CONFIRMATION`として保持し、音声には文書記載値の確認質問を返す。候補は「はい」などの明示承認後だけ正式回答へ移し、訂正発話があれば利用者の値へ更新する。音声Runtimeはこの判定や文書検索を複製せず、`app/api`が生成した確認質問、状態、出典を利用する。
+
 ## 5. VoiceRuntimeEvent契約
 
 RuntimeはProvider固有イベントを以下の共通イベントへ変換する。
@@ -645,6 +647,8 @@ RAG検索
 ```
 
 検索不要なターンでは、knowledge search、vector search、GraphRAG、reranking、document loading、embedding生成を呼ばない。
+
+次質問の生成時は、回答評価とは別に、現在の質問項目の`retrievalPolicy`に従ってBackendの共通文書検索を利用する。`never`では検索せず、`auto`または`required`では`indexed`または取り込み完了状態の同一テナント・同一Knowledgeの文書・文書チャンクだけをQuestion Generatorへ渡す。音声サービスは検索を実行せず、`app/api`から返された質問と`retrievedSources`を音声応答・監査メタデータへ引き継ぐ。
 
 ## 15. Assistant Event保存
 

@@ -9,11 +9,18 @@
   "tags": {
     "title": "Tags",
     "inputAria": "Knowledge tags",
-    "placeholder": "Enter a tag and press Enter",
+    "placeholder": "Search or enter a tag…",
+    "create": "＋ Create new tag {tag}",
+    "editTitle": "Edit tag",
+    "editLabel": "Tag name",
+    "editAria": "Edit {tag}",
+    "deleteAria": "Delete {tag}",
+    "deleteConfirm": "Delete {tag}? This also removes it from knowledge items that use it.",
+    "operationFailed": "The tag could not be updated or deleted. Please try again.",
     "add": "Add",
     "remove": "Remove {tag}",
     "existing": "Existing tags",
-    "select": "Add {tag}"
+    "select": "Select {tag}"
   },
   "tabs": {
     "fields": "Question items",

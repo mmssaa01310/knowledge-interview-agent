@@ -520,6 +520,116 @@ small {
   margin-bottom: 14px;
 }
 
+.document-upload-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  margin-bottom: 14px;
+}
+
+.document-file-picker {
+  min-width: 0;
+  gap: 6px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.document-file-picker-label {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.document-file-picker-control {
+  min-width: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  border: 1px solid #cbd7e2;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2d3d;
+}
+
+.document-file-picker:focus-within .document-file-picker-control {
+  border-color: #7da9d5;
+  box-shadow: 0 0 0 3px rgba(36, 95, 159, 0.14);
+}
+
+.document-file-picker.dragging .document-file-picker-control {
+  border-color: #245f9f;
+  border-style: dashed;
+  background: #eef6ff;
+}
+
+.document-file-picker-trigger {
+  flex: 0 0 auto;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  background: #f4f7fa;
+  border-right: 1px solid #cbd7e2;
+  color: #245f9f;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.document-file-picker-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: 10px;
+  font-size: 13px;
+}
+
+.document-file-picker-name.placeholder {
+  color: #6b7d90;
+}
+
+.document-file-picker-drop-hint {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  padding-right: 10px;
+  color: #6b7d90;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-upload-submit {
+  height: 38px;
+  min-height: 38px;
+}
+
+.document-content-dialog {
+  width: min(780px, 100%);
+  max-height: calc(100vh - 48px);
+}
+
+.document-content-viewer {
+  max-height: min(60vh, 640px);
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #e5ebf0;
+  border-radius: 8px;
+  background: #f8fbfd;
+  color: #26394d;
+  font-family: "Cascadia Mono", "Yu Gothic UI", monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.document-delete-dialog {
+  width: min(480px, 100%);
+}
+
 input,
 textarea,
 select {
@@ -587,7 +697,7 @@ label {
 }
 
 .document-detail-row {
-  grid-template-columns: 1.5fr 0.9fr 0.9fr 0.9fr 1.3fr 1.2fr;
+  grid-template-columns: 1.6fr 1fr 1.2fr 1fr 1.2fr;
 }
 
 .record-detail-row {
@@ -1375,7 +1485,7 @@ label {
 }
 
 .document-row {
-  grid-template-columns: 2fr 1fr 1.3fr 1fr 0.7fr;
+  grid-template-columns: 2fr 1fr 1.3fr 1fr 1.2fr;
 }
 
 .text-cell {

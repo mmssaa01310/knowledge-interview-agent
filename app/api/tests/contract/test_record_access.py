@@ -13,6 +13,7 @@ from ai_interviewer_api.routers.records import (
     delete_record,
     get_record,
     get_record_interview_state,
+    list_records,
     list_accessible_records,
     update_record,
 )
@@ -233,6 +234,23 @@ def test_only_admin_can_delete_record() -> None:
     assert manager_exc_info.value.status_code == 403
     assert delete_record(record["id"], admin) == {"deleted": True}
     assert store.get("records", record["id"]) is None
+    assert list_accessible_records(admin) == []
+    assert list_records(record["knowledgeId"], admin) == []
+
+
+def test_deleted_records_are_excluded_from_access_and_knowledge_counts() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    knowledge = _create_knowledge(manager)
+    record = create_record(knowledge["id"], RecordCreate(title="削除済み記録"), manager)
+    record["deletedAt"] = "2026-08-31T00:00:00Z"
+    store.upsert("records", record)
+
+    assert list_accessible_records(manager) == []
+    assert list_records(knowledge["id"], manager) == []
+
+    from ai_interviewer_api.routers.knowledges import get_knowledge
+
+    assert get_knowledge(knowledge["id"], manager)["recordCount"] == 0
 
 
 def test_viewer_can_only_read_explicitly_shared_approved_records() -> None:

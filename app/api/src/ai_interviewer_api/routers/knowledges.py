@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.permissions import require_knowledge_read_role, require_management_role
+from ai_interviewer_api.core.permissions import (
+    is_active_record,
+    require_knowledge_read_role,
+    require_management_role,
+)
 from ai_interviewer_api.models.domain import Knowledge
 from ai_interviewer_api.models.base import utc_now
+from ai_interviewer_api.repositories.knowledge_tags import register_knowledge_tags
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import (
     ensure_interviewer_knowledge_access,
@@ -25,7 +30,11 @@ def enrich_knowledge(row: dict, user: UserContext) -> dict:
     knowledge_id = row["id"]
     enriched = interview_context_knowledge(row, user)
     enriched.setdefault("tags", [])
-    records = [item for item in store.list("records", user.tenant_id) if item["knowledgeId"] == knowledge_id]
+    records = [
+        item
+        for item in store.list("records", user.tenant_id)
+        if item["knowledgeId"] == knowledge_id and is_active_record(item)
+    ]
     if user.role == "interviewer":
         records = [item for item in records if item.get("ownerUserId") == user.user_id]
     enriched["recordCount"] = len(records)
@@ -66,6 +75,7 @@ def create_knowledge(
     get_scoped_item("knowledge_dbs", knowledge_db_id, user, "knowledge_db_not_found")
     payload_data = payload.model_dump()
     payload_data["tags"] = _normalize_tags_for_api(payload_data.get("tags"))
+    register_knowledge_tags(user.tenant_id, user.user_id, payload_data["tags"])
     item = Knowledge(
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
@@ -97,6 +107,7 @@ def update_knowledge(
     requested_updates = payload.model_dump(exclude_unset=True)
     if "tags" in requested_updates:
         requested_updates["tags"] = _normalize_tags_for_api(requested_updates["tags"])
+        register_knowledge_tags(user.tenant_id, user.user_id, requested_updates["tags"])
     if "interviewPlan" in requested_updates:
         current_profile = _resolve_interview_profile(item.get("interviewPlan"))
         requested_profile = _resolve_interview_profile(requested_updates.get("interviewPlan"))

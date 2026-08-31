@@ -67,6 +67,20 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
   const { selectedKnowledgeDb, selectedKnowledge } = props;
   const [recordFilters, setRecordFilters] = useState<RecordFilters>(EMPTY_RECORD_FILTERS);
   const [isRecordFilterOpen, setIsRecordFilterOpen] = useState(false);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
+  const deleteTarget = props.records.find((record) => record.id === deleteTargetId) ?? null;
+  const deleteConfirmationPhrase = t("errors.recordDeleteConfirmationPhrase");
+
+  function openDeleteDialog(recordId: string) {
+    setDeleteConfirmationText("");
+    setDeleteTargetId(recordId);
+  }
+
+  function closeDeleteDialog() {
+    setDeleteConfirmationText("");
+    setDeleteTargetId(null);
+  }
 
   useEffect(() => {
     setRecordFilters(EMPTY_RECORD_FILTERS);
@@ -253,7 +267,7 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
                 {props.user?.role === "viewer" ? t("knowledge.records.viewerAction") : t("knowledge.records.editAction")}
               </button>
               {isAdmin ? (
-                <button className="danger compact" type="button" onClick={() => void props.onDeleteRecord(record.id)}>
+                <button className="danger compact" type="button" onClick={() => openDeleteDialog(record.id)}>
                   {t("knowledge.records.delete")}
                 </button>
               ) : null}
@@ -271,6 +285,57 @@ export function KnowledgeRecordsPage(props: KnowledgeLayoutProps) {
           </div>
         ))}
       </div>
+      {deleteTarget ? (
+        <div
+          className="dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDeleteDialog();
+          }}
+        >
+          <div
+            className="dialog-panel record-delete-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="record-delete-title"
+          >
+            <div className="dialog-header">
+              <div>
+                <h2 id="record-delete-title">{t("errors.recordDeleteTitle")}</h2>
+                <p>{t("errors.recordDeleteConfirm", { title: deleteTarget.title })}</p>
+              </div>
+            </div>
+            <label className="delete-confirmation-field">
+              <span>{t("errors.recordDeleteVerification", { phrase: deleteConfirmationPhrase })}</span>
+              <input
+                type="text"
+                value={deleteConfirmationText}
+                onChange={(event) => setDeleteConfirmationText(event.target.value)}
+                placeholder={deleteConfirmationPhrase}
+                autoComplete="off"
+                autoFocus
+              />
+            </label>
+            <div className="dialog-actions">
+              <button type="button" className="ghost" onClick={closeDeleteDialog}>
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={deleteConfirmationText !== deleteConfirmationPhrase}
+                onClick={() => {
+                  const recordId = deleteTarget.id;
+                  closeDeleteDialog();
+                  void props.onDeleteRecord(recordId);
+                }}
+              >
+                {t("common.delete")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

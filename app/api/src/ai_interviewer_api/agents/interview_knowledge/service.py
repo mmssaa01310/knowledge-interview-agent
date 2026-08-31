@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
+    apply_document_candidate,
     apply_structured_output,
     build_initial_structured_state,
     confirm_tentative_target,
@@ -31,15 +32,25 @@ from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     interview_language_instruction,
     localized_interview_confirmation_question,
-    localized_interview_tentative_transition,
+    localized_interview_document_confirmation_question,
     localized_interview_fallbacks,
+    localized_interview_tentative_transition,
     resolve_interview_locale,
 )
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.models.interview_plan import STRUCTURED_INTERVIEW_MODEL_IDS
 from ai_interviewer_api.repositories.store import store
+from ai_interviewer_api.schemas.retrieval import (
+    DocumentQuestionCandidate,
+    RetrievedKnowledgeContext,
+    source_references,
+)
 from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
+)
+from ai_interviewer_api.services.interview_document_retrieval import (
+    retrieve_interview_document_context,
+    validate_document_question_candidate,
 )
 
 
@@ -253,19 +264,41 @@ def generate_structured_interview_result(
     structured_provider = _get_structured_provider(provider, model_id=model_id)
     state["questionGenerationPending"] = True
     _persist_state(state, user)
-    question_text = _generate_question_text(
+    question_text, retrieved_context, document_candidate = _generate_question_text(
         structured_provider,
         profile=profile,
         target=target,
         record=record,
         knowledge=knowledge,
+        user=user,
         fields=fields,
         state=state,
         messages=messages,
     )
+    if document_candidate is not None:
+        target = dict(target)
+        if apply_document_candidate(
+            state,
+            target,
+            value=document_candidate.value,
+            source_ids=document_candidate.source_ids,
+        ):
+            question_text = localized_interview_document_confirmation_question(
+                interview_locale,
+                str(target.get("label") or "").strip(),
+                document_candidate.value,
+            )
+        else:
+            document_candidate = None
     state["lastQuestionModelId"] = model_id
     state["lastQuestionReasoningEffort"] = settings.structured_interview_reasoning_effort
-    question = _build_question(state, target, question_text)
+    question = _build_question(
+        state,
+        target,
+        question_text,
+        retrieval_policy=_retrieval_policy_for_target(target, _field_for_target(target, fields)),
+        retrieved_sources=source_references(retrieved_context),
+    )
     reply = question["text"]
     assistant_message = (
         _save_assistant_message(user, str(record["id"]), reply, question)
@@ -390,6 +423,18 @@ def _backfill_state(
         if requirement_id not in requirement_states:
             requirement_states[requirement_id] = requirement_state
             changed = True
+    for field_id, initial_field_state in initial.get("fieldStates", {}).items():
+        field_state = state.setdefault("fieldStates", {}).setdefault(field_id, initial_field_state)
+        for key in ("candidateSourceIds", "confirmedSourceIds"):
+            if key not in field_state:
+                field_state[key] = []
+                changed = True
+    for requirement_id, initial_requirement_state in initial.get("requirementStates", {}).items():
+        requirement_state = requirement_states.setdefault(requirement_id, initial_requirement_state)
+        for key in ("candidateSourceIds", "confirmedSourceIds"):
+            if key not in requirement_state:
+                requirement_state[key] = []
+                changed = True
     applicability_states = state.setdefault("applicabilityState", {})
     for topic, applicability_state in initial.get("applicabilityState", {}).items():
         if topic not in applicability_states:
@@ -696,11 +741,25 @@ def _generate_question_text(
     target: Mapping[str, Any],
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
+    user: UserContext,
     fields: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
-) -> str:
+) -> tuple[str, list[RetrievedKnowledgeContext], DocumentQuestionCandidate | None]:
     started_at = monotonic()
+    current_field = _field_for_target(target, fields)
+    retrieval_policy = _retrieval_policy_for_target(target, current_field)
+    retrieved_context = retrieve_interview_document_context(
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        current_question=None,
+        current_field=current_field,
+        target=target,
+        state=state,
+        messages=messages,
+        retrieval_policy=retrieval_policy,
+    )
     context = {
         "knowledgeName": knowledge.get("name"),
         "recordTitle": record.get("title"),
@@ -715,6 +774,7 @@ def _generate_question_text(
         ],
         "fields": [{"id": field.get("id"), "name": field.get("name")} for field in fields],
         "tentativeCandidates": _list_tentative_candidates(state),
+        "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
     generated = provider.generate_question(
         profile=profile,
@@ -731,7 +791,45 @@ def _generate_question_text(
         round((monotonic() - started_at) * 1000),
     )
     question_text = generated.questionText.strip()
+    document_candidate = validate_document_question_candidate(
+        value=generated.documentCandidateValue,
+        source_ids=generated.documentCandidateSourceIds,
+        contexts=retrieved_context,
+    )
+    if document_candidate is not None and (
+        _is_awaiting_confirmation_target(target, state)
+        or _candidate_value_for_target(target, state)
+    ):
+        document_candidate = None
+    if document_candidate is not None:
+        # The backend owns the wording of document-backed confirmation so the
+        # source is always explicit and the candidate cannot be omitted by a
+        # provider response.
+        return (
+            localized_interview_document_confirmation_question(
+                resolve_interview_locale(record, knowledge),
+                str(target.get("label") or "").strip(),
+                document_candidate.value,
+            ),
+            retrieved_context,
+            document_candidate,
+        )
     candidate_value = _candidate_value_for_target(target, state)
+    candidate_source = _candidate_source_for_target(target, state)
+    if (
+        candidate_value
+        and _is_awaiting_confirmation_target(target, state)
+        and candidate_source == "document_reference"
+    ):
+        return (
+            localized_interview_document_confirmation_question(
+                resolve_interview_locale(record, knowledge),
+                str(target.get("label") or "").strip(),
+                candidate_value,
+            ),
+            retrieved_context,
+            None,
+        )
     if (
         candidate_value
         and _is_awaiting_confirmation_target(target, state)
@@ -742,9 +840,13 @@ def _generate_question_text(
             target.get("targetType") or target.get("kind"),
             target.get("targetId"),
         )
-        return localized_interview_confirmation_question(
-            resolve_interview_locale(record, knowledge),
-            candidate_value,
+        return (
+            localized_interview_confirmation_question(
+                resolve_interview_locale(record, knowledge),
+                candidate_value,
+            ),
+            retrieved_context,
+            None,
         )
     tentative = _tentative_candidate_for_state(state)
     if tentative and not _is_awaiting_confirmation_target(target, state):
@@ -762,7 +864,32 @@ def _generate_question_text(
             )
         if isinstance(state, dict):
             state["tentativeBridgeShown"] = True
-    return question_text
+    return question_text, retrieved_context, None
+
+
+def _field_for_target(
+    target: Mapping[str, Any],
+    fields: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type != "field" or not target_id:
+        return None
+    return next(
+        (field for field in fields if str(field.get("id") or "") == target_id),
+        None,
+    )
+
+
+def _retrieval_policy_for_target(
+    target: Mapping[str, Any],
+    field: Mapping[str, Any] | None,
+) -> str:
+    value = target.get("retrievalPolicy")
+    if value is None and field is not None:
+        value = field.get("retrievalPolicy")
+    policy = str(value or "auto").strip().lower()
+    return policy if policy in {"never", "auto", "required"} else "auto"
 
 
 def _repair_current_confirmation_question(
@@ -787,10 +914,12 @@ def _repair_current_confirmation_question(
         target_state = state.get("fieldStates", {}).get(target_id, {})
         is_pending = target_state.get("answerState") == "AWAITING_CONFIRMATION"
         candidate_value = str(target_state.get("candidateAnswer") or "").strip()
+        candidate_source = target_state.get("candidateSource")
     elif target_type in {"requirement", "process"}:
         target_state = state.get("requirementStates", {}).get(target_id, {})
         is_pending = target_state.get("status") == "AWAITING_CONFIRMATION"
         candidate_value = str(target_state.get("candidateValue") or "").strip()
+        candidate_source = target_state.get("candidateSource")
     else:
         return False
     if not is_pending or not candidate_value or _contains_question_candidate(
@@ -799,7 +928,14 @@ def _repair_current_confirmation_question(
     ):
         return False
 
-    current_question["text"] = localized_interview_confirmation_question(locale, candidate_value)
+    if candidate_source == "document_reference":
+        current_question["text"] = localized_interview_document_confirmation_question(
+            locale,
+            str(current_question.get("targetLabel") or current_question.get("label") or "").strip(),
+            candidate_value,
+        )
+    else:
+        current_question["text"] = localized_interview_confirmation_question(locale, candidate_value)
     return True
 
 
@@ -816,6 +952,21 @@ def _candidate_value_for_target(
         target_state = state.get("requirementStates", {}).get(target_id, {})
         return str(target_state.get("candidateValue") or "").strip()
     return ""
+
+
+def _candidate_source_for_target(
+    target: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> str | None:
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        value = state.get("fieldStates", {}).get(target_id, {}).get("candidateSource")
+    elif target_type in {"requirement", "process"}:
+        value = state.get("requirementStates", {}).get(target_id, {}).get("candidateSource")
+    else:
+        return None
+    return str(value) if value else None
 
 
 def _is_awaiting_confirmation_target(
@@ -894,6 +1045,9 @@ def _build_question(
     state: Mapping[str, Any],
     target: Mapping[str, Any],
     text: str,
+    *,
+    retrieval_policy: str = "auto",
+    retrieved_sources: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     target_kind = str(target.get("targetType") or target.get("kind") or "issue")
     target_id = str(target.get("targetId") or "")
@@ -903,12 +1057,18 @@ def _build_question(
         "questionType": "structured",
         "fieldId": field_id,
         "text": text,
-        "retrievalPolicy": "auto",
+        "retrievalPolicy": retrieval_policy,
         "targetType": target_kind,
         "targetId": target_id,
+        "targetLabel": str(target.get("label") or "").strip() or None,
+        "retrievedSources": [dict(source) for source in (retrieved_sources or [])],
     }
     if target.get("candidateSource"):
         question["candidateSource"] = target.get("candidateSource")
+    if target.get("candidateValue"):
+        question["candidateValue"] = target.get("candidateValue")
+    if target.get("candidateSourceIds"):
+        question["candidateSourceIds"] = list(target.get("candidateSourceIds") or [])
     return question
 
 
@@ -954,6 +1114,12 @@ def _build_result(
         "structuredDraft": _build_structured_draft(state, fields),
         "messages": [dict(message) for message in messages],
         "nextQuestionTarget": dict(state.get("nextQuestionTarget") or {}) or None,
+        "retrievalPolicy": str((question or {}).get("retrievalPolicy") or "auto"),
+        "retrievalExecuted": bool((question or {}).get("retrievedSources")),
+        "retrievedSources": [
+            dict(source)
+            for source in ((question or {}).get("retrievedSources") or [])
+        ],
         "completionStatus": "completed" if completion["complete"] else "in_progress",
         "missingRequiredTargets": completion["missingRequiredTargets"],
     }
@@ -999,7 +1165,14 @@ def _save_assistant_message(
         "fieldId": question.get("fieldId"),
         "targetType": question.get("targetType"),
         "targetId": question.get("targetId"),
+        "targetLabel": question.get("targetLabel"),
         "candidateSource": question.get("candidateSource"),
+        "candidateValue": question.get("candidateValue"),
+        "candidateSourceIds": list(question.get("candidateSourceIds") or []),
+        "retrievedSources": [
+            dict(source)
+            for source in (question.get("retrievedSources") or [])
+        ],
     }
     store.upsert("messages", message)
     return message
@@ -1034,6 +1207,8 @@ def _save_newly_confirmed_field_messages(
             "answerToQuestionId": answer_question_id,
             "answerToFieldId": field_id,
             "questionType": "structured",
+            "confirmedSource": field_state.get("confirmedSource"),
+            "confirmedSourceIds": list(field_state.get("confirmedSourceIds") or []),
         }
         store.upsert("messages", message)
 

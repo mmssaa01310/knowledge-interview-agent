@@ -6,12 +6,16 @@ from pydantic import BaseModel, Field
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import InterviewProfile
 from ai_interviewer_api.core.interview_locale import InterviewLocale
-from ai_interviewer_api.services.interview_answer_resolution import AnswerResolution
 from ai_interviewer_api.models.interview_plan import (
     CapturedInterviewItem,
     InterviewPlan,
     InterviewQuestionPlan,
 )
+from ai_interviewer_api.schemas.retrieval import (
+    RetrievedKnowledgeContext,
+    RetrievedSourceReference,
+)
+from ai_interviewer_api.services.interview_answer_resolution import AnswerResolution
 
 
 class InterviewMessage(BaseModel):
@@ -38,7 +42,11 @@ class InterviewQuestion(BaseModel):
     questionPlan: InterviewQuestionPlan | None = None
     targetType: str | None = None
     targetId: str | None = None
-    candidateSource: Literal["user_statement", "assistant_proposal"] | None = None
+    targetLabel: str | None = None
+    candidateSource: Literal["user_statement", "assistant_proposal", "document_reference"] | None = None
+    candidateValue: str | None = None
+    candidateSourceIds: list[str] = Field(default_factory=list)
+    retrievedSources: list[RetrievedSourceReference] = Field(default_factory=list)
 
 
 class InterviewField(BaseModel):
@@ -60,9 +68,11 @@ class InterviewFieldState(BaseModel):
     answerState: Literal["UNANSWERED", "CANDIDATE_PENDING", "AWAITING_CONFIRMATION", "CONFIRMED"] = "UNANSWERED"
     answerResolution: AnswerResolution | None = None
     candidateAnswer: str | None = None
-    candidateSource: Literal["user_statement", "assistant_proposal"] | None = None
+    candidateSource: Literal["user_statement", "assistant_proposal", "document_reference"] | None = None
+    candidateSourceIds: list[str] = Field(default_factory=list)
     candidateProposalMessageId: str | None = None
-    confirmedSource: Literal["user_statement", "assistant_proposal", "management_edit"] | None = None
+    confirmedSource: Literal["user_statement", "assistant_proposal", "document_reference", "management_edit"] | None = None
+    confirmedSourceIds: list[str] = Field(default_factory=list)
     confirmedProposalMessageId: str | None = None
     confirmationEvidenceTranscriptIds: list[str] = Field(default_factory=list)
     rawAnswer: str | None = None
@@ -149,6 +159,7 @@ class InterviewTurnInput(BaseModel):
     interview_state: InterviewState | None = None
     follow_up_count: int = 0
     max_follow_up_questions_per_field: int = 2
+    retrieved_knowledge: list[RetrievedKnowledgeContext] = Field(default_factory=list)
 
 
 class InterviewTurnOutput(BaseModel):

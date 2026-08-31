@@ -661,12 +661,12 @@ body {
 }
 
 .tag-editor-selected-list {
-  max-height: 68px;
-  overflow-y: auto;
-  padding: 5px 6px;
-  border: 1px solid var(--ki-border);
-  border-radius: 9px;
-  background: var(--ki-surface-subtle);
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .tag-editor-remove {
@@ -710,11 +710,8 @@ body {
   width: auto;
 }
 
-.knowledge-info-primary > label > input,
 .knowledge-create-primary-fields > label > input,
-.knowledge-info-primary .tag-editor-input-row input,
 .knowledge-create-primary-fields .tag-editor-input-row input,
-.knowledge-info-primary .tag-editor-input-row .compact,
 .knowledge-create-primary-fields .tag-editor-input-row .compact {
   height: 40px;
   min-height: 40px;
@@ -1470,6 +1467,13 @@ textarea::placeholder {
   color: var(--ki-primary-strong);
 }
 
+.option-picker-option.option-picker-create {
+  border-style: dashed;
+  border-color: rgba(25, 87, 215, 0.24);
+  background: var(--ki-surface-subtle);
+  color: var(--ki-primary-strong);
+}
+
 .option-picker-option.disabled {
   cursor: not-allowed;
   opacity: 0.5;
@@ -1479,6 +1483,42 @@ textarea::placeholder {
   display: grid;
   min-width: 0;
   gap: 2px;
+}
+
+.option-picker-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  margin-inline-start: auto;
+}
+
+.option-picker-action {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ki-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.option-picker-action:hover,
+.option-picker-action:focus-visible {
+  border-color: var(--ki-border-strong);
+  background: var(--ki-surface);
+  color: var(--ki-primary-strong);
+  outline: none;
+}
+
+.option-picker-action.danger:hover,
+.option-picker-action.danger:focus-visible {
+  border-color: rgba(190, 55, 70, 0.24);
+  color: var(--ki-danger, #b7374a);
 }
 
 .option-picker-option-copy strong,
@@ -1691,6 +1731,22 @@ label {
   border-radius: var(--ki-radius-lg);
   box-shadow: var(--ki-shadow-lg);
   padding: 20px;
+}
+
+.tag-edit-dialog {
+  width: min(420px, calc(100vw - 32px));
+}
+
+.delete-confirmation-field {
+  display: grid;
+  gap: 6px;
+}
+
+.delete-confirmation-field > span {
+  color: var(--ki-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
 }
 
 .dialog-header h2 {
@@ -2652,28 +2708,38 @@ label {
   padding: 0 16px 16px;
 }
 
-.knowledge-info-primary,
+.knowledge-info-fields,
 .knowledge-create-primary-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 2fr) minmax(150px, 1fr);
   align-items: start;
   gap: 12px;
+}
+
+.knowledge-info-fields .knowledge-info-description {
+  grid-column: 1 / -1;
 }
 
 .knowledge-info-description textarea {
   min-height: 58px;
 }
 
-.knowledge-tags-field {
+.knowledge-tag-field {
   display: grid;
   min-width: 0;
-  gap: 5px;
+  gap: 6px;
 }
 
-.knowledge-info-field-label {
-  color: var(--ki-text);
-  font-size: 13px;
-  font-weight: 700;
+.knowledge-tag-picker,
+.knowledge-tag-picker .option-picker-trigger {
+  width: 100%;
+  min-width: 0;
+}
+
+.knowledge-info-fields .knowledge-tag-picker .option-picker-trigger,
+.knowledge-create-primary-fields .knowledge-tag-picker .option-picker-trigger {
+  height: 40px;
+  min-height: 40px;
 }
 
 .settings-tabs-row {
@@ -2997,6 +3063,11 @@ label {
     overflow: visible;
   }
 
+  .knowledge-info-fields,
+  .knowledge-create-primary-fields {
+    grid-template-columns: 1fr;
+  }
+
   .interview-chat-panel {
     height: min(720px, calc(100svh - 200px));
     min-height: 560px;
@@ -3172,7 +3243,7 @@ label {
     padding: 12px;
   }
 
-  .knowledge-info-primary,
+  .knowledge-info-fields,
   .knowledge-create-primary-fields {
     grid-template-columns: 1fr;
   }

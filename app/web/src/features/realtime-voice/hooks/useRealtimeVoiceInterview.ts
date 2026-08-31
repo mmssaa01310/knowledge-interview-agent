@@ -209,6 +209,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             role: "assistant",
             text: event.text,
             questionId: event.questionId ?? undefined,
+            retrievedSources: event.retrievedSources,
             voiceSessionId: event.voiceSessionId,
             voiceResponseId: event.responseId ?? undefined,
           });

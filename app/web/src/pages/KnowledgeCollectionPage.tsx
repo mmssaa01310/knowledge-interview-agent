@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import type { KnowledgeTag } from "@ai-interviewer/shared-types";
 import { formatDate, formatNumber } from "../lib/date";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import { useI18n } from "../i18n";
-import { OptionPicker } from "../components/ui/OptionPicker";
-import { TagEditor } from "../components/ui/TagEditor";
+import { OptionPicker, type OptionPickerOption } from "../components/ui/OptionPicker";
+import { TagEditDialog } from "../components/ui/TagEditDialog";
+import { buildKnowledgeTagOptions } from "../features/knowledge/tagOptions";
 
 export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
   const { t, locale } = useI18n();
@@ -12,11 +14,13 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
   const [description, setDescription] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [createKnowledgeDbId, setCreateKnowledgeDbId] = useState(props.selectedKnowledgeDb?.id ?? "");
+  const [editingTag, setEditingTag] = useState<KnowledgeTag | null>(null);
+  const [tagOperationError, setTagOperationError] = useState(false);
   const canManage = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isCreateDialogOpen = canManage && props.route.name === "knowledge-new";
-  const existingTags = useMemo(
-    () => props.knowledges.flatMap((knowledge) => knowledge.tags ?? []),
-    [props.knowledges],
+  const tagOptions = useMemo(
+    () => buildKnowledgeTagOptions(props.availableTags, props.knowledges, locale, t("common.notSet")),
+    [props.availableTags, props.knowledges, locale, t],
   );
 
   useEffect(() => {
@@ -28,6 +32,24 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
 
   const knowledgeDbPath = `/knowledge-dbs/${props.selectedKnowledgeDb.id}`;
   const currentKnowledges = props.knowledges.filter((knowledge) => knowledge.knowledgeDbId === props.selectedKnowledgeDb?.id);
+
+  function editTag(option: OptionPickerOption) {
+    if (!option.id) return;
+    const tag = props.availableTags.find((candidate) => candidate.id === option.id);
+    if (tag) {
+      setTagOperationError(false);
+      setEditingTag(tag);
+    }
+  }
+
+  function deleteTag(option: OptionPickerOption) {
+    if (!option.id || !window.confirm(t("settings.tags.deleteConfirm", { tag: option.label }))) return;
+    setTagOperationError(false);
+    void props.onDeleteTag(option.id).catch((error) => {
+      console.error("Failed to delete knowledge tag", error);
+      setTagOperationError(true);
+    });
+  }
 
   function closeDialog() {
     setName("");
@@ -84,21 +106,37 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
             </div>
             <div className="form-stack">
               <div className="knowledge-create-primary-fields">
-                <label>{t("knowledge.createDialog.name")}<input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder={t("knowledge.createDialog.namePlaceholder")} /></label>
-                <div className="knowledge-tags-field">
-                  <strong className="knowledge-info-field-label">{t("settings.tags.title")}</strong>
-                  <TagEditor
-                    tags={tags}
-                    suggestions={existingTags}
-                    onChange={setTags}
+                <label>
+                  <span>{t("knowledge.createDialog.name")}</span>
+                  <input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder={t("knowledge.createDialog.namePlaceholder")} />
+                </label>
+                <label className="knowledge-tag-field">
+                  <span>{t("settings.tags.title")}</span>
+                  <OptionPicker
+                    value={tags[0] ?? ""}
+                    options={tagOptions}
+                    onChange={(tag) => {
+                      const normalizedTag = tag.trim().replace(/^#+/, "");
+                      setTags(normalizedTag ? [normalizedTag] : []);
+                    }}
                     ariaLabel={t("settings.tags.inputAria")}
                     placeholder={t("settings.tags.placeholder")}
-                    addLabel={t("settings.tags.add")}
-                    removeLabel={(tag) => t("settings.tags.remove", { tag })}
-                    suggestionsLabel={t("settings.tags.existing")}
-                    selectSuggestionLabel={(tag) => t("settings.tags.select", { tag })}
+                    searchPlaceholder={t("settings.tags.placeholder")}
+                    emptyLabel={t("common.notSet")}
+                    searchable
+                    creatable
+                    onCreateOption={props.onCreateTag}
+                    createOptionLabel={(tag) => t("settings.tags.create", { tag: `#${tag.trim().replace(/^#+/, "")}` })}
+                    selectedValueLabel={(tag) => `#${tag.trim().replace(/^#+/, "")}`}
+                    showOptionActions={(option) => canManage && Boolean(option.id)}
+                    onEditOption={editTag}
+                    onDeleteOption={deleteTag}
+                    editOptionLabel={(option) => t("settings.tags.editAria", { tag: option.label })}
+                    deleteOptionLabel={(option) => t("settings.tags.deleteAria", { tag: option.label })}
+                    className="knowledge-tag-picker"
                   />
-                </div>
+                </label>
+                {tagOperationError ? <p className="notice error">{t("settings.tags.operationFailed")}</p> : null}
               </div>
               <label>{t("knowledge.createDialog.purpose")}<input value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder={t("knowledge.createDialog.purposePlaceholder")} /></label>
               <label>{t("knowledge.createDialog.descriptionField")}<textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("knowledge.createDialog.descriptionPlaceholder")} /></label>
@@ -123,6 +161,19 @@ export function KnowledgeCollectionPage(props: KnowledgeLayoutProps) {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {editingTag ? (
+        <TagEditDialog
+          tag={editingTag}
+          title={t("settings.tags.editTitle")}
+          inputLabel={t("settings.tags.editLabel")}
+          saveLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          errorLabel={t("settings.tags.operationFailed")}
+          onClose={() => setEditingTag(null)}
+          onSave={(value) => props.onUpdateTag(editingTag.id, value)}
+        />
       ) : null}
 
       <div className="table-list">

@@ -27,11 +27,16 @@ POSTGRES_SCHEMA_STATEMENTS = (
                 'audit_logs',
                 'document_read_status',
                 'documents',
+                'document_chunks',
+                'knowledge_chunks',
+                'knowledge_document_chunks',
+                'chunks',
                 'guidance_drafts',
                 'interview_prompt_profiles',
                 'interview_states',
                 'knowledge_dbs',
                 'knowledge_fields',
+                'knowledge_tags',
                 'knowledges',
                 'learning_analysis_drafts',
                 'messages',
@@ -42,6 +47,36 @@ POSTGRES_SCHEMA_STATEMENTS = (
                 'voice_sessions',
                 'voice_turns'
             )
+        )
+    )
+    """,
+    "ALTER TABLE kikiori.entity_store DROP CONSTRAINT IF EXISTS entity_store_type_check",
+    """
+    ALTER TABLE kikiori.entity_store
+    ADD CONSTRAINT entity_store_type_check CHECK (
+        entity_type IN (
+            'audit_logs',
+            'document_read_status',
+            'documents',
+            'document_chunks',
+            'knowledge_chunks',
+            'knowledge_document_chunks',
+            'chunks',
+            'guidance_drafts',
+            'interview_prompt_profiles',
+            'interview_states',
+            'knowledge_dbs',
+            'knowledge_fields',
+            'knowledge_tags',
+            'knowledges',
+            'learning_analysis_drafts',
+            'messages',
+            'proposals',
+            'records',
+            'voice_assistant_events',
+            'voice_connection_events',
+            'voice_sessions',
+            'voice_turns'
         )
     )
     """,

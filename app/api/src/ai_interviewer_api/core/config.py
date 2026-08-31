@@ -22,6 +22,38 @@ class Settings:
         "DATABASE_URL",
         "postgresql://kikiori:kikiori@localhost:5432/kikiori",
     )
+    document_knowledge_backend: str = os.getenv(
+        "DOCUMENT_KNOWLEDGE_BACKEND",
+        "postgres",
+    )
+    elasticsearch_cloud_id: str = os.getenv("ELASTICSEARCH_CLOUD_ID", "")
+    elasticsearch_url: str = os.getenv("ELASTICSEARCH_URL", "")
+    elasticsearch_api_key: str = os.getenv("ELASTICSEARCH_API_KEY", "")
+    elasticsearch_username: str = os.getenv("ELASTICSEARCH_USERNAME", "")
+    elasticsearch_password: str = os.getenv("ELASTICSEARCH_PASSWORD", "")
+    elasticsearch_verify_certs: bool = (
+        os.getenv("ELASTICSEARCH_VERIFY_CERTS", "true").lower() == "true"
+    )
+    elasticsearch_request_timeout_seconds: float = float(
+        os.getenv("ELASTICSEARCH_REQUEST_TIMEOUT_SECONDS", "10")
+    )
+    elasticsearch_document_index: str = os.getenv(
+        "ELASTICSEARCH_DOCUMENT_INDEX",
+        "kikiori-documents-v1",
+    )
+    elasticsearch_document_chunk_index: str = os.getenv(
+        "ELASTICSEARCH_DOCUMENT_CHUNK_INDEX",
+        "kikiori-document-chunks-v1",
+    )
+    document_max_upload_bytes: int = int(
+        os.getenv("DOCUMENT_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    )
+    document_chunk_size_chars: int = int(
+        os.getenv("DOCUMENT_CHUNK_SIZE_CHARS", "1200")
+    )
+    document_chunk_overlap_chars: int = int(
+        os.getenv("DOCUMENT_CHUNK_OVERLAP_CHARS", "150")
+    )
     sqs_document_queue_url: str = os.getenv(
         "SQS_DOCUMENT_QUEUE_URL", "memory://document-ingestion"
     )

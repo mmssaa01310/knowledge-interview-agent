@@ -12,9 +12,11 @@ import {
 import { KnowledgeDocumentsContent } from "./KnowledgeDocumentsPage";
 import { useI18n, type Translate } from "../i18n";
 import { formatNumber } from "../lib/date";
+import type { KnowledgeTag } from "@ai-interviewer/shared-types";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
-import { OptionPicker } from "../components/ui/OptionPicker";
-import { TagEditor } from "../components/ui/TagEditor";
+import { OptionPicker, type OptionPickerOption } from "../components/ui/OptionPicker";
+import { TagEditDialog } from "../components/ui/TagEditDialog";
+import { buildKnowledgeTagOptions } from "../features/knowledge/tagOptions";
 import { useGuide } from "../features/guides/GuideProvider";
 
 const modelOptions = [
@@ -130,14 +132,16 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   const [savePromptTemplateName, setSavePromptTemplateName] = useState("");
   const [dontShowCreationGuideAgain, setDontShowCreationGuideAgain] = useState(false);
   const [expandedFieldIndex, setExpandedFieldIndex] = useState<number | null>(null);
+  const [editingTag, setEditingTag] = useState<KnowledgeTag | null>(null);
+  const [tagOperationError, setTagOperationError] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const assistInputRef = useRef<HTMLTextAreaElement | null>(null);
   const initializedKnowledgeIdRef = useRef(props.selectedKnowledge?.id ?? null);
   const promptProfiles = props.promptProfiles ?? [];
   const requiresInterviewConfiguration = !isInterviewConfigurationComplete(props.selectedKnowledge);
-  const existingTags = useMemo(
-    () => props.knowledges.flatMap((knowledge) => knowledge.tags ?? []),
-    [props.knowledges],
+  const tagOptions = useMemo(
+    () => buildKnowledgeTagOptions(props.availableTags, props.knowledges, locale, t("common.notSet")),
+    [props.availableTags, props.knowledges, locale, t],
   );
 
   const selectedModelOption = modelOptions.some((option) => option.value === props.settingsDefaultModelId)
@@ -157,6 +161,24 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
   function clearSettingsNotice() {
     if (!props.settingsNotice && props.settingsSaveState === "idle") return;
     props.onClearSettingsNotice();
+  }
+
+  function editTag(option: OptionPickerOption) {
+    if (!option.id) return;
+    const tag = props.availableTags.find((candidate) => candidate.id === option.id);
+    if (tag) {
+      setTagOperationError(false);
+      setEditingTag(tag);
+    }
+  }
+
+  function deleteTag(option: OptionPickerOption) {
+    if (!option.id || !window.confirm(t("settings.tags.deleteConfirm", { tag: option.label }))) return;
+    setTagOperationError(false);
+    void props.onDeleteTag(option.id).catch((error) => {
+      console.error("Failed to delete knowledge tag", error);
+      setTagOperationError(true);
+    });
   }
 
   useEffect(() => {
@@ -476,26 +498,59 @@ export function KnowledgeSettingsPage(props: KnowledgeLayoutProps) {
           </span>
         </summary>
         <div className="knowledge-info-content">
-          <div className="knowledge-info-primary">
-            <label>{t("common.name")}<input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} /></label>
-            <div className="knowledge-tags-field">
-              <strong className="knowledge-info-field-label">{t("settings.tags.title")}</strong>
-              <TagEditor
-                tags={props.settingsTags}
-                suggestions={existingTags}
-                onChange={(tags) => { clearSettingsNotice(); props.setSettingsTags(tags); }}
+          <div className="knowledge-info-fields">
+            <label>
+              <span>{t("common.name")}</span>
+              <input value={props.settingsName} onChange={(event) => { clearSettingsNotice(); props.setSettingsName(event.target.value); }} />
+            </label>
+            <label className="knowledge-tag-field">
+              <span>{t("settings.tags.title")}</span>
+              <OptionPicker
+                value={props.settingsTags[0] ?? ""}
+                options={tagOptions}
+                onChange={(tag) => {
+                  const normalizedTag = tag.trim().replace(/^#+/, "");
+                  clearSettingsNotice();
+                  props.setSettingsTags(normalizedTag ? [normalizedTag] : []);
+                }}
                 ariaLabel={t("settings.tags.inputAria")}
                 placeholder={t("settings.tags.placeholder")}
-                addLabel={t("settings.tags.add")}
-                removeLabel={(tag) => t("settings.tags.remove", { tag })}
-                suggestionsLabel={t("settings.tags.existing")}
-                selectSuggestionLabel={(tag) => t("settings.tags.select", { tag })}
+                searchPlaceholder={t("settings.tags.placeholder")}
+                emptyLabel={t("common.notSet")}
+                searchable
+                creatable
+                onCreateOption={props.onCreateTag}
+                createOptionLabel={(tag) => t("settings.tags.create", { tag: `#${tag.trim().replace(/^#+/, "")}` })}
+                selectedValueLabel={(tag) => `#${tag.trim().replace(/^#+/, "")}`}
+                showOptionActions={(option) => Boolean(option.id)}
+                onEditOption={editTag}
+                onDeleteOption={deleteTag}
+                editOptionLabel={(option) => t("settings.tags.editAria", { tag: option.label })}
+                deleteOptionLabel={(option) => t("settings.tags.deleteAria", { tag: option.label })}
+                className="knowledge-tag-picker"
               />
-            </div>
+            </label>
+            {tagOperationError ? <p className="notice error">{t("settings.tags.operationFailed")}</p> : null}
+            <label className="knowledge-info-description">
+              <span>{t("common.description")}</span>
+              <textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} />
+            </label>
           </div>
-          <label className="knowledge-info-description">{t("common.description")}<textarea value={props.settingsDescription} onChange={(event) => { clearSettingsNotice(); props.setSettingsDescription(event.target.value); }} /></label>
         </div>
       </details>
+
+      {editingTag ? (
+        <TagEditDialog
+          tag={editingTag}
+          title={t("settings.tags.editTitle")}
+          inputLabel={t("settings.tags.editLabel")}
+          saveLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          errorLabel={t("settings.tags.operationFailed")}
+          onClose={() => setEditingTag(null)}
+          onSave={(value) => props.onUpdateTag(editingTag.id, value)}
+        />
+      ) : null}
 
       <div className="settings-tabs-row" data-guide="settings-tabs">
         <div className="settings-tabs" role="tablist" aria-label={t("settings.menuAria")}>

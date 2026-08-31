@@ -68,7 +68,9 @@ APIの保存先はPostgreSQLである。ローカル開発では`infra/docker-co
 
 ローカル実装では、全ロール共通のナレッジ一覧サイドバー、Recordの担当者・明示閲覧許可による一覧絞り込み、記録の確認待ち・差し戻し・承認状態を実装している。ナレッジ管理者は最後に開いたナレッジ、または最初のナレッジの「インタビュー」を開く。`interviewer`は同一テナントの有効なナレッジ一覧から選択し、設定済みのナレッジで自分の新規Recordを開始できる。`viewer`はアクセス可能な記録からナレッジを構成し、最初のアクセス可能なナレッジの「インタビュー」を開く。サイドバーのナレッジ一覧は表示設定がない場合は作成日時順で表示し、利用者がナレッジごとのピンアイコンをクリックしてピン留めを切り替え、ドラッグハンドルで同じタググループ内のナレッジを並べ替えできる。ピン留めしたナレッジはサイドバー上部の「ピン留め」グループへまとめ、元のタググループには重複表示しない。設定は認証ユーザーとテナント単位のlocalStorageへ保存し、同じピン留め状態のナレッジを指定順で表示する。サイドバーでは、ナレッジをタグ別の折りたたみ可能なグループに分け、複数タグのナレッジは各グループに表示し、タグなしは「タグなし」グループへ表示する。グループはタグ名順で、「タグなし」を最後に表示する。ナレッジ配下では「インタビュー」「記録」をメイン画面上部の主タブとして表示し、管理者系ロールだけにヘッダーの主ボタン「インタビュー設定」を表示する。ナレッジ配下のページヘッダー左側にある「ナレッジ一覧」は、全ナレッジを表示する`/knowledge-dbs`へ遷移する。`/knowledge-dbs`では、最後に開いたナレッジのインタビューへ自動遷移せず、ナレッジ一覧を表示する。新規ナレッジは作成後に設定画面の「実行設定」を開き、設定が完了するまで記録作成を表示しない。質問項目は、通常時に順番・項目名・必須状態・詳細項目の要約を1行カードで表示し、選択した1件だけをアコーディオン形式で編集できる。項目追加直後は追加項目を展開し、AI提案は承認カードとして分離表示する。Frontendに全体の`/records`画面はなく、記録はナレッジ配下で確認する。記録詳細では`1200px`以上で会話を左、整理結果または質問リストを右に表示する。`901px`から`1199px`では会話と整理結果の2ペインを維持し、`900px`以下では整理結果または質問リストを右Drawerへ切り替える。業務フローとシステム要件では、整理結果を表示するサイドバーをデスクトップ時に全体の44%へ広げ、フローチャート領域を380pxへ拡大する。図の高さは狭い画面で段階的に縮小する。`system_requirement`の整理結果は「要件整理」「処理の流れ」タブで切り替え、「処理の流れ」内でフローチャートとシーケンス図を切り替える。「インタビュー」では管理者系ロールと対象者が設定済みナレッジから記録を開始し、対象者は自分の途中の記録を再開する。「記録」では権限範囲内の記録を確認し、管理者系ロールがインタビュー結果の編集、差し戻し、承認を行う。インタビュー完了時は記録状態を自動的に確認待ちへ変更する。記録削除は`admin`だけが実行できる。`KnowledgeDb`は内部の分類単位として保持し、ナレッジ一覧には表示しない。複数のDBがある場合の新規ナレッジ作成時だけ「業務領域」として選択できる。Record API、音声セッションAPI、記録に関連する提案APIで同じRecord認可判定を使用する。ユーザー一覧を永続管理する本番のユーザーディレクトリと、画面から担当者・閲覧者を選択する管理画面は未実装である。権限モデルは[利用者ワークスペースと認可アーキテクチャ](../architecture/access-control.md)を参照する。
 
-ナレッジ作成ダイアログとナレッジ設定の「ナレッジ情報」にはタグ編集欄を表示する。入力したタグはEnter、カンマ、読点で追加でき、個別に削除できる。既存タグは候補リストから選択できる。保存時のタグ正規化と制限はBackendが正本として検証する。設定画面ではナレッジ名を折りたたみ時も見出しとして表示し、展開時は名前とタグを横並び、説明をその下に表示する。
+ナレッジ作成ダイアログとナレッジ設定の「ナレッジ情報」にはタグ編集欄を表示する。入力可能な検索付きComboboxで既存タグを選択し、候補にない値はタグマスターへ新規作成できる。タグは1ナレッジにつき1つを設定し、保存時のタグ正規化と制限はBackendが正本として検証する。設定画面ではナレッジ名を折りたたみ時も見出しとして表示し、展開時は名前とタグを横並び、説明をその下に表示する。
+
+現行UIのタグ欄は、既存タグの選択と新規タグ作成を同じ検索可能なComboboxで行う。タグは1ナレッジにつき1つ選択でき、未設定を選んでも`KnowledgeTag`マスターからは削除しない。
 
 ナレッジ一覧と業務領域内のナレッジ一覧では、タグを独立した列に表示する。タグ未設定は明示し、タグが多い場合はタグ列内でスクロールできる。
 
@@ -94,6 +96,7 @@ deletedAt?
 | エンティティ | 主な役割 | 主な関連 |
 |---|---|---|
 | `KnowledgeDb` | ナレッジをまとめる単位 | `Knowledge`を複数保持 |
+| `KnowledgeTag` | テナント単位で再利用するタグマスター | `Knowledge.tags`から参照され、紐付け解除では削除しない |
 | `Knowledge` | ナレッジとインタビュー設定 | `KnowledgeDb`に属し、タグ、Field、Record、Documentを保持 |
 | `InterviewPromptProfile` | 実インタビューの追加カスタマイズ | テナントに属する |
 | `KnowledgeField` | 固定フォームの質問項目 | `Knowledge`に属する |
@@ -102,7 +105,6 @@ deletedAt?
 | `VoiceTurn` | 音声セッション内の発話 | `VoiceSession`とRecordに属する |
 | `AiProposal` | AIが作成した未承認候補 | Recordに属する |
 | `Document` | ナレッジに紐づく文書メタデータ | `Knowledge`に属する |
-| `DocumentReadStatus` | ユーザー別の文書既読状態 | Documentとユーザーに属する |
 | `AuditLog` | 作成・更新・削除・承認、教育支援案の生成・公開の監査情報 | 操作対象を参照する |
 | `GuidanceDraft` | 教育目標ごとの学習案内・指導案の下書きと公開状態 | `InterviewRecord`、`Knowledge`に属する |
 | `LearningAnalysisDraft` | 同一ナレッジの複数記録を横断した学習支援分析、全体傾向、回答者別アドバイスの下書きと確認状態 | `Knowledge`に属し、対象記録IDをスコープへ保持する |
@@ -122,7 +124,7 @@ deletedAt?
 
 設定画面の初期選択はLunaとする。記録を作成・開始するには、選択したモデルを`interviewPlan.modelId`へ保存しなければならない。画像生成モデルは使用しない。
 
-設定画面には「基本設定」タブを置かず、ナレッジ名と説明を「ナレッジ情報」としてタブの上に表示する。タブは「質問項目」「実行設定」「事前知識」の3つとし、事前知識タブでは参照文書の追加・取り込み状態・既読状態を管理する。設定保存操作はナレッジ情報、質問項目、実行設定をまとめて保存し、文書追加・既読状態更新は各操作時に反映する。
+設定画面には「基本設定」タブを置かず、ナレッジ名と説明を「ナレッジ情報」としてタブの上に表示する。タブは「質問項目」「実行設定」「事前知識」の3つとし、事前知識タブでは管理者が登録した参照文書の本文表示・削除・取り込み状態を管理する。設定保存操作はナレッジ情報、質問項目、実行設定をまとめて保存し、文書追加・本文表示・削除は各操作時に反映する。
 
 記録を作成・開始するには、`interviewPlan`へ有効な`profile`と`modelId`を保存済みであることが必要である。設定未完了の場合、Backendは`409 interview_configuration_required`を返す。
 
@@ -143,7 +145,16 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 * `PATCH /api/knowledge-dbs/{knowledge_db_id}`
 * `DELETE /api/knowledge-dbs/{knowledge_db_id}`
 
-### 5.3 ナレッジ
+### 5.3 タグ
+
+* `GET /api/knowledge-tags`
+* `POST /api/knowledge-tags`
+* `PATCH /api/knowledge-tags/{tag_id}`
+* `DELETE /api/knowledge-tags/{tag_id}`
+
+タグマスターはテナント単位で管理し、`admin`または`knowledge_manager`だけが取得・作成できる。既存ナレッジのタグは取得時にマスターへ同期される。ナレッジの`tags`から値を削除しても、タグマスターの値は削除しない。
+
+### 5.4 ナレッジ
 
 * `GET /api/knowledge-dbs/{knowledge_db_id}/knowledges`
 * `POST /api/knowledge-dbs/{knowledge_db_id}/knowledges`
@@ -153,7 +164,7 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 
 ナレッジの作成・更新APIは`tags: string[]`を受け付ける。保存時に前後空白の除去、空文字の除外、大文字・小文字を区別しない重複除去を行う。タグは1ナレッジあたり20件以下、1件あたり40文字以下とし、制限超過時はHTTP 422を返す。取得APIは、既存の認証・認可スコープ内でナレッジの`tags`を返す。
 
-### 5.4 質問項目と質問設計
+### 5.5 質問項目と質問設計
 
 * `GET /api/knowledges/{knowledge_id}/fields`
 * `POST /api/knowledges/{knowledge_id}/fields`
@@ -168,7 +179,11 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 
 `field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用し、質問項目設計の本番経路ではStrands Agentを使用しない。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
 
-### 5.5 インタビュー記録
+通常の固定項目インタビューと構造化インタビューの次質問生成も、`interview_document_retrieval`の共通検索を利用する。`indexed`または既存Workerの取り込み完了状態にある同一テナント・同一Knowledgeの文書・チャンクだけを質問コンテキストへ渡し、質問には`retrievedSources`を記録する。音声インタビューは`app/api`が生成した質問と出典を再利用する。文書アップロードはBackendで本文抽出・チャンク化を行い、設定された文書Repositoryへ保存する。
+
+質問対象の値が取り込み済み文書に明示されている場合、共通の`QuestionGenerationOutput`が`documentCandidateValue`と`documentCandidateSourceIds`を返す。Backendは検索結果への値の出現と出典IDを検証したうえで、`candidateSource=document_reference`、`answerState/status=AWAITING_CONFIRMATION`の仮候補として保存する。初回質問は「文書では○○となっています。この内容で合っていますか？」という確認事項になり、明示承認後だけ正式回答へ移る。値が文書にない場合、文書の取り込みが完了していない場合、または`retrievalPolicy=never`の場合は通常質問へ戻る。通常、構造化、音声のすべてでこの状態と出典を共有し、音声はAPIが生成した確認質問をそのまま再生する。
+
+### 5.6 インタビュー記録
 
 * `GET /api/records`
 * `GET /api/knowledges/{knowledge_id}/records`
@@ -195,7 +210,7 @@ stream_end
 proposal_created
 ```
 
-### 5.6 提案と承認
+### 5.7 提案と承認
 
 * `GET /api/records/{record_id}/proposals`
 * `POST /api/proposals/{proposal_id}/approve`
@@ -204,16 +219,17 @@ proposal_created
 
 AI提案は`draft`または`needs_review`で保存し、人の操作なしに`approved`へ変更しない。承認方式は`single`、`record_bulk`、`list_bulk`を区別する。
 
-### 5.7 文書
+### 5.8 文書
 
 * `GET /api/knowledges/{knowledge_id}/documents`
 * `POST /api/knowledges/{knowledge_id}/documents`
-* `POST /api/documents/{document_id}/read`
-* `POST /api/documents/{document_id}/acknowledge`
+* `POST /api/knowledges/{knowledge_id}/documents/upload`
+* `GET /api/documents/{document_id}/content`
+* `DELETE /api/documents/{document_id}`
 
-現在の文書登録はメタデータ登録であり、登録後にメモリ上の取り込みキューへ投入する。文書本体のアップロードは未実装である。
+JSON形式の文書登録は後続Worker向けのメタデータ登録として残し、ファイル本体を取り込む場合は`documents/upload`を利用する。アップロード経路は同期的に本文抽出・チャンク化・検索Repositoryへの保存まで行い、取り込み状態を`indexed`または`failed`へ更新する。本文表示と削除は同じテナントの管理者だけが実行でき、削除時は検索Repositoryの本文・チャンクも併せて削除する。
 
-### 5.8 音声セッション
+### 5.9 音声セッション
 
 ユーザー向け音声セッションAPI:
 
@@ -234,14 +250,14 @@ AI提案は`draft`または`needs_review`で保存し、人の操作なしに`ap
 * `POST /internal/voice-sessions/{voice_session_id}/assistant-events`
 * `POST /internal/voice-sessions/{voice_session_id}/connection-events`
 
-### 5.9 開発用データ操作
+### 5.10 開発用データ操作
 
 開発用Composeで有効になるAPIであり、本番APIとして利用しない。
 
 * `POST /api/dev/voice-demo/reset`
 * `POST /api/dev/system-requirement-demo/reset`
 
-### 5.10 ナレッジ分析と教育支援
+### 5.11 ナレッジ分析と教育支援
 
 * `GET /api/admin/dashboard`
 * `POST /api/admin/learning-analysis`
@@ -337,10 +353,9 @@ Composeを使用しない場合の詳細は、リポジトリ直下の`README.md
 
 * 本番IdP（Entra ID候補）のJWT検証
 * SQSの実接続とAPI・Worker間の実ジョブ連携
-* 文書ファイル本体のアップロードと実ファイル処理
 * 承認済み項目値を正式ナレッジへ反映する永続モデル
 * 本番向けの監視、負荷対策、マルチテナント運用
 
-質問項目設計の検索データ源もPostgreSQLのRepository Storeである。文書ファイル本体のアップロードと実ファイル処理は未実装である。
+文書ファイルは`POST /api/knowledges/{knowledge_id}/documents/upload`で受信し、PDF、DOCX、XLSX、PPTX、CSV、Markdown、TXTから本文を抽出してチャンク化する。文書メタデータと取り込み状態はPostgreSQLに保存し、本文・チャンクは`DOCUMENT_KNOWLEDGE_BACKEND`に応じてPostgreSQLまたはElastic Cloudへ保存する。Elastic Cloudでは起動時に設定済みインデックスの存在と接続を確認する。既存文書の切替先への移行は、別途再インデックス操作が必要である。
 
 未実装項目を実装した場合は、恒久的な仕様を`docs/spec.md`または該当する`docs/architecture/`・`docs/reference/`へ反映し、この文書の実装状況も更新する。

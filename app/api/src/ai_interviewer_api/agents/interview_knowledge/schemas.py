@@ -9,7 +9,7 @@ from ai_interviewer_api.services.interview_answer_resolution import AnswerResolu
 
 InterviewProfile = Literal["fixed_form", "business_process", "system_requirement"]
 ApplicabilityStatus = Literal["unknown", "present", "not_applicable"]
-CandidateSource = Literal["user_statement", "assistant_proposal"]
+CandidateSource = Literal["user_statement", "assistant_proposal", "document_reference"]
 StructuredDialogueAct = Literal[
     "ANSWER",
     "CLARIFICATION_REQUEST",
@@ -185,3 +185,5 @@ class ProcessModelEditOutput(StrictModel):
 
 class QuestionGenerationOutput(StrictModel):
     questionText: str
+    documentCandidateValue: str | None = Field(default=None, max_length=1000)
+    documentCandidateSourceIds: list[str] = Field(default_factory=list, max_length=6)

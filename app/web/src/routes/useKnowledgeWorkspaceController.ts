@@ -1,24 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb, UserRole } from "@ai-interviewer/shared-types";
+import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb, KnowledgeTag, UserRole } from "@ai-interviewer/shared-types";
 import { confirmApproveAll } from "../components/ui/ApproveAllDialog";
 import {
   createKnowledge,
   createKnowledgeDb,
   createKnowledgeField,
+  createKnowledgeTag,
   deleteKnowledge,
   deleteKnowledgeField,
+  deleteKnowledgeTag,
   fetchKnowledgeDbs,
   fetchKnowledgeFields,
+  fetchKnowledgeTags,
   fetchKnowledges,
   fetchMe,
   updateKnowledge,
   updateKnowledgeField,
+  updateKnowledgeTag,
   type KnowledgeField,
   type UserProfile
 } from "../features/knowledge/api/knowledgeApi";
 import {
-  createDocument,
+  deleteDocument,
+  fetchDocumentContent,
   fetchDocuments,
+  uploadDocument,
+  type DocumentContent,
   type DocumentSummary
 } from "../features/documents/api/documentApi";
 import {
@@ -52,7 +59,6 @@ import {
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 import type {
   ChatMessage,
-  DocumentReadState,
   InterviewAnswerTarget,
   InterviewState,
   InterviewStreamMetadata,
@@ -61,23 +67,6 @@ import type {
 import type { GuidanceDraft } from "../types/dashboard";
 import { getRouteKnowledgeDbId, getRouteKnowledgeId } from "./routeUtils";
 import type { Route } from "./routeTypes";
-
-function inferDocumentContentType(fileName: string) {
-  const normalized = fileName.toLowerCase();
-
-  if (normalized.endsWith(".pdf")) return "application/pdf";
-  if (normalized.endsWith(".doc") || normalized.endsWith(".docx")) {
-    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-  }
-  if (normalized.endsWith(".xls") || normalized.endsWith(".xlsx")) {
-    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  }
-  if (normalized.endsWith(".ppt") || normalized.endsWith(".pptx")) {
-    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-  }
-  if (normalized.endsWith(".md")) return "text/markdown";
-  return "text/plain";
-}
 
 type UseKnowledgeWorkspaceControllerArgs = {
   route: Route;
@@ -118,6 +107,24 @@ function rememberKnowledge(knowledgeId: string) {
   } catch {
     // localStorageが利用できない環境でもインタビュー操作は継続する。
   }
+}
+
+function normalizeKnowledgeTagForUi(value: string) {
+  return value.trim().replace(/^#+/, "");
+}
+
+function mergeKnowledgeTags(current: KnowledgeTag[], additions: readonly KnowledgeTag[]) {
+  const tags = new Map<string, KnowledgeTag>();
+  [...current, ...additions].forEach((tag) => {
+    const normalizedTag = normalizeKnowledgeTagForUi(tag.name);
+    if (!normalizedTag) return;
+    const key = normalizedTag.toLocaleLowerCase();
+    const existingTag = tags.get(key);
+    if (!existingTag || tag.id) {
+      tags.set(key, { ...tag, name: normalizedTag });
+    }
+  });
+  return [...tags.values()];
 }
 
 function createAccessibleKnowledgeDb(knowledge: Knowledge, knowledgeCount: number, t: Translate): KnowledgeDb {
@@ -162,14 +169,20 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [user, setUser] = useState<UserProfile | null>(null);
   const [knowledgeDbs, setKnowledgeDbs] = useState<KnowledgeDb[]>([]);
   const [knowledges, setKnowledges] = useState<Knowledge[]>([]);
+  const [availableTags, setAvailableTags] = useState<KnowledgeTag[]>([]);
   const [records, setRecords] = useState<InterviewRecord[]>([]);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [openedDocument, setOpenedDocument] = useState<DocumentContent | null>(null);
+  const [openingDocumentId, setOpeningDocumentId] = useState<string | null>(null);
+  const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [fields, setFields] = useState<KnowledgeField[]>([]);
   const [proposals, setProposals] = useState<AiProposal[]>([]);
   const [publishedGuidance, setPublishedGuidance] = useState<GuidanceDraft[]>([]);
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [newRecordTitle, setNewRecordTitle] = useState("");
-  const [newDocumentName, setNewDocumentName] = useState("");
+  const [newDocumentFile, setNewDocumentFile] = useState<File | null>(null);
+  const [documentNotice, setDocumentNotice] = useState("");
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [settingsName, setSettingsName] = useState("");
   const [settingsDescription, setSettingsDescription] = useState("");
   const [settingsSystemPrompt, setSettingsSystemPrompt] = useState("");
@@ -197,7 +210,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [interviewAnswerOverrides, setInterviewAnswerOverrides] = useState<Record<string, string>>({});
   const [deletedExtraQuestionIds, setDeletedExtraQuestionIds] = useState<string[]>([]);
   const [recordNotice, setRecordNotice] = useState("");
-  const [documentReadStates, setDocumentReadStates] = useState<Record<string, DocumentReadState>>({});
   const pendingInterviewSubmissionRef = useRef<{
     content: string;
     target: InterviewAnswerTarget | null;
@@ -274,6 +286,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         voiceTurnId: message.voiceTurnId,
         voiceResponseId: message.voiceResponseId,
         candidateSource: message.candidateSource,
+        retrievedSources: message.retrievedSources,
         isActualUtterance: message.isActualUtterance,
         isLegacy: !message.questionId && !message.answerToQuestionId && !message.turnType,
       }));
@@ -319,6 +332,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
           targetType: assistantMessage.targetType,
           targetId: assistantMessage.targetId,
           candidateSource: assistantMessage.candidateSource,
+          retrievedSources: assistantMessage.retrievedSources,
         }]));
       }
       if (metadata?.interviewState) {
@@ -358,6 +372,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     const [profile, dbs] = await Promise.all([fetchMe(), fetchKnowledgeDbs()]);
     setUser(profile);
     setKnowledgeDbs(dbs);
+    if (profile.role === "admin" || profile.role === "knowledge_manager") {
+      setAvailableTags(await fetchKnowledgeTags());
+    } else {
+      setAvailableTags([]);
+    }
     return dbs;
   }
 
@@ -461,6 +480,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
     setKnowledgeDbs(nextKnowledgeDbs);
     setKnowledges(nextKnowledges);
+    setAvailableTags([]);
     if (nextKnowledges.length === 0) {
       setRecords([]);
       setDocuments([]);
@@ -524,8 +544,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       args.navigate("/knowledge-dbs");
     }
 
-    const dbs = await fetchKnowledgeDbs();
+    const [dbs, tags] = await Promise.all([
+      fetchKnowledgeDbs(),
+      ["admin", "knowledge_manager"].includes(profile.role)
+        ? fetchKnowledgeTags()
+        : Promise.resolve([] as KnowledgeTag[]),
+    ]);
     setKnowledgeDbs(dbs);
+    setAvailableTags(tags);
     const knowledgeIndex = await loadKnowledgeIndex(dbs);
     if (args.route.name === "dashboard") {
       setRecords([]);
@@ -579,6 +605,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       args.navigate(`/knowledge-dbs/${nextKnowledgeDbId}/knowledges/${openedKnowledge.id}/interview`);
     } else {
       setKnowledges([]);
+      setAvailableTags([]);
       setRecords([]);
       setDocuments([]);
       setFields([]);
@@ -651,6 +678,52 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     });
   }
 
+  async function handleCreateTag(value: string) {
+    const normalizedTag = normalizeKnowledgeTagForUi(value);
+    if (!normalizedTag) return;
+    try {
+      const createdTag = await createKnowledgeTag(normalizedTag);
+      setAvailableTags((current) => mergeKnowledgeTags(current, [createdTag]));
+    } catch (error) {
+      // 保存時にもKnowledge側でタグを登録するため、候補選択を妨げない。
+      console.error("Failed to create knowledge tag", error);
+    }
+  }
+
+  async function handleUpdateTag(tagId: string, value: string) {
+    const normalizedTag = normalizeKnowledgeTagForUi(value);
+    if (!normalizedTag) throw new Error("knowledge_tag_required");
+    const currentTag = availableTags.find((tag) => tag.id === tagId);
+    const updatedTag = await updateKnowledgeTag(tagId, normalizedTag);
+    setAvailableTags((current) => current.map((tag) => tag.id === tagId ? updatedTag : tag));
+    if (!currentTag) return;
+
+    const previousKey = currentTag.name.trim().toLocaleLowerCase();
+    setKnowledges((current) => current.map((knowledge) => ({
+      ...knowledge,
+      tags: knowledge.tags.map((tag) => (
+        tag.trim().toLocaleLowerCase() === previousKey ? updatedTag.name : tag
+      )),
+    })));
+    setSettingsTags((current) => current.map((tag) => (
+      tag.trim().toLocaleLowerCase() === previousKey ? updatedTag.name : tag
+    )));
+  }
+
+  async function handleDeleteTag(tagId: string) {
+    const currentTag = availableTags.find((tag) => tag.id === tagId);
+    await deleteKnowledgeTag(tagId);
+    setAvailableTags((current) => current.filter((tag) => tag.id !== tagId));
+    if (!currentTag) return;
+
+    const deletedKey = currentTag.name.trim().toLocaleLowerCase();
+    setKnowledges((current) => current.map((knowledge) => ({
+      ...knowledge,
+      tags: knowledge.tags.filter((tag) => tag.trim().toLocaleLowerCase() !== deletedKey),
+    })));
+    setSettingsTags((current) => current.filter((tag) => tag.trim().toLocaleLowerCase() !== deletedKey));
+  }
+
   async function handleDeleteKnowledge(knowledgeId: string) {
     if (!selectedKnowledgeDb) return;
     if (!window.confirm(t("errors.knowledgeDeleteConfirm"))) return;
@@ -689,7 +762,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         defaultModelId: settingsDefaultModelId,
         interviewPlan,
       });
-
       const existingIds = fields.map((field) => field.id).filter(Boolean);
       const draftIds = draftFields.map((field) => field.id).filter(Boolean);
       await Promise.all(
@@ -716,14 +788,78 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     }
   }
 
-  async function handleCreateDocument() {
-    if (!selectedKnowledgeDb || !selectedKnowledge || !newDocumentName.trim()) return;
-    await createDocument(selectedKnowledge.id, {
-      fileName: newDocumentName.trim(),
-      contentType: inferDocumentContentType(newDocumentName.trim())
-    });
-    setNewDocumentName("");
-    await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+  async function handleUploadDocument() {
+    if (!selectedKnowledgeDb || !selectedKnowledge || !newDocumentFile || isUploadingDocument) return;
+    setIsUploadingDocument(true);
+    setDocumentNotice("");
+    try {
+      const uploaded = await uploadDocument(selectedKnowledge.id, newDocumentFile);
+      setNewDocumentFile(null);
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      setDocumentNotice(
+        uploaded.ingestionStatus === "indexed"
+          ? t("knowledge.documents.uploadSuccess")
+          : t("knowledge.documents.uploadQueued")
+      );
+    } catch (error) {
+      console.error("Failed to upload document", error);
+      setDocumentNotice(
+        error instanceof ApiError && error.detail
+          ? `${t("knowledge.documents.uploadFailed")} (${error.detail})`
+          : t("knowledge.documents.uploadFailed")
+      );
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+    } finally {
+      setIsUploadingDocument(false);
+    }
+  }
+
+  async function handleOpenDocument(documentId: string) {
+    if (openingDocumentId || deletingDocumentId) return;
+    setOpeningDocumentId(documentId);
+    setDocumentNotice("");
+    try {
+      const content = await fetchDocumentContent(documentId);
+      setOpenedDocument(content);
+    } catch (error) {
+      console.error("Failed to open document", error);
+      setDocumentNotice(
+        error instanceof ApiError && error.detail
+          ? `${t("knowledge.documents.openFailed")} (${error.detail})`
+          : t("knowledge.documents.openFailed")
+      );
+    } finally {
+      setOpeningDocumentId(null);
+    }
+  }
+
+  function handleCloseDocument() {
+    setOpenedDocument(null);
+  }
+
+  async function handleDeleteDocument(documentId: string) {
+    if (deletingDocumentId || openingDocumentId) return;
+    setDeletingDocumentId(documentId);
+    setDocumentNotice("");
+    try {
+      await deleteDocument(documentId);
+      if (openedDocument?.document.id === documentId) {
+        setOpenedDocument(null);
+      }
+      if (selectedKnowledgeDb && selectedKnowledge) {
+        await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      }
+      setDocumentNotice(t("knowledge.documents.deleteSuccess"));
+    } catch (error) {
+      console.error("Failed to delete document", error);
+      setDocumentNotice(
+        error instanceof ApiError && error.detail
+          ? `${t("knowledge.documents.deleteFailed")} (${error.detail})`
+          : t("knowledge.documents.deleteFailed")
+      );
+    } finally {
+      setDeletingDocumentId(null);
+    }
   }
 
   async function handleCreateRecord() {
@@ -755,11 +891,12 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
 
   async function handleDeleteRecord(recordId: string) {
     if (!selectedKnowledgeDb || !selectedKnowledge) return;
-    if (!window.confirm(t("errors.recordDeleteConfirm"))) return;
     try {
       await deleteRecord(recordId);
       await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
-      setRecordNotice(t("errors.recordDeleted"));
+      // 削除成功は一覧から記録が消えることで示す。共通noticeを残すと、
+      // インタビュー画面へ戻った後も削除済みの操作結果が表示され続ける。
+      setRecordNotice("");
     } catch (error) {
       console.error("Failed to delete interview record", error);
       setRecordNotice(t("errors.recordDeleteFailed"));
@@ -1055,21 +1192,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     });
   }
 
-  function handleUpdateDocumentReadState(documentId: string, nextState: DocumentReadState["readStatus"]) {
-    const now = new Date().toISOString();
-    setDocumentReadStates((current) => ({
-      ...current,
-      [documentId]: {
-        readStatus: nextState,
-        readProgress: nextState === "opened" ? 25 : nextState === "reading" ? 60 : 100,
-        acknowledged: nextState === "acknowledged",
-        lastOpenedAt: now,
-        readAt: nextState === "read" || nextState === "acknowledged" ? now : current[documentId]?.readAt,
-        acknowledgedAt: nextState === "acknowledged" ? now : current[documentId]?.acknowledgedAt
-      }
-    }));
-  }
-
   function handleRejectProposal(proposalId: string) {
     setProposals((items) => items.map((proposal) => (
       proposal.id === proposalId ? { ...proposal, status: "rejected" } : proposal
@@ -1141,15 +1263,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   }, [selectedKnowledge?.id, selectedRecord?.id, user?.role]);
 
   useEffect(() => {
-    setDocumentReadStates((current) => ({
-      ...Object.fromEntries(documents.map((document) => [document.id, current[document.id] ?? {
-        readStatus: "unread",
-        readProgress: 0,
-        acknowledged: false
-      }])),
-      ...current
-    }));
-  }, [documents]);
+    setOpenedDocument(null);
+    setOpeningDocumentId(null);
+    setDeletingDocumentId(null);
+  }, [selectedKnowledge?.id]);
 
   useEffect(() => {
     if ("recordId" in args.route && user && ["admin", "knowledge_manager"].includes(user.role)) {
@@ -1162,6 +1279,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     user,
     knowledgeDbs,
     knowledges,
+    availableTags,
     selectedKnowledgeDb,
     selectedKnowledge,
     records,
@@ -1183,6 +1301,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setSettingsTargetEquipment,
     settingsTags,
     setSettingsTags,
+    onCreateTag: handleCreateTag,
+    onUpdateTag: handleUpdateTag,
+    onDeleteTag: handleDeleteTag,
     settingsLanguage,
     setSettingsLanguage,
     settingsDefaultModelId,
@@ -1193,12 +1314,15 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     settingsSaveState,
     newRecordTitle,
     setNewRecordTitle,
-    newDocumentName,
-    setNewDocumentName,
+    newDocumentFile,
+    setNewDocumentFile,
+    documentNotice,
+    isUploadingDocument,
     selectedRecordIds,
     setSelectedRecordIds,
-    documentReadStates,
-    onUpdateDocumentReadState: handleUpdateDocumentReadState,
+    openedDocument,
+    openingDocumentId,
+    deletingDocumentId,
     selectedRecord,
     publishedGuidance,
     proposals,
@@ -1231,7 +1355,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       setSettingsNotice("");
       setSettingsSaveState("idle");
     },
-    onCreateDocument: handleCreateDocument,
+    onUploadDocument: handleUploadDocument,
+    onOpenDocument: handleOpenDocument,
+    onCloseDocument: handleCloseDocument,
+    onDeleteDocument: handleDeleteDocument,
     onCreateRecord: handleCreateRecord,
     onDeleteRecord: handleDeleteRecord,
     onChangeRecordStatus: handleChangeRecordStatus,

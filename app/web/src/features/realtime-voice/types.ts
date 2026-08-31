@@ -11,6 +11,7 @@ Relations:
 */
 
 import type { InterviewLocale } from "@ai-interviewer/shared-types";
+import type { RetrievedSourceReference } from "../../types/app";
 
 export type VoiceConversationStatus =
   | "idle"
@@ -121,6 +122,7 @@ export type VoiceDataChannelEvent =
       text: string;
       questionId?: string | null;
       stateVersion?: number | null;
+      retrievedSources?: RetrievedSourceReference[];
     }
   | {
       type: "interview_state" | "interview_completed";

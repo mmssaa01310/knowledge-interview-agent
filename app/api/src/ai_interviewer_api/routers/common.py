@@ -5,6 +5,7 @@ from ai_interviewer_api.core.permissions import (
     MANAGEMENT_ROLES,
     ensure_record_access,
     ensure_tenant_scope,
+    is_active_record,
 )
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.repositories.store import store
@@ -20,6 +21,8 @@ def get_scoped_item(table: str, item_id: str, user: UserContext, not_found_detai
         raise HTTPException(status_code=404, detail=not_found_detail)
     ensure_tenant_scope(user, item["tenantId"])
     if table == "records":
+        if not is_active_record(item):
+            raise HTTPException(status_code=404, detail=not_found_detail)
         ensure_record_access(item, user, operation="read")
     return item
 

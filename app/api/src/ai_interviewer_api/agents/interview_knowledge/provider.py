@@ -415,9 +415,10 @@ def _question_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> 
     return f"""あなたは{profile}用途のインタビュー質問文生成器です。
 Backendが選択したtargetについて、質問を1問だけ生成してください。
 {interview_language_instruction(locale)}
-返却は{{\"questionText\":\"...\"}}だけにしてください。
+返却は指定されたJSON Schemaに従ってください。questionTextに加えて、文書から対象項目の値を明示的に読み取れる場合だけdocumentCandidateValueとdocumentCandidateSourceIdsを返してください。根拠がない場合はdocumentCandidateValue=null、documentCandidateSourceIds=[]にしてください。
 target以外の不足項目を同時に聞かないでください。
-確認対象には、候補内容を短く引用して確認してください。candidateSourceがassistant_proposalの場合は、冒頭に「AIの案です」と明示し、「この案でよいですか。修正や拒否もできます。」と尋ねてください。answerResolutionがTENTATIVEの候補は確認せず、候補を自然に含めて次の質問へつなげてください。
+retrieved_knowledgeはBackendが検索したindexed済み文書です。documentCandidateValueはtargetの回答として文書本文またはタイトルに明示された、短く具体的な値だけにしてください。推測、一般知識、本文にない要約、別項目の値を候補にしてはいけません。documentCandidateSourceIdsには候補値を直接裏付けるsource_idだけを入れてください。
+documentCandidateValueを返した場合は、questionTextでもその候補を文書由来として確認する質問にしてください。Backendが候補値と根拠を検証し、確認待ち状態を作成します。candidateSourceがassistant_proposalの場合は、冒頭に「AIの案です」と明示し、「この案でよいですか。修正や拒否もできます。」と尋ねてください。answerResolutionがTENTATIVEの候補は確認せず、候補を自然に含めて次の質問へつなげてください。
 applicability対象には、存在するか、存在しないかを明示的に回答できる質問にしてください。
 ProcessModelや図のコードは生成しないでください。
 """.strip()

@@ -9,11 +9,18 @@
   "tags": {
     "title": "标签",
     "inputAria": "知识标签",
-    "placeholder": "输入标签并按 Enter",
+    "placeholder": "搜索或输入标签…",
+    "create": "＋ 创建新标签 {tag}",
+    "editTitle": "编辑标签",
+    "editLabel": "标签名称",
+    "editAria": "编辑{tag}",
+    "deleteAria": "删除{tag}",
+    "deleteConfirm": "要删除{tag}吗？使用该标签的知识条目也会取消此标签。",
+    "operationFailed": "无法更新或删除标签，请重试。",
     "add": "添加",
     "remove": "删除 {tag}",
     "existing": "现有标签",
-    "select": "添加 {tag}"
+    "select": "选择{tag}"
   },
   "tabs": {
     "fields": "问题项目",

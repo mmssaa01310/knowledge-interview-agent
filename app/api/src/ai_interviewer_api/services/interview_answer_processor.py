@@ -401,6 +401,8 @@ class InterviewAnswerProcessor:
                     or raw_answer.strip()
                     or target.get("candidateAnswer")
                 )
+                target["candidateSource"] = "user_statement"
+                target["candidateSourceIds"] = []
                 target["answerSummary"] = None
                 target["status"] = "asking"
                 target["pendingQuestionId"] = question_id
@@ -469,6 +471,8 @@ class InterviewAnswerProcessor:
             candidate = _candidate_value(raw_answer, evaluation)
             if _is_tentative_candidate(evaluation, candidate):
                 field_state["candidateAnswer"] = candidate
+                field_state["candidateSource"] = "user_statement"
+                field_state["candidateSourceIds"] = []
                 field_state["answerResolution"] = resolution
                 field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
                 field_state["pendingQuestionId"] = question_id
@@ -488,6 +492,8 @@ class InterviewAnswerProcessor:
         if evaluation.decision == "CONFIRMABLE" and raw_answer.strip():
             candidate = _candidate_value(raw_answer, evaluation)
             field_state["candidateAnswer"] = candidate
+            field_state["candidateSource"] = "user_statement"
+            field_state["candidateSourceIds"] = []
             field_state["answerResolution"] = resolution
             if resolution == "AUTO_CONFIRM" and _is_auto_confirmable(evaluation, candidate):
                 _commit_field_candidate(current_state, field_id, field_state)
@@ -541,6 +547,8 @@ class InterviewAnswerProcessor:
                 evaluation.record_answer.strip()
                 or raw_answer.strip()
             )
+            field_state["candidateSource"] = "user_statement"
+            field_state["candidateSourceIds"] = []
         field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
         field_state["answerResolution"] = resolution
         field_state["status"] = "asking"
@@ -610,6 +618,8 @@ class InterviewAnswerProcessor:
             )
             if candidate:
                 field_state["candidateAnswer"] = candidate
+                field_state["candidateSource"] = "user_statement"
+                field_state["candidateSourceIds"] = []
                 resolution = _effective_answer_resolution(evaluation)
                 field_state["answerResolution"] = resolution
                 if resolution == "AUTO_CONFIRM" and _is_auto_confirmable(evaluation, candidate):
@@ -673,6 +683,8 @@ class InterviewAnswerProcessor:
             or str(field_state.get("candidateAnswer") or "").strip()
             or None
         )
+        field_state["candidateSource"] = "user_statement"
+        field_state["candidateSourceIds"] = []
         field_state["answerState"] = ANSWER_STATE_CANDIDATE_PENDING
         field_state["answerResolution"] = _effective_answer_resolution(evaluation)
         field_state["status"] = "asking"
@@ -768,6 +780,8 @@ class InterviewAnswerProcessor:
         if confirmation.outcome == "REVISE_WITH_CONTENT" and revised_record_answer:
             _append_raw_answer(field_state, transcript)
             field_state["candidateAnswer"] = revised_record_answer
+            field_state["candidateSource"] = "user_statement"
+            field_state["candidateSourceIds"] = []
             captured_items = _captured_items_by_id(field_state.get("capturedItems"))
             captured_items.update(_captured_items_by_id(confirmation.captured_items))
             field_state["capturedItems"] = list(captured_items.values())
@@ -816,6 +830,10 @@ def _ensure_field_state(current_state: dict[str, Any], field_id: str) -> dict[st
     )
     field_state.setdefault("answerState", ANSWER_STATE_UNANSWERED)
     field_state.setdefault("candidateAnswer", None)
+    field_state.setdefault("candidateSource", None)
+    field_state.setdefault("candidateSourceIds", [])
+    field_state.setdefault("confirmedSource", None)
+    field_state.setdefault("confirmedSourceIds", [])
     field_state.setdefault("rawAnswer", None)
     raw_answer_history = field_state.setdefault("rawAnswerHistory", [])
     if not raw_answer_history and field_state.get("rawAnswer"):
@@ -889,6 +907,10 @@ def _commit_field_candidate(
     field_state["answerSummary"] = None
     field_state["candidateAnswer"] = None
     field_state["answerResolution"] = "AUTO_CONFIRM"
+    field_state["confirmedSource"] = field_state.get("candidateSource") or "user_statement"
+    field_state["confirmedSourceIds"] = list(field_state.get("candidateSourceIds") or [])
+    field_state["candidateSource"] = None
+    field_state["candidateSourceIds"] = []
     field_state["confirmedItems"] = list(
         field_state.get("candidateItems") or field_state.get("capturedItems") or []
     )

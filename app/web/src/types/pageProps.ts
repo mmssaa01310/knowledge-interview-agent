@@ -1,9 +1,8 @@
-import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb } from "@ai-interviewer/shared-types";
-import type { AiProposal, DocumentSummary, KnowledgeField, UserProfile } from "../lib/api";
+import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb, KnowledgeTag } from "@ai-interviewer/shared-types";
+import type { AiProposal, DocumentContent, DocumentSummary, KnowledgeField, UserProfile } from "../lib/api";
 import type { Route } from "../routes/routeTypes";
 import type {
   ChatMessage,
-  DocumentReadState,
   InterviewAnswerTarget,
   InterviewState,
   InterviewStreamMetadata,
@@ -22,6 +21,7 @@ export type KnowledgeLayoutProps = {
   user: UserProfile | null;
   knowledgeDbs: KnowledgeDb[];
   knowledges: Knowledge[];
+  availableTags: KnowledgeTag[];
   selectedKnowledgeDb: KnowledgeDb | null;
   selectedKnowledge: Knowledge | null;
   records: InterviewRecord[];
@@ -44,6 +44,9 @@ export type KnowledgeLayoutProps = {
   setSettingsTargetEquipment: (value: string) => void;
   settingsTags: string[];
   setSettingsTags: (value: string[]) => void;
+  onCreateTag: (value: string) => void;
+  onUpdateTag: (tagId: string, value: string) => Promise<void>;
+  onDeleteTag: (tagId: string) => Promise<void>;
   settingsLanguage: Knowledge["language"];
   setSettingsLanguage: (value: Knowledge["language"]) => void;
   settingsDefaultModelId: string;
@@ -54,15 +57,15 @@ export type KnowledgeLayoutProps = {
   settingsSaveState: "idle" | "saving" | "success" | "error";
   newRecordTitle: string;
   setNewRecordTitle: (value: string) => void;
-  newDocumentName: string;
-  setNewDocumentName: (value: string) => void;
+  newDocumentFile: File | null;
+  setNewDocumentFile: (value: File | null) => void;
+  documentNotice: string;
+  isUploadingDocument: boolean;
   selectedRecordIds: string[];
   setSelectedRecordIds: (value: string[]) => void;
-  documentReadStates: Record<string, DocumentReadState>;
-  onUpdateDocumentReadState: (
-    documentId: string,
-    nextState: DocumentReadState["readStatus"]
-  ) => void;
+  openedDocument: DocumentContent | null;
+  openingDocumentId: string | null;
+  deletingDocumentId: string | null;
   selectedRecord: InterviewRecord | null;
   publishedGuidance: GuidanceDraft[];
   proposals: AiProposal[];
@@ -98,7 +101,10 @@ export type KnowledgeLayoutProps = {
   onSaveSettings: (activeTab: "fields" | "execution") => void;
   onClearSettingsNotice: () => void;
   onCreatePromptProfile?: (payload: { name: string; prompt: string }) => Promise<PromptProfile>;
-  onCreateDocument: () => void;
+  onUploadDocument: () => void;
+  onOpenDocument: (documentId: string) => void;
+  onCloseDocument: () => void;
+  onDeleteDocument: (documentId: string) => void;
   onCreateRecord: () => void;
   onDeleteRecord: (recordId: string) => void;
   onChangeRecordStatus: (

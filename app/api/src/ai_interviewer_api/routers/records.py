@@ -131,7 +131,11 @@ def list_accessible_records(user: UserContext = Depends(get_current_user)) -> li
 def list_records(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
     require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
-    return [row for row in store.list("records", user.tenant_id) if row["knowledgeId"] == knowledge_id]
+    return [
+        row
+        for row in store.list("records", user.tenant_id)
+        if row["knowledgeId"] == knowledge_id and not row.get("deletedAt")
+    ]
 
 
 @router.get("/records/{record_id}/interview-context")

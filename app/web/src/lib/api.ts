@@ -1,5 +1,9 @@
-import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb, UserRole } from "@ai-interviewer/shared-types";
-import type { InterviewState, ProcessModelState } from "../types/app";
+import type { InterviewPlan, InterviewRecord, Knowledge, KnowledgeDb, KnowledgeTag, UserRole } from "@ai-interviewer/shared-types";
+import type {
+  InterviewState,
+  ProcessModelState,
+  RetrievedSourceReference,
+} from "../types/app";
 import type {
   AdminDashboard,
   DashboardFilters,
@@ -114,6 +118,11 @@ export type DocumentSummary = {
   lastIngestedAt?: string;
 };
 
+export type DocumentContent = {
+  document: DocumentSummary;
+  content: string;
+};
+
 export type KnowledgeField = {
   id?: string;
   name: string;
@@ -158,12 +167,7 @@ export type FieldSuggestionResponse = {
   interviewPlan?: InterviewPlan;
   modelId: string;
   bedrockInvoked?: boolean;
-  retrievedSources?: Array<{
-    sourceType: string;
-    sourceId: string;
-    title: string;
-    score: number;
-  }>;
+  retrievedSources?: RetrievedSourceReference[];
 };
 
 export type FieldSuggestionChatMessage = {
@@ -190,7 +194,10 @@ export type InterviewStateResponse = {
     isActualUtterance?: boolean;
     targetType?: string | null;
     targetId?: string | null;
-    candidateSource?: "user_statement" | "assistant_proposal" | null;
+    candidateSource?: "user_statement" | "assistant_proposal" | "document_reference" | null;
+    candidateValue?: string | null;
+    candidateSourceIds?: string[];
+    retrievedSources?: RetrievedSourceReference[];
   }>;
   structuredDraft: Record<string, string>;
 };
@@ -201,6 +208,28 @@ export async function fetchMe() {
 
 export async function fetchKnowledgeDbs() {
   return apiRequest<KnowledgeDb[]>("/api/knowledge-dbs");
+}
+
+export async function fetchKnowledgeTags() {
+  return apiRequest<KnowledgeTag[]>("/api/knowledge-tags");
+}
+
+export async function createKnowledgeTag(name: string) {
+  return apiRequest<KnowledgeTag>("/api/knowledge-tags", {
+    method: "POST",
+    body: { name }
+  });
+}
+
+export async function updateKnowledgeTag(tagId: string, name: string) {
+  return apiRequest<KnowledgeTag>(`/api/knowledge-tags/${tagId}`, {
+    method: "PATCH",
+    body: { name }
+  });
+}
+
+export async function deleteKnowledgeTag(tagId: string) {
+  return apiRequest<{ deleted: boolean }>(`/api/knowledge-tags/${tagId}`, { method: "DELETE" });
 }
 
 export async function createKnowledgeDb(payload: {
@@ -339,6 +368,14 @@ export async function fetchDocuments(knowledgeId: string) {
   return apiRequest<DocumentSummary[]>(`/api/knowledges/${knowledgeId}/documents`);
 }
 
+export async function fetchDocumentContent(documentId: string) {
+  return apiRequest<DocumentContent>(`/api/documents/${documentId}/content`);
+}
+
+export async function deleteDocument(documentId: string) {
+  return apiRequest<{ deleted: boolean }>(`/api/documents/${documentId}`, { method: "DELETE" });
+}
+
 export async function createDocument(
   knowledgeId: string,
   payload: { fileName: string; contentType: string }
@@ -347,6 +384,42 @@ export async function createDocument(
     method: "POST",
     body: payload
   });
+}
+
+export async function uploadDocument(knowledgeId: string, file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/knowledges/${knowledgeId}/documents/upload`, {
+      method: "POST",
+      headers: {
+        "x-dev-token": getDevelopmentToken()
+      },
+      body: formData
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "network_error";
+    throw new ApiError(detail, { detail });
+  }
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    let detail = responseText;
+    try {
+      const parsed = JSON.parse(responseText) as { detail?: unknown };
+      detail = typeof parsed.detail === "string" ? parsed.detail : responseText;
+    } catch {
+      detail = responseText;
+    }
+    throw new ApiError(
+      `${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
+      { status: response.status, detail }
+    );
+  }
+
+  return response.json() as Promise<DocumentSummary>;
 }
 
 export async function fetchKnowledgeFields(knowledgeId: string) {
@@ -403,7 +476,9 @@ export async function createRecordMessage(
       turnType?: "ANSWER" | "CONTROL";
       targetType?: string | null;
       targetId?: string | null;
-      candidateSource?: "user_statement" | "assistant_proposal" | null;
+      candidateSource?: "user_statement" | "assistant_proposal" | "document_reference" | null;
+      candidateValue?: string | null;
+      candidateSourceIds?: string[];
     };
   }>(`/api/records/${recordId}/messages`, {
     method: "POST",

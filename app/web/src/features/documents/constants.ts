@@ -9,5 +9,3 @@ export const ingestionStatuses = [
   "completed",
   "failed"
 ];
-
-export const readStatuses = ["unread", "opened", "reading", "read", "acknowledged"];

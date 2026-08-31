@@ -15,16 +15,23 @@ from ai_interviewer_api.routers.routes import (
     create_field,
     create_knowledge,
     create_knowledge_db,
+    create_knowledge_tag,
     create_record,
     create_record_message,
+    delete_document,
     delete_knowledge_db,
+    delete_knowledge_tag,
     generate_fields,
+    get_document_content,
     get_knowledge_db,
+    get_knowledge,
     list_knowledges,
+    list_knowledge_tags,
     list_records,
     suggest_fields,
     update_knowledge,
     update_knowledge_db,
+    update_knowledge_tag,
     update_read_status,
 )
 from ai_interviewer_api.schemas.requests import (
@@ -35,6 +42,8 @@ from ai_interviewer_api.schemas.requests import (
     KnowledgeDbCreate,
     KnowledgeDbUpdate,
     KnowledgeCreate,
+    KnowledgeTagCreate,
+    KnowledgeTagUpdate,
     KnowledgeFieldCreate,
     KnowledgeUpdate,
     ReadStatusUpdate,
@@ -175,6 +184,46 @@ def test_knowledge_tags_are_normalized_and_validated() -> None:
         )
     assert too_many.value.status_code == 422
     assert too_many.value.detail == "knowledge_tag_limit_exceeded"
+
+
+def test_knowledge_tag_master_survives_unsetting_a_knowledge_tag() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="タグマスタDB"), user)
+    knowledge = create_knowledge(
+        knowledge_db["id"],
+        KnowledgeCreate(name="タグ付きナレッジ", tags=["保全"]),
+        user,
+    )
+
+    tags = list_knowledge_tags(user)
+    assert [tag["name"] for tag in tags] == ["保全"]
+    update_knowledge(knowledge["id"], KnowledgeUpdate(tags=[]), user)
+    assert [tag["name"] for tag in list_knowledge_tags(user)] == ["保全"]
+
+    master_tag = next(tag for tag in list_knowledge_tags(user) if tag["name"] == "保全")
+    update_knowledge(knowledge["id"], KnowledgeUpdate(tags=["保全"]), user)
+    renamed_master_tag = update_knowledge_tag(
+        master_tag["id"],
+        KnowledgeTagUpdate(name="設備保全"),
+        user,
+    )
+    assert get_knowledge(knowledge["id"], user)["tags"] == ["設備保全"]
+    delete_knowledge_tag(renamed_master_tag["id"], user)
+    assert get_knowledge(knowledge["id"], user)["tags"] == []
+
+    created_tag = create_knowledge_tag(KnowledgeTagCreate(name="点検"), user)
+    assert created_tag["name"] == "点検"
+    assert [tag["name"] for tag in list_knowledge_tags(user)] == ["点検"]
+
+    renamed_tag = update_knowledge_tag(
+        created_tag["id"],
+        KnowledgeTagUpdate(name="定期点検"),
+        user,
+    )
+    assert renamed_tag["name"] == "定期点検"
+    assert [tag["name"] for tag in list_knowledge_tags(user)] == ["定期点検"]
+    delete_knowledge_tag(renamed_tag["id"], user)
+    assert [tag["name"] for tag in list_knowledge_tags(user)] == []
 
 
 def test_knowledge_model_can_change_after_interview_started() -> None:
@@ -585,11 +634,17 @@ def test_cross_tenant_access_is_rejected_for_child_resources() -> None:
         update_read_status(document["id"], ReadStatusUpdate(readStatus="read", readProgress=100), other_tenant_user)
     with pytest.raises(HTTPException) as ack_exc:
         acknowledge_document(document["id"], other_tenant_user)
+    with pytest.raises(HTTPException) as open_exc:
+        get_document_content(document["id"], other_tenant_user)
+    with pytest.raises(HTTPException) as delete_exc:
+        delete_document(document["id"], other_tenant_user)
 
     assert list_records_exc.value.status_code == 403
     assert message_exc.value.status_code == 403
     assert read_exc.value.status_code == 403
     assert ack_exc.value.status_code == 403
+    assert open_exc.value.status_code == 403
+    assert delete_exc.value.status_code == 403
 
 
 def test_record_bulk_approval_skips_low_confidence_and_already_approved_proposals() -> None:

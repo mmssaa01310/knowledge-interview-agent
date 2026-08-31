@@ -9,11 +9,18 @@
   "tags": {
     "title": "แท็ก",
     "inputAria": "แท็กคลังความรู้",
-    "placeholder": "พิมพ์แท็กแล้วกด Enter",
+    "placeholder": "ค้นหาหรือป้อนแท็ก…",
+    "create": "＋ สร้างแท็กใหม่ {tag}",
+    "editTitle": "แก้ไขแท็ก",
+    "editLabel": "ชื่อแท็ก",
+    "editAria": "แก้ไข {tag}",
+    "deleteAria": "ลบ {tag}",
+    "deleteConfirm": "ลบ {tag} หรือไม่ แท็กนี้จะถูกนำออกจากรายการความรู้ที่ใช้งานอยู่ด้วย",
+    "operationFailed": "ไม่สามารถแก้ไขหรือลบแท็กได้ โปรดลองอีกครั้ง",
     "add": "เพิ่ม",
     "remove": "ลบ {tag}",
     "existing": "แท็กที่มีอยู่",
-    "select": "เพิ่ม {tag}"
+    "select": "เลือก {tag}"
   },
   "tabs": {
     "fields": "รายการคำถาม",

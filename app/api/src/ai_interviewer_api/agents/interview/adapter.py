@@ -13,6 +13,7 @@ from ai_interviewer_api.agents.interview.schemas import (
 )
 from ai_interviewer_api.agents.interview.service import run_interview_turn
 from ai_interviewer_api.core.interview_locale import resolve_interview_locale
+from ai_interviewer_api.schemas.retrieval import RetrievedKnowledgeContext
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ def build_interview_turn_input(
     current_question: Mapping[str, Any] | None = None,
     *,
     max_follow_up_questions_per_field: int = 2,
+    retrieved_context: Sequence[RetrievedKnowledgeContext] | None = None,
 ) -> InterviewTurnInput:
     conversation_history = _build_conversation_history(messages)
     approved_fields = _build_approved_fields(knowledge_fields)
@@ -61,6 +63,7 @@ def build_interview_turn_input(
         interview_state=state_model,
         follow_up_count=state_model.followUpCounts.get(current_field.fieldId, 0) if state_model and current_field and current_field.fieldId else 0,
         max_follow_up_questions_per_field=max_follow_up_questions_per_field,
+        retrieved_knowledge=list(retrieved_context or []),
     )
 
 
@@ -90,6 +93,7 @@ def run_adapted_interview_turn(
         interview_state,
         current_question,
         max_follow_up_questions_per_field=int(kwargs.pop("max_follow_up_questions_per_field", 2)),
+        retrieved_context=kwargs.pop("retrieved_context", None),
     )
     output = run_interview_turn(interview_input, **kwargs)
     return adapt_interview_turn_output(output)

@@ -6,17 +6,18 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
-from ai_interviewer_api.agents.question_design.schemas import RetrievedKnowledgeContext
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest
+from ai_interviewer_api.schemas.retrieval import RetrievedKnowledgeContext
+from ai_interviewer_api.services.interview_document_retrieval import (
+    retrieve_indexed_document_context,
+)
 
 MAX_RETRIEVED_CONTEXT = 8
 MAX_CONTEXT_CONTENT_CHARS = 1800
 APPROVED_RECORD_STATUS = "approved"
 APPROVED_PROPOSAL_STATUS = "approved"
-INDEXED_DOCUMENT_STATUSES = frozenset({"indexed", "completed"})
-INDEXED_CHUNK_STATUSES = frozenset({"indexed", "completed"})
 
 
 @dataclass(frozen=True)
@@ -51,8 +52,19 @@ def retrieve_question_design_context(
     _add_field_candidates(candidates, knowledge_id=knowledge_id, tenant_id=user.tenant_id)
     _add_approved_record_candidates(candidates, knowledge_id=knowledge_id, tenant_id=user.tenant_id)
     _add_approved_proposal_candidates(candidates, knowledge_id=knowledge_id, tenant_id=user.tenant_id)
-    _add_document_chunk_candidates(candidates, knowledge_id=knowledge_id, tenant_id=user.tenant_id)
-    _add_document_candidates(candidates, knowledge_id=knowledge_id, tenant_id=user.tenant_id)
+    for document_context in retrieve_indexed_document_context(
+        query=query,
+        knowledge_id=knowledge_id,
+        tenant_id=user.tenant_id,
+    ):
+        _append_candidate(
+            candidates,
+            source_type=document_context.source_type,
+            source_id=document_context.source_id,
+            title=document_context.title,
+            content=document_context.content,
+            priority=3 if document_context.source_type == "document_chunk" else 1,
+        )
 
     scored: list[tuple[float, int, _SearchCandidate]] = []
     for candidate in candidates:
@@ -201,62 +213,6 @@ def _add_approved_proposal_candidates(
         )
 
 
-def _add_document_chunk_candidates(
-    candidates: list[_SearchCandidate],
-    *,
-    knowledge_id: str,
-    tenant_id: str,
-) -> None:
-    """Read indexed chunk-shaped rows when an ingestion adapter has created them."""
-
-    for table_name in ("knowledge_chunks", "document_chunks", "knowledge_document_chunks", "chunks"):
-        for chunk in store.list(table_name, tenant_id):
-            if chunk.get("knowledgeId") != knowledge_id:
-                continue
-            status = chunk.get("status") or chunk.get("ingestionStatus")
-            if status and status not in INDEXED_CHUNK_STATUSES:
-                continue
-            content = _first_text(chunk, "text", "content", "chunkText", "body", "extractedText")
-            if not content:
-                continue
-            document_id = _text(chunk.get("documentId"))
-            title = _text(chunk.get("title")) or _text(chunk.get("fileName")) or "事前知識チャンク"
-            source_id = str(chunk.get("id") or f"{table_name}-{document_id}-{len(candidates)}")
-            _append_candidate(
-                candidates,
-                source_type="document_chunk",
-                source_id=source_id,
-                title=title,
-                content=content,
-                priority=3,
-            )
-
-
-def _add_document_candidates(
-    candidates: list[_SearchCandidate],
-    *,
-    knowledge_id: str,
-    tenant_id: str,
-) -> None:
-    for document in store.list("documents", tenant_id):
-        if document.get("knowledgeId") != knowledge_id:
-            continue
-        if document.get("ingestionStatus") not in INDEXED_DOCUMENT_STATUSES:
-            continue
-        content = _first_text(document, "text", "content", "extractedText", "body")
-        file_name = _text(document.get("fileName"))
-        if not content and not file_name:
-            continue
-        _append_candidate(
-            candidates,
-            source_type="document",
-            source_id=str(document.get("id") or ""),
-            title=file_name or "事前知識文書",
-            content=content or f"事前知識文書: {file_name}",
-            priority=1,
-        )
-
-
 def _append_candidate(
     candidates: list[_SearchCandidate],
     *,
@@ -305,14 +261,6 @@ def _fragments(value: str) -> set[str]:
         for size in (2, 3):
             fragments.update(run[index : index + size] for index in range(len(run) - size + 1))
     return fragments
-
-
-def _first_text(row: dict[str, Any], *keys: str) -> str:
-    for key in keys:
-        value = _text(row.get(key))
-        if value:
-            return value
-    return ""
 
 
 def _serialize(value: Any) -> str:
