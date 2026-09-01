@@ -701,11 +701,15 @@ class VoicePeerConnection:
                 self._input_consumer.source_track_state,
             )
         elif isinstance(event, RuntimeError):
+            error_code = event.detail.get("code")
             await self._voice_session_service.create_connection_event(
                 self.voice_session_id,
                 event_type="runtime_error",
                 connection_status=self.connection_state,
-                detail={"message": event.message},
+                detail={
+                    "message": event.message,
+                    "code": error_code if isinstance(error_code, str) else None,
+                },
             )
 
         self._data_channel.send_event(event_to_send, context=self._event_context())

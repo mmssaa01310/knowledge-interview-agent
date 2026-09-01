@@ -102,7 +102,10 @@
     "notApplicable": "この要望は、処理フローなしで要件を整理します。",
     "title": "処理の流れ",
     "description": "会話から整理した内容です。点線の要素は確認前です。",
-    "fromConversation": "会話から整理",
+    "infoLabel": "処理の流れの説明",
+    "infoFlowchart": "処理手順が2つ以上、つながりが1つ以上あると表示",
+    "infoSequence": "関係者が2人以上、やり取りが1つ以上あると表示",
+    "infoTiming": "回答が反映されるたびに更新。不足時は準備中",
     "fullscreen": "全画面",
     "flowchart": "フローチャート",
     "sequence": "シーケンス図",
@@ -141,6 +144,7 @@
     "numberedInteraction": "{index}. {action}",
     "dataWithValue": "{action}（{data}）"
     ,"saved": "修正を保存しました。",
+    "updated": "処理モデルを更新しました。",
     "start": "開始",
     "end": "終了"
   },
@@ -203,9 +207,12 @@
     "listening": "聞き取り中…",
     "finalizingTranscript": "回答を確認しています…",
     "processingAnswer": "回答を整理しています…",
+    "processingDelayed": "回答を処理しています。少し時間がかかっています。",
     "preparingAudio": "音声を準備しています…",
     "speaking": "質問を読み上げています…",
     "error": "音声インタビューでエラーが発生しました。",
+    "apiError": "インタビュー処理でエラーが発生しました。もう一度お試しください。",
+    "networkError": "通信に失敗しました。接続を確認してもう一度お試しください。",
     "reconnecting": "再接続しています…",
     "continueText": "続けて回答してください。"
   }

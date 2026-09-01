@@ -245,17 +245,22 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         setStatus(hasPendingInitialReply(voiceSessionRef.current) ? "preparing_initial_reply" : "listening");
         return;
       case "error":
+        if (event.code === "PROCESS_TIMEOUT") {
+          setStatus("processing_interview");
+          setMessage(t("interview.voice.processingDelayed"));
+          return;
+        }
         if (event.message === "audio_playback_failed") {
           setRequiresManualPlayback(true);
           setMessage(toUserFacingError(event.message, t));
           return;
         }
         if (event.fatal === false) {
-          setMessage(toUserFacingError(event.message, t));
+          setMessage(toUserFacingError(event.message, t, event.code));
           return;
         }
         setStatus("error");
-        setMessage(toUserFacingError(event.message, t));
+        setMessage(toUserFacingError(event.message, t, event.code));
         return;
       default:
         return;
@@ -499,7 +504,20 @@ function toStartErrorMessage(error: unknown, stage: string, t: Translate): strin
   return t("errors.voiceConnectFailed");
 }
 
-function toUserFacingError(message: string | undefined, t: Translate): string {
+function toUserFacingError(
+  message: string | undefined,
+  t: Translate,
+  code?: "PROCESS_TIMEOUT" | "API_ERROR" | "NETWORK_ERROR",
+): string {
+  if (code === "PROCESS_TIMEOUT") {
+    return t("interview.voice.processingDelayed");
+  }
+  if (code === "NETWORK_ERROR") {
+    return t("interview.voice.networkError");
+  }
+  if (code === "API_ERROR") {
+    return t("interview.voice.apiError");
+  }
   if (message === "audio_playback_failed") {
     return t("errors.audioPlaybackFailed");
   }

@@ -102,7 +102,10 @@
     "notApplicable": "This request will be organized as requirements without a process flow.",
     "title": "Process flow",
     "description": "Organized from the conversation. Dotted elements have not been confirmed.",
-    "fromConversation": "From conversation",
+    "infoLabel": "About the process flow",
+    "infoFlowchart": "Shown with two or more process steps and at least one connection",
+    "infoSequence": "Shown with two or more participants and at least one interaction",
+    "infoTiming": "Updated whenever an answer is reflected; shows preparation when information is insufficient",
     "fullscreen": "Full screen",
     "flowchart": "Flowchart",
     "sequence": "Sequence diagram",
@@ -141,6 +144,7 @@
     "numberedInteraction": "{index}. {action}",
     "dataWithValue": "{action} ({data})"
     ,"saved": "Changes saved.",
+    "updated": "The process model was updated.",
     "start": "Start",
     "end": "End"
   },
@@ -203,9 +207,12 @@
     "listening": "Listening…",
     "finalizingTranscript": "Checking your answer…",
     "processingAnswer": "Organizing your answer…",
+    "processingDelayed": "Your answer is still being processed. This is taking a little longer than usual.",
     "preparingAudio": "Preparing audio…",
     "speaking": "Reading the question aloud…",
     "error": "A voice interview error occurred.",
+    "apiError": "The interview service could not process your answer. Please try again.",
+    "networkError": "The network connection failed. Check your connection and try again.",
     "reconnecting": "Reconnecting…",
     "continueText": "Please continue your answer."
   }

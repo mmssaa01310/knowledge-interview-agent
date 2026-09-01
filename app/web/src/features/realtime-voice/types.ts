@@ -143,6 +143,7 @@ export type VoiceDataChannelEvent =
       voiceSessionId?: string;
       message?: string;
       fatal?: boolean;
+      code?: "PROCESS_TIMEOUT" | "API_ERROR" | "NETWORK_ERROR";
     };
 
 export type VoiceConnectionStats = {

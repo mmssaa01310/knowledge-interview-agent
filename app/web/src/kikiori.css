@@ -2480,6 +2480,17 @@ label {
   box-shadow: var(--ki-shadow-sm);
 }
 
+.process-flow-info {
+  color: var(--ki-info);
+}
+
+.process-flow-info-tooltip {
+  border-color: var(--ki-border);
+  background: var(--ki-surface);
+  box-shadow: var(--ki-shadow-lg);
+  color: var(--ki-text);
+}
+
 .process-model-header p {
   color: var(--ki-muted);
   font-size: 11px;
@@ -2642,12 +2653,6 @@ label {
 
 .process-command-bar input:focus {
   box-shadow: none;
-}
-
-.process-command-history {
-  border-color: var(--ki-border);
-  border-radius: var(--ki-radius-md);
-  background: var(--ki-surface);
 }
 
 .process-model-notice {

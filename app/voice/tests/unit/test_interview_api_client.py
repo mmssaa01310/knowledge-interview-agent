@@ -120,3 +120,63 @@ def test_interview_api_client_maps_unauthorized() -> None:
         assert exc_info.value.code == "unauthorized"
 
     asyncio.run(run())
+
+
+def test_interview_api_client_classifies_process_timeout() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("process timed out", request=request)
+
+        client = InterviewApiClient(
+            "http://test",
+            "internal-token",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test"),
+        )
+
+        with pytest.raises(InterviewApiError) as exc_info:
+            await client.process_turn("session-1", "turn-1", timeout_seconds=30)
+
+        assert exc_info.value.code == "turn_process_failed_timeout"
+        assert exc_info.value.category == "PROCESS_TIMEOUT"
+
+    asyncio.run(run())
+
+
+def test_interview_api_client_classifies_process_api_error() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"detail": "internal error"})
+
+        client = InterviewApiClient(
+            "http://test",
+            "internal-token",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test"),
+        )
+
+        with pytest.raises(InterviewApiError) as exc_info:
+            await client.process_turn("session-1", "turn-1", timeout_seconds=30)
+
+        assert exc_info.value.code == "turn_process_failed_api_error"
+        assert exc_info.value.category == "API_ERROR"
+
+    asyncio.run(run())
+
+
+def test_interview_api_client_classifies_process_network_error() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        client = InterviewApiClient(
+            "http://test",
+            "internal-token",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test"),
+        )
+
+        with pytest.raises(InterviewApiError) as exc_info:
+            await client.process_turn("session-1", "turn-1", timeout_seconds=30)
+
+        assert exc_info.value.code == "turn_process_failed_network_error"
+        assert exc_info.value.category == "NETWORK_ERROR"
+
+    asyncio.run(run())

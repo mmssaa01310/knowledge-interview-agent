@@ -26,6 +26,10 @@ DEV_INTERVIEWEE_USER_ID = "user-interviewer"
 VOICE_DEMO_DB_ID = "dev-voice-demo-db"
 VOICE_DEMO_KNOWLEDGE_ID = "dev-voice-demo-knowledge"
 VOICE_DEMO_RECORD_ID = "dev-voice-demo-record"
+LEGACY_VOICE_DEMO_FIELD_IDS = {
+    "dev-voice-demo-field-hobby",
+    "dev-voice-demo-field-role",
+}
 
 
 def ensure_dev_voice_demo() -> dict[str, str]:
@@ -52,8 +56,8 @@ def ensure_dev_voice_demo() -> dict[str, str]:
                 updatedByUserId=DEV_USER_ID,
                 knowledgeDbId=VOICE_DEMO_DB_ID,
                 name="人物インタビュー",
-                description="自己紹介、趣味、担当業務を順番に確認する",
-                purpose="リアルタイム音声インタビューの動作確認",
+                description="人物の業務経験、強み、課題、今後の目標を順番に確認する",
+                purpose="人物インタビューの質問設計とリアルタイム音声会話の動作確認",
                 language="ja",
                 defaultModelId="apac.amazon.nova-pro-v1:0",
                 interviewPlan=InterviewPlan(
@@ -70,49 +74,97 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             createdByUserId=DEV_USER_ID,
             updatedByUserId=DEV_USER_ID,
             knowledgeId=VOICE_DEMO_KNOWLEDGE_ID,
-            name="自己紹介",
-            description="氏名が回答されれば十分とする。",
-            inputType="short_text",
+            name="基本プロフィール",
+            description="氏名、所属、役職または担当領域を確認する。",
+            inputType="long_text",
             required=True,
             askByAi=True,
             retrievalPolicy="never",
-            aiQuestionExamples=["自己紹介をお願いします。"],
+            aiQuestionExamples=["お名前、所属部署、役職または担当領域を教えてください。"],
             displayOrder=1,
         ),
         KnowledgeField(
-            id="dev-voice-demo-field-hobby",
+            id="dev-voice-demo-field-current-role",
             tenantId=DEV_TENANT_ID,
             createdByUserId=DEV_USER_ID,
             updatedByUserId=DEV_USER_ID,
             knowledgeId=VOICE_DEMO_KNOWLEDGE_ID,
-            name="趣味",
-            description="具体的な趣味が1つ回答されれば十分とする。",
-            inputType="short_text",
+            name="現在の役割",
+            description="現在担っている役割と責任範囲を具体的に確認する。",
+            inputType="long_text",
             required=True,
             askByAi=True,
             retrievalPolicy="never",
-            aiQuestionExamples=["具体的な趣味を教えてください。"],
+            aiQuestionExamples=["現在の役割と、日々どのような責任を担っているかを具体的に教えてください。"],
             displayOrder=2,
         ),
         KnowledgeField(
-            id="dev-voice-demo-field-role",
+            id="dev-voice-demo-field-experience",
             tenantId=DEV_TENANT_ID,
             createdByUserId=DEV_USER_ID,
             updatedByUserId=DEV_USER_ID,
             knowledgeId=VOICE_DEMO_KNOWLEDGE_ID,
-            name="担当業務",
-            description="現在の担当業務が回答されれば十分とする。",
-            inputType="short_text",
+            name="経験・転機",
+            description="現在の専門性につながる主な経験や転機を確認する。",
+            inputType="long_text",
             required=True,
             askByAi=True,
             retrievalPolicy="never",
-            aiQuestionExamples=["現在の担当業務を教えてください。"],
+            aiQuestionExamples=["これまでの経験の中で、現在の仕事の進め方や専門性に大きく影響した出来事・転機を教えてください。"],
             displayOrder=3,
         ),
+        KnowledgeField(
+            id="dev-voice-demo-field-strengths-results",
+            tenantId=DEV_TENANT_ID,
+            createdByUserId=DEV_USER_ID,
+            updatedByUserId=DEV_USER_ID,
+            knowledgeId=VOICE_DEMO_KNOWLEDGE_ID,
+            name="強み・成果",
+            description="本人の強みが成果につながった具体的な事例を確認する。",
+            inputType="long_text",
+            required=True,
+            askByAi=True,
+            retrievalPolicy="never",
+            aiQuestionExamples=["ご自身の強みや専門性が実際の業務で発揮され、成果につながった具体的な事例を教えてください。"],
+            displayOrder=4,
+        ),
+        KnowledgeField(
+            id="dev-voice-demo-field-challenge-improvement",
+            tenantId=DEV_TENANT_ID,
+            createdByUserId=DEV_USER_ID,
+            updatedByUserId=DEV_USER_ID,
+            knowledgeId=VOICE_DEMO_KNOWLEDGE_ID,
+            name="課題・改善",
+            description="現在の課題と、それに対して実施している改善を確認する。",
+            inputType="long_text",
+            required=True,
+            askByAi=True,
+            retrievalPolicy="never",
+            aiQuestionExamples=["現在の仕事で課題と感じていることと、その課題に対して実施している改善を教えてください。"],
+            displayOrder=5,
+        ),
+        KnowledgeField(
+            id="dev-voice-demo-field-future-goals",
+            tenantId=DEV_TENANT_ID,
+            createdByUserId=DEV_USER_ID,
+            updatedByUserId=DEV_USER_ID,
+            knowledgeId=VOICE_DEMO_KNOWLEDGE_ID,
+            name="今後の目標",
+            description="今後取り組みたいテーマや身につけたい能力を確認する。",
+            inputType="long_text",
+            required=True,
+            askByAi=True,
+            retrievalPolicy="never",
+            aiQuestionExamples=["今後取り組みたいテーマや身につけたい能力、実現に向けて必要な支援を教えてください。"],
+            displayOrder=6,
+        ),
     ]
+    for field_id in LEGACY_VOICE_DEMO_FIELD_IDS:
+        legacy_field = store.get("knowledge_fields", field_id)
+        if legacy_field and legacy_field.get("knowledgeId") == VOICE_DEMO_KNOWLEDGE_ID:
+            store.delete("knowledge_fields", field_id)
     for field in fields:
-        if store.get("knowledge_fields", field.id) is None:
-            store.upsert("knowledge_fields", field.model_dump())
+        store.upsert("knowledge_fields", field.model_dump())
 
     if store.get("records", VOICE_DEMO_RECORD_ID) is None:
         store.upsert(

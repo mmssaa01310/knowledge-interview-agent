@@ -51,6 +51,17 @@ class FakeInterviewApiClient:
         self.calls.append(("create_assistant_event", (voice_session_id,), kwargs))
 
 
+class DelayedProcessInterviewApiClient(FakeInterviewApiClient):
+    def __init__(self, delay_seconds: float) -> None:
+        super().__init__()
+        self.delay_seconds = delay_seconds
+
+    async def process_turn(self, voice_session_id: str, turn_id: str, **kwargs) -> VoiceTurnProcessResult:
+        self.calls.append(("process_turn", (voice_session_id, turn_id), kwargs))
+        await asyncio.sleep(self.delay_seconds)
+        return self.process_result
+
+
 def test_interview_bridge_saves_then_processes_turn() -> None:
     async def run() -> tuple[object, list[tuple[str, tuple, dict]]]:
         client = FakeInterviewApiClient()
@@ -111,3 +122,25 @@ def test_interview_bridge_exposes_api_errors() -> None:
         assert exc_info.value.code == "turn_save_failed"
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("delay_seconds", [3, 6, 10])
+def test_interview_bridge_allows_structured_processes_within_thirty_seconds(
+    delay_seconds: float,
+) -> None:
+    async def run() -> tuple[object, list[tuple[str, tuple, dict]]]:
+        client = DelayedProcessInterviewApiClient(delay_seconds)
+        bridge = InterviewBridge(client, turn_process_timeout_seconds=30)
+        result = await bridge.process_turn(
+            voice_session_id="session-1",
+            transcript="回答です",
+            answer_to_question_id="q-1",
+            client_turn_id="retry-safe-client-turn",
+        )
+        return result, client.calls
+
+    result, calls = asyncio.run(run())
+
+    assert result.reply_text == "確認します。"
+    assert calls[-1][0] == "process_turn"
+    assert calls[-1][2]["timeout_seconds"] == 30

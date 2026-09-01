@@ -102,7 +102,10 @@
     "notApplicable": "此请求将作为没有处理流程的需求进行整理。",
     "title": "处理流程",
     "description": "根据对话整理。虚线元素尚未确认。",
-    "fromConversation": "根据对话整理",
+    "infoLabel": "处理流程说明",
+    "infoFlowchart": "整理出至少两个处理步骤和一条连接时显示",
+    "infoSequence": "整理出至少两个参与者和一条交互时显示",
+    "infoTiming": "每次反映访谈回答后更新；信息不足时显示准备中",
     "fullscreen": "全屏",
     "flowchart": "流程图",
     "sequence": "时序图",
@@ -141,6 +144,7 @@
     "numberedInteraction": "{index}. {action}",
     "dataWithValue": "{action}（{data}）"
     ,"saved": "修改已保存。",
+    "updated": "处理模型已更新。",
     "start": "开始",
     "end": "结束"
   },
@@ -203,9 +207,12 @@
     "listening": "正在听取…",
     "finalizingTranscript": "正在确认回答…",
     "processingAnswer": "正在整理回答…",
+    "processingDelayed": "正在处理您的回答，所需时间比平时稍长。",
     "preparingAudio": "正在准备音频…",
     "speaking": "正在朗读问题…",
     "error": "语音访谈发生错误。",
+    "apiError": "访谈服务无法处理您的回答，请重试。",
+    "networkError": "网络连接失败，请检查连接后重试。",
     "reconnecting": "正在重新连接…",
     "continueText": "请继续回答。"
   }

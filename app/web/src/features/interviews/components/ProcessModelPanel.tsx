@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Background,
@@ -32,11 +32,14 @@ import {
 type ProcessCollection = "participants" | "nodes" | "edges" | "interactions";
 type ProcessEntity = Record<string, unknown>;
 type Graph = { nodes: Node[]; edges: Edge[] };
-type CommandMessage = { role: "user" | "assistant" | "error"; text: string };
 type FlowchartNodeData = { label?: string; nodeType?: FlowchartNodeKind; candidate?: boolean };
 type FlowchartNodeType = Node<FlowchartNodeData>;
 type SmoothstepFlowEdge = Edge & {
   pathOptions?: { borderRadius?: number; offset?: number };
+};
+
+type ProcessFlowInfoProps = {
+  t: Translate;
 };
 
 type ProcessModelPanelProps = {
@@ -56,6 +59,85 @@ type ProcessModelPanelProps = {
 
 function text(value: unknown, fallback: string) {
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+export function ProcessFlowInfo({ t }: ProcessFlowInfoProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const tooltipId = "process-flow-info-tooltip";
+
+  useLayoutEffect(() => {
+    if (!isOpen) return undefined;
+
+    const updateTooltipPosition = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const tooltipWidth = Math.min(360, Math.max(0, window.innerWidth - 32));
+      const left = Math.max(
+        16,
+        Math.min(rect.right - tooltipWidth, window.innerWidth - tooltipWidth - 16),
+      );
+      setTooltipPosition({ top: rect.bottom + 8, left });
+    };
+
+    updateTooltipPosition();
+    window.addEventListener("resize", updateTooltipPosition);
+    window.addEventListener("scroll", updateTooltipPosition, true);
+    return () => {
+      window.removeEventListener("resize", updateTooltipPosition);
+      window.removeEventListener("scroll", updateTooltipPosition, true);
+    };
+  }, [isOpen]);
+
+  const openTooltip = () => {
+    setTooltipPosition(null);
+    setIsOpen(true);
+  };
+
+  const closeTooltip = () => setIsOpen(false);
+
+  return (
+    <>
+      <span
+        ref={triggerRef}
+        className="process-flow-info"
+        role="img"
+        tabIndex={0}
+        aria-describedby={isOpen ? tooltipId : undefined}
+        aria-expanded={isOpen}
+        onMouseEnter={openTooltip}
+        onMouseLeave={closeTooltip}
+        onFocus={openTooltip}
+        onBlur={closeTooltip}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            closeTooltip();
+          }
+        }}
+        aria-label={t("interview.process.infoLabel")}
+      >
+        <span aria-hidden="true">i</span>
+      </span>
+      {isOpen && tooltipPosition && typeof document !== "undefined" ? createPortal(
+        <div
+          id={tooltipId}
+          className="process-flow-info-tooltip"
+          role="tooltip"
+          style={{ top: tooltipPosition.top, left: tooltipPosition.left }}
+        >
+          <ul>
+            <li>{t("interview.process.infoFlowchart")}</li>
+            <li>{t("interview.process.infoSequence")}</li>
+            <li>{t("interview.process.infoTiming")}</li>
+          </ul>
+        </div>,
+        document.body,
+      ) : null}
+    </>
+  );
 }
 
 function number(value: unknown, fallback: number) {
@@ -463,7 +545,6 @@ export function ProcessModelPanel({
   const [isSaving, setIsSaving] = useState(false);
   const [commandInput, setCommandInput] = useState("");
   const [isSendingCommand, setIsSendingCommand] = useState(false);
-  const [commandMessages, setCommandMessages] = useState<CommandMessage[]>([]);
   const [notice, setNotice] = useState("");
   const processState = interviewState?.processState;
   const editableProcessState = draftProcessState ?? processState ?? {};
@@ -582,17 +663,13 @@ export function ProcessModelPanel({
       return;
     }
     setCommandInput("");
-    setCommandMessages((current) => [...current, { role: "user" as const, text: instruction }].slice(-4));
     setIsSendingCommand(true);
     setNotice("");
     try {
-      const result = await onEditProcessModel(instruction, baseProcessVersion, baseStateVersion);
-      setCommandMessages((current) => [...current, { role: "assistant" as const, text: result.reply }].slice(-4));
+      await onEditProcessModel(instruction, baseProcessVersion, baseStateVersion);
+      setNotice(t("interview.process.updated"));
     } catch (error) {
-      setCommandMessages((current) => [
-        ...current,
-        { role: "error" as const, text: processModelErrorMessage(error, "command", t) },
-      ].slice(-4));
+      setNotice(processModelErrorMessage(error, "command", t));
     } finally {
       setIsSendingCommand(false);
     }
@@ -608,43 +685,29 @@ export function ProcessModelPanel({
   ) : null;
 
   const commandBar = canEdit ? (
-    <>
-      {commandMessages.length > 0 ? (
-        <div className="process-command-history" aria-live="polite">
-          {commandMessages.slice(-3).map((message, index) => (
-            <p className={`process-command-message ${message.role}`} key={`${message.role}-${index}-${message.text}`}>
-              {message.role !== "user" ? (
-                <span>{message.role === "assistant" ? t("common.ai") : t("common.notification")}</span>
-              ) : null}
-              {message.text}
-            </p>
-          ))}
-        </div>
-      ) : null}
-      <div className="process-command-bar">
-        <input
-          value={commandInput}
-          onChange={(event) => setCommandInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void handleSendCommand();
-            }
-          }}
-          disabled={isSendingCommand || hasUnsavedChanges}
-          placeholder={t("interview.process.commandPlaceholder")}
-          aria-label={t("interview.process.commandAria")}
-        />
-        <button
-          type="button"
-          className="primary compact"
-          onClick={() => void handleSendCommand()}
-          disabled={!commandInput.trim() || isSendingCommand || hasUnsavedChanges}
-        >
-          {isSendingCommand ? t("interview.process.applying") : t("common.send")}
-        </button>
-      </div>
-    </>
+    <div className="process-command-bar">
+      <input
+        value={commandInput}
+        onChange={(event) => setCommandInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void handleSendCommand();
+          }
+        }}
+        disabled={isSendingCommand || hasUnsavedChanges}
+        placeholder={t("interview.process.commandPlaceholder")}
+        aria-label={t("interview.process.commandAria")}
+      />
+      <button
+        type="button"
+        className="primary compact"
+        onClick={() => void handleSendCommand()}
+        disabled={!commandInput.trim() || isSendingCommand || hasUnsavedChanges}
+      >
+        {isSendingCommand ? t("interview.process.applying") : t("common.send")}
+      </button>
+    </div>
   ) : null;
 
   return (
@@ -660,11 +723,13 @@ export function ProcessModelPanel({
       ) : <>
         <div className="process-model-header">
           <div>
-            <strong>{t("interview.process.title")}</strong>
+            <strong className="process-model-title">
+              {t("interview.process.title")}
+              <ProcessFlowInfo t={t} />
+            </strong>
             <p>{t("interview.process.description")}</p>
           </div>
           <div className="process-model-header-actions">
-            <span className="status-pill muted">{t("interview.process.fromConversation")}</span>
             {hasRenderableGraph ? (
               <button type="button" className="ghost compact" onClick={() => setIsFullscreen(true)}>
                 {t("interview.process.fullscreen")}

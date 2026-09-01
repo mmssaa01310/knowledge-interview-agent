@@ -709,6 +709,7 @@ class TranscribePollyRuntime:
                 generation=generation,
             )
         result_received = False
+        processing_may_continue = False
         api_started_at = monotonic()
         try:
             result = await self._interview_bridge.process_turn(
@@ -735,14 +736,14 @@ class TranscribePollyRuntime:
             if exc.code in {"turn_state_conflict", "turn_duplicate_conflict"}:
                 logger.info("discarded_stale_turn client_turn_id=%s code=%s", client_turn_id, exc.code)
                 return
-            await self._handle_interview_failure(exc)
+            processing_may_continue = await self._handle_interview_failure(exc)
             return
         except Exception as exc:  # noqa: BLE001 - InterviewBridge boundary
             await self._handle_interview_failure(exc)
             return
         finally:
             await self._cancel_notice_tasks()
-            if not result_received:
+            if not result_received and not processing_may_continue:
                 self._clear_active_client_turn(client_turn_id)
         if generation != self._generation or self._closed:
             self._clear_active_client_turn(client_turn_id)
@@ -777,16 +778,33 @@ class TranscribePollyRuntime:
             )
         )
 
-    async def _handle_interview_failure(self, exc: Exception) -> None:
+    async def _handle_interview_failure(self, exc: Exception) -> bool:
+        category = exc.category if isinstance(exc, InterviewApiError) else "API_ERROR"
+        message = {
+            "PROCESS_TIMEOUT": "interview_process_timeout",
+            "NETWORK_ERROR": "interview_process_network_error",
+            "API_ERROR": "interview_process_api_error",
+        }[category]
         await self._emit(
             RuntimeError(
-                message="interview_process_failed",
-                detail={"errorType": exc.__class__.__name__},
+                message=message,
+                detail={
+                    "code": category,
+                    "errorCode": exc.code if isinstance(exc, InterviewApiError) else None,
+                    "errorType": exc.__class__.__name__,
+                },
                 fatal=False,
             )
         )
+        if category == "PROCESS_TIMEOUT":
+            # The API may still commit this turn after the client-side timeout.
+            # Keep its clientTurnId active so a later utterance cancels that exact
+            # backend turn before any replacement turn starts.
+            await self._emit_input_state("ANSWER_PROCESSING")
+            return True
         if self._interview_status == "active":
             await self._emit_input_state("ANSWER_LISTENING")
+        return False
 
     def _schedule_notice(
         self,

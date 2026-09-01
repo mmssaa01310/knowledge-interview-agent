@@ -34,7 +34,7 @@ from ai_interviewer_voice.schemas.events import (
     UserTranscriptFinal,
 )
 from ai_interviewer_voice.schemas.sessions import VoiceRuntimeContext
-from ai_interviewer_voice.services.interview_bridge import InterviewBridgeResult
+from ai_interviewer_voice.services.interview_bridge import InterviewApiError, InterviewBridgeResult
 
 
 def _pcm(sample: int, samples: int = 320) -> bytes:
@@ -209,6 +209,16 @@ class BlockingBridge(FakeBridge):
         self.process_started.set()
         await self.release_process.wait()
         return await super().process_turn(**kwargs)
+
+
+class TimeoutBridge(FakeBridge):
+    async def process_turn(self, **kwargs) -> InterviewBridgeResult:
+        self.process_calls.append(kwargs)
+        raise InterviewApiError(
+            "turn_process_failed_timeout",
+            "process timed out",
+            category="PROCESS_TIMEOUT",
+        )
 
 
 class ControlBridge(FakeBridge):
@@ -826,6 +836,60 @@ async def test_new_speech_cancels_only_pending_evaluating_turn() -> None:
     assert runtime._turn_active is True
     assert runtime._state_version == 2
     await asyncio.gather(process_task, return_exceptions=True)
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_process_timeout_keeps_turn_pending_until_a_replacement_turn_cancels_it() -> None:
+    bridge = TimeoutBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    await runtime._process_interview_turn(
+        transcript="6秒かかった回答です",
+        generation=1,
+        expected_state_version=1,
+        client_turn_id="timed-out-client-turn",
+    )
+
+    events = []
+    while not runtime._events.empty():
+        events.append(runtime._events.get_nowait())
+    assert any(
+        isinstance(event, RuntimeError)
+        and event.message == "interview_process_timeout"
+        and event.detail["code"] == "PROCESS_TIMEOUT"
+        for event in events
+    )
+    assert any(
+        isinstance(event, InputStateChanged)
+        and event.input_state == "ANSWER_PROCESSING"
+        for event in events
+    )
+    assert runtime._active_client_turn_id == "timed-out-client-turn"
+
+    await runtime.push_audio(_frame(1200))
+    if runtime._state_sync_task is not None:
+        await runtime._state_sync_task
+
+    assert bridge.cancel_calls == [
+        {
+            "voice_session_id": "vs-1",
+            "client_turn_id": "timed-out-client-turn",
+            "expected_state_version": 1,
+        }
+    ]
     await runtime.close()
 
 

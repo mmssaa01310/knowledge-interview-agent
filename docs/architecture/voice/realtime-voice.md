@@ -237,6 +237,8 @@ Trickle ICE用WebSocketは初回PoCの対象外とする。
 
 `app/voice`から`app/api`を呼び出すため、内部APIを用意する。
 
+回答処理APIの待機上限は`VOICE_TURN_PROCESS_TIMEOUT_SECONDS`で管理し、既定値は30秒とする。構造化インタビューのLLM処理が数秒を超えることを許容しつつ、無制限には待たない。timeout時は`PROCESS_TIMEOUT`として「処理中」の状態を維持し、APIエラー（`API_ERROR`）・通信エラー（`NETWORK_ERROR`）とは区別する。timeout後も同じ`clientTurnId`を保持し、次の発話があった場合は先行turnをキャンセルしてから開始するため、遅延した処理結果との二重確定を防ぐ。
+
 ```http
 POST /internal/voice-sessions/{voice_session_id}/turns
 POST /internal/voice-sessions/{voice_session_id}/turns/{turn_id}/process

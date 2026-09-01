@@ -1719,6 +1719,62 @@ label {
   margin: 0;
 }
 
+.process-model-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.process-flow-info {
+  position: relative;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: currentColor;
+  cursor: help;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.process-flow-info:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.process-flow-info-tooltip {
+  position: fixed;
+  z-index: 2147483001;
+  width: min(360px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  padding: 10px 12px;
+  border: 1px solid #cbd7e2;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(31, 45, 61, 0.18);
+  color: #26394d;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.6;
+  text-align: left;
+  white-space: normal;
+}
+
+.process-flow-info-tooltip ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 17px;
+}
+
+.process-flow-info-tooltip li {
+  margin: 0;
+}
+
 .process-model-header p {
   margin-top: 4px;
   color: #6b7d90;
@@ -2036,32 +2092,6 @@ label {
   margin: 0;
   color: #40546a;
   font-size: 12px;
-}
-
-.process-command-history {
-  max-height: 92px;
-  overflow: auto;
-  display: grid;
-  gap: 4px;
-}
-
-.process-command-message {
-  margin: 0;
-  display: flex;
-  gap: 7px;
-  color: #40546a;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.process-command-message span {
-  flex: 0 0 auto;
-  color: #6b7d90;
-  font-weight: 700;
-}
-
-.process-command-message.error {
-  color: #a33e3e;
 }
 
 .process-command-bar {

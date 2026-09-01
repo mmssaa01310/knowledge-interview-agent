@@ -46,7 +46,10 @@ class Settings:
         "VOICE_ENABLE_BACKCHANNELS", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
     interview_turn_save_timeout_seconds: float = float(os.getenv("VOICE_TURN_SAVE_TIMEOUT_SECONDS", "5"))
-    interview_turn_process_timeout_seconds: float = float(os.getenv("VOICE_TURN_PROCESS_TIMEOUT_SECONDS", "5"))
+    # Structured-interview turns can include an LLM interpretation and next-question
+    # generation. Keep a finite bound, but do not treat ordinary 6-10 second turns
+    # as failed requests.
+    interview_turn_process_timeout_seconds: float = float(os.getenv("VOICE_TURN_PROCESS_TIMEOUT_SECONDS", "30"))
     interview_timeout_reply_text: str = os.getenv(
         "VOICE_INTERVIEW_TIMEOUT_REPLY_TEXT",
         "処理に時間がかかっています。もう一度お願いします。",

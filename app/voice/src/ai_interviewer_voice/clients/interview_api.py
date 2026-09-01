@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -14,10 +14,12 @@ class InterviewApiError(RuntimeError):
         message: str,
         *,
         status_code: int | None = None,
+        category: Literal["PROCESS_TIMEOUT", "API_ERROR", "NETWORK_ERROR"] = "API_ERROR",
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+        self.category = category
 
 
 @dataclass(frozen=True)
@@ -338,9 +340,17 @@ class InterviewApiClient:
                 headers=self.headers if self._http_client is not None else None,
             )
         except httpx.TimeoutException as exc:
-            raise InterviewApiError(f"{failure_code}_timeout", str(exc) or failure_code) from exc
-        except httpx.HTTPError as exc:
-            raise InterviewApiError(failure_code, str(exc) or failure_code) from exc
+            raise InterviewApiError(
+                f"{failure_code}_timeout",
+                str(exc) or failure_code,
+                category="PROCESS_TIMEOUT",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise InterviewApiError(
+                f"{failure_code}_network_error",
+                str(exc) or failure_code,
+                category="NETWORK_ERROR",
+            ) from exc
 
         if response.status_code == 401:
             raise InterviewApiError("unauthorized", "internal api unauthorized", status_code=401)
@@ -354,9 +364,10 @@ class InterviewApiClient:
             raise InterviewApiError(code, code, status_code=409)
         if response.status_code >= 400:
             raise InterviewApiError(
-                failure_code,
+                f"{failure_code}_api_error",
                 f"http {response.status_code}",
                 status_code=response.status_code,
+                category="API_ERROR",
             )
         return response
 

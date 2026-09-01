@@ -532,6 +532,21 @@ def test_runtime_event_serialization_emits_common_events_only() -> None:
         "message": "boom",
         "fatal": True,
     }
+    timeout_payload = _serialize_runtime_event(
+        RuntimeError(
+            message="interview_process_timeout",
+            detail={"code": "PROCESS_TIMEOUT"},
+            fatal=False,
+        ),
+        context=VoiceEventContext(voice_session_id="vs-1"),
+    )
+    assert timeout_payload == {
+        "type": "error",
+        "voiceSessionId": "vs-1",
+        "message": "interview_process_timeout",
+        "fatal": False,
+        "code": "PROCESS_TIMEOUT",
+    }
     gate_payload = _serialize_runtime_event(
         InputStateChanged(input_state="CONFIRMATION_LISTENING", generation=3),
         context=VoiceEventContext(voice_session_id="vs-1"),

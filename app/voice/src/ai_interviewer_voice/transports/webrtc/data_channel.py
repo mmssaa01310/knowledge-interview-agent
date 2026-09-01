@@ -216,10 +216,14 @@ def _serialize_runtime_event(event: VoiceRuntimeEvent, *, context: VoiceEventCon
             "voiceSessionId": context.voice_session_id,
         }
     if isinstance(event, RuntimeError):
-        return {
+        payload = {
             "type": "error",
             "voiceSessionId": context.voice_session_id,
             "message": event.message,
             "fatal": event.fatal,
         }
+        code = event.detail.get("code")
+        if isinstance(code, str):
+            payload["code"] = code
+        return payload
     return None
