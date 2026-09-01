@@ -2503,16 +2503,16 @@ label {
 }
 
 .process-flow-canvas {
-  height: 320px;
+  height: 360px;
 }
 
 .process-interview-shell .process-flow-canvas {
-  height: 390px;
+  height: 440px;
 }
 
 .flowchart-node {
   border-color: #57919a;
-  border-radius: 9px;
+  border-radius: 6px;
   background: var(--ki-surface);
   color: var(--ki-text);
   box-shadow: 0 5px 13px rgba(23, 53, 66, 0.09);
@@ -2527,6 +2527,10 @@ label {
 .flowchart-node-terminator {
   border-radius: 999px;
   background: var(--ki-success-soft);
+}
+
+.flowchart-node-process {
+  border-radius: 6px;
 }
 
 .flowchart-node-decision {
@@ -2582,9 +2586,10 @@ label {
 }
 
 .process-model-backdrop {
+  z-index: 2147483000;
   padding: 26px;
-  background: rgba(15, 35, 46, 0.7);
-  backdrop-filter: blur(6px);
+  background: #0f232e;
+  backdrop-filter: none;
 }
 
 .process-model-fullscreen {

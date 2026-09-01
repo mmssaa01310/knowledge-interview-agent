@@ -1755,7 +1755,7 @@ label {
 }
 
 .process-flow-canvas {
-  height: 290px;
+  height: 360px;
   overflow: hidden;
   border: 1px solid #d7e0e8;
   border-radius: 8px;
@@ -1763,7 +1763,7 @@ label {
 }
 
 .process-interview-shell .process-flow-canvas {
-  height: 380px;
+  height: 440px;
 }
 
 .flowchart-node {
@@ -1774,6 +1774,7 @@ label {
   display: grid;
   place-items: center;
   padding: 8px 14px;
+  overflow: visible;
   border: 2px solid #6285a8;
   border-radius: 3px;
   background: #ffffff;
@@ -1786,6 +1787,9 @@ label {
 
 .flowchart-node > span {
   max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
   overflow-wrap: anywhere;
 }
 
@@ -1805,6 +1809,10 @@ label {
   clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
   padding: 24px 30px;
   box-shadow: none;
+}
+
+.flowchart-node-process {
+  border-radius: 4px;
 }
 
 .flowchart-node-data {
@@ -1830,6 +1838,16 @@ label {
   height: 8px;
   border: 2px solid #ffffff;
   background: #6285a8;
+}
+
+.process-flow-canvas .react-flow__edge-path {
+  stroke: #526b82;
+  stroke-width: 1.8;
+}
+
+.process-flow-canvas .react-flow__edge-textbg {
+  fill: #ffffff;
+  fill-opacity: 0.92;
 }
 
 .sequence-diagram-scroll {
@@ -1889,14 +1907,21 @@ label {
 .process-model-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 2147483000;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   display: grid;
   place-items: center;
   padding: 24px;
-  background: #182736;
+  background: #0f232e;
+  isolation: isolate;
+  pointer-events: auto;
 }
 
 .process-model-fullscreen {
+  position: relative;
+  z-index: 1;
   width: min(1440px, 100%);
   height: min(900px, calc(100vh - 48px));
   min-height: 0;

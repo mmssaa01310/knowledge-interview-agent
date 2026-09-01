@@ -1,28 +1,43 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Background,
   Controls,
   Handle,
   MarkerType,
   ReactFlow,
+  ReactFlowProvider,
   type Edge,
   type Node,
   type NodeProps,
   type NodeTypes,
   Position,
+  useReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ApiError } from "../../../lib/api";
 import { useI18n, type Translate } from "../../../i18n";
 import { formatNumber } from "../../../lib/date";
 import type { InterviewState, ProcessModelState } from "../../../types/app";
+import {
+  fallbackFlowchartLayout,
+  flowchartNodeDimensions,
+  flowchartShape,
+  layoutFlowchart,
+  resolveFlowchartNodeType,
+  type FlowchartGraph,
+  type FlowchartNodeKind,
+} from "../flowchartLayout";
 
 type ProcessCollection = "participants" | "nodes" | "edges" | "interactions";
 type ProcessEntity = Record<string, unknown>;
 type Graph = { nodes: Node[]; edges: Edge[] };
 type CommandMessage = { role: "user" | "assistant" | "error"; text: string };
-type FlowchartNodeData = { label?: string; nodeType?: string; candidate?: boolean };
+type FlowchartNodeData = { label?: string; nodeType?: FlowchartNodeKind; candidate?: boolean };
 type FlowchartNodeType = Node<FlowchartNodeData>;
+type SmoothstepFlowEdge = Edge & {
+  pathOptions?: { borderRadius?: number; offset?: number };
+};
 
 type ProcessModelPanelProps = {
   interviewState: InterviewState | null;
@@ -58,21 +73,18 @@ function processVersion(
   return number(processState.version, number(interviewState?.processVersion, 0));
 }
 
-function flowchartShape(nodeType: string) {
-  if (nodeType === "start" || nodeType === "end") return "terminator";
-  if (nodeType === "decision") return "decision";
-  if (nodeType === "data") return "data";
-  if (nodeType === "subprocess") return "subprocess";
-  if (nodeType === "system") return "system";
-  return "process";
-}
-
 function FlowchartNode({ data }: NodeProps<FlowchartNodeType>) {
-  const shape = flowchartShape(text(data.nodeType, "activity"));
+  const nodeType = data.nodeType ?? "activity";
+  const shape = flowchartShape(nodeType);
+  const label = text(data.label, "");
   return (
-    <div className={`flowchart-node flowchart-node-${shape}${data.candidate ? " is-candidate" : ""}`}>
+    <div
+      className={`flowchart-node flowchart-node-${shape}${data.candidate ? " is-candidate" : ""}`}
+      data-flowchart-shape={shape}
+      aria-label={label}
+    >
       <Handle type="target" position={Position.Top} />
-      <span>{text(data.label, "")}</span>
+      <span title={label}>{label}</span>
       <Handle type="source" position={Position.Bottom} />
     </div>
   );
@@ -85,17 +97,19 @@ function buildFlowchart(processState: ProcessModelState, t: Translate): Graph {
     .filter((node) => node.lifecycle !== "superseded")
     .map((node, index): Node => {
       const isCandidate = node.confirmationStatus !== "confirmed";
-      const nodeType = text(node.nodeType, "activity");
+      const label = text(node.label, t("interview.process.unnamedProcess"));
+      const nodeType = resolveFlowchartNodeType(node.nodeType, label);
+      const dimensions = flowchartNodeDimensions(label, nodeType);
       return {
         id: text(node.nodeId, `node-${index}`),
         type: "flowchart",
-        position: { x: (index % 3) * 230, y: Math.floor(index / 3) * 110 },
-        data: { label: text(node.label, t("interview.process.unnamedProcess")), nodeType, candidate: isCandidate },
+        position: { x: 0, y: 0 },
+        data: { label, nodeType, candidate: isCandidate },
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
         style: {
-          width: nodeType === "decision" ? 170 : 190,
-          height: nodeType === "decision" ? 116 : 64,
+          width: dimensions.width,
+          height: dimensions.height,
           padding: 0,
           background: "transparent",
           border: "none",
@@ -108,12 +122,13 @@ function buildFlowchart(processState: ProcessModelState, t: Translate): Graph {
   const edges = (processState.edges ?? [])
     .filter((edge) => edge.lifecycle !== "superseded")
     .filter((edge) => nodeIds.has(text(edge.sourceNodeId, "")) && nodeIds.has(text(edge.targetNodeId, "")))
-    .map((edge, index): Edge => ({
+    .map((edge, index): SmoothstepFlowEdge => ({
       id: text(edge.edgeId, `edge-${index}`),
       source: text(edge.sourceNodeId, ""),
       target: text(edge.targetNodeId, ""),
       label: text(edge.label ?? edge.condition, "") || undefined,
       type: "smoothstep",
+      pathOptions: { borderRadius: 12, offset: 28 },
       animated: false,
       markerEnd: { type: MarkerType.ArrowClosed },
       style: edge.confirmationStatus === "confirmed" ? undefined : { strokeDasharray: "5 4" },
@@ -235,6 +250,53 @@ function SequenceDiagram({ graph, t }: { graph: Graph; t: Translate }) {
   );
 }
 
+function FlowchartCanvas({ graph }: { graph: FlowchartGraph }) {
+  const reactFlow = useReactFlow();
+  const [layoutedGraph, setLayoutedGraph] = useState<FlowchartGraph>(() => fallbackFlowchartLayout(graph));
+
+  useEffect(() => {
+    let isCurrent = true;
+    const fallback = fallbackFlowchartLayout(graph);
+    setLayoutedGraph(fallback);
+    void layoutFlowchart(graph)
+      .then((next) => {
+        if (isCurrent) setLayoutedGraph(next);
+      })
+      .catch(() => {
+        if (isCurrent) setLayoutedGraph(fallback);
+      });
+    return () => {
+      isCurrent = false;
+    };
+  }, [graph]);
+
+  useEffect(() => {
+    if (layoutedGraph.nodes.length === 0) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      reactFlow.fitView({ padding: 0.2, duration: 180 });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [layoutedGraph, reactFlow]);
+
+  return (
+    <ReactFlow
+      nodes={layoutedGraph.nodes}
+      edges={layoutedGraph.edges}
+      nodeTypes={flowchartNodeTypes}
+      fitView
+      fitViewOptions={{ padding: 0.2 }}
+      nodesDraggable={false}
+      nodesConnectable={false}
+      elementsSelectable={false}
+      zoomOnDoubleClick={false}
+      panOnDrag
+    >
+      <Background gap={20} size={1} color="#dfe8f0" />
+      <Controls showInteractive={false} />
+    </ReactFlow>
+  );
+}
+
 function ProcessGraph({ graph, view, t }: { graph: Graph; view: "flowchart" | "sequence"; t: Translate }) {
   if (view === "sequence") {
     return <SequenceDiagram graph={graph} t={t} />;
@@ -242,21 +304,9 @@ function ProcessGraph({ graph, view, t }: { graph: Graph; view: "flowchart" | "s
 
   return (
     <div className="process-flow-canvas">
-      <ReactFlow
-        nodes={graph.nodes}
-        edges={graph.edges}
-        nodeTypes={flowchartNodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable={false}
-        zoomOnDoubleClick={false}
-        panOnDrag
-      >
-        <Background gap={20} size={1} color="#dfe8f0" />
-        <Controls showInteractive={false} />
-      </ReactFlow>
+      <ReactFlowProvider>
+        <FlowchartCanvas graph={graph} />
+      </ReactFlowProvider>
     </div>
   );
 }
@@ -428,7 +478,18 @@ export function ProcessModelPanel({
   useEffect(() => {
     if (!isFullscreen) return undefined;
     const previousOverflow = document.body.style.overflow;
+    const previousBodyOverscrollBehavior = document.body.style.overscrollBehavior;
+    const previousDocumentOverflow = document.documentElement.style.overflow;
+    const root = document.getElementById("root");
+    const previousRootInert = root?.inert ?? false;
+    const previousRootAriaHidden = root ? root.getAttribute("aria-hidden") : null;
     document.body.style.overflow = "hidden";
+    document.body.style.overscrollBehavior = "none";
+    document.documentElement.style.overflow = "hidden";
+    if (root) {
+      root.inert = true;
+      root.setAttribute("aria-hidden", "true");
+    }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !isSaving) {
         setIsFullscreen(false);
@@ -439,6 +500,16 @@ export function ProcessModelPanel({
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
+      document.body.style.overscrollBehavior = previousBodyOverscrollBehavior;
+      document.documentElement.style.overflow = previousDocumentOverflow;
+      if (root) {
+        root.inert = previousRootInert;
+        if (previousRootAriaHidden === null) {
+          root.removeAttribute("aria-hidden");
+        } else {
+          root.setAttribute("aria-hidden", previousRootAriaHidden);
+        }
+      }
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [isFullscreen, isSaving]);
@@ -627,7 +698,7 @@ export function ProcessModelPanel({
         ) : null}
       </>}
 
-      {isFullscreen ? (
+      {isFullscreen ? createPortal(
         <div className="process-model-backdrop">
           <section className="process-model-fullscreen" role="dialog" aria-modal="true" aria-label={t("interview.process.fullscreenAria")}>
             <div className="process-fullscreen-header">
@@ -644,7 +715,7 @@ export function ProcessModelPanel({
                     {isSaving ? t("common.saving") : t("interview.process.save")}
                   </button>
                 ) : null}
-                <button type="button" className="ghost" onClick={closeFullscreen} disabled={isSaving}>{t("interview.process.close")}</button>
+                <button type="button" className="ghost" onClick={closeFullscreen} disabled={isSaving} autoFocus>{t("interview.process.close")}</button>
               </div>
             </div>
             <div className="process-model-tabs" role="tablist" aria-label={t("interview.process.fullscreenTabAria")}>
@@ -666,7 +737,8 @@ export function ProcessModelPanel({
             {notice ? <p className="process-model-notice" role="status">{notice}</p> : null}
             {commandBar}
           </section>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </section>
   );
