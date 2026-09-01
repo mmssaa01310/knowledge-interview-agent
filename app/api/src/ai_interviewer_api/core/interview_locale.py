@@ -113,25 +113,57 @@ def localized_interview_document_confirmation_question(
     }[locale]
 
 
-def localized_interview_tentative_transition(
-    locale: InterviewLocale,
-    candidate: str,
-    next_topic: str,
-) -> str:
-    """Bridge a tentative interpretation into the next question without asking for yes/no."""
+def localized_interview_incomplete_prompt(locale: InterviewLocale) -> str:
+    """Ask the speaker to continue without repeating the partial transcript."""
 
-    candidate_text = candidate.strip()
-    topic_text = next_topic.strip() or {
-        "ja-JP": "次の項目",
-        "en-US": "the next topic",
-        "zh-CN": "下一个问题",
-        "pt-BR": "o próximo tópico",
+    return {
+        "ja-JP": "続き、お願いします。",
+        "en-US": "Please continue.",
+        "zh-CN": "请继续说。",
+        "pt-BR": "Pode continuar, por favor.",
+    }[locale]
+
+
+def localized_interview_transcript_retry(locale: InterviewLocale) -> str:
+    """Ask for a re-utterance when the transcript cannot be safely corrected."""
+
+    return {
+        "ja-JP": "この部分をもう一度お願いします。",
+        "en-US": "Please repeat that part.",
+        "zh-CN": "请再说一遍这一部分。",
+        "pt-BR": "Repita essa parte, por favor.",
+    }[locale]
+
+
+def localized_interview_question_help(locale: InterviewLocale, target_label: str) -> str:
+    """Explain the current question without asking a second question."""
+
+    label = target_label.strip() or {
+        "ja-JP": "この項目",
+        "en-US": "this item",
+        "zh-CN": "这一项",
+        "pt-BR": "este item",
     }[locale]
     return {
-        "ja-JP": f"「{candidate_text}」なんですね。では、{topic_text}について教えてください。",
-        "en-US": f"So, it tends to be “{candidate_text}”. Now, please tell me about {topic_text}.",
-        "zh-CN": f"也就是说是“{candidate_text}”。那么，请告诉我关于{topic_text}的信息。",
-        "pt-BR": f"Entendi, tende a ser “{candidate_text}”. Agora, fale-me sobre {topic_text}.",
+        "ja-JP": f"この質問では、{label}について実際の内容や経験をお聞きしています。答えられる範囲でお話しください。",
+        "en-US": f"This question asks about the actual details or experience related to {label}. Please share what you can.",
+        "zh-CN": f"这个问题想了解{label}的实际内容或经历。请在您方便的范围内说明。",
+        "pt-BR": f"Esta pergunta busca os detalhes ou experiências reais relacionados a {label}. Compartilhe o que puder.",
+    }[locale]
+
+
+def localized_interview_transcript_confirmation_question(
+    locale: InterviewLocale,
+    normalized_transcript: str,
+) -> str:
+    """Confirm a corrected transcript before it is used as an answer."""
+
+    transcript = normalized_transcript.strip()
+    return {
+        "ja-JP": f"「{transcript}」という理解でよろしいですか？",
+        "en-US": f"Is my understanding correct: “{transcript}”?",
+        "zh-CN": f"我的理解是“{transcript}”，这样对吗？",
+        "pt-BR": f"Entendi que “{transcript}”. Está correto?",
     }[locale]
 
 
@@ -140,30 +172,22 @@ def localized_interview_fallbacks(locale: InterviewLocale) -> dict[str, str]:
 
     return {
         "ja-JP": {
-            "follow_up": "もう少し詳しく確認させてください。",
             "completion": "インタビューが完了しました。回答内容を確認してください。",
-            "completion_full": "以上で、設定されているすべての質問項目へのインタビューが完了しました。ご協力ありがとうございました。",
             "control_ack": "承知しました。",
             "error": "一時的にAI応答を生成できませんでした。少し時間をおいて再度送信してください。",
         },
         "en-US": {
-            "follow_up": "Please tell me a little more so I can confirm the answer.",
             "completion": "The interview is complete. Please review the answers.",
-            "completion_full": "You have completed all configured interview questions. Thank you for your cooperation.",
             "control_ack": "Understood.",
             "error": "I could not generate an AI response temporarily. Please wait a moment and try again.",
         },
         "zh-CN": {
-            "follow_up": "请再详细说明一些，以便我确认您的回答。",
             "completion": "访谈已完成。请确认回答内容。",
-            "completion_full": "您已完成所有设定的问题。感谢您的配合。",
             "control_ack": "明白了。",
             "error": "暂时无法生成 AI 回复。请稍后再试。",
         },
         "pt-BR": {
-            "follow_up": "Conte-me um pouco mais para que eu possa confirmar a resposta.",
             "completion": "A entrevista foi concluída. Verifique as respostas.",
-            "completion_full": "Você concluiu todas as perguntas configuradas da entrevista. Obrigado pela sua colaboração.",
             "control_ack": "Entendido.",
             "error": "Não foi possível gerar uma resposta da IA no momento. Aguarde um pouco e tente novamente.",
         },

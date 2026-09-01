@@ -33,6 +33,33 @@ export type InterviewQuestion = {
 };
 
 export type InterviewAnswerResolution = "AUTO_CONFIRM" | "TENTATIVE" | "RETRY" | "CONFIRM_REQUIRED";
+export type UtteranceCompleteness = "COMPLETE" | "INCOMPLETE" | "UNCERTAIN";
+export type TranscriptCorrectionStatus = "NONE" | "CORRECTED" | "UNCERTAIN";
+export type AnswerSufficiency =
+  | "SUFFICIENT"
+  | "PARTIAL"
+  | "AMBIGUOUS"
+  | "EXAMPLE_MISSING"
+  | "REASON_MISSING"
+  | "CRITERIA_MISSING"
+  | "UNANSWERABLE"
+  | "REFUSAL"
+  | "INCOMPLETE";
+export type ProbeType = "NONE" | "REFRAME" | "EXAMPLE" | "REASON" | "CRITERIA" | "CLARIFY" | "RETRY";
+
+export type TranscriptAssessment = {
+  rawTranscript: string;
+  normalizedTranscript: string;
+  correctionStatus: TranscriptCorrectionStatus;
+  correctionCandidates: string[];
+  correctionReason?: string | null;
+  confirmed?: boolean;
+};
+
+export type AnswerAssessment = {
+  sufficiency: AnswerSufficiency;
+  probeType: ProbeType;
+};
 
 export type InterviewFieldState = {
   fieldId: string;
@@ -68,6 +95,24 @@ export type InterviewState = {
   followUpCounts: Record<string, number>;
   fieldStates: Record<string, InterviewFieldState>;
   lastProcessedUserMessageId: string | null;
+  lastUtteranceCompleteness?: UtteranceCompleteness | null;
+  lastTranscriptAssessment?: TranscriptAssessment | null;
+  lastAnswerAssessment?: AnswerAssessment | null;
+  activeProbeTarget?: {
+    targetType: string;
+    targetId: string;
+    label: string;
+    probeType: Exclude<ProbeType, "NONE">;
+    probeCount: number;
+  } | null;
+  pendingTranscriptConfirmation?: {
+    messageId: string;
+    rawTranscript: string;
+    normalizedTranscript: string;
+    correctionCandidates: string[];
+    targetRefs: Array<{ targetType: string; targetId: string }>;
+    sourceQuestion?: InterviewQuestion | null;
+  } | null;
   interviewProfile?: "fixed_form" | "business_process" | "system_requirement";
   nextQuestionTarget?: {
     targetType: string;
@@ -77,11 +122,17 @@ export type InterviewState = {
     candidateSource?: InterviewCandidateSource | null;
     candidateValue?: string | null;
     candidateSourceIds?: string[];
+    probeType?: ProbeType;
+    probeCount?: number;
   } | null;
   deferredProposalTarget?: string | null;
-  tentativeBridgeFieldId?: string | null;
-  tentativeBridgeShown?: boolean;
   lastTentativeTarget?: { targetType: string; targetId: string } | null;
+  closingState?: "UNANSWERED" | "ASKING" | "CONFIRMED";
+  closingAnswer?: {
+    rawTranscript: string;
+    normalizedTranscript: string;
+    evidenceTranscriptIds: string[];
+  } | null;
   requirementStates?: Record<string, {
     requirementId: string;
     label: string;
@@ -138,6 +189,11 @@ export type ChatMessage = {
   voiceResponseId?: string | null;
   isActualUtterance?: boolean;
   isLegacy?: boolean;
+  rawTranscript?: string;
+  normalizedTranscript?: string | null;
+  correctionStatus?: TranscriptCorrectionStatus;
+  correctionCandidates?: string[];
+  correctionReason?: string | null;
   targetType?: string | null;
   targetId?: string | null;
   candidateSource?: InterviewCandidateSource | null;
@@ -162,7 +218,6 @@ export type InterviewStreamMetadata = {
   answerSummary: string | null;
   recordAnswer?: string | null;
   missingInformation: string[];
-  used_tools: string[];
   assistantMessage?: ChatMessage | null;
   interviewState?: InterviewState | null;
   structuredDraft?: Record<string, string>;

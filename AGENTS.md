@@ -55,10 +55,10 @@ AI関連処理は以下に従う。
 
 * `docs/architecture/agents/agent-architecture.md`
 * `docs/agents/agent-behavior-policy.md`
-* `docs/agents/interview-agent-strands.md`
+* `docs/architecture/agents/interview-knowledge-capture.md`
 * `docs/agents/question-design-agent-strands.md`
 
-Strands Agentでは「判断はAI、保証はbackend」を原則とする。
+Structured Interviewでは「判断はAI、保証はbackend」を原則とする。
 挨拶辞書、キーワード一致、文字数などの固定ルールでAI判断を過剰に置き換えない。
 
 ## 5. リアルタイム音声
@@ -70,7 +70,7 @@ Strands Agentでは「判断はAI、保証はbackend」を原則とする。
 
 基本原則:
 
-* 音声機能は既存Interview Agentの別入出力経路として扱う。
+* 音声機能はStructured Interviewの別入出力経路として扱う。
 * 質問進行、回答評価、RAG、状態更新の正本は`app/api`に置く。
 * `app/voice`にインタビュー評価やRAGを複製しない。
 * `app/voice`から`app/api`のPythonモジュールを直接importしない。

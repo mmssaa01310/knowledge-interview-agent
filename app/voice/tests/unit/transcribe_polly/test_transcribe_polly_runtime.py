@@ -421,6 +421,34 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
 
 
 @pytest.mark.anyio
+async def test_duplicate_transcribe_final_events_create_only_one_interview_turn() -> None:
+    transcribe = FakeTranscribe()
+    bridge = FakeBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("回答です。", is_partial=False, result_id="same-result")
+    await transcribe.result("回答です。", is_partial=False, result_id="same-result")
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.11)
+
+    assert len(bridge.process_calls) == 1
+    assert bridge.process_calls[0]["transcript"] == "回答です。"
+    await runtime.close()
+
+
+@pytest.mark.anyio
 async def test_control_transcript_is_classified_by_api_before_commit() -> None:
     transcribe = FakeTranscribe()
     bridge = ControlBridge()
@@ -1142,10 +1170,10 @@ async def test_cache_miss_does_not_mark_listen_ack_played() -> None:
     ("transcript", "normal_should_finalize"),
     [
         ("担当しています。", True),
-        ("なので。", False),
+        ("なので。", True),
     ],
 )
-async def test_normal_endpoint_normalizes_punctuation_and_suppresses_continuation(
+async def test_normal_endpoint_finalizes_transcribe_final_for_backend_assessment(
     transcript: str,
     normal_should_finalize: bool,
 ) -> None:
@@ -1173,14 +1201,11 @@ async def test_normal_endpoint_normalizes_punctuation_and_suppresses_continuatio
     await runtime.push_audio(_frame(0))
     await asyncio.sleep(0.09)
     assert bool(bridge.process_calls) is normal_should_finalize
-    if not normal_should_finalize:
-        await asyncio.sleep(0.14)
-        assert len(bridge.process_calls) == 1
     await runtime.close()
 
 
 @pytest.mark.anyio
-async def test_partial_stable_transcript_waits_for_final_or_hard_endpoint() -> None:
+async def test_partial_stable_transcript_never_finalizes_without_a_final_result() -> None:
     bridge = FakeBridge()
     transcribe = FakeTranscribe()
     runtime = TranscribePollyRuntime(
@@ -1208,6 +1233,10 @@ async def test_partial_stable_transcript_waits_for_final_or_hard_endpoint() -> N
 
     assert bridge.process_calls == []
     await asyncio.sleep(0.25)
+    assert bridge.process_calls == []
+
+    await transcribe.result("設備を担当しています。", is_partial=False)
+    await asyncio.sleep(0.06)
     assert len(bridge.process_calls) == 1
     await runtime.close()
 

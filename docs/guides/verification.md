@@ -70,7 +70,7 @@ docker compose -f infra/docker-compose.yml config
 質問項目設計まわり、実行設定まわり、プロンプト loader まわりを変更した場合は、以下を確認する。
 
 * 質問項目設計の system prompt が `agents/question_design/prompts/*` だけで構成されているか
-* 実インタビューの system prompt が `agents/interview/prompts/base.md` と追加カスタマイズの連結になっているか
+* 実インタビューの system prompt が `agents/interview_knowledge/provider.py` の固定指示とKnowledgeの追加カスタマイズに分離されているか
 * 質問項目設計チャットの request/context に実インタビュー用 `systemPrompt` を含めていないか
 * 「追加カスタマイズ」「テンプレート」「実インタビュー用」相当のUI文言が、質問項目設計チャット側に誤誘導していないか
 * プロンプト分離を担保するテストが壊れていないか

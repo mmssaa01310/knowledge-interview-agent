@@ -386,11 +386,17 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 必須ルール:
 {interview_language_instruction(locale)}
 - fieldUpdates、requirementUpdates、processPatch、contradictions、applicability、openIssuesを使用します。
+- utteranceCompletenessは、最新発話が文として完結し、現在の質問への意味的な回答として成立している場合だけCOMPLETEにします。文が途中で切れている、接続助詞・動詞の語幹で終わっている、または続きが明らかな場合はINCOMPLETEにします。判断できない場合はUNCERTAINにします。
+- Transcribe由来の発話ではtranscriptAssessment.rawTranscriptに最新発話をそのまま入れ、意味を変えない句読点・空白・表記揺れだけをNONEとしてnormalizedTranscriptに反映します。単語や意味を変更する場合はCORRECTEDにし、normalizedTranscriptへ最有力の自然な候補を入れます。候補が一意でない場合はUNCERTAINにし、correctionCandidatesを列挙します。発話にない情報は追加しません。
+- correctionStatusがCORRECTEDまたはUNCERTAINの場合、fieldUpdates、requirementUpdates、processPatch、applicabilityを確定可能な情報として返しません。CORRECTEDはBackendが候補を確認質問にし、UNCERTAINは再発話を依頼します。
+- answerAssessment.sufficiencyは、SUFFICIENT、PARTIAL、AMBIGUOUS、EXAMPLE_MISSING、REASON_MISSING、CRITERIA_MISSING、UNANSWERABLE、REFUSAL、INCOMPLETEのいずれかです。回答が不足している場合はprobeTypeに不足部分だけを確認する方針（REFRAME、EXAMPLE、REASON、CRITERIA、CLARIFY、RETRY）を入れ、SUFFICIENTならNONEにします。
+- ユーザーが「どういう意味ですか」「何を答えればよいですか」など質問の意味を尋ねた場合はQUESTION_TO_ASSISTANTまたはCLARIFICATION_REQUESTにし、回答値を作らず、現在の質問対象を維持します。
 - 確定判断、質問対象の選択、完了判定はBackendが実行します。あなたは確定済みと返しません。
 - 最新の発話から取得できた情報は、複数項目でもすべて候補として抽出します。
 - 最新の発話に根拠がない情報を補いません。
 - candidateSourceは、最新の発話が事実を述べている場合はuser_statement、利用者が「提案して」「案を出して」などと求め、あなたが例示案を作る場合だけassistant_proposalにします。
 - user_statementのfieldUpdatesとrequirementUpdatesにはanswerResolutionを必ず設定します。意味的一致、対象フィールドの型・用途、必要情報量、前後の矛盾、音声の場合は認識信頼度を合わせて、会話を止める必要性を判定してください。
+- sttConfidenceが低い、固有名詞・数字・単位・コードが不自然、または複数解釈が残る場合は、推測で確定せずCORRECTEDまたはUNCERTAINとして確認・再発話へ回します。
 - answerResolutionはAUTO_CONFIRM（十分に確かな回答。確認せず次の質問へ）、TENTATIVE（回答として成立するが曖昧。候補を保持して次の質問へ）、RETRY（意味的に成立しない、または誤認識の可能性が高い。値を抽出しない）、CONFIRM_REQUIRED（重大な矛盾や例外的な不確実性で停止が必要）のいずれかです。
 - 通常の回答を受け取っただけでCONFIRM_REQUIREDにしてはいけません。TENTATIVEでは「はい／いいえ」の確認を生成せず、次の質問生成器が候補を自然に織り込みます。
 - assistant_proposalの値は利用者の事実として確定していません。候補として返し、確認質問で採用・修正・拒否を促します。
@@ -419,6 +425,11 @@ def _question_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> 
 Backendが選択したtargetについて、質問を1問だけ生成してください。
 {interview_language_instruction(locale)}
 返却は指定されたJSON Schemaに従ってください。questionTextに加えて、文書から対象項目の値を明示的に読み取れる場合だけdocumentCandidateValueとdocumentCandidateSourceIdsを返してください。根拠がない場合はdocumentCandidateValue=null、documentCandidateSourceIds=[]にしてください。
+- questionTextはuser-facingな実際の質問文だけにしてください。回答全文の引用、「なるほど」「そうなんですね」「〜なんですね」の定型リアクション、勝手な長いコメント、target名の説明と同義質問の組み合わせ、「では○○について」＋「○○を教えてください」の二重構造は禁止です。
+- 1回の生成で質問は必ず1問だけにしてください。同義の質問を2つ並べたり、複数の不足項目を同時に尋ねたりしないでください。
+- currentState.answerAssessmentまたはactiveProbeがある場合は、回答済みの内容を繰り返さず、probeTypeが示す不足部分だけを一度に確認してください。UNANSWERABLEやREFUSALへのprobeは中立的な別の聞き方にし、拒否が再度明示されたら質問を続ける前提にしないでください。
+- targetTypeがclosingの場合は、ここまでの質問で扱わなかった重要なことを自由に追加できる、誘導しないopen-endedな質問を1問だけ作ってください。
+- tentativeCandidatesは説明文として読み上げず、必要な場合だけ次の質問に自然に関係づけてください。候補を毎回復唱しないでください。
 target以外の不足項目を同時に聞かないでください。
 retrieved_knowledgeはBackendが検索したindexed済み文書です。documentCandidateValueはtargetの回答として文書本文またはタイトルに明示された、短く具体的な値だけにしてください。推測、一般知識、本文にない要約、別項目の値を候補にしてはいけません。documentCandidateSourceIdsには候補値を直接裏付けるsource_idだけを入れてください。
 documentCandidateValueを返した場合は、questionTextでもその候補を文書由来として確認する質問にしてください。Backendが候補値と根拠を検証し、確認待ち状態を作成します。candidateSourceがassistant_proposalの場合は、候補値だけを説明し、確認文の定型化とOKボタン表示はBackend/UIが行います。answerResolutionがTENTATIVEの候補は確認せず、候補を自然に含めて次の質問へつなげてください。

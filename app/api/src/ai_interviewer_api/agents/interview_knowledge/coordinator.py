@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence, Set
 from copy import deepcopy
 from typing import Any
@@ -46,6 +48,9 @@ PROFILE_LABELS: dict[InterviewProfile, str] = {
 }
 
 logger = logging.getLogger(__name__)
+
+CLOSING_TARGET_ID = "open_ended"
+CLOSING_TARGET_LABEL = "最後に伝えておきたいこと"
 
 REQUIREMENT_DEFINITIONS: dict[InterviewProfile, tuple[tuple[str, str, str], ...]] = {
     "fixed_form": (),
@@ -153,10 +158,16 @@ def build_initial_structured_state(
         "followUpCounts": {},
         "fieldStates": field_states,
         "lastProcessedUserMessageId": None,
+        "lastUtteranceCompleteness": None,
+        "lastTranscriptAssessment": None,
+        "lastAnswerAssessment": None,
+        "activeProbeTarget": None,
+        "pendingTranscriptConfirmation": None,
         "nextQuestionTarget": None,
         "lastTentativeTarget": None,
-        "tentativeBridgeShown": False,
         "deferredProposalTarget": None,
+        "closingState": "UNANSWERED",
+        "closingAnswer": None,
         "requirementStates": requirement_states,
         "processState": process_state,
         "applicabilityState": applicability_state,
@@ -248,6 +259,163 @@ def apply_document_candidate(
     return True
 
 
+def record_interpretation_assessment(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    *,
+    latest_message_id: str,
+    raw_transcript: str | None = None,
+) -> None:
+    """Persist the model's safety decisions without promoting an answer.
+
+    The raw transcript is supplied by the backend boundary, not trusted from
+    the model response. This keeps the audit text stable while allowing the
+    model to propose a normalized/corrected form for explicit confirmation.
+    """
+
+    assessment = output.transcriptAssessment.model_dump()
+    raw = str(raw_transcript or assessment.get("rawTranscript") or "").strip()
+    normalized = str(assessment.get("normalizedTranscript") or "").strip()
+    if output.transcriptAssessment.correctionStatus == "NONE":
+        normalized = _lightly_normalize_transcript(raw)
+    elif output.transcriptAssessment.correctionStatus == "CORRECTED" and not normalized:
+        # A correction without a candidate is unsafe. Treat it as uncertain
+        # at the backend boundary rather than allowing an empty confirmation.
+        assessment["correctionStatus"] = "UNCERTAIN"
+    assessment["rawTranscript"] = raw
+    assessment["normalizedTranscript"] = normalized
+    state["lastUtteranceCompleteness"] = output.utteranceCompleteness
+    state["lastTranscriptAssessment"] = assessment
+    state["lastAnswerAssessment"] = output.answerAssessment.model_dump()
+    state["lastProcessedUserMessageId"] = latest_message_id
+
+
+def _lightly_normalize_transcript(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return re.sub(
+        r"(?<=[\u3040-\u30ff\u3400-\u9fff])\s+(?=[\u3040-\u30ff\u3400-\u9fff])",
+        "",
+        normalized,
+    )
+
+
+def stage_transcript_correction(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    *,
+    latest_message_id: str,
+    raw_transcript: str,
+    fields: Sequence[Mapping[str, Any]],
+    valid_evidence_ids: Set[str] | None = None,
+    current_question: Mapping[str, Any] | None = None,
+) -> bool:
+    """Store a single corrected transcript as a confirmation-only candidate."""
+
+    assessment = output.transcriptAssessment
+    normalized = assessment.normalizedTranscript.strip()
+    if assessment.correctionStatus != "CORRECTED" or not normalized:
+        return False
+
+    record_interpretation_assessment(
+        state,
+        output,
+        latest_message_id=latest_message_id,
+        raw_transcript=raw_transcript,
+    )
+    target_refs: list[dict[str, str]] = []
+    field_ids = {str(field.get("id")) for field in fields if field.get("id")}
+    current_target = _target_for_current_question(state, current_question)
+    for update in output.fieldUpdates:
+        if (
+            update.fieldId not in field_ids
+            or not update.value.strip()
+            or update.candidateSource == "document_reference"
+            or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+        ):
+            continue
+        _apply_field_update(
+            state,
+            update.model_copy(update={"answerResolution": "CONFIRM_REQUIRED"}),
+            latest_message_id,
+            valid_evidence_ids,
+            force_awaiting_confirmation=True,
+        )
+        target_refs.append({"targetType": "field", "targetId": update.fieldId})
+
+    for update in output.requirementUpdates:
+        if (
+            update.requirementId not in state.setdefault("requirementStates", {})
+            or not update.value.strip()
+            or update.candidateSource == "document_reference"
+            or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
+        ):
+            continue
+        _apply_requirement_update(
+            state,
+            update.model_copy(update={"answerResolution": "CONFIRM_REQUIRED"}),
+            latest_message_id,
+            valid_evidence_ids,
+            force_awaiting_confirmation=True,
+        )
+        target_refs.append(
+            {
+                "targetType": (
+                    "requirement"
+                    if update.requirementId.startswith("requirement.")
+                    else "process"
+                ),
+                "targetId": update.requirementId,
+            }
+        )
+
+    if not target_refs and current_target is not None:
+        target_type = str(current_target.get("targetType") or "")
+        target_id = str(current_target.get("targetId") or "")
+        if target_type == "field" and target_id in field_ids:
+            _apply_field_update(
+                state,
+                FieldUpdate(
+                    fieldId=target_id,
+                    value=normalized,
+                    evidenceTranscriptIds=[latest_message_id],
+                    answerResolution="CONFIRM_REQUIRED",
+                ),
+                latest_message_id,
+                valid_evidence_ids,
+                force_awaiting_confirmation=True,
+            )
+            target_refs.append({"targetType": "field", "targetId": target_id})
+        elif target_type in {"requirement", "process"} and target_id in state["requirementStates"]:
+            _apply_requirement_update(
+                state,
+                RequirementUpdate(
+                    requirementId=target_id,
+                    value=normalized,
+                    evidenceTranscriptIds=[latest_message_id],
+                    answerResolution="CONFIRM_REQUIRED",
+                ),
+                latest_message_id,
+                valid_evidence_ids,
+                force_awaiting_confirmation=True,
+            )
+            target_refs.append({"targetType": target_type, "targetId": target_id})
+
+    if not target_refs:
+        return False
+    state["pendingTranscriptConfirmation"] = {
+        "messageId": latest_message_id,
+        "rawTranscript": raw_transcript.strip(),
+        "normalizedTranscript": normalized,
+        "correctionCandidates": list(assessment.correctionCandidates),
+        "targetRefs": target_refs,
+        "sourceQuestion": dict(current_question) if current_question else None,
+    }
+    state["activeProbeTarget"] = None
+    state["lastProcessedUserMessageId"] = latest_message_id
+    return True
+
+
 def apply_structured_output(
     state: dict[str, Any],
     output: StructuredInterviewOutput,
@@ -257,8 +425,21 @@ def apply_structured_output(
     profile: InterviewProfile | None = None,
     valid_evidence_ids: Set[str] | None = None,
     current_question: Mapping[str, Any] | None = None,
+    raw_transcript: str | None = None,
 ) -> list[str]:
     """Apply only validated meaning; completion remains a coordinator decision."""
+
+    record_interpretation_assessment(
+        state,
+        output,
+        latest_message_id=latest_message_id,
+        raw_transcript=raw_transcript,
+    )
+    if output.utteranceCompleteness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
+        # A final Transcribe result is still only a candidate utterance. The
+        # Interpreter must establish both grammatical completeness and a
+        # meaningful answer before any field or process state is changed.
+        return []
 
     changed_topics: list[str] = []
     field_ids = {str(field.get("id")) for field in fields if field.get("id")}
@@ -441,13 +622,23 @@ def evaluate_completion(
     pending_confirmations = list_pending_confirmation_targets(state)
     missing_required = list_missing_required_targets(state, profile, fields)
     unknown_applicability = list_unknown_applicability(state, profile)
-    complete = not unresolved_contradictions and not pending_confirmations and not missing_required and not unknown_applicability
+    closing_state = str(state.get("closingState") or "UNANSWERED")
+    closing_complete = closing_state == "CONFIRMED"
+    complete = (
+        not unresolved_contradictions
+        and not pending_confirmations
+        and not missing_required
+        and not unknown_applicability
+        and closing_complete
+    )
     return {
         "complete": complete,
         "unresolvedContradictionIds": [str(item.get("contradictionId")) for item in unresolved_contradictions],
         "pendingConfirmationTargets": pending_confirmations,
         "missingRequiredTargets": missing_required,
         "unknownApplicabilityTopics": unknown_applicability,
+        "closingState": closing_state,
+        "closingRequired": not closing_complete,
     }
 
 
@@ -457,6 +648,23 @@ def select_next_question_target(
     fields: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
     """Select exactly one target using the fixed backend priority."""
+
+    pending_transcript = state.get("pendingTranscriptConfirmation")
+    if isinstance(pending_transcript, Mapping):
+        message_id = str(pending_transcript.get("messageId") or "").strip()
+        normalized = str(pending_transcript.get("normalizedTranscript") or "").strip()
+        if message_id and normalized:
+            return _target(
+                "transcript_confirmation",
+                message_id,
+                "発話内容",
+                1,
+                candidate_value=normalized,
+            )
+
+    active_probe = _active_probe_target(state)
+    if active_probe is not None:
+        return active_probe
 
     # Preserve the legacy queue of ordinary candidates, but deliberately leave
     # TENTATIVE candidates in the conversation so a later answer can confirm
@@ -525,6 +733,8 @@ def select_next_question_target(
     optional = _select_optional_target(state, profile)
     if optional:
         return optional
+    if str(state.get("closingState") or "UNANSWERED") != "CONFIRMED":
+        return _target("closing", CLOSING_TARGET_ID, CLOSING_TARGET_LABEL, 6)
     # Once there is no other useful question, fall back to an explicit stop
     # only for the remaining candidate. This is the exceptional confirmation
     # path, not the default after every answer.
@@ -533,6 +743,169 @@ def select_next_question_target(
     if pending_confirmations:
         return pending_confirmations[0]
     return None
+
+
+def _active_probe_target(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    value = state.get("activeProbeTarget")
+    if not isinstance(value, Mapping):
+        return None
+    target_type = str(value.get("targetType") or "").strip()
+    target_id = str(value.get("targetId") or "").strip()
+    if target_type not in {"field", "requirement", "process", "applicability"} or not target_id:
+        return None
+    return _target(
+        target_type,
+        target_id,
+        str(value.get("label") or target_id),
+        1,
+    ) | {
+        "probeType": str(value.get("probeType") or "CLARIFY"),
+        "probeCount": int(value.get("probeCount") or 0),
+    }
+
+
+def target_key(target: Mapping[str, Any] | None) -> str:
+    if not target:
+        return ""
+    target_type = str(target.get("targetType") or target.get("kind") or "").strip()
+    target_id = str(target.get("targetId") or "").strip()
+    return f"{target_type}:{target_id}" if target_type and target_id else ""
+
+
+def register_probe(
+    state: dict[str, Any],
+    *,
+    target: Mapping[str, Any] | None,
+    probe_type: str | None,
+) -> int:
+    """Keep the current target active while one focused probe is asked."""
+
+    key = target_key(target)
+    if not key:
+        return 0
+    counts = state.setdefault("followUpCounts", {})
+    count = int(counts.get(key, counts.get(str(target.get("targetId") or ""), 0)) or 0) + 1
+    counts[key] = count
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    state["activeProbeTarget"] = {
+        "targetType": target_type,
+        "targetId": target_id,
+        "label": str(target.get("label") or target_id),
+        "probeType": probe_type if probe_type in {"REFRAME", "EXAMPLE", "REASON", "CRITERIA", "CLARIFY", "RETRY"} else "CLARIFY",
+        "probeCount": count,
+    }
+    return count
+
+
+def clear_probe(state: dict[str, Any], target: Mapping[str, Any] | None = None) -> None:
+    active = state.get("activeProbeTarget")
+    if target is None or (
+        isinstance(active, Mapping) and target_key(active) == target_key(target)
+    ):
+        state["activeProbeTarget"] = None
+
+
+def accept_no_answer(
+    state: dict[str, Any],
+    target: Mapping[str, Any] | None,
+    *,
+    transcript: str,
+    message_id: str,
+    valid_evidence_ids: Set[str] | None = None,
+) -> bool:
+    """Treat an explicit second refusal as a valid no-detail answer."""
+
+    if target is None:
+        return False
+    value = transcript.strip()
+    evidence = _ensure_latest_evidence([message_id], message_id, valid_evidence_ids)
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        field_state = state.get("fieldStates", {}).get(target_id)
+        if not isinstance(field_state, dict):
+            return False
+        field_state.update(
+            {
+                "answerState": "CONFIRMED",
+                "answerResolution": "AUTO_CONFIRM",
+                "status": "completed",
+                "answerDisposition": "NO_DETAIL",
+                "recordAnswer": value,
+                "rawAnswer": value,
+                "confirmedSource": "user_statement",
+                "confirmedSourceIds": evidence,
+                "candidateAnswer": None,
+                "candidateSource": None,
+                "candidateSourceIds": [],
+                "candidateItems": [],
+            }
+        )
+        raw_history = field_state.setdefault("rawAnswerHistory", [])
+        if value and (not raw_history or raw_history[-1] != value):
+            raw_history.append(value)
+        _mark_field_completed(state, target_id)
+    elif target_type in {"requirement", "process"}:
+        requirement_state = state.get("requirementStates", {}).get(target_id)
+        if not isinstance(requirement_state, dict):
+            return False
+        requirement_state.update(
+            {
+                "status": "CONFIRMED",
+                "answerResolution": "AUTO_CONFIRM",
+                "answerDisposition": "NO_DETAIL",
+                "value": value,
+                "confirmedSource": "user_statement",
+                "confirmedSourceIds": evidence,
+                "candidateValue": None,
+                "candidateSource": None,
+                "candidateSourceIds": [],
+            }
+        )
+    elif target_type == "applicability":
+        applicability = state.get("applicabilityState", {}).get(target_id)
+        if not isinstance(applicability, dict):
+            return False
+        applicability.update(
+            {
+                "status": "not_applicable",
+                "evidenceTranscriptIds": evidence,
+                "reason": value,
+            }
+        )
+    else:
+        return False
+    clear_probe(state, target)
+    return True
+
+
+def confirm_closing_answer(
+    state: dict[str, Any],
+    *,
+    transcript: str,
+    message_id: str,
+    normalized_transcript: str | None = None,
+    valid_evidence_ids: Set[str] | None = None,
+) -> bool:
+    """Finish the open-ended closing after one complete response."""
+
+    raw = transcript.strip()
+    if not raw:
+        return False
+    normalized = (normalized_transcript or raw).strip()
+    state["closingState"] = "CONFIRMED"
+    state["closingAnswer"] = {
+        "rawTranscript": raw,
+        "normalizedTranscript": normalized,
+        "evidenceTranscriptIds": _ensure_latest_evidence(
+            [message_id],
+            message_id,
+            valid_evidence_ids,
+        ),
+    }
+    state["activeProbeTarget"] = None
+    return True
 
 
 def list_pending_confirmation_targets(state: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -703,6 +1076,7 @@ def _new_requirement_state(target_id: str, label: str, kind: str) -> dict[str, A
         "confirmationEvidenceTranscriptIds": [],
         "value": None,
         "evidenceTranscriptIds": [],
+        "answerDisposition": None,
     }
 
 
@@ -765,6 +1139,17 @@ def _target_for_current_question(
     target_id = str(current_question.get("targetId") or "")
     if not target_type or not target_id:
         return None
+    if target_type == "transcript_confirmation":
+        pending = state.get("pendingTranscriptConfirmation")
+        if not isinstance(pending, Mapping):
+            return None
+        return _target(
+            "transcript_confirmation",
+            target_id,
+            "発話内容",
+            1,
+            candidate_value=str(pending.get("normalizedTranscript") or "").strip(),
+        )
     target = _target(
         target_type,
         target_id,
@@ -787,6 +1172,13 @@ def _target_for_current_question(
 def _is_confirmation_target(state: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
     target_type = target.get("targetType") or target.get("kind")
     target_id = str(target.get("targetId") or "")
+    if target_type == "transcript_confirmation":
+        pending = state.get("pendingTranscriptConfirmation")
+        return bool(
+            isinstance(pending, Mapping)
+            and str(pending.get("messageId") or "") == target_id
+            and str(pending.get("normalizedTranscript") or "").strip()
+        )
     if target_type == "contradiction":
         return any(
             str(item.get("contradictionId") or "") == target_id
@@ -864,6 +1256,26 @@ def _confirm_target(
 ) -> None:
     kind = target.get("targetType") or target.get("kind")
     target_id = str(target.get("targetId") or "")
+    if kind == "transcript_confirmation":
+        pending = state.get("pendingTranscriptConfirmation")
+        if not isinstance(pending, Mapping):
+            return
+        references = [
+            item
+            for item in pending.get("targetRefs", [])
+            if isinstance(item, Mapping)
+        ]
+        for reference in references:
+            _confirm_target(
+                state,
+                reference,
+                confirmation_message_id=confirmation_message_id,
+            )
+        state["pendingTranscriptConfirmation"] = None
+        assessment = state.get("lastTranscriptAssessment")
+        if isinstance(assessment, dict):
+            assessment["confirmed"] = True
+        return
     if kind == "contradiction":
         _resolve_contradictions(state, [target_id], confirmation_message_id or "")
         _confirm_candidate_for_contradiction(
@@ -894,7 +1306,6 @@ def _confirm_target(
             field_state["candidateProposalMessageId"] = None
             if _target_matches(state.get("lastTentativeTarget"), "field", target_id):
                 state["lastTentativeTarget"] = None
-                state["tentativeBridgeShown"] = False
             _mark_field_completed(state, target_id)
         return
     requirement_state = state.get("requirementStates", {}).get(target_id)
@@ -918,7 +1329,6 @@ def _confirm_target(
             target_id,
         ):
             state["lastTentativeTarget"] = None
-            state["tentativeBridgeShown"] = False
         _maybe_confirm_process_entities(state)
 
 
@@ -1000,6 +1410,40 @@ def _confirm_candidate_for_contradiction(
 def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
     kind = target.get("targetType") or target.get("kind")
     target_id = str(target.get("targetId") or "")
+    if kind == "transcript_confirmation":
+        pending = state.get("pendingTranscriptConfirmation")
+        if isinstance(pending, Mapping):
+            for reference in pending.get("targetRefs", []):
+                if isinstance(reference, Mapping):
+                    _reject_target(state, reference)
+            source_question = pending.get("sourceQuestion")
+            if isinstance(source_question, Mapping):
+                source_question_id = str(source_question.get("questionId") or "").strip()
+                if source_question_id and any(
+                    str(item.get("questionId") or "") == source_question_id
+                    for item in state.get("askedQuestions", [])
+                ):
+                    state["currentQuestionId"] = source_question_id
+                    state["currentFieldId"] = source_question.get("fieldId")
+                    source_type = str(
+                        source_question.get("targetType")
+                        or source_question.get("kind")
+                        or "issue"
+                    )
+                    source_id = str(source_question.get("targetId") or "").strip()
+                    if source_id:
+                        state["nextQuestionTarget"] = _target(
+                            source_type,
+                            source_id,
+                            str(
+                                source_question.get("targetLabel")
+                                or source_question.get("label")
+                                or source_id
+                            ),
+                            1,
+                        )
+        state["pendingTranscriptConfirmation"] = None
+        return
     if kind == "field":
         field_state = state.get("fieldStates", {}).get(target_id)
         if field_state:
@@ -1091,10 +1535,8 @@ def _apply_field_update(
     field_state["capturedItems"] = list(field_state["candidateItems"])
     if resolution == "TENTATIVE":
         state["lastTentativeTarget"] = {"targetType": "field", "targetId": update.fieldId}
-        state["tentativeBridgeShown"] = False
     elif _target_matches(state.get("lastTentativeTarget"), "field", update.fieldId):
         state["lastTentativeTarget"] = None
-        state["tentativeBridgeShown"] = False
     if resolution == "AUTO_CONFIRM":
         _confirm_target(
             state,
@@ -1144,14 +1586,12 @@ def _apply_requirement_update(
             "targetType": "requirement" if update.requirementId.startswith("requirement.") else "process",
             "targetId": update.requirementId,
         }
-        state["tentativeBridgeShown"] = False
     elif _target_matches(
         state.get("lastTentativeTarget"),
         "requirement" if update.requirementId.startswith("requirement.") else "process",
         update.requirementId,
     ):
         state["lastTentativeTarget"] = None
-        state["tentativeBridgeShown"] = False
     if resolution == "AUTO_CONFIRM":
         _confirm_target(
             state,
@@ -1802,7 +2242,6 @@ def confirm_tentative_target(
     if target is None or not _is_tentative_target(state, target):
         return False
     _confirm_target(state, target, confirmation_message_id=None)
-    state["tentativeBridgeShown"] = False
     return True
 
 

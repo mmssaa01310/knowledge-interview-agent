@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from time import monotonic, time
@@ -73,16 +74,6 @@ logger = logging.getLogger(__name__)
 LISTEN_ACK_TEXT = "はい。"
 PROCESSING_ACK_TEXT = "回答を確認しています。"
 LONG_PROCESSING_TEXT = "確認に少し時間がかかっています。"
-_CONTINUATION_ENDINGS = (
-    "ですが",
-    "なので",
-    "それで",
-    "というか",
-    "けれど",
-    "あと",
-    "つまり",
-    "そのため",
-)
 _SHORT_DIRECT_ANSWERS = frozenset({"はい", "いいえ"})
 
 
@@ -117,6 +108,28 @@ class AssistantResponseState(StrEnum):
 
 def _normalize_ending(text: str) -> str:
     return text.strip().rstrip("。！？!?、, ")
+
+
+def _transcript_fingerprint(text: str) -> str:
+    return "".join(text.casefold().split())
+
+
+def _looks_like_continuation(text: str) -> bool:
+    """Only suppress a listening backchannel for obvious unfinished speech.
+
+    This is deliberately not the turn-completion decision. Completion is
+    decided by the Structured Interpreter after a Transcribe final result.
+    """
+
+    value = _normalize_ending(text)
+    if len(value) < 2:
+        return False
+    if re.search(
+        r"(?:し|っ|ですが|なので|けど|けれど|例えば|まず|それから|というか|担当しているのは|私の場合は)$",
+        value,
+    ):
+        return True
+    return bool(re.search(r"(?:and|or|but|because|to|which|that|with|for)$", value.casefold()))
 
 
 class TranscribePollyRuntime:
@@ -159,12 +172,12 @@ class TranscribePollyRuntime:
         self._latest_partial_text = ""
         self._latest_stt_confidence: float | None = None
         self._final_segments: dict[str, str] = {}
+        self._final_segment_fingerprints: set[str] = set()
         self._anonymous_final_index = 0
         self._listen_ack_played = False
         self._processing_ack_played = False
         self._long_notice_played = False
         self._last_backchannel_at: float | None = None
-        self._hard_endpoint_started_at: float | None = None
         self._endpoint_task: asyncio.Task[None] | None = None
         self._processing_task: asyncio.Task[None] | None = None
         self._state_sync_task: asyncio.Task[object] | None = None
@@ -519,7 +532,6 @@ class TranscribePollyRuntime:
                 self._voiced_duration_ms += duration_ms
             self._speech_active = True
             self._silence_started_at = None
-            self._hard_endpoint_started_at = None
             return
         self._barge_in_voiced_ms = 0
         if self._turn_active and self._speech_active:
@@ -546,10 +558,10 @@ class TranscribePollyRuntime:
         self._latest_partial_text = ""
         self._latest_stt_confidence = None
         self._final_segments.clear()
+        self._final_segment_fingerprints.clear()
         self._listen_ack_played = False
         self._processing_ack_played = False
         self._long_notice_played = False
-        self._hard_endpoint_started_at = None
         await self._emit(UserSpeechStarted())
 
     async def _on_transcribe_result(self, result: TranscribeResult) -> None:
@@ -567,7 +579,12 @@ class TranscribePollyRuntime:
             if not key:
                 self._anonymous_final_index += 1
                 key = f"anonymous-{self._anonymous_final_index}"
+            fingerprint = _transcript_fingerprint(result.text)
+            if key in self._final_segments or fingerprint in self._final_segment_fingerprints:
+                logger.debug("transcribe_final_duplicate_ignored result_id=%s", result.result_id)
+                return
             self._final_segments[key] = result.text
+            self._final_segment_fingerprints.add(fingerprint)
             self._stable_text = self._combined_final_text()
             self._latest_partial_text = ""
         visible = self._combined_transcript()
@@ -605,7 +622,6 @@ class TranscribePollyRuntime:
             silence_ms = int((monotonic() - self._silence_started_at) * 1000)
             stable = self._combined_stable_text()
             final = self._combined_final_text()
-            normalized_final = _normalize_ending(final)
             normalized_stable = _normalize_ending(stable)
             if silence_ms >= self._config.listen_ack_silence_ms:
                 await self._maybe_play_listen_ack(normalized_stable)
@@ -613,21 +629,10 @@ class TranscribePollyRuntime:
                 self._has_final_transcript
                 and silence_ms >= self._endpoint_silence_ms()
                 and self._transcript_quiet_ms() >= self._config.final_result_settle_ms
-                and normalized_final
-                and not normalized_final.endswith(_CONTINUATION_ENDINGS)
+                and _normalize_ending(final)
             ):
                 await self._finalize_user_turn(final)
                 continue
-            if silence_ms >= self._config.hard_endpoint_ms and normalized_stable:
-                if final:
-                    await self._finalize_user_turn(final)
-                    continue
-                if self._hard_endpoint_started_at is None:
-                    self._hard_endpoint_started_at = monotonic()
-                    continue
-                waited_ms = int((monotonic() - self._hard_endpoint_started_at) * 1000)
-                if waited_ms >= self._config.final_result_wait_ms:
-                    await self._finalize_user_turn(stable)
 
     async def _maybe_play_listen_ack(self, stable: str) -> None:
         if not self._config.backchannel_enabled:
@@ -638,7 +643,7 @@ class TranscribePollyRuntime:
             return
         if len(stable) < self._config.listen_ack_min_stable_chars:
             return
-        if stable in _SHORT_DIRECT_ANSWERS or stable.endswith(_CONTINUATION_ENDINGS):
+        if stable in _SHORT_DIRECT_ANSWERS or _looks_like_continuation(stable):
             return
         if self._last_backchannel_at is not None:
             elapsed_ms = int((monotonic() - self._last_backchannel_at) * 1000)
@@ -662,7 +667,6 @@ class TranscribePollyRuntime:
         self._turn_active = False
         self._speech_active = False
         self._silence_started_at = None
-        self._hard_endpoint_started_at = None
         transcript_final_at_ms = int(time() * 1000)
         await self._emit(UserSpeechEnded())
         await self._emit_input_state("ANSWER_PROCESSING")

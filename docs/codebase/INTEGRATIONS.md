@@ -28,7 +28,7 @@
 ## 4. 失敗時の扱い
 
 * PostgreSQLの接続確認はAPI起動時の`store.ensure_schema()`と`store.health()`で行う。
-* BedrockのVoice warmup失敗はAPI起動を停止せず、warningを記録する。
+* Structured Interviewまたは質問生成のBedrock呼び出しに失敗した場合は、状態を確定せずAPIエラーとして扱う。Voice Runtimeはそのエラーを共通イベントへ変換する。
 * VoiceのProvider固有の再接続・音声出力制御はRuntimeに閉じ込める。
 * 外部AWSを必要とする実接続とブラウザWebRTCのE2Eは通常の自動テスト範囲外である。
 

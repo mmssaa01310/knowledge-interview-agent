@@ -180,7 +180,7 @@ Solを追加する場合、またはTerraとLunaの自動ルーティングを�
 
 ### 6.4 Provider境界
 
-現在のコードはStrands/Bedrockを使用している。新しいStructured Output契約では、LLM Providerを次の境界で分離する。
+現在のコードはBedrockのOpenAI互換Responses APIを使用している。Structured Output契約では、LLM Providerを次の境界で分離する。
 
 ```text
 Interview Coordinator
@@ -196,8 +196,8 @@ global.openai.gpt-5.6-terra または global.openai.gpt-5.6-luna
 
 1. Router、Repository、状態機械からBedrock APIを直接呼び出してはならない。
 2. `app/voice`からBedrock APIを呼び出してはならない。
-3. 既存のBedrock/Strands経路を移行期間中に残す場合も、同じターンを2つのProviderで処理してはならない。
-4. 構造化インタビューのProvider失敗時に、別モデルまたは既存Strands経路へ自動フォールバックしてはならない。Providerフォールバックは別仕様で定義する。
+3. 同じターンを2つのProviderで処理してはならない。
+4. 構造化インタビューのProvider失敗時に、別モデルや別経路へ自動フォールバックしてはならない。Providerフォールバックは別仕様で定義する。
 5. 本番ではモデルのスナップショットIDを設定する。利用可能なスナップショットがないモデルは、使用したモデルIDを設定値と監査ログへ保存する。
 6. AWS認証情報、署名情報、プロンプト全文、ユーザー発話全文をログへ出力してはならない。
 
@@ -205,13 +205,12 @@ GPT-5.6 Terra、BedrockのOpenAI互換Responses API、Structured Outputの仕様
 
 ### 6.5 有効化設定
 
-標準の開発・Compose実行では、Backendの`STRUCTURED_INTERVIEW_ENABLED=true`を設定し、構造化インタビューを使用する。`STRUCTURED_INTERVIEW_ENABLED=false`を明示した場合だけ、既存のStrands/Bedrock経路を使用する。環境変数を設定しない場合のコード既定値は、既存利用者との互換性を保つため`false`である。構造化インタビューを有効にした場合、Bedrock RuntimeのOpenAI互換Responses APIだけを使用する。AWS認証情報またはIAM権限が不足している場合は、状態を更新せずエラーにする。
+インタビュー実行はStructured Interview経路だけを正式サポートする。テキストと音声（Transcribe + Polly）の両方がBedrock RuntimeのOpenAI互換Responses APIを使用し、旧Interview Agent経路や切替用Feature Flagは持たない。AWS認証情報またはIAM権限が不足している場合は、状態を更新せずエラーにする。
 
 次の環境変数を使用する。
 
 | 環境変数 | 必須 | 既定値 |
 |---|---:|---|
-| `STRUCTURED_INTERVIEW_ENABLED` | いいえ | 標準設定は`true`。未設定時のコード既定値は`false` |
 | `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` |
 | `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
 | `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
@@ -224,7 +223,7 @@ GPT-5.6 Terra、BedrockのOpenAI互換Responses API、Structured Outputの仕様
 | `STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS` | いいえ | `5` |
 | `STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS` | いいえ | `120` |
 
-Docker Composeで起動する場合は、上記の値をリポジトリルートの`.env`から`infra/docker-compose.yml`のAPIコンテナへ渡す。構造化インタビューを使うには、`STRUCTURED_INTERVIEW_ENABLED=true`、AWS認証情報、対象リージョンのBedrockモデルアクセス、Global inference profileのIAM許可を設定する。
+Docker Composeで起動する場合は、上記の値をリポジトリルートの`.env`から`infra/docker-compose.yml`のAPIコンテナへ渡す。AWS認証情報、対象リージョンのBedrockモデルアクセス、Global inference profileのIAM許可を設定する。
 
 `STRUCTURED_INTERVIEW_MODEL_ID`には、既定の`global.openai.gpt-5.6-luna`または対象リージョンで利用できるGlobal inference profile ARNを指定する。ユーザーが提示したARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。ARNを使用する場合は`BEDROCK_AWS_REGION=us-east-1`に設定する。東京など別の呼び出し元リージョンでは、既定のprofile IDを使用する。
 
@@ -237,6 +236,18 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
 ```json
 {
   "dialogueAct": "ANSWER",
+  "utteranceCompleteness": "COMPLETE",
+  "transcriptAssessment": {
+    "rawTranscript": "",
+    "normalizedTranscript": "",
+    "correctionStatus": "NONE",
+    "correctionCandidates": [],
+    "correctionReason": null
+  },
+  "answerAssessment": {
+    "sufficiency": "SUFFICIENT",
+    "probeType": "NONE"
+  },
   "fieldUpdates": [],
   "requirementUpdates": [],
   "processPatch": {
@@ -262,6 +273,18 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
 このJSONは概念契約であり、実装ではPydanticまたは同等の厳格なJSON Schemaとして定義する。
 
 Schemaは`additionalProperties=false`を設定し、定義済みの全プロパティを必須とする。値がない文字列は`null`、値がない配列は`[]`で返す。必須プロパティの省略、未知のプロパティ、列挙値以外の値はSchema違反として扱う。
+
+### 7.1.1 発話完結性とTranscript評価
+
+`utteranceCompleteness`は`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`のいずれかとする。文法的に途中で切れている発話、続きが明らかな発話、現在の質問への意味的回答として成立していない発話は`INCOMPLETE`または`UNCERTAIN`とする。`INCOMPLETE`のときBackendは`fieldUpdates`、`requirementUpdates`、`processPatch`を適用せず、現在の質問を維持して短く続行を依頼する。
+
+`transcriptAssessment.rawTranscript`はBackendが受け取ったTranscribe結果を記録する。句読点・空白・明らかな表記揺れだけの補正は`correctionStatus=NONE`とし、意味を変える単語の補正は`CORRECTED`として`normalizedTranscript`と候補を返す。候補が一意でない場合は`UNCERTAIN`とし、補正前の文字列も補正候補も正式回答へ確定しない。`CORRECTED`の場合も、Backendが自然な補正候補を確認質問として提示し、対象者が肯定するまで状態を確定しない。
+
+`UNCERTAIN`または補正候補が空の`CORRECTED`は再発話を依頼する。補正確認中は`pendingTranscriptConfirmation`を保持し、次のProfile対象へ進めない。補正候補を対象者が否定した場合は候補を破棄し、元の質問へ戻す。
+
+### 7.1.2 回答充足性とProbe
+
+`answerAssessment.sufficiency`は`SUFFICIENT`、`PARTIAL`、`AMBIGUOUS`、`EXAMPLE_MISSING`、`REASON_MISSING`、`CRITERIA_MISSING`、`UNANSWERABLE`、`REFUSAL`、`INCOMPLETE`のいずれかとする。`SUFFICIENT`以外では`probeType`に不足部分だけを確認する方針を示す。Backendは`UNANSWERABLE`または`REFUSAL`に対して一度だけ中立的な再探索を行い、再度「特にない」などの回答があれば`NO_DETAIL`として次の対象へ進める。回答済みの部分を再質問してはならない。
 
 ### 7.2 Dialogue Act
 
@@ -292,13 +315,15 @@ Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistan
   "fieldId": "users",
   "value": "申請者",
   "evidenceTranscriptIds": ["message-123"],
-  "candidateSource": "user_statement"
+  "candidateSource": "user_statement",
+  "answerResolution": "AUTO_CONFIRM"
 }
 ```
 
 * `fieldId`は既存のKnowledgeField IDでなければならない。
 * `value`は発話から抽出した値でなければならない。
 * `evidenceTranscriptIds`には、値の根拠となる保存済みメッセージまたは確定音声文字起こしのIDを1件以上含める。
+* `answerResolution`は`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`のいずれかとし、Backendが状態遷移を検証する。
 * LLMは`confirmed`を設定してはならない。
 * 確認、訂正、拒否の結果は`dialogueAct`と現在の状態を使ってBackendが決定する。
 
@@ -543,6 +568,8 @@ AWAITING_CONFIRMATION
 
 `AUTO_CONFIRM`は、ユーザーの事実回答についてBackendが妥当性を検証したうえで確認質問なしに`CONFIRMED`へ遷移させる判定である。`TENTATIVE`は候補を`CANDIDATE_PENDING`に残し、次の質問を止めない。`RETRY`は候補値と候補根拠を保存しない。LLMの出力に`confirmed`状態が含まれていても受け入れてはならず、`answerResolution`だけをBackendの状態遷移入力として検証する。`assistant_proposal`由来の値はこの限りではなく、対象者の明示的な採用・修正まで`CONFIRM_REQUIRED`として扱う。
 
+発話の完結性は回答状態とは別に保持する。`INCOMPLETE`では候補抽出結果を正式な候補へ昇格せず、`UNCERTAIN`では補正候補を確認前に利用しない。意味を変更するSTT補正を確認中の間は`pendingTranscriptConfirmation`を`TRANSCRIPT_CONFIRMATION_REQUIRED`相当として保持し、質問対象の遷移を止める。全Profileの必須条件を満たした後は`closingState=ASKING`を経て、自由追加回答を確認すると`CONFIRMED`になる。
+
 同時に`AWAITING_CONFIRMATION`へ遷移できる対象は1件だけとする。同じターンから抽出した他の候補は`CANDIDATE_PENDING`で保持する。`TENTATIVE`候補は優先順位上の確認対象にせず、次の会話へ自然に引き継ぐ。明示確認が必要な候補だけを優先順位に従って確認する。
 
 #### 8.1.1 質問と回答の固定対応
@@ -686,6 +713,8 @@ AIが対象を抽出できなかった場合は`unknown`のままにする。
 
 完了判定はBackendが行う。LLMに完了判定を委譲してはならない。
 
+次のProfile別条件に加え、全Profileで`closingState=CONFIRMED`を満たす必要がある。必須項目がそろった後、Backendはopen-ended closingを1回だけ質問する。回答、明示的な「特にない」、または明示的なunknown/skipを受けた場合にclosingを確認済みにする。`closingState`が存在しない過去の完了状態は、移行時に従来の完了を維持する。
+
 ### 10.1 `fixed_form`
 
 次のすべてを満たした場合に完了とする。
@@ -732,11 +761,13 @@ AIが対象を抽出できなかった場合は`unknown`のままにする。
 Backendは、次の優先順位を上から順に評価し、最初に該当した1件だけを質問対象にする。
 
 ```text
-1. 未解決の矛盾
-2. AWAITING_CONFIRMATION中の候補
-3. Profile必須項目の未確認
-4. Applicabilityがunknownの項目
-5. Profile任意項目の深掘り
+1. 補正Transcriptの確認、または現在の回答に対する一度のactive probe
+2. 未解決の矛盾
+3. AWAITING_CONFIRMATION中の候補
+4. Profile必須項目の未確認
+5. Applicabilityがunknownの項目
+6. Profile任意項目の深掘り
+7. open-ended closing
 ```
 
 ### 11.1 優先順位の詳細
@@ -759,6 +790,7 @@ LLMは、質問対象の選択、優先順位の変更、完了判定を行っ�
    テキスト経路では`clientMessageId`をmessage IDとして使用し、回答送信時に`stateVersion`を検証する。既存`clientMessageId`の再送は、状態バージョンが進んでいても保存済みメッセージを返す。
 5. 確認成功直後に同じ対象を選ぼうとした場合、Backendは状態不整合として新しい質問を生成せず、保存済み状態から次の対象を再評価する。
 6. Question Generatorは、Backendが`AWAITING_CONFIRMATION`として指定していない対象について、候補内容を引用した確認質問を生成してはならない。
+7. `closing`対象では、未回収の重要情報を自由に追加できる質問を1件だけ生成する。テーマ説明と同義の質問を連結してはならない。
 
 ### 11.3 Question Generator
 
@@ -792,6 +824,7 @@ Question Generatorには次の制約を課す。
 * 入力にない業務、人物、システム、制約を追加しない。
 * 1回の質問で複数の独立した必須項目を要求しない。
 * `applicability_overview`だけは、標準のApplicability確認文を1つの質問として使用できる。
+* `closing`では、ここまでの質問で扱わなかった重要事項を尋ねるopen-endedな質問を1件だけ生成する。
 * Mermaid、図、座標、JSONのProcessPatchを返さない。
 
 ## 12. ProcessModelと図表示
@@ -1137,18 +1170,14 @@ contradiction
 | `services/process_model.py` | ProcessModel編集サービス | 管理者認可、手動保存、編集指示のStructured Output適用、バージョン競合、監査を担当する |
 | `agents/interview_knowledge/coordinator.py` | 共通Coordinator | 状態更新、Patch検証、完了判定、質問対象決定を担当する |
 | `agents/interview_knowledge/service.py` | 構造化インタビューサービス | テキスト・音声から共通Coordinatorを呼び出す |
-| `agents/interview/schemas.py` | 既存Field中心のInterviewStateと評価出力 | 互換経路の型にProfile、Requirement、Processの状態を追加する |
-| `services/interview_answer_processor.py` | Fieldの候補・確認・確定境界 | FieldStateの状態機械として再利用する |
-| `services/dialogue_interpreter.py` | Dialogue Actの個別判定 | 共通Interpreter契約へ統合するか、互換アダプターにする |
-| `services/ai_interview.py` | テキストインタビューの入口 | Feature flag有効時に構造化サービスへルーティングする |
-| `services/voice_interview.py` | 音声ターンのI/O境界と保存 | 確定transcriptを構造化サービスへ渡す |
-| `agents/common/strands_runtime.py` | BedrockModelとStrands Agent生成 | Structured InterviewのProviderとは別の既存互換経路として分離する |
+| `services/ai_interview.py` | テキストインタビューの入口 | Structured Interviewサービスへ委譲する |
+| `services/voice_interview.py` | 音声ターンのI/O境界と保存 | 確定transcriptをStructured Interviewサービスへ渡す |
 | `models/domain.py`の`AiProposal` | AI提案の汎用保存 | 構造化候補のレビュー公開で使用する |
 | `pages/KnowledgeSettingsPage.tsx` | ナレッジ情報と実行設定 | 利用者向けProfile選択を追加する |
 | `pages/InterviewRecordPage.tsx` | チャットと音声UI | Process Viewの表示領域を追加する |
 | `types/app.ts` | Field中心のFrontend型 | Requirement、Process、Applicability型を追加する |
 
-現行のBedrock/Strands実装、Field中心の状態、音声経路の独立評価を、追加仕様の完了とみなしてはならない。
+Structured InterviewのProvider、状態機械、音声I/O境界を、テキストと音声で別々に実装してはならない。
 
 ## 18. 受け入れ条件
 
@@ -1236,7 +1265,6 @@ contradiction
 
 * [製品仕様](../../spec.md)
 * [エージェントアーキテクチャ](./agent-architecture.md)
-* [Interview Agent仕様](../../agents/interview-agent-strands.md)
 * [Question Design Agent仕様](../../agents/question-design-agent-strands.md)
 * [リアルタイム音声仕様](../voice/realtime-voice.md)
 * [GPT-5.6 Terra - Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-terra.html)

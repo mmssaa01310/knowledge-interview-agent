@@ -2,7 +2,7 @@
 
 ## 1. 目的
 
-リアルタイム音声インタビューは、既存Interview Agentに対する別の入出力経路として実装する。
+リアルタイム音声インタビューは、Structured Interviewに対する別の入出力経路として実装する。
 
 質問進行、回答評価、RAG、状態更新、構造化提案生成、終了判定は、`app/voice`ではなく`app/api`を正本とする。
 
@@ -22,7 +22,7 @@
 * Voice SessionとVoice Turnの保存
 * 確定Transcriptの正式保存
 * 回答対象Question IDの管理
-* 既存Interview Agentの実行
+* Structured Interviewの実行
 * 回答評価
 * RAG
 * インタビュー状態更新
@@ -63,7 +63,7 @@
 
 `app/voice`から`app/api`のPythonモジュールを直接importしてはいけない。
 
-`app/voice`からInterview Agent、RAG、状態更新処理を直接呼び出してはいけない。
+`app/voice`からStructured Interview、RAG、状態更新処理を直接呼び出してはいけない。
 
 ### 2.3 `app/web`
 
@@ -162,7 +162,7 @@ class AssistantReply:
 
 ### 4.1 回答確認と次質問
 
-音声の確定Transcriptは、テキスト経路と共通の意味解釈・回答妥当性評価へ渡す。判定器は質問との意味的一致、フィールドの型・用途、必要情報量、前後の矛盾、任意のSTT confidenceを合わせて`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を返す。`AUTO_CONFIRM`は確認質問なしで次へ進み、`TENTATIVE`は候補を保持したまま次質問へ自然につなぎ、`RETRY`は候補を保存せず聞き直す。`CONFIRM_REQUIRED`の場合だけ、保持中の候補に対する専用の確認判定（`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`）を1回行う。`app/api`が候補の確定・訂正・再確認を状態機械として保証する。
+音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは文としての完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で評価し、`rawTranscript`、意味を変えない`normalizedTranscript`、STT補正候補の`correctionStatus`を返す。さらに質問への意味的成立性を`answerAssessment`で評価する。Backendは、未完了なら現在質問を維持し、`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから回答状態を更新する。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
 
 回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。`TENTATIVE`の候補は次質問本文に自然に織り込む。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 
@@ -255,9 +255,9 @@ POST /internal/voice-sessions/{voice_session_id}/connection-events
 Transcribe + Pollyの確定Transcriptは、音声サービスで先行意図分類せず、`app/api`へ1回だけ送る。
 通常ターンでは、`turnType`、Dialogue Act、回答評価を同一のAI判定へ統合する。回答評価は`answerResolution`を返し、確認質問は`CONFIRM_REQUIRED`の例外に限定する。`CONFIRM_REQUIRED`のターンでは、`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返す専用判定を1回だけ行う。
 
-この判定はBedrock Converseの短いテキストJSONを受け、backendでPydantic検証してから既存の
-`InterviewAnswerProcessor`へ渡す。確認、必須項目、不足項目、状態更新、正式保存の保証はbackendが持ち、
-AI出力をそのまま正式回答として確定しない。音声ターンの低遅延経路では、tool-based structured outputを使わない。
+この処理は`app/api`の`BedrockResponsesStructuredProvider`がStructured Outputとして受け取り、
+`Structured Interview`のCoordinatorへ渡す。確認、必須項目、不足項目、状態更新、正式保存の保証はBackendが持ち、
+AI出力をそのまま正式回答として確定しない。音声サービスは回答評価や質問生成を実行しない。
 
 ## 7. WebRTCのv1基本方針
 
@@ -295,7 +295,7 @@ WebRTC Transportで扱ってはいけないものは以下。
 * Tool Use payload
 * Tool Result payload
 * completionIdを用いた業務判断
-* Interview Agentの実行
+* Structured Interviewの実行
 * RAG
 * 回答評価
 * 次質問決定
@@ -358,7 +358,7 @@ class VoiceSession:
 `owner_user_id`は採用した認証プロバイダーのユーザーIDを保存する必須項目である。
 
 `initial_reply_text`は、Session開始時点で`app/api`が決定した初回発話文である。
-v1では固定挨拶「それではインタビューを開始します。」に続けて、既存Interview Agentが決定した初回質問を含める。
+v1では固定挨拶「それではインタビューを開始します。」に続けて、Structured Interviewが決定した初回質問を含める。
 Novaに初回質問を独自生成させるための値ではない。
 
 初回発話も通常ターンと同じTool Result経路で音声化する。
@@ -456,7 +456,7 @@ Nova Sonicが強制process_interview_turn Tool Useを生成
   ↓
 app/voiceがturn保存APIとprocess APIを実行
   ↓
-app/apiが既存Interview Agentを実行
+app/apiがStructured Interviewを実行
   ↓
 reply_text / action / state_versionを返す
   ↓
@@ -530,7 +530,7 @@ Assistant FINAL textや`completionEnd`を待ってから最初の音声再生を
 
 ## 14. 初回質問の音声化
 
-Voice Session作成時、`app/api`は既存Interview Agentにより最初の質問を決定し、固定挨拶とあわせてVoice Sessionへ`initial_reply_text`として保持する。
+Voice Session作成時、`app/api`はStructured Interviewにより最初の質問を決定し、固定挨拶とあわせてVoice Sessionへ`initial_reply_text`として保持する。
 同じスナップショットで`initial_question_id`も保持し、送信状態を`initial_reply_status`で管理する。
 
 ```text
@@ -632,7 +632,7 @@ class RetrievalPolicy(str, Enum):
 
 `AUTO`では、まず検索なしの回答評価を行い、評価結果が検索を必要とする場合だけRAG検索を実行する。
 
-`NEVER`でも回答評価は省略しない。無効になるのは検索toolだけであり、生transcriptの意図判定、関連性・十分性評価、正規化、`answerResolution`判定、候補保存、必要な場合だけの明示確認はテキスト経路と同じ`InterviewAnswerProcessor`を通る。
+`NEVER`でも回答評価は省略しない。無効になるのは検索だけであり、生transcriptの意図判定、発話完結性、関連性・十分性評価、正規化、`answerResolution`判定、候補保存、必要な場合だけの明示確認はテキスト経路と同じStructured Interviewを通る。
 
 ```text
 User answer
@@ -988,7 +988,7 @@ v1では以下を実装しない。
 
 * `docs/spec.md`
 * `docs/architecture/agents/agent-architecture.md`
-* `docs/agents/interview-agent-strands.md`
+* `docs/architecture/agents/interview-knowledge-capture.md`
 
 ## 21. 構造化インタビューとの接続
 

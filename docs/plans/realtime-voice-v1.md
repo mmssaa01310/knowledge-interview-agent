@@ -158,7 +158,7 @@ Phase 5CはまだGoとは記載しない。
 * Browserマイク音声がNova Sonicへ届く
 * User Transcript FINALを受信する
 * Voice Turnを保存する
-* 既存Interview Agentを実行する
+* Structured Interviewを実行する
 * APIの`reply_text`をTool Resultへ設定する
 * Tool Result前の音声がBrowserへ漏れない
 * authorized audioだけをBrowserで再生できる
@@ -300,7 +300,7 @@ app/web build: success
 * Realtime Voiceメッセージは`voice_session_id + turn_id`または`voice_session_id + response_id`相当でupsertする
 * `RetrievalPolicy`を追加し、直接収集項目では検索を実行しない
 * 暫定ルールとして、氏名、所属、担当、役割、日時、場所、数値、Yes/No、選択肢、自由記述収集に該当する項目は`retrieval_policy=never`として扱う
-* `retrieval_policy=never`の単純項目では、Strands Interview Agentとread-only toolを起動せず、回答保存と次質問決定だけを行う
+* `retrieval_policy=never`の単純項目では、Structured Interviewの追加検索を起動せず、回答保存と次質問決定だけを行う
 * UserTranscriptFinal後のTurn保存、検索判断、Process開始/完了、Tool Result、Assistant audio、Playback enqueueを追えるログを追加した
 
 検証:

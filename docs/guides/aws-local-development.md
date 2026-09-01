@@ -46,13 +46,8 @@ Bedrock 呼び出しに必要な IAM 権限は次を含める。
 
 ```env
 BEDROCK_AWS_REGION=ap-northeast-1
-VOICE_BEDROCK_MODEL_ID=apac.amazon.nova-pro-v1:0
-VOICE_BEDROCK_TEMPERATURE=0.0
-VOICE_BEDROCK_MAX_TOKENS=600
-VOICE_BEDROCK_WARMUP_ENABLED=true
 AWS_REGION=ap-northeast-1
 AWS_DEFAULT_REGION=ap-northeast-1
-STRUCTURED_INTERVIEW_ENABLED=true
 STRUCTURED_INTERVIEW_MODEL_ID=global.openai.gpt-5.6-luna
 QUESTION_DESIGN_MODEL_ID=global.openai.gpt-5.6-luna
 STRUCTURED_INTERVIEW_REASONING_EFFORT=low
@@ -65,7 +60,7 @@ STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS=5
 STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS=120
 ```
 
-上記はComposeでAPI・Voiceへ渡す標準設定である。`BEDROCK_MODEL_ID`など旧Strands経路専用の設定は、標準の構造化インタビューでは使用しない。旧経路を明示的に検証する場合は、該当する環境変数をAPIコンテナへ渡して再作成する。
+上記はComposeでAPI・Voiceへ渡す標準設定である。インタビュー実行はStructured Interviewに統一し、旧Interview Agent経路の設定は持たない。
 
 構造化インタビューを有効にすると、APIは`BEDROCK_AWS_REGION`の`bedrock-runtime`へAWS SigV4で接続し、未選択時は`global.openai.gpt-5.6-luna`、選択時は`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`を呼び出す。OpenAI APIキーは設定しない。Global profileは対応する商用AWSリージョンへルーティングされるため、データ処理リージョンを限定する要件がある環境では使用しない。
 
@@ -74,26 +69,7 @@ GPT-5.6 Terra／LunaはBedrock Converse APIの`temperature`をサポートしな
 
 Global profileのARNはAWSアカウント・リージョンによって異なる。ARNを直接設定する場合は、AWSコンソールまたは公式ドキュメントで対象アカウントの値を確認し、通常はリージョンに依存しないprofile IDを設定する。
 
-`VOICE_BEDROCK_MODEL_ID`は、`STRUCTURED_INTERVIEW_ENABLED=false`で旧経路を使う場合のリアルタイム音声回答評価にだけ適用する。標準の構造化インタビューでは、回答解析と次の質問生成に`STRUCTURED_INTERVIEW_MODEL_ID`を使用し、音声入出力にはTranscribeとPollyを使用する。旧経路を比較する場合は、以下のモデルのいずれかを設定し、APIコンテナを再作成する。
-
-```env
-# Nova Pro
-VOICE_BEDROCK_MODEL_ID=apac.amazon.nova-pro-v1:0
-
-# Claude Sonnet 4.5 (Japan cross-region inference profile)
-VOICE_BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-5-20250929-v1:0
-VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS=6.0
-VOICE_BEDROCK_READ_TIMEOUT_SECONDS=5.5
-
-# Qwen3 Next 80B A3B (Tokyo region)
-VOICE_BEDROCK_MODEL_ID=qwen.qwen3-next-80b-a3b
-```
-
-```bash
-docker compose -f infra/docker-compose.yml up -d --force-recreate api
-```
-
-Sonnet 4.5の上記timeout値は旧経路の品質比較用であり、構造化インタビューの標準設定には使用しない。旧経路の標準設定へ戻す場合は、`STRUCTURED_INTERVIEW_ENABLED=false`を明示し、モデルIDをNova Proへ戻し、deadlineを`2.0`、read timeoutを`1.8`に戻す。
+音声インタビューでは、Transcribeが作成した確定TranscriptをVoice APIへ渡し、`STRUCTURED_INTERVIEW_MODEL_ID`でStructured InterpreterとQuestion Generatorを実行する。音声出力はPollyが担当し、`app/voice`はBedrockを直接呼び出さない。
 
 ### profile の例
 

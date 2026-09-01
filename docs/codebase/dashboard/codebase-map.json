@@ -26,7 +26,7 @@
   ],
   "integrations": [
     {"group":"Storage","name":"PostgreSQL","purpose":"構造化データをJSONB payloadとして保存する","boundary":"PostgresStore","failure":"API起動時にスキーマ確認。接続不能時は起動に失敗する"},
-    {"group":"AI","name":"Amazon Bedrock","purpose":"インタビュー・質問設計のAI処理","boundary":"API Agent / Provider層","failure":"Voice warmup失敗はwarningとして記録し、起動を継続する"},
+    {"group":"AI","name":"Amazon Bedrock","purpose":"インタビュー・質問設計のAI処理","boundary":"API Agent / Provider層","failure":"Structured Interviewまたは質問生成の失敗は状態を確定せず、Voiceでは共通エラーイベントへ変換する"},
     {"group":"Voice","name":"Transcribe / Polly / WebRTC","purpose":"音声認識、音声合成、ブラウザとの音声通信","boundary":"app/voice Runtime","failure":"Provider固有の失敗をRuntimeで共通イベントへ変換する"},
     {"group":"Authentication","name":"Development tokens","purpose":"ローカルの固定ユーザー・ロール切替","boundary":"API auth dependency","failure":"無効トークンは401。本番認証は未実装"}
   ],

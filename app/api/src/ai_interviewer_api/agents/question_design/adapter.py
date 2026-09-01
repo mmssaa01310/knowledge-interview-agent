@@ -29,7 +29,6 @@ ALLOWED_INPUT_TYPES = {
 class AdaptedQuestionDesignResult:
     reply: str
     fields: list[KnowledgeFieldCreate]
-    used_tools: list[str]
     interview_plan: InterviewPlan | None = None
 
 
@@ -78,7 +77,6 @@ def adapt_question_design_output(output: QuestionDesignOutput) -> AdaptedQuestio
         return AdaptedQuestionDesignResult(
             reply=DEFAULT_CLARIFICATION,
             fields=[],
-            used_tools=list(output.used_tools),
             interview_plan=output.interview_plan,
         )
 
@@ -101,7 +99,6 @@ def adapt_question_design_output(output: QuestionDesignOutput) -> AdaptedQuestio
     return AdaptedQuestionDesignResult(
         reply=output.reply.strip(),
         fields=fields,
-        used_tools=list(output.used_tools),
         interview_plan=output.interview_plan,
     )
 

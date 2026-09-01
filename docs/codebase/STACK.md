@@ -21,7 +21,7 @@
 | `@xyflow/react` | 処理フロー表示 | `app/web/package.json` |
 | `fastapi` / `uvicorn` | API・VoiceのHTTPサーバー | `app/api/pyproject.toml`、`app/voice/pyproject.toml` |
 | `psycopg[binary]` | APIからPostgreSQLへの接続 | `app/api/pyproject.toml` |
-| `boto3` / `strands-agents` | APIのBedrock / Agent呼び出し | `app/api/pyproject.toml` |
+| `boto3` | APIのBedrock呼び出し | `app/api/pyproject.toml` |
 | `aiortc` / `av` / Transcribe SDK | VoiceのWebRTC・音声入出力 | `app/voice/pyproject.toml` |
 
 Workerには外部SDK依存が定義されていない。

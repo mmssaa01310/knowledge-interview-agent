@@ -257,18 +257,10 @@ agents/question_design/
 `services/field_suggestions.py` は router 互換の薄いラッパーとして残し、事前検索は`services/question_design_retrieval.py`、生成と検証はBedrock OpenAI互換Responses APIのStructured Output runnerに置く。
 
 ```text
-agents/interview/
+agents/interview_knowledge/
 ```
 
-熟練者インタビューの進行、次質問判断、構造化候補生成、draft保存の責務を置く。
-正式ナレッジ化は人の承認後に限定する。
-
-```text
-agents/common/
-```
-
-Bedrock client、prompt loader、JSON parser、contract retry、observabilityなど、エージェント共通基盤の候補を置く。
-tool は read-only から開始し、自律的なDB更新を行わない。
+Structured InterviewのSchema、Bedrock Responses API Provider、Coordinator、テキスト・音声から共有するサービスを置く。次質問対象、候補の確定境界、完了判定はBackendが保証し、正式ナレッジ化は人の承認後に限定する。
 
 ```text
 auth/
@@ -318,15 +310,13 @@ services/
 agents/question_design/prompts/
   base.md
   validation.md
-agents/interview/prompts/
-  base.md
 agents/learning_support/prompts/
   overall_analysis.md
   personal_advice.md
 ```
 
 * `question_design/prompts/`: 質問項目設計の生成・検証用プロンプト
-* `interview/prompts/`: AIインタビュー用の固定ベースプロンプト
+* `interview_knowledge/`: AIインタビューのSchema、Provider、Coordinator
 * `learning_support/prompts/`: 管理者向け学習分析・助言用プロンプト
 * ユーザー追加カスタマイズは実インタビュー実行時だけに適用し、質問項目設計用プロンプトとは分離する
 

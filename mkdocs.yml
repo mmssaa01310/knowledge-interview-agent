@@ -21,7 +21,6 @@ nav:
       - AIエージェント: architecture/agents/agent-architecture.md
       - AIインタビュー構造化: architecture/agents/interview-knowledge-capture.md
       - Agentの振る舞い: agents/agent-behavior-policy.md
-      - インタビューAgent: agents/interview-agent-strands.md
       - 質問設計Agent: agents/question-design-agent-strands.md
       - リアルタイム音声: architecture/voice/realtime-voice.md
   - 開発ガイド:

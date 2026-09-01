@@ -1,6 +1,6 @@
 # Agent Behavior Policy
 
-このドキュメントは、AIインタビューアーにおける Strands Agent 実装の基本方針を定義する。
+このドキュメントは、AIインタビューアーにおけるLLM / Structured Output実装の基本方針を定義する。
 
 ## 基本原則
 
@@ -12,7 +12,7 @@
 
 ## AIに任せる判断
 
-以下は原則として Strands Agent / LLM に判断させる。
+以下は原則としてStructured Interpreter / Question Generatorに判断させる。
 
 * 質問項目を生成できるだけの材料があるか
 * 追加情報を聞き返すべきか
@@ -31,12 +31,13 @@ backend は LLM の判断を無条件に信頼しない。
 backend が保証する invariant の例:
 
 * `design_status="needs_info"` の場合、`suggestions=[]` にする
-* `answer_status="not_answered"` の場合、`draft_updates={}` にする
+* `utteranceCompleteness="INCOMPLETE"` の場合、field・requirement・processを更新しない
+* `transcriptAssessment.correctionStatus="UNCERTAIN"` の場合、補正候補を確定しない
+* `answerAssessment.sufficiency`に応じて、Coordinatorが候補・probe・完了を制御する
 * schema 外の出力を安全に fallback する
 * 次の質問対象、質問優先順位、完了判定をBackendで決定する
 * DB保存しないものを保存しない
-* read-only tool 以外を agent に渡さない
-* `used_tools` は許可された tool 名だけに正規化する
+* LLMにRepositoryの読み書き権限を渡さない
 * 通常pytestでは Bedrock / real LLM を呼ばない
 * prompt全文や `user_message` 全文をログに出さない
 
@@ -47,11 +48,13 @@ backend が保証する invariant の例:
 * 「こんにちは」を文字列一致で `needs_info` にする
 * hello / hi / よろしく のような挨拶辞書で判定する
 * 「質問作って」を固定ルールで弾く
-* 入力文字数だけで `ready` / `needs_info` を決める
+* 入力文字数だけで `ready` / `needs_info` や回答完了を決める
 * 特定キーワードの有無だけで質問項目生成可否を決める
 * 業務名や対象物を正規表現で推定して決めつける
 
 これらは、エージェントの判断領域をアプリ側ルールで置き換えるため、原則禁止する。
+
+ただし、Structured Interpreterの判定を補完する安全弁として、明らかな発話途中の語尾を検知した場合は、Backendが状態更新と次質問を止めてよい。これは完了判定の主経路ではなく、誤ったSTT finalによる早期遷移を防ぐための境界保証である。
 
 ## 例外的に許容するルール
 
@@ -92,7 +95,8 @@ if user_input in ["こんにちは", "hello", "hi"]:
 
 * agent が `needs_info` を返した場合、backend が `suggestions=[]` にする
 * agent が `ready` を返した場合、backend が `suggestions` を維持する
-* agent が `not_answered` を返した場合、backend が `draft_updates` を破棄する
+* agent が `INCOMPLETE` / `UNCERTAIN` を返した場合、backendが状態更新と次質問を止める
+* 補正候補がある場合、明示確認前に正式回答へ保存しない
 * schema 不正時に安全 fallback する
 * DB保存が増えない
 * API response shape が変わらない
@@ -110,7 +114,9 @@ prompt は、エージェントに判断基準を与える。
 例:
 
 * 材料不足なら `design_status="needs_info"` にする
-* 回答になっていなければ `answer_status="not_answered"` にする
+* 発話が未完了なら `utteranceCompleteness="INCOMPLETE"` にする
+* STT補正が必要なら `transcriptAssessment` に候補と確度を出す
+* 回答の不足部分を `answerAssessment.sufficiency` と `probeType` で示す
 * 入力にない業種・業務・対象物を推測しない
 * 汎用テンプレ項目を穴埋めで作らない
 
@@ -132,27 +138,28 @@ backend が保証する:
 * `needs_info` のとき `clarification_question` を `reply` に優先する
 * suggestions をDB保存しない
 
-### interview agent
+### Structured Interview
 
 AIに任せる:
 
 * 回答が現在の質問への回答になっているか
 * 聞き返すべきか
 * 不足情報、矛盾、Applicabilityを抽出する
-* `draft_updates` の候補
+* field・requirement・processの候補
+* Transcriptの軽微な正規化と、意味変更を伴う補正候補
+* 回答充足度と、不足部分に対応するprobe種別
 
 backend が保証する:
 
-* `not_answered` のとき `draft_updates` を破棄する
-* `not_answered` のとき `next_questions` を進めない
+* `INCOMPLETE` / `UNCERTAIN` のとき候補を正式値へ進めない
+* `INCOMPLETE` / `UNCERTAIN` のとき次の質問へ進めない
 * 次の質問対象を固定優先順位で決定する
-* `draft_updates` をDB保存しない
 * `approved_fields` を勝手に更新しない
 
 ## まとめ
 
 このプロジェクトでは、AIエージェントの判断をルールで先回りしすぎない。
 
-* 判断は Strands Agent / LLM
+* 判断はStructured Interpreter / Question Generator
 * 境界保証は backend
 * 保存判断は human approval / 明示的な承認フロー

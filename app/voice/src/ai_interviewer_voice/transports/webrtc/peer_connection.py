@@ -136,6 +136,7 @@ class VoicePeerConnection:
         self._audio_input_started = False
         self._runtime_closed = False
         self._initial_reply_sent = False
+        self._initial_reply_lock = asyncio.Lock()
         self._initial_reply_preload_task: asyncio.Task[None] | None = None
         self._closed = False
         self._start_lock = asyncio.Lock()
@@ -373,59 +374,31 @@ class VoicePeerConnection:
                 raise
 
     async def _send_initial_reply_if_pending(self) -> None:
-        if self._initial_reply_sent:
-            return
-        initial_reply_text = (self._session_state.initial_reply_text or "").strip()
-        if not initial_reply_text:
-            return
-        if self._session_state.initial_reply_status == "sent":
-            return
-        if self._session_state.initial_question_id != self._session_state.current_question_id:
-            await self._voice_session_service.create_connection_event(
-                self.voice_session_id,
-                event_type="initial_reply_skipped",
-                connection_status=self.connection_state,
-                detail={"reason": "question_mismatch"},
-            )
-            return
-        logger.info(
-            "voice_initial_reply_claim_started voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
-            self.voice_session_id,
-            self._session_state.initial_question_id,
-            self._session_state.initial_reply_status,
-        )
-        claim_task = asyncio.create_task(
-            self._voice_session_service.claim_initial_reply(self.voice_session_id)
-        )
-        self._initial_reply_sent = True
-        try:
-            greeting_text = _extract_initial_greeting_text(
-                initial_reply_text,
-                self._session_state.interview_locale,
-            )
-            if hasattr(self._runtime, "start_initial_reply"):
-                await getattr(self._runtime, "start_initial_reply")(
-                    reply_text=greeting_text,
-                    question_id=None,
-                )
-                logger.info(
-                    "voice_initial_control_text_sent voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
+        async with self._initial_reply_lock:
+            if self._initial_reply_sent:
+                return
+            initial_reply_text = (self._session_state.initial_reply_text or "").strip()
+            if not initial_reply_text:
+                return
+            if self._session_state.initial_reply_status == "sent":
+                return
+            if self._session_state.initial_question_id != self._session_state.current_question_id:
+                await self._voice_session_service.create_connection_event(
                     self.voice_session_id,
-                    None,
-                    "sending",
+                    event_type="initial_reply_skipped",
+                    connection_status=self.connection_state,
+                    detail={"reason": "question_mismatch"},
                 )
-            else:
-                await self._runtime.send_reply(
-                    AssistantReply(
-                        turn_id=f"initial-{self.voice_session_id}",
-                        response_id=f"initial-response-{self.voice_session_id}",
-                        text=greeting_text,
-                        action="ask_initial_question",
-                        question_id=None,
-                        state_version=self._session_state.state_version,
-                    )
-                )
-            claim = await claim_task
+                return
+            logger.info(
+                "voice_initial_reply_claim_started voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
+                self.voice_session_id,
+                self._session_state.initial_question_id,
+                self._session_state.initial_reply_status,
+            )
+            claim = await self._voice_session_service.claim_initial_reply(
+                self.voice_session_id
+            )
             if not claim.claimed:
                 await self._voice_session_service.create_connection_event(
                     self.voice_session_id,
@@ -434,52 +407,81 @@ class VoicePeerConnection:
                     detail={"reason": claim.reason or "not_claimed"},
                 )
                 return
-            logger.info(
-                "voice_initial_reply_claimed voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
-                self.voice_session_id,
-                claim.initial_question_id,
-                "sending",
-            )
-            question_text = _extract_initial_question_text(
-                claim.initial_reply_text,
-                self._session_state.interview_locale,
-            )
-            if question_text:
-                if hasattr(self._runtime, "queue_initial_followup_reply"):
-                    await getattr(self._runtime, "queue_initial_followup_reply")(
-                        reply_text=question_text,
-                        question_id=claim.initial_question_id,
+            self._initial_reply_sent = True
+            try:
+                logger.info(
+                    "voice_initial_reply_claimed voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
+                    self.voice_session_id,
+                    claim.initial_question_id,
+                    "sending",
+                )
+                greeting_text = _extract_initial_greeting_text(
+                    initial_reply_text,
+                    self._session_state.interview_locale,
+                )
+                if hasattr(self._runtime, "start_initial_reply"):
+                    await getattr(self._runtime, "start_initial_reply")(
+                        reply_text=greeting_text,
+                        question_id=None,
+                    )
+                    logger.info(
+                        "voice_initial_control_text_sent voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
+                        self.voice_session_id,
+                        None,
+                        "sending",
                     )
                 else:
                     await self._runtime.send_reply(
                         AssistantReply(
-                            turn_id=f"initial-{self.voice_session_id}-question",
-                            response_id=f"initial-response-{self.voice_session_id}-question",
-                            text=question_text,
+                            turn_id=f"initial-{self.voice_session_id}",
+                            response_id=f"initial-response-{self.voice_session_id}",
+                            text=greeting_text,
                             action="ask_initial_question",
-                            question_id=claim.initial_question_id,
+                            question_id=None,
                             state_version=self._session_state.state_version,
                         )
                     )
-                    await self._voice_session_service.mark_initial_reply_sent(self.voice_session_id)
-        except Exception:
-            self._initial_reply_sent = False
-            claim_task.cancel()
-            await self._voice_session_service.mark_initial_reply_failed(self.voice_session_id)
-            raise
-        self._data_channel.send_initial_reply_sent(
-            context=self._event_context(),
-            response_id=f"initial-response-{self.voice_session_id}",
-        )
-        await self._voice_session_service.create_connection_event(
-            self.voice_session_id,
-            event_type="initial_reply_sent",
-            connection_status=self.connection_state,
-            detail={
-                "questionId": self._session_state.current_question_id,
-                "stateVersion": self._session_state.state_version,
-            },
-        )
+                question_text = _extract_initial_question_text(
+                    claim.initial_reply_text,
+                    self._session_state.interview_locale,
+                )
+                if question_text:
+                    if hasattr(self._runtime, "queue_initial_followup_reply"):
+                        await getattr(self._runtime, "queue_initial_followup_reply")(
+                            reply_text=question_text,
+                            question_id=claim.initial_question_id,
+                        )
+                    else:
+                        await self._runtime.send_reply(
+                            AssistantReply(
+                                turn_id=f"initial-{self.voice_session_id}-question",
+                                response_id=f"initial-response-{self.voice_session_id}-question",
+                                text=question_text,
+                                action="ask_initial_question",
+                                question_id=claim.initial_question_id,
+                                state_version=self._session_state.state_version,
+                            )
+                        )
+                        await self._voice_session_service.mark_initial_reply_sent(
+                            self.voice_session_id
+                        )
+            except Exception:
+                self._initial_reply_sent = False
+                await self._voice_session_service.mark_initial_reply_failed(self.voice_session_id)
+                raise
+            self._data_channel.send_initial_reply_sent(
+                context=self._event_context(),
+                response_id=f"initial-response-{self.voice_session_id}",
+            )
+            await self._voice_session_service.create_connection_event(
+                self.voice_session_id,
+                event_type="initial_reply_sent",
+                connection_status=self.connection_state,
+                detail={
+                    "questionId": self._session_state.current_question_id,
+                    "stateVersion": self._session_state.state_version,
+                },
+            )
 
     async def _consume_runtime_events(self) -> None:
         try:

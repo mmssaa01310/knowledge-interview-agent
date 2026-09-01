@@ -10,6 +10,20 @@ from ai_interviewer_api.services.interview_answer_resolution import AnswerResolu
 InterviewProfile = Literal["fixed_form", "business_process", "system_requirement"]
 ApplicabilityStatus = Literal["unknown", "present", "not_applicable"]
 CandidateSource = Literal["user_statement", "assistant_proposal", "document_reference"]
+UtteranceCompleteness = Literal["COMPLETE", "INCOMPLETE", "UNCERTAIN"]
+TranscriptCorrectionStatus = Literal["NONE", "CORRECTED", "UNCERTAIN"]
+AnswerSufficiency = Literal[
+    "SUFFICIENT",
+    "PARTIAL",
+    "AMBIGUOUS",
+    "EXAMPLE_MISSING",
+    "REASON_MISSING",
+    "CRITERIA_MISSING",
+    "UNANSWERABLE",
+    "REFUSAL",
+    "INCOMPLETE",
+]
+ProbeType = Literal["NONE", "REFRAME", "EXAMPLE", "REASON", "CRITERIA", "CLARIFY", "RETRY"]
 StructuredDialogueAct = Literal[
     "ANSWER",
     "CLARIFICATION_REQUEST",
@@ -162,10 +176,30 @@ class OpenIssue(StrictModel):
     evidenceTranscriptIds: list[str] = Field(default_factory=list)
 
 
+class TranscriptAssessment(StrictModel):
+    """Assessment of the STT text before it can become a formal answer."""
+
+    rawTranscript: str = ""
+    normalizedTranscript: str = ""
+    correctionStatus: TranscriptCorrectionStatus = "NONE"
+    correctionCandidates: list[str] = Field(default_factory=list, max_length=3)
+    correctionReason: str | None = None
+
+
+class AnswerAssessment(StrictModel):
+    """Semantic answer sufficiency used by the backend coordinator."""
+
+    sufficiency: AnswerSufficiency = "SUFFICIENT"
+    probeType: ProbeType = "NONE"
+
+
 class StructuredInterviewOutput(StrictModel):
     """Meaning extraction contract. It contains no generated question or layout."""
 
     dialogueAct: StructuredDialogueAct = "ANSWER"
+    utteranceCompleteness: UtteranceCompleteness = "COMPLETE"
+    transcriptAssessment: TranscriptAssessment = Field(default_factory=TranscriptAssessment)
+    answerAssessment: AnswerAssessment = Field(default_factory=AnswerAssessment)
     fieldUpdates: list[FieldUpdate] = Field(default_factory=list)
     requirementUpdates: list[RequirementUpdate] = Field(default_factory=list)
     processPatch: ProcessPatch = Field(default_factory=ProcessPatch)

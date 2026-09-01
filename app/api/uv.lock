@@ -25,7 +25,6 @@ dependencies = [
     { name = "python-docx" },
     { name = "python-multipart" },
     { name = "python-pptx" },
-    { name = "strands-agents" },
     { name = "uvicorn" },
 ]
 
@@ -43,7 +42,6 @@ requires-dist = [
     { name = "python-docx", specifier = ">=1.1.0,<2.0.0" },
     { name = "python-multipart", specifier = ">=0.0.9,<1.0.0" },
     { name = "python-pptx", specifier = ">=1.0.0,<2.0.0" },
-    { name = "strands-agents", specifier = "==1.47.0" },
     { name = "uvicorn", specifier = ">=0.30.1" },
 ]
 
@@ -1275,30 +1273,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ce/20/08dfcd9c983f6a6f4a1000d934b9e6d626cff8d2eeb77a89a68eef20a2b7/starlette-0.46.2.tar.gz", hash = "sha256:7f7361f34eed179294600af672f565727419830b54b7b084efe44bb82d2fccd5", size = 2580846, upload-time = "2025-04-13T13:56:17.942Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/0c/9d30a4ebeb6db2b25a841afbb80f6ef9a854fc3b41be131d249a977b4959/starlette-0.46.2-py3-none-any.whl", hash = "sha256:595633ce89f8ffa71a015caed34a5b2dc1c0cdb3f0f1fbd1e69339cf2abeec35", size = 72037, upload-time = "2025-04-13T13:56:16.21Z" },
-]
-
-[[package]]
-name = "strands-agents"
-version = "1.47.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "boto3" },
-    { name = "botocore" },
-    { name = "docstring-parser" },
-    { name = "jsonschema" },
-    { name = "mcp", version = "1.27.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
-    { name = "mcp", version = "1.28.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation-threading" },
-    { name = "opentelemetry-sdk" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "typing-extensions" },
-    { name = "watchdog" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2e/05/5eb8431ff340739b1c21b0da7d19ec9604b9c4953a1c4638df915321573c/strands_agents-1.47.0.tar.gz", hash = "sha256:97770cb6beb6e5fd1a58849f41201eb7edb43fd67ad3de6544ada2f342c2bcf0", size = 1157139, upload-time = "2026-07-10T14:45:05.809Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/cb/ceae892c5823bea9254160efc02a4553f2ced9d183676110c03c3a9ff0f3/strands_agents-1.47.0-py3-none-any.whl", hash = "sha256:1f6ce17404ff02079244ad7a4a180a2a7150546275e4b91187d71472ba8fe3f2", size = 600611, upload-time = "2026-07-10T14:45:03.942Z" },
 ]
 
 [[package]]

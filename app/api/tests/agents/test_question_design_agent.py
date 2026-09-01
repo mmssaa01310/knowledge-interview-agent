@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import importlib
 from dataclasses import dataclass
-from types import ModuleType
 from typing import Any
-from unittest.mock import Mock
 
 import pytest
 
-from ai_interviewer_api.agents.common.tools import search_existing_fields, search_past_knowledge
-from ai_interviewer_api.agents.question_design.agent import (
+from ai_interviewer_api.agents.question_design.prompt_loader import (
     load_question_design_prompt,
     load_question_design_validation_prompt,
 )
@@ -49,13 +45,11 @@ def test_run_question_design_returns_structured_output() -> None:
                 description="判断の根拠を聞き取る",
             )
         ],
-        used_tools=[],
     )
 
     def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
         assert "user_instruction:" in args[0]
         assert kwargs["structured_output_model"] is QuestionDesignOutput
-        kwargs["invocation_state"]["used_tools"].append("search_existing_fields")
         return FakeAgentResult(structured_output=expected)
 
     result = run_question_design(
@@ -71,14 +65,12 @@ def test_run_question_design_returns_structured_output() -> None:
 
     assert result.reply == expected.reply
     assert result.suggestions[0].label == "判断基準"
-    assert result.used_tools == ["search_existing_fields"]
 
 
 def test_run_question_design_parses_json_string_fallback() -> None:
     def fake_runner(*args: Any, **kwargs: Any) -> FakeAgentResult:
-        kwargs["invocation_state"]["used_tools"].append("search_past_knowledge")
         return FakeAgentResult(
-            text='{"reply":"質問項目を整理しました。","design_status":"ready","suggestions":[{"label":"前提条件","question":"前提条件として何を確認すべきですか。","description":"前提の把握","input_type":"long_text"}],"used_tools":[]}'
+            text='{"reply":"質問項目を整理しました。","design_status":"ready","suggestions":[{"label":"前提条件","question":"前提条件として何を確認すべきですか。","description":"前提の把握","input_type":"long_text"}]}'
         )
 
     result = run_question_design(
@@ -89,7 +81,6 @@ def test_run_question_design_parses_json_string_fallback() -> None:
 
     assert result.reply == "質問項目を整理しました。"
     assert result.suggestions[0].label == "前提条件"
-    assert result.used_tools == ["search_past_knowledge"]
 
 
 def test_run_question_design_reports_invalid_output_after_one_retry() -> None:
@@ -155,7 +146,6 @@ def test_run_question_design_does_not_assume_fixed_domain_terms_without_input() 
                 design_status="needs_info",
                 clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 suggestions=[],
-                used_tools=[],
             )
         )
 
@@ -188,7 +178,6 @@ def test_run_question_design_clears_suggestions_when_design_status_is_needs_info
                         question="業務の概要を教えてください。",
                     )
                 ],
-                used_tools=[],
             )
         )
 
@@ -210,7 +199,6 @@ def test_run_question_design_uses_fixed_reply_for_needs_info() -> None:
                 design_status="needs_info",
                 clarification_question="設備Xとは何ですか？また、それはどのような環境で使用されていますか？",
                 suggestions=[],
-                used_tools=[],
             )
         )
 
@@ -238,7 +226,6 @@ def test_run_question_design_discards_suggestions_when_needs_info_even_if_llm_re
                         question="業務の概要を教えてください。",
                     )
                 ],
-                used_tools=[],
             )
         )
 
@@ -265,7 +252,6 @@ def test_run_question_design_returns_needs_info_for_greeting_only() -> None:
                 design_status="needs_info",
                 clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 suggestions=[],
-                used_tools=[],
             )
         )
 
@@ -296,7 +282,6 @@ def test_run_question_design_returns_ready_when_materials_are_sufficient() -> No
                         question="月次請求処理を開始する前に何を確認しますか。",
                     )
                 ],
-                used_tools=[],
             )
         )
 
@@ -324,7 +309,6 @@ def test_run_question_design_allows_agent_to_handle_empty_input_when_called_dire
                 design_status="needs_info",
                 clarification_question="質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。",
                 suggestions=[],
-                used_tools=[],
             )
         )
 
@@ -350,7 +334,6 @@ def test_run_question_design_allows_agent_to_decide_needs_info_for_short_vague_r
                 design_status="needs_info",
                 clarification_question="どの業務について、何を明らかにしたいのかを教えてください。",
                 suggestions=[],
-                used_tools=[],
             )
         )
 
@@ -554,47 +537,7 @@ def test_question_design_validation_prompt_contains_required_contract() -> None:
     assert "質問対象または聞きたい観点を示している場合" in prompt
 
 
-def test_question_design_imports_do_not_construct_bedrock_model_or_agent(monkeypatch) -> None:
-    import strands.models
+def test_question_design_provider_import_is_lazy() -> None:
+    from ai_interviewer_api.agents.question_design.provider import BedrockQuestionDesignRunner
 
-    runtime_module = importlib.import_module("ai_interviewer_api.agents.common.strands_runtime")
-    question_agent_module = importlib.import_module("ai_interviewer_api.agents.question_design.agent")
-    question_service_module = importlib.import_module("ai_interviewer_api.agents.question_design.service")
-
-    original_bedrock_model = strands.models.BedrockModel
-
-    class FailOnInitBedrockModel(original_bedrock_model):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            raise AssertionError("BedrockModel should not be instantiated during module import")
-
-    monkeypatch.setattr(strands.models, "BedrockModel", FailOnInitBedrockModel)
-    monkeypatch.setattr(question_agent_module, "build_question_design_agent", Mock(side_effect=AssertionError("should not build agent during import")))
-
-    importlib.reload(runtime_module)
-    importlib.reload(question_agent_module)
-    importlib.reload(question_service_module)
-
-
-def test_question_design_tools_are_read_only_stubs() -> None:
-    tool_context = {"tool_use": {"toolUseId": "tool-1"}, "agent": None, "invocation_state": {}}
-
-    assert (
-        search_existing_fields("観点", tool_context=tool_context)
-        == "No existing fields data source is connected yet."
-    )
-    assert (
-        search_past_knowledge("手順", tool_context=tool_context)
-        == "No past knowledge data source is connected yet."
-    )
-
-
-def test_question_design_tool_modules_do_not_depend_on_repositories_or_store() -> None:
-    modules: list[ModuleType] = [
-        importlib.import_module("ai_interviewer_api.agents.common.tools.existing_fields"),
-        importlib.import_module("ai_interviewer_api.agents.common.tools.past_knowledge"),
-    ]
-
-    for module in modules:
-        assert "store" not in module.__dict__
-        assert "boto3" not in module.__dict__
-        assert not any(name.startswith("ai_interviewer_api.repositories") for name in module.__dict__)
+    assert BedrockQuestionDesignRunner._resolve_contract(QuestionDesignOutput)[0] is QuestionDesignOutput

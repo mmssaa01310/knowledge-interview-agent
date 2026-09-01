@@ -293,7 +293,7 @@ async def test_playback_buffer_keeps_pcm_when_preroll_target_is_exceeded() -> No
 
 
 @pytest.mark.anyio
-async def test_initial_reply_greeting_is_sent_before_claim_completes() -> None:
+async def test_initial_reply_is_not_sent_before_claim_completes() -> None:
     events: list[tuple[str, str | None]] = []
     claim_release = asyncio.Event()
     runtime = StubRuntime()
@@ -354,15 +354,18 @@ async def test_initial_reply_greeting_is_sent_before_claim_completes() -> None:
     task = asyncio.create_task(peer._send_initial_reply_if_pending())
     await asyncio.sleep(0.01)
 
-    assert runtime.calls == [
-        ("start_initial_reply", {"reply_text": INITIAL_VOICE_GREETING, "question_id": None}),
-    ]
+    assert runtime.calls == []
     assert events == [("claim_started", "vs-1")]
 
     claim_release.set()
     await task
 
     assert events[:2] == [("claim_started", "vs-1"), ("claim_completed", "vs-1")]
+    assert runtime.calls == [
+        ("start_initial_reply", {"reply_text": INITIAL_VOICE_GREETING, "question_id": None}),
+        ("queue_initial_followup_reply", {"reply_text": "あなたの名前は？", "question_id": "q-001"}),
+    ]
+    await peer._send_initial_reply_if_pending()
     assert runtime.calls == [
         ("start_initial_reply", {"reply_text": INITIAL_VOICE_GREETING, "question_id": None}),
         ("queue_initial_followup_reply", {"reply_text": "あなたの名前は？", "question_id": "q-001"}),

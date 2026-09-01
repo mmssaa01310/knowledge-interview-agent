@@ -104,4 +104,4 @@ Bedrock API呼び出しは、Backendの`StructuredInterviewProvider`アダプタ
 * `app/api`のRouter、Repository、状態機械からBedrock APIを直接呼び出さない。
 * `app/voice`からBedrock APIを呼び出さない。
 * 音声データをGPT-5.6モデルへ直接送信しない。音声経路は確定transcriptを構造化インタビューへ渡す。
-* 既存のStrands/Bedrock経路を残す場合も、同じターンを構造化Providerと既存経路の両方で処理しない。
+* Structured InterviewのProviderを1ターンに1回だけ使用し、別経路へ自動フォールバックしない。

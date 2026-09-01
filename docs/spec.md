@@ -57,7 +57,7 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 個別エージェントの詳細仕様は、以下に従う。
 
 * `docs/agents/agent-behavior-policy.md`
-* `docs/agents/interview-agent-strands.md`
+* `docs/architecture/agents/interview-knowledge-capture.md`
 * `docs/agents/question-design-agent-strands.md`
 
 ### 2.2 インタビュー入出力経路
@@ -148,6 +148,8 @@ AI提案は必ず`draft`または`needs_review`として保存する。
 * 人の修正値
 
 テキスト経路と音声経路で、回答妥当性の判定契約を変更してはいけない。両経路とも`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を共通で扱い、音声経路だけが追加情報としてSTT confidenceを渡せる。これはAI提案や正式ナレッジの人による承認を不要にするものではない。
+
+確定したSTT結果であっても、BackendはInterpreterの`utteranceCompleteness`（`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`）と回答の意味的成立性を確認してから状態を更新する。`INCOMPLETE`または`UNCERTAIN`では現在の質問を維持し、回答・候補・次質問を確定しない。音声由来の発話は`rawTranscript`を保持し、意味を変えない正規化は`normalizedTranscript`へ保存する。意味を変える補正は`correctionStatus=CORRECTED`として候補確認を必須にし、一意に補正できない場合は`UNCERTAIN`として再発話を依頼する。
 
 音声インタビューから生成されたAI提案についても、人による承認を必須とする。
 
@@ -651,7 +653,8 @@ InterviewState
 ├── FieldState
 ├── RequirementState
 ├── ProcessState
-└── ApplicabilityState
+├── ApplicabilityState
+└── closingState / closingAnswer
 ```
 
 `ProcessModel`は`ProcessState`から生成する派生ビューである。フローチャートとシーケンス図は、`ProcessModel`から生成する。
@@ -729,6 +732,8 @@ not_applicable
 
 完了判定はBackendが行う。LLMは完了状態を決定しない。
 
+以下のProfile別条件に加え、全Profileで`closingState=CONFIRMED`でなければ完了しない。必須項目を満たした後、Backendは「ここまでの質問で触れなかった重要なこと」を自由に追加できるopen-ended closingを1回提示する。回答、明示的な「特にない」、または明示的なunknown/skipを受けた後だけclosingを確認済みにする。既存の完了済み状態に`closingState`がない場合は、移行処理で従来の完了を維持する。
+
 #### `fixed_form`
 
 次のすべてを満たした場合に完了とする。
@@ -770,11 +775,13 @@ not_applicable
 
 Backendは、次の優先順位で1件だけ質問対象を決定する。
 
-1. 未解決の矛盾
-2. `AWAITING_CONFIRMATION`中の候補
-3. Profile必須項目の未確認
-4. `ApplicabilityState=unknown`の項目
-5. 任意項目の深掘り
+1. 補正Transcriptの確認、または現在の回答に対する一度のactive probe
+2. 未解決の矛盾
+3. `AWAITING_CONFIRMATION`中の候補
+4. Profile必須項目の未確認
+5. `ApplicabilityState=unknown`の項目
+6. 任意項目の深掘り
+7. open-ended closing
 
 同じ優先順位の候補が複数ある場合は、Profileの定義順、依存関係、項目の表示順で1件に絞る。
 
@@ -825,13 +832,13 @@ Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.fo
 
 質問項目設計では、通常時も検証時もKnowledgeで選択された`defaultModelId`を使用する。未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。質問項目設計においてTerraとLunaを自動切り替えしてはならない。
 
-質問項目設計は、Strands Agentを本番経路に使用せず、BedrockのOpenAI互換Responses APIへ直接送信する。GPT-5.6 Terra／Lunaは`temperature`を使用せず、Structured OutputのJSON Schemaを指定する。GPT-5.6以外のモデルを追加する場合は、モデルが対応する場合に限り温度設定を別仕様で定義する。
+質問項目設計は、BedrockのOpenAI互換Responses APIへ直接送信する。GPT-5.6 Terra／Lunaは`temperature`を使用せず、Structured OutputのJSON Schemaを指定する。GPT-5.6以外のモデルを追加する場合は、モデルが対応する場合に限り温度設定を別仕様で定義する。
 
 質問項目設計の生成前に、Backendは同じテナントかつ同じKnowledgeに属する情報だけを読み取る。検索対象は、既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済みの文書・文書チャンクである。未承認の記録・提案、取り込み中の文書、別Knowledgeの情報をLLMへ渡してはならない。検索結果は`retrieved_knowledge`として入力へ埋め込み、LLMにDBアクセスやDB更新を許可してはならない。
 
-インタビューの次質問生成でも、Backendは同じテナントかつ同じKnowledgeに属する`indexed`または取り込み完了状態の文書・文書チャンクを共通検索サービスから取得し、通常経路のInterview Agent、構造化経路のQuestion Generator、音声経路のAPI正本へ`retrieved_knowledge`として渡す。`retrievalPolicy=never`の項目では文書を検索せず、`auto`または`required`では質問・項目・会話文脈に関連する文書だけを渡す。生成された質問には`retrievedSources`として文書IDまたはチャンクID、タイトル、スコアを記録する。`app/voice`は検索・質問進行を実装せず、Backendが生成した同じ質問と出典を利用する。
+インタビューの次質問生成でも、Backendは同じテナントかつ同じKnowledgeに属する`indexed`または取り込み完了状態の文書・文書チャンクを共通検索サービスから取得し、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`として渡す。`retrievalPolicy=never`の項目では文書を検索せず、`auto`または`required`では質問・項目・会話文脈に関連する文書だけを渡す。生成された質問には`retrievedSources`として文書IDまたはチャンクID、タイトル、スコアを記録する。`app/voice`は検索・質問進行を実装せず、Backendが生成した同じ質問と出典を利用する。
 
-Question Design AgentとValidatorは、同じ選択モデルへそれぞれStructured Outputリクエストを送る。生成結果と検証結果はBackendがPydantic Schemaで検証し、検証失敗時は各段階で1回だけ再実行する。Provider障害時にStrands、別モデル、別の自動フォールバックへ切り替えてはならない。
+Question Design AgentとValidatorは、同じ選択モデルへそれぞれStructured Outputリクエストを送る。生成結果と検証結果はBackendがPydantic Schemaで検証し、検証失敗時は各段階で1回だけ再実行する。Provider障害時に別モデルや別の自動フォールバックへ切り替えてはならない。
 
 既存状態との矛盾、複数フロー、大量更新、大量要求、既存ProcessStateの大幅変更をBackendが検知した場合だけ、ナレッジで選択されたTerraまたはLunaを`medium`で再実行する。
 
@@ -839,13 +846,12 @@ Question Design AgentとValidatorは、同じ選択モデルへそれぞれStruc
 
 画像生成モデルはインタビュー処理、図生成、図表示のいずれにも使用しない。
 
-標準の開発・Compose実行では、Backendの`STRUCTURED_INTERVIEW_ENABLED=true`を設定し、構造化インタビューを使用する。`STRUCTURED_INTERVIEW_ENABLED=false`を明示した場合だけ、既存のStrands/Bedrock経路を使用する。環境変数を設定しない場合のコード既定値は、既存利用者との互換性を保つため`false`である。同じターンを構造化経路と既存経路で重複処理してはならない。AWS認証情報またはIAM権限が不足している場合は状態を更新せず、エラーとして扱う。
+インタビュー実行はStructured Interview経路だけを正式サポートする。テキストと音声（Transcribe + Polly）の両方が同じStructured Interpreter、Coordinator、Question Generatorを使用し、旧Interview Agent経路や切替用Feature Flagは持たない。AWS認証情報またはIAM権限が不足している場合は状態を更新せず、エラーとして扱う。
 
 構造化インタビューの環境変数は次のとおりである。
 
 | 環境変数 | 必須 | 既定値 | 用途 |
 |---|---:|---|---|
-| `STRUCTURED_INTERVIEW_ENABLED` | いいえ | 標準設定は`true`。未設定時のコード既定値は`false` | 構造化インタビューの有効化 |
 | `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` | Bedrock Runtimeへ接続する呼び出し元リージョン |
 | `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` | Bedrock inference profile IDまたはARN |
 | `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` | 通常時の推論強度 |
@@ -867,6 +873,7 @@ Global profileのIAM許可には、少なくとも対象inference profileへの`
 LLMの責務は次のとおりである。
 
 * 発話の意味解釈
+* 発話完結性、Transcript補正、回答充足度、probe方針の候補判定
 * Field、Requirement、Processの候補抽出
 * 矛盾の検出
 * Applicabilityの候補抽出
@@ -883,6 +890,7 @@ Backendの責務は次のとおりである。
 * 完了判定
 * 次の質問対象の決定
 * 質問の重複防止
+* INCOMPLETE/UNCERTAIN発話の保留、Transcript補正候補の確認待ち管理
 * 候補、確認済み、正式承認済みの境界保証
 * ProcessModel手動保存の認可、入力検証、バージョン競合検出
 * 全画面編集指示のStructured Output検証、RequirementPatchとProcessPatchの適用、監査ログ保存
@@ -895,6 +903,8 @@ Backendの責務は次のとおりである。
 
 * partial transcriptを正式回答として処理しない。
 * 確定transcriptだけを`app/api`へ渡す。
+* 確定transcriptでも、意味的に未完了なら現在の質問を維持し、次質問へ進めない。
+* `rawTranscript`と`normalizedTranscript`を分け、意味を変更する補正は確認前に確定しない。
 * `app/voice`にInterviewの意味判断を実装しない。
 * `app/voice`から`app/api`のPythonモジュールを直接importしない。
 * Terraへ音声データを直接送信しない。
@@ -942,7 +952,6 @@ ProcessModelとRequirementStateの直接編集は、インタビュー回答の�
 
 * [AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)
 * [エージェントアーキテクチャ](architecture/agents/agent-architecture.md)
-* [Interview Agent仕様](agents/interview-agent-strands.md)
 * [リアルタイム音声仕様](architecture/voice/realtime-voice.md)
 
 ## 10. UI多言語仕様

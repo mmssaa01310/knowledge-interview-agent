@@ -58,23 +58,13 @@ class Settings:
         "SQS_DOCUMENT_QUEUE_URL", "memory://document-ingestion"
     )
     bedrock_enabled: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
-    strands_interview_agent_enabled: bool = (
-        os.getenv("STRANDS_INTERVIEW_AGENT_ENABLED", "false").lower() == "true"
-    )
     bedrock_aws_region: str = os.getenv("BEDROCK_AWS_REGION", "ap-northeast-1")
     bedrock_model_id: str = os.getenv(
         "BEDROCK_MODEL_ID",
         "apac.amazon.nova-pro-v1:0",
     )
-    bedrock_fallback_model_id: str = os.getenv("BEDROCK_FALLBACK_MODEL_ID", "global.amazon.nova-2-lite-v1:0")
     bedrock_max_tokens: int = int(os.getenv("BEDROCK_MAX_TOKENS", "2400"))
     bedrock_temperature: float = float(os.getenv("BEDROCK_TEMPERATURE", "0.2"))
-    # The deployment templates enable this path. The code-level fallback stays
-    # disabled when the environment variable is omitted for compatibility with
-    # callers that construct the API without deployment configuration.
-    structured_interview_enabled: bool = (
-        os.getenv("STRUCTURED_INTERVIEW_ENABLED", "false").lower() == "true"
-    )
     structured_interview_model_id: str = os.getenv(
         "STRUCTURED_INTERVIEW_MODEL_ID",
         "global.openai.gpt-5.6-luna",
@@ -112,26 +102,6 @@ class Settings:
     )
     question_design_temperature: float = float(
         os.getenv("QUESTION_DESIGN_TEMPERATURE", "0.0")
-    )
-    voice_answer_evaluation_deadline_seconds: float = float(
-        os.getenv("VOICE_ANSWER_EVALUATION_DEADLINE_SECONDS", "2.0")
-    )
-    voice_bedrock_model_id: str = os.getenv(
-        "VOICE_BEDROCK_MODEL_ID",
-        os.getenv("BEDROCK_MODEL_ID", "apac.amazon.nova-pro-v1:0"),
-    )
-    voice_bedrock_temperature: float = float(
-        os.getenv("VOICE_BEDROCK_TEMPERATURE", "0.0")
-    )
-    voice_bedrock_max_tokens: int = int(os.getenv("VOICE_BEDROCK_MAX_TOKENS", "600"))
-    voice_bedrock_connect_timeout_seconds: float = float(
-        os.getenv("VOICE_BEDROCK_CONNECT_TIMEOUT_SECONDS", "0.5")
-    )
-    voice_bedrock_read_timeout_seconds: float = float(
-        os.getenv("VOICE_BEDROCK_READ_TIMEOUT_SECONDS", "1.8")
-    )
-    voice_bedrock_warmup_enabled: bool = (
-        os.getenv("VOICE_BEDROCK_WARMUP_ENABLED", "true").lower() == "true"
     )
     internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")
 

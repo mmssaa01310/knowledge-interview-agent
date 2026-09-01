@@ -58,7 +58,6 @@ class QuestionDesignOutput(BaseModel):
     reason: str | None = None
     suggestions: list[QuestionFieldSuggestion] = Field(default_factory=list)
     interview_plan: InterviewPlan | None = None
-    used_tools: list[str] = Field(default_factory=list)
 
 
 class QuestionDesignValidation(BaseModel):

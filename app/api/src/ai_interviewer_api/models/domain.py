@@ -100,6 +100,10 @@ class VoiceTurn(BaseEntity):
     sequence: int
     speaker: Literal["user", "assistant"] = "user"
     transcript: str
+    rawTranscript: str | None = None
+    normalizedTranscript: str | None = None
+    correctionStatus: Literal["NONE", "CORRECTED", "UNCERTAIN"] = "NONE"
+    transcriptAssessment: dict | None = None
     sttConfidence: float | None = None
     turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None
@@ -109,7 +113,7 @@ class VoiceTurn(BaseEntity):
         "confirmation_reply",
         "structured_interpretation",
         "control",
-    ] = "answer_evaluation"
+    ] = "structured_interpretation"
     processingStatus: Literal["pending", "processing", "completed", "failed", "cancelled"] = "pending"
     lifecycleStatus: Literal[
         "RECEIVED",

@@ -99,7 +99,6 @@ def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
                     ask_by_ai=True,
                 )
             ],
-            used_tools=["search_existing_fields"],
         )
     )
 
@@ -107,7 +106,6 @@ def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
     assert result.fields[0].name == "判断基準"
     assert result.fields[0].description == "見分け方を確認する"
     assert result.fields[0].aiQuestionExamples == ["正常と異常をどのように見分けますか。"]
-    assert result.used_tools == ["search_existing_fields"]
 
 
 def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatch) -> None:
@@ -133,7 +131,6 @@ def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatc
                     description="既存項目と重複",
                 ),
             ],
-            used_tools=["search_existing_fields"],
         )
 
     monkeypatch.setattr(
@@ -310,11 +307,11 @@ def test_suggest_fields_with_bedrock_maps_structured_provider_failure(monkeypatc
     assert exc_info.value.detail == "question_design_provider_error"
 
 
-def test_suggest_fields_with_bedrock_returns_safe_empty_response_when_strands_fails(monkeypatch) -> None:
+def test_suggest_fields_with_bedrock_returns_internal_error_when_provider_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         field_suggestions,
         "run_question_design",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("strands failure")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("provider failure")),
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -399,6 +396,6 @@ def test_suggest_fields_with_bedrock_maps_client_error_without_legacy_fallback(m
         raise AssertionError("HTTPException was expected")
 
 
-def test_legacy_prompt_and_direct_bedrock_symbols_are_not_used() -> None:
+def test_direct_bedrock_symbols_are_not_used_outside_provider() -> None:
     assert not hasattr(field_suggestions, "_invoke_bedrock_model")
     assert not hasattr(field_suggestions, "_repair_json_with_bedrock")

@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from threading import Lock
 from time import monotonic
 from typing import Any
-from uuid import uuid4
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
+    accept_no_answer,
     apply_document_candidate,
     apply_structured_output,
     build_initial_structured_state,
+    clear_probe,
+    confirm_closing_answer,
     confirm_tentative_target,
     evaluate_completion,
     is_current_question_confirmation_target,
+    register_probe,
     process_patch_validation_errors,
+    record_interpretation_assessment,
     resolve_profile,
     select_next_question_target,
+    stage_transcript_correction,
     sync_structured_state_fields,
 )
 from ai_interviewer_api.agents.interview_knowledge.provider import (
@@ -34,9 +41,12 @@ from ai_interviewer_api.core.interview_locale import (
     interview_language_instruction,
     localized_interview_confirmation_question,
     localized_interview_document_confirmation_question,
+    localized_interview_incomplete_prompt,
     localized_interview_fallbacks,
     localized_interview_proposal_question,
-    localized_interview_tentative_transition,
+    localized_interview_question_help,
+    localized_interview_transcript_confirmation_question,
+    localized_interview_transcript_retry,
     resolve_interview_locale,
 )
 from ai_interviewer_api.models.base import utc_now
@@ -58,13 +68,39 @@ from ai_interviewer_api.services.interview_document_retrieval import (
 
 STRUCTURED_PROFILES: frozenset[str] = frozenset({"fixed_form", "business_process", "system_requirement"})
 logger = logging.getLogger(__name__)
-
-
-def is_structured_interview_enabled(knowledge: Mapping[str, Any]) -> bool:
-    return bool(settings.structured_interview_enabled and resolve_profile(knowledge) in STRUCTURED_PROFILES)
+_STRUCTURED_INTERVIEW_LOCKS: dict[str, Lock] = {}
+_STRUCTURED_INTERVIEW_LOCKS_GUARD = Lock()
 
 
 def generate_structured_interview_result(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    *,
+    persist_assistant_messages: bool = True,
+    provider: StructuredInterviewProvider | None = None,
+) -> dict[str, Any]:
+    """Run one record's Structured Interview turn serially.
+
+    Reconnects and duplicate client submissions can otherwise observe the
+    same unprocessed message and invoke Question Generator twice. The lock is
+    scoped to a record so unrelated interviews continue concurrently.
+    """
+
+    record_id = str(record.get("id") or "")
+    with _STRUCTURED_INTERVIEW_LOCKS_GUARD:
+        lock = _STRUCTURED_INTERVIEW_LOCKS.setdefault(record_id, Lock())
+    with lock:
+        return _generate_structured_interview_result(
+            record,
+            knowledge,
+            user,
+            persist_assistant_messages=persist_assistant_messages,
+            provider=provider,
+        )
+
+
+def _generate_structured_interview_result(
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
     user: UserContext,
@@ -210,6 +246,166 @@ def generate_structured_interview_result(
                 valid_evidence_ids=valid_evidence_ids,
                 selected_reasoning_effort=selected_reasoning_effort,
             )
+            latest_message_id = str(latest_user_message.get("id") or "")
+            raw_transcript = str(
+                latest_user_message.get("rawTranscript")
+                or latest_user_message.get("content")
+                or ""
+            ).strip()
+            pending_transcript_confirmation = isinstance(
+                state.get("pendingTranscriptConfirmation"),
+                Mapping,
+            )
+            effective_completeness = _effective_utterance_completeness(
+                output,
+                raw_transcript,
+            )
+            if effective_completeness != output.utteranceCompleteness:
+                output = output.model_copy(
+                    update={"utteranceCompleteness": effective_completeness}
+                )
+            transcript_assessment_status = output.transcriptAssessment.correctionStatus
+            if (
+                transcript_assessment_status == "CORRECTED"
+                and _has_ambiguous_correction_candidates(output)
+            ):
+                # The backend must not turn a non-unique provider proposal into
+                # a confirmation question. Keep the raw transcript and request
+                # a re-utterance until there is one grounded candidate.
+                output = output.model_copy(
+                    update={
+                        "transcriptAssessment": output.transcriptAssessment.model_copy(
+                            update={"correctionStatus": "UNCERTAIN"}
+                        )
+                    }
+                )
+                transcript_assessment_status = "UNCERTAIN"
+            if (
+                transcript_assessment_status == "CORRECTED"
+                and not output.transcriptAssessment.normalizedTranscript.strip()
+            ):
+                # A correction without a candidate is an unsafe provider
+                # response. Normalize it before any branch can apply updates.
+                output = output.model_copy(
+                    update={
+                        "transcriptAssessment": output.transcriptAssessment.model_copy(
+                            update={"correctionStatus": "UNCERTAIN"}
+                        )
+                    }
+                )
+                transcript_assessment_status = "UNCERTAIN"
+            if effective_completeness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
+                apply_structured_output(
+                    state,
+                    output,
+                    latest_message_id=latest_message_id,
+                    raw_transcript=raw_transcript,
+                    fields=fields,
+                    profile=profile,
+                    valid_evidence_ids=valid_evidence_ids,
+                    current_question=current_question,
+                )
+                _persist_transcript_assessment(
+                    latest_user_message,
+                    state.get("lastTranscriptAssessment"),
+                )
+                state["lastStructuredOutput"] = output.model_dump()
+                state["lastStructuredModelId"] = model_id
+                state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+                _persist_state(state, user)
+                messages = _replace_message(
+                    messages,
+                    latest_message_id,
+                    latest_user_message,
+                )
+                return _build_result(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    reply=(
+                        localized_interview_incomplete_prompt(interview_locale)
+                        if effective_completeness == "INCOMPLETE"
+                        else localized_interview_transcript_retry(interview_locale)
+                    ),
+                    question=current_question,
+                    action="ask_follow_up",
+                    status="in_progress",
+                )
+
+            if transcript_assessment_status == "UNCERTAIN":
+                record_interpretation_assessment(
+                    state,
+                    output,
+                    latest_message_id=latest_message_id,
+                    raw_transcript=raw_transcript,
+                )
+                _persist_transcript_assessment(
+                    latest_user_message,
+                    state.get("lastTranscriptAssessment"),
+                )
+                state["lastStructuredOutput"] = output.model_dump()
+                state["lastStructuredModelId"] = model_id
+                state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+                _persist_state(state, user)
+                messages = _replace_message(
+                    messages,
+                    latest_message_id,
+                    latest_user_message,
+                )
+                return _build_result(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    reply=localized_interview_transcript_retry(interview_locale),
+                    question=current_question,
+                    action="ask_follow_up",
+                    status="in_progress",
+                )
+
+            staged_transcript_correction = False
+            if transcript_assessment_status == "CORRECTED":
+                staged_transcript_correction = stage_transcript_correction(
+                    state,
+                    output,
+                    latest_message_id=latest_message_id,
+                    raw_transcript=raw_transcript,
+                    fields=fields,
+                    valid_evidence_ids=valid_evidence_ids,
+                    current_question=current_question,
+                )
+                if not staged_transcript_correction:
+                    record_interpretation_assessment(
+                        state,
+                        output,
+                        latest_message_id=latest_message_id,
+                        raw_transcript=raw_transcript,
+                    )
+                    _persist_transcript_assessment(
+                        latest_user_message,
+                        state.get("lastTranscriptAssessment"),
+                    )
+                    state["lastStructuredOutput"] = output.model_dump()
+                    state["lastStructuredModelId"] = model_id
+                    state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+                    _persist_state(state, user)
+                    messages = _replace_message(
+                        messages,
+                        latest_message_id,
+                        latest_user_message,
+                    )
+                    return _build_result(
+                        record=record,
+                        state=state,
+                        messages=messages,
+                        fields=fields,
+                        reply=localized_interview_transcript_retry(interview_locale),
+                        question=current_question,
+                        action="ask_follow_up",
+                        status="in_progress",
+                    )
+
             if output.dialogueAct in {
                 "ANSWER",
                 "CORRECTION",
@@ -218,31 +414,184 @@ def generate_structured_interview_result(
             } or _has_structured_updates(output):
                 if current_question.get("targetType") == "applicability_overview":
                     state["applicabilityOverviewAsked"] = True
+                if not staged_transcript_correction:
+                    current_target = _target_from_question(current_question)
+                    answer_sufficiency = output.answerAssessment.sufficiency
+                    if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                        output_to_apply = output.model_copy(
+                            update={"fieldUpdates": [], "requirementUpdates": []}
+                        )
+                    elif answer_sufficiency != "SUFFICIENT":
+                        output_to_apply = _downgrade_current_target_update(
+                            output,
+                            current_target,
+                        )
+                    else:
+                        output_to_apply = output
+                    apply_structured_output(
+                        state,
+                        output_to_apply,
+                        latest_message_id=latest_message_id,
+                        raw_transcript=raw_transcript,
+                        fields=fields,
+                        profile=profile,
+                        valid_evidence_ids=valid_evidence_ids,
+                        current_question=current_question,
+                    )
+                    if _should_implicitly_confirm_tentative_target(
+                        output,
+                        tentative_target_before,
+                        current_question,
+                    ):
+                        confirm_tentative_target(state, tentative_target_before)
+                    if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                        follow_up_count = _follow_up_count(state, current_target)
+                        if follow_up_count >= 1:
+                            accept_no_answer(
+                                state,
+                                current_target,
+                                transcript=str(
+                                    state.get("lastTranscriptAssessment", {}).get(
+                                        "normalizedTranscript"
+                                    )
+                                    or raw_transcript
+                                ),
+                                message_id=latest_message_id,
+                                valid_evidence_ids=valid_evidence_ids,
+                            )
+                        else:
+                            register_probe(
+                                state,
+                                target=current_target,
+                                probe_type=output.answerAssessment.probeType,
+                            )
+                    elif answer_sufficiency != "SUFFICIENT":
+                        register_probe(
+                            state,
+                            target=current_target,
+                            probe_type=output.answerAssessment.probeType,
+                        )
+                    else:
+                        clear_probe(state, current_target)
+                    _save_newly_confirmed_field_messages(
+                        record=record,
+                        state=state,
+                        previous_confirmed_field_ids=confirmed_field_ids_before,
+                        question=current_question,
+                        user=user,
+                    )
+                    _persist_transcript_assessment(
+                        latest_user_message,
+                        state.get("lastTranscriptAssessment"),
+                    )
+                else:
+                    _persist_transcript_assessment(
+                        latest_user_message,
+                        state.get("lastTranscriptAssessment"),
+                    )
+            else:
                 apply_structured_output(
                     state,
                     output,
-                    latest_message_id=str(latest_user_message.get("id") or ""),
+                    latest_message_id=latest_message_id,
+                    raw_transcript=raw_transcript,
                     fields=fields,
                     profile=profile,
                     valid_evidence_ids=valid_evidence_ids,
                     current_question=current_question,
                 )
-                if _should_implicitly_confirm_tentative_target(
+                state["lastStructuredDialogueAct"] = output.dialogueAct
+            if (
+                current_question.get("targetType") == "closing"
+                and not staged_transcript_correction
+                and output.answerAssessment.sufficiency
+                in {"SUFFICIENT", "UNANSWERABLE", "REFUSAL"}
+                and output.dialogueAct
+                not in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"}
+            ):
+                assessment = state.get("lastTranscriptAssessment")
+                normalized = (
+                    assessment.get("normalizedTranscript")
+                    if isinstance(assessment, Mapping)
+                    else None
+                )
+                confirm_closing_answer(
+                    state,
+                    transcript=raw_transcript,
+                    message_id=latest_message_id,
+                    normalized_transcript=str(normalized or raw_transcript),
+                    valid_evidence_ids=valid_evidence_ids,
+                )
+            if output.dialogueAct in {
+                "QUESTION_TO_ASSISTANT",
+                "CLARIFICATION_REQUEST",
+            } and not _has_structured_updates(output):
+                record_interpretation_assessment(
+                    state,
                     output,
-                    tentative_target_before,
-                    current_question,
-                ):
-                    confirm_tentative_target(state, tentative_target_before)
-                _save_newly_confirmed_field_messages(
+                    latest_message_id=latest_message_id,
+                    raw_transcript=raw_transcript,
+                )
+                _persist_transcript_assessment(
+                    latest_user_message,
+                    state.get("lastTranscriptAssessment"),
+                )
+                state["lastStructuredOutput"] = output.model_dump()
+                state["lastStructuredModelId"] = model_id
+                state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+                _persist_state(state, user)
+                messages = _replace_message(
+                    messages,
+                    latest_message_id,
+                    latest_user_message,
+                )
+                return _build_result(
                     record=record,
                     state=state,
-                    previous_confirmed_field_ids=confirmed_field_ids_before,
+                    messages=messages,
+                    fields=fields,
+                    reply=localized_interview_question_help(
+                        interview_locale,
+                        str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or "この項目"
+                        ),
+                    ),
                     question=current_question,
-                    user=user,
+                    action="ask_follow_up",
+                    status="in_progress",
                 )
-            else:
-                state["lastStructuredDialogueAct"] = output.dialogueAct
-                state["lastProcessedUserMessageId"] = latest_user_message.get("id")
+            if (
+                pending_transcript_confirmation
+                and output.dialogueAct == "REJECTION"
+                and not staged_transcript_correction
+            ):
+                state["lastStructuredOutput"] = output.model_dump()
+                state["lastStructuredModelId"] = model_id
+                state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+                _persist_state(state, user)
+                messages = _replace_message(
+                    messages,
+                    latest_message_id,
+                    latest_user_message,
+                )
+                retry_question = _get_current_question(state) or current_question
+                return _build_result(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    reply=localized_interview_transcript_retry(interview_locale),
+                    question=retry_question,
+                    action="ask_follow_up",
+                    status="in_progress",
+                )
+            messages = _replace_message(
+                messages,
+                latest_message_id,
+                latest_user_message,
+            )
             state["lastStructuredOutput"] = output.model_dump()
             state["lastStructuredModelId"] = model_id
             state["lastStructuredReasoningEffort"] = selected_reasoning_effort
@@ -323,6 +672,8 @@ def generate_structured_interview_result(
             )
         else:
             document_candidate = None
+    if target.get("targetType") == "closing":
+        state["closingState"] = "ASKING"
     state["lastQuestionModelId"] = model_id
     state["lastQuestionReasoningEffort"] = settings.structured_interview_reasoning_effort
     question = _build_question(
@@ -449,7 +800,11 @@ def _backfill_state(
     initial = build_initial_structured_state(profile, fields)
     for key, value in initial.items():
         if key not in state:
-            state[key] = value
+            state[key] = (
+                "CONFIRMED"
+                if key == "closingState" and state.get("status") == "completed"
+                else value
+            )
             changed = True
     requirement_states = state.setdefault("requirementStates", {})
     for requirement_id, requirement_state in initial.get("requirementStates", {}).items():
@@ -462,6 +817,11 @@ def _backfill_state(
             if key not in field_state:
                 field_state[key] = []
                 changed = True
+    if state.get("status") == "completed" and state.get("closingState") == "UNANSWERED":
+        # States completed before the open-ended closing was introduced remain
+        # completed; new in-progress states must still ask the closing question.
+        state["closingState"] = "CONFIRMED"
+        changed = True
     for requirement_id, initial_requirement_state in initial.get("requirementStates", {}).items():
         requirement_state = requirement_states.setdefault(requirement_id, initial_requirement_state)
         for key in ("candidateSourceIds", "confirmedSourceIds"):
@@ -574,11 +934,16 @@ def _build_interpreter_context(
         ],
         "currentQuestion": dict(current_question),
         "interviewState": _compact_state(state),
+        "latestUtterance": _latest_utterance_context(messages, current_question),
         "conversation": [
             {
                 "id": message.get("id"),
                 "role": message.get("role"),
                 "content": message.get("content"),
+                "rawTranscript": message.get("rawTranscript"),
+                "normalizedTranscript": message.get("normalizedTranscript"),
+                "correctionStatus": message.get("correctionStatus"),
+                "correctionCandidates": message.get("correctionCandidates"),
                 "questionId": message.get("questionId"),
                 "answerToQuestionId": message.get("answerToQuestionId"),
                 "sttConfidence": message.get("sttConfidence"),
@@ -586,6 +951,22 @@ def _build_interpreter_context(
             for message in messages[-30:]
             if message.get("isActualUtterance") is not False
         ],
+    }
+
+
+def _latest_utterance_context(
+    messages: Sequence[Mapping[str, Any]],
+    current_question: Mapping[str, Any],
+) -> dict[str, Any]:
+    latest = _latest_answer_message(messages, current_question) or {}
+    raw = str(latest.get("rawTranscript") or latest.get("content") or "").strip()
+    return {
+        "messageId": latest.get("id"),
+        "rawTranscript": raw,
+        "normalizedTranscript": latest.get("normalizedTranscript"),
+        "correctionStatus": latest.get("correctionStatus") or "NONE",
+        "correctionCandidates": list(latest.get("correctionCandidates") or []),
+        "sttConfidence": latest.get("sttConfidence"),
     }
 
 
@@ -924,6 +1305,21 @@ def _generate_question_text(
     messages: Sequence[Mapping[str, Any]],
 ) -> tuple[str, list[RetrievedKnowledgeContext], DocumentQuestionCandidate | None]:
     started_at = monotonic()
+    pending_transcript = state.get("pendingTranscriptConfirmation")
+    if (
+        target.get("targetType") == "transcript_confirmation"
+        and isinstance(pending_transcript, Mapping)
+    ):
+        # A correction confirmation is a backend-owned safety step. Do not
+        # invoke Question Generator or retrieve unrelated context for it.
+        return (
+            localized_interview_transcript_confirmation_question(
+                resolve_interview_locale(record, knowledge),
+                str(pending_transcript.get("normalizedTranscript") or ""),
+            ),
+            [],
+            None,
+        )
     current_field = _field_for_target(target, fields)
     retrieval_policy = _retrieval_policy_for_target(target, current_field)
     retrieved_context = retrieve_interview_document_context(
@@ -951,6 +1347,8 @@ def _generate_question_text(
         ],
         "fields": [{"id": field.get("id"), "name": field.get("name")} for field in fields],
         "tentativeCandidates": _list_tentative_candidates(state),
+        "answerAssessment": state.get("lastAnswerAssessment"),
+        "activeProbe": state.get("activeProbeTarget"),
         "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
     generated = provider.generate_question(
@@ -967,7 +1365,7 @@ def _generate_question_text(
         settings.structured_interview_reasoning_effort,
         round((monotonic() - started_at) * 1000),
     )
-    question_text = generated.questionText.strip()
+    question_text = _sanitize_question_text(generated.questionText)
     document_candidate = validate_document_question_candidate(
         value=generated.documentCandidateValue,
         source_ids=generated.documentCandidateSourceIds,
@@ -1038,22 +1436,6 @@ def _generate_question_text(
             retrieved_context,
             None,
         )
-    tentative = _tentative_candidate_for_state(state)
-    if tentative and not _is_awaiting_confirmation_target(target, state):
-        tentative_value, _ = tentative
-        if (
-            not state.get("tentativeBridgeShown")
-            and not _contains_question_candidate(question_text, tentative_value)
-        ):
-            question_text = (
-                f"{localized_interview_tentative_transition(
-                    resolve_interview_locale(record, knowledge),
-                    tentative_value,
-                    str(target.get("label") or "").strip(),
-                )}{question_text}"
-            )
-        if isinstance(state, dict):
-            state["tentativeBridgeShown"] = True
     return question_text, retrieved_context, None
 
 
@@ -1100,6 +1482,18 @@ def _repair_current_confirmation_question(
         return False
     target_type = str(current_question.get("targetType") or current_question.get("kind") or "")
     target_id = str(current_question.get("targetId") or "")
+    if target_type == "transcript_confirmation":
+        pending = state.get("pendingTranscriptConfirmation")
+        if not isinstance(pending, Mapping):
+            return False
+        question_text = localized_interview_transcript_confirmation_question(
+            locale,
+            str(pending.get("normalizedTranscript") or ""),
+        )
+        if str(current_question.get("text") or "") == question_text:
+            return False
+        current_question["text"] = question_text
+        return True
     if target_type == "field":
         target_state = state.get("fieldStates", {}).get(target_id, {})
         is_pending = target_state.get("answerState") == "AWAITING_CONFIRMATION"
@@ -1216,6 +1610,32 @@ def _contains_question_candidate(question_text: str, candidate_value: str) -> bo
     return bool(compact_candidate and compact_candidate in compact_question)
 
 
+def _sanitize_question_text(value: str) -> str:
+    """Keep one generated question and discard duplicated lead-in prose."""
+
+    text = " ".join(str(value or "").split()).strip()
+    if not text:
+        return ""
+    sentences = [part.strip() for part in re.split(r"(?<=[。！？!?])\s*", text) if part.strip()]
+    question_sentences = [
+        sentence
+        for sentence in sentences
+        if (
+            "？" in sentence
+            or "?" in sentence
+            or re.search(
+                r"(?:教えてください|お聞かせください|伺えますか|ありますか|ですか|でしょうか|ますか)[。！？!?]?$",
+                sentence,
+            )
+        )
+    ]
+    if question_sentences and len(sentences) > 1:
+        # A theme explanation followed by the actual question is not a
+        # two-part reply. Keep the question itself as the sole utterance.
+        return question_sentences[-1]
+    return text
+
+
 def _get_structured_provider(
     provider: StructuredInterviewProvider | None,
     *,
@@ -1224,6 +1644,155 @@ def _get_structured_provider(
     if provider is not None:
         return provider
     return BedrockResponsesStructuredProvider(model_id=model_id)
+
+
+def _target_from_question(question: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not question:
+        return None
+    target_type = str(question.get("targetType") or question.get("kind") or "").strip()
+    target_id = str(question.get("targetId") or "").strip()
+    if not target_type or not target_id:
+        return None
+    return {
+        "targetType": target_type,
+        "targetId": target_id,
+        "label": str(question.get("targetLabel") or question.get("label") or target_id),
+    }
+
+
+def _follow_up_count(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any] | None,
+) -> int:
+    if not target:
+        return 0
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    counts = state.get("followUpCounts") or {}
+    if not isinstance(counts, Mapping):
+        return 0
+    return int(counts.get(f"{target_type}:{target_id}", counts.get(target_id, 0)) or 0)
+
+
+def _downgrade_current_target_update(
+    output: StructuredInterviewOutput,
+    current_target: Mapping[str, Any] | None,
+) -> StructuredInterviewOutput:
+    """Prevent an insufficient current answer from being auto-confirmed."""
+
+    if current_target is None:
+        return output
+    target_type = str(current_target.get("targetType") or current_target.get("kind") or "")
+    target_id = str(current_target.get("targetId") or "")
+    field_updates = [
+        update.model_copy(update={"answerResolution": "TENTATIVE"})
+        if target_type == "field" and update.fieldId == target_id
+        else update
+        for update in output.fieldUpdates
+    ]
+    requirement_updates = [
+        update.model_copy(update={"answerResolution": "TENTATIVE"})
+        if target_type in {"requirement", "process"} and update.requirementId == target_id
+        else update
+        for update in output.requirementUpdates
+    ]
+    return output.model_copy(
+        update={
+            "fieldUpdates": field_updates,
+            "requirementUpdates": requirement_updates,
+        }
+    )
+
+
+def _effective_utterance_completeness(
+    output: StructuredInterviewOutput,
+    transcript: str,
+) -> str:
+    """Apply a small syntactic safety floor below the model judgement.
+
+    The Structured Interpreter remains the primary decision maker. This guard
+    only catches an unmistakable trailing conjunction/verb stem when a model
+    accidentally reports COMPLETE, so endpoint timing cannot advance the
+    interview on text such as ``担当し`` or ``関わっ``.
+    """
+
+    if output.utteranceCompleteness != "COMPLETE":
+        return output.utteranceCompleteness
+    if output.transcriptAssessment.correctionStatus == "CORRECTED":
+        corrected = output.transcriptAssessment.normalizedTranscript.strip()
+        if corrected and not _looks_like_incomplete_utterance(corrected):
+            # The raw final can itself be truncated by STT. A complete,
+            # explicit correction remains confirmation-only, so accepting the
+            # correction here cannot commit or advance the interview.
+            return "COMPLETE"
+    if _looks_like_incomplete_utterance(transcript):
+        return "INCOMPLETE"
+    return "COMPLETE"
+
+
+def _has_ambiguous_correction_candidates(output: StructuredInterviewOutput) -> bool:
+    candidates = {
+        str(candidate).strip()
+        for candidate in output.transcriptAssessment.correctionCandidates
+        if str(candidate).strip()
+    }
+    return len(candidates) > 1
+
+
+def _looks_like_incomplete_utterance(transcript: str) -> bool:
+    value = re.sub(r"[\s。、！？!?.,…]+$", "", transcript.strip())
+    if len(value) < 2:
+        return False
+    hesitation = re.sub(r"[\s、。！？!?.,…]+", "", value)
+    if re.fullmatch(
+        r"(?:えーっと|えーと|えっと|ええと|えー|あー|あの|その|うーん|うー)+",
+        hesitation,
+    ):
+        return True
+    if re.search(
+        r"(?:し|っ|ですが|なので|けど|けれど|例えば|まず|それから|というか|担当しているのは|担当して|関わって|携わって|行って|私の場合は|と|や|も|は|が|を|に|で|の|から|まで|主に)$",
+        value,
+    ):
+        return True
+    return bool(re.search(r"(?:and|or|but|because|to|which|that|with|for)$", value.casefold()))
+
+
+def _persist_transcript_assessment(
+    message: Mapping[str, Any],
+    assessment: Mapping[str, Any] | None,
+) -> None:
+    if not assessment:
+        return
+    message_id = str(message.get("id") or "")
+    if not message_id:
+        return
+    stored = store.get("messages", message_id)
+    if stored is None:
+        return
+    stored.update(
+        {
+            "rawTranscript": assessment.get("rawTranscript") or stored.get("content") or "",
+            "normalizedTranscript": assessment.get("normalizedTranscript") or "",
+            "correctionStatus": assessment.get("correctionStatus") or "NONE",
+            "correctionCandidates": list(assessment.get("correctionCandidates") or []),
+            "correctionReason": assessment.get("correctionReason"),
+            "updatedAt": utc_now(),
+        }
+    )
+    store.upsert("messages", stored)
+    if isinstance(message, dict):
+        message.update(stored)
+
+
+def _replace_message(
+    messages: Sequence[Mapping[str, Any]],
+    message_id: str,
+    message: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        dict(message) if str(item.get("id") or "") == message_id else dict(item)
+        for item in messages
+    ]
 
 
 def resolve_structured_model_id(knowledge: Mapping[str, Any]) -> str:
@@ -1303,7 +1872,6 @@ def _build_result(
         "answerSummary": None,
         "recordAnswer": result_field.get("recordAnswer"),
         "missingInformation": missing_information or [],
-        "used_tools": [],
         "assistantMessage": dict(assistant_message) if assistant_message else None,
         "interviewState": dict(state),
         "structuredDraft": _build_structured_draft(state, fields),
@@ -1346,8 +1914,12 @@ def _save_assistant_message(
     content: str,
     question: Mapping[str, Any],
 ) -> dict[str, Any]:
+    question_id = str(question.get("questionId") or "")
     message = {
-        "id": f"msg-{uuid4().hex[:12]}",
+        # A question is a durable state transition. A deterministic message
+        # ID makes retries/reconnects idempotent even when the caller did not
+        # supply a client message ID.
+        "id": f"structured-question-msg-{record_id}-{question_id}",
         "tenantId": user.tenant_id,
         "recordId": record_id,
         "content": content,
@@ -1355,7 +1927,7 @@ def _save_assistant_message(
         "isActualUtterance": True,
         "createdAt": utc_now(),
         "updatedAt": utc_now(),
-        "questionId": question.get("questionId"),
+        "questionId": question_id,
         "questionType": "structured",
         "fieldId": question.get("fieldId"),
         "targetType": question.get("targetType"),

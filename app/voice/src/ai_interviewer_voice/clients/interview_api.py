@@ -45,7 +45,7 @@ class InitialReplyClaimResult:
 class VoiceTurnSaveResult:
     turn_id: str
     processing_status: str
-    processing_mode: str = "answer_evaluation"
+    processing_mode: str = "structured_interpretation"
 
 
 @dataclass(frozen=True)
@@ -208,7 +208,7 @@ class InterviewApiClient:
         return VoiceTurnSaveResult(
             turn_id=str(payload["id"]),
             processing_status=str(payload.get("processingStatus") or "pending"),
-            processing_mode=str(payload.get("processingMode") or "answer_evaluation"),
+            processing_mode=str(payload.get("processingMode") or "structured_interpretation"),
         )
 
     async def classify_voice_turn_intent(

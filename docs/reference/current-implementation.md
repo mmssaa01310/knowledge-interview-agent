@@ -39,7 +39,33 @@
 * `services`: 業務ロジック、AI呼び出し、状態更新
 * `repositories`: 保存先へのアクセス
 * `models`: ドメインモデル
-* `agents`: 質問設計、インタビュー、構造化インタビューのAI処理
+* `agents`: 質問設計、構造化インタビューのAI処理
+
+### 2.2.1 現行音声インタビュー経路とコード分類
+
+Transcribe + Pollyを正式な音声入力経路、Structured Interviewを意味解釈と質問進行の正本とする。Nova Sonicは別Runtimeとして既存互換のため保持し、今回の品質改善の対象外である。
+
+```text
+Transcribe
+  → app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py::_on_transcribe_result
+  → app/voice/src/ai_interviewer_voice/transports/webrtc/peer_connection.py::_finalize_user_turn
+  → app/api/src/ai_interviewer_api/routers/internal_voice.py::process_internal_voice_turn
+  → app/api/src/ai_interviewer_api/services/voice_interview.py::_process_structured_voice_turn
+  → app/api/src/ai_interviewer_api/agents/interview_knowledge/service.py::generate_structured_interview_result
+  → app/api/src/ai_interviewer_api/agents/interview_knowledge/coordinator.py::apply_structured_output
+  → app/api/src/ai_interviewer_api/agents/interview_knowledge/provider.py::BedrockResponsesStructuredProvider
+  → app/api/src/ai_interviewer_api/agents/interview_knowledge/service.py::_generate_question_text
+  → provider.generate_question (Question Generator)
+  → Voice API response → app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py::_synthesize_chunks
+  → app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/polly_synthesizer.py (Polly)
+```
+
+分類は次のとおりである。
+
+* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。
+* B（共通）: 認証・Record認可、Store/Repository、VoiceSession/VoiceTurn、Interview Bridge、文書検索、メッセージ・イベントの冪等性。
+* C（旧・削除済み）: 旧Strands Interview Agent、旧Voice回答評価、`dialogue_interpreter`、`interview_answer_processor`、Strands共通Tool、旧Feature Flagと旧専用設定。
+* D（判断不能）: なし。Structured Interviewのみを正式経路とする方針に確定したため、旧経路分岐も削除した。
 
 ### 2.3 現在の保存方式
 
@@ -177,7 +203,7 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 * `PATCH /api/interview-prompt-profiles/{profile_id}`
 * `DELETE /api/interview-prompt-profiles/{profile_id}`
 
-`field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用し、質問項目設計の本番経路ではStrands Agentを使用しない。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
+`field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用する。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
 
 通常の固定項目インタビューと構造化インタビューの次質問生成も、`interview_document_retrieval`の共通検索を利用する。`indexed`または既存Workerの取り込み完了状態にある同一テナント・同一Knowledgeの文書・チャンクだけを質問コンテキストへ渡し、質問には`retrievedSources`を記録する。音声インタビューは`app/api`が生成した質問と出典を再利用する。文書アップロードはBackendで本文抽出・チャンク化を行い、設定された文書Repositoryへ保存する。
 

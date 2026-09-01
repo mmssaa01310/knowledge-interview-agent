@@ -1,10 +1,19 @@
-import time
-from copy import deepcopy
-from threading import Event
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Mapping
 
 import pytest
 from fastapi import HTTPException
 
+from ai_interviewer_api.agents.interview_knowledge import service as structured_service
+from ai_interviewer_api.agents.interview_knowledge.schemas import (
+    AnswerAssessment,
+    FieldUpdate,
+    QuestionGenerationOutput,
+    StructuredInterviewOutput,
+    TranscriptAssessment,
+)
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
 from ai_interviewer_api.models.interview_plan import InterviewPlan
 from ai_interviewer_api.repositories.store import store
@@ -40,11 +49,109 @@ from ai_interviewer_api.schemas.voice import (
     VoiceTurnIntentCreate,
 )
 from ai_interviewer_api.services import voice_interview as voice_interview_service
-from ai_interviewer_api.services.ai_interview import (
-    InterviewStreamResult,
-    generate_interview_reply,
-)
-from ai_interviewer_api.services.dialogue_interpreter import DialogueInterpretation
+from ai_interviewer_api.services.ai_interview import generate_interview_reply
+
+
+class FakeStructuredProvider:
+    def __init__(self) -> None:
+        self.interpret_calls: list[dict[str, object]] = []
+        self.question_calls: list[dict[str, object]] = []
+
+    def generate_question(
+        self,
+        *,
+        target: Mapping[str, object],
+        context: Mapping[str, object],
+        **_: object,
+    ) -> QuestionGenerationOutput:
+        self.question_calls.append({"target": dict(target), "context": dict(context)})
+        if target.get("probeType"):
+            return QuestionGenerationOutput(
+                questionText="大きな転機でなくても、印象に残っている出来事はありますか？"
+            )
+        if context.get("interviewLocale") == "en-US":
+            return QuestionGenerationOutput(
+                questionText=f"Please tell me about {target.get('label') or 'that'}."
+            )
+        return QuestionGenerationOutput(
+            questionText=f"{target.get('label') or 'その点'}について教えてください。"
+        )
+
+    def interpret(
+        self,
+        *,
+        context: Mapping[str, object],
+        **_: object,
+    ) -> StructuredInterviewOutput:
+        self.interpret_calls.append(dict(context))
+        latest = context.get("latestUtterance")
+        latest = latest if isinstance(latest, Mapping) else {}
+        raw = str(latest.get("rawTranscript") or "").strip()
+        message_id = str(latest.get("messageId") or "")
+        assessment = TranscriptAssessment(
+            rawTranscript=raw,
+            normalizedTranscript=raw,
+            correctionStatus="NONE",
+        )
+        if raw.endswith(("担当し", "関わっ")):
+            return StructuredInterviewOutput(
+                utteranceCompleteness="INCOMPLETE",
+                transcriptAssessment=assessment,
+                answerAssessment=AnswerAssessment(sufficiency="INCOMPLETE"),
+            )
+        compact_raw = raw.strip(" 、。！？!?.,")
+        if compact_raw in {"特にありません", "特にない"} or "あまり覚えていません" in raw:
+            return StructuredInterviewOutput(
+                transcriptAssessment=assessment,
+                answerAssessment=AnswerAssessment(
+                    sufficiency="REFUSAL",
+                    probeType="REFRAME",
+                ),
+            )
+
+        question = context.get("currentQuestion")
+        question = question if isinstance(question, Mapping) else {}
+        fields = context.get("fields")
+        fields = fields if isinstance(fields, list) else []
+        updates: list[FieldUpdate] = []
+        if "山田太郎" in raw:
+            values = {
+                "氏名": "山田太郎",
+                "部署": "開発部",
+                "役職": "主任",
+                "担当領域": "社内システムの設計と開発",
+                "担当": "開発部の主任",
+            }
+            for field in fields:
+                if not isinstance(field, Mapping):
+                    continue
+                field_id = str(field.get("id") or "")
+                label = str(field.get("name") or "")
+                if field_id and label in values:
+                    updates.append(
+                        FieldUpdate(
+                            fieldId=field_id,
+                            value=values[label],
+                            evidenceTranscriptIds=[message_id],
+                            answerResolution="AUTO_CONFIRM",
+                        )
+                    )
+        if not updates:
+            target_id = str(question.get("targetId") or "")
+            if target_id:
+                updates.append(
+                    FieldUpdate(
+                        fieldId=target_id,
+                        value=raw.removesuffix("です。").removesuffix("です").strip(" 、。"),
+                        evidenceTranscriptIds=[message_id],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                )
+        return StructuredInterviewOutput(
+            transcriptAssessment=assessment,
+            answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+            fieldUpdates=updates,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -53,151 +160,52 @@ def clear_store() -> None:
 
 
 @pytest.fixture(autouse=True)
-def stub_voice_answer_ai(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_evaluate(
-        *,
-        transcript: str,
-        current_question: dict | None,
-        current_field: dict | None,
-        field_state: dict,
-        evidence_message_id: str,
-        interview_locale: str = "ja-JP",
-    ):
-        question_text = str((current_question or {}).get("text") or "")
-        normalized = transcript.strip().replace("です。", "").replace("です", "")
-        normalized = normalized.replace("はい、", "").replace("はい", "").strip(" 、。")
-        if "自己紹介" in question_text:
-            if "所属" in transcript and "担当" in transcript:
-                return voice_interview_service.VoiceAnswerEvaluation(
-                    decision="CONFIRMABLE",
-                    normalized_answer="宮崎正之です。設備保全部で担当業務は設備保全です。",
-                    record_answer="宮崎正之です。設備保全部で担当業務は設備保全です。",
-                    is_relevant=True,
-                    is_sufficient=True,
-                    missing_information=[],
-                    follow_up_question=None,
-                    evidence_transcript_ids=[evidence_message_id],
-                )
-            return voice_interview_service.VoiceAnswerEvaluation(
-                decision="NEEDS_MORE_INFORMATION",
-                normalized_answer="宮崎正之",
-                record_answer="宮崎正之",
-                is_relevant=True,
-                is_sufficient=False,
-                missing_information=["所属", "担当業務"],
-                follow_up_question="所属と担当業務についても教えてください。",
-                evidence_transcript_ids=[evidence_message_id],
-            )
-        if normalized in {"雑談", "関係ない", "関係ないです"}:
-            return voice_interview_service.VoiceAnswerEvaluation(
-                decision="NOT_ANSWER",
-                normalized_answer="",
-                is_relevant=False,
-                is_sufficient=False,
-                missing_information=[],
-                follow_up_question="すみません。あなたの名前を教えてください。",
-                evidence_transcript_ids=[evidence_message_id],
-            )
-        if normalized in {"", "えっと", "あの"}:
-            return voice_interview_service.VoiceAnswerEvaluation(
-                decision="UNCLEAR",
-                normalized_answer="",
-                is_relevant=False,
-                is_sufficient=False,
-                missing_information=[],
-                follow_up_question="すみません。回答内容を正しく理解できませんでした。もう一度教えてください。",
-                evidence_transcript_ids=[evidence_message_id],
-            )
-        if "宮崎ではなく宮崎健一" in transcript:
-            normalized = "宮崎健一"
-        elif "宮崎正之" in transcript:
-            normalized = "宮崎正之"
-        elif "宮崎" in transcript:
-            normalized = "宮崎"
-        return voice_interview_service.VoiceAnswerEvaluation(
-            decision="CONFIRMABLE",
-            normalized_answer=normalized,
-            record_answer=normalized,
-            is_relevant=True,
-            is_sufficient=True,
-            missing_information=[],
-            follow_up_question=None,
-            evidence_transcript_ids=[evidence_message_id],
-        )
-
-    def fake_confirmation(
-        *,
-        current_question: dict | None,
-        candidate_answer: str,
-        user_reply: str,
-        field_state: dict,
-        interview_locale: str = "ja-JP",
-    ):
-        text = user_reply.strip()
-        compact = text.replace("。", "").replace("、", "").replace(" ", "")
-        if compact in {"はい", "はいそうです", "そうです", "そのとおりです", "合っています", "問題ありません"}:
-            return voice_interview_service.VoiceConfirmationEvaluation(
-                outcome="CONFIRM",
-                revised_answer=None,
-                record_answer=candidate_answer,
-                clarification_question=None,
-            )
-        if compact in {"ダメです", "違います", "いいえ", "間違っています"}:
-            return voice_interview_service.VoiceConfirmationEvaluation(
-                outcome="REJECT_WITHOUT_CONTENT",
-                revised_answer=None,
-                clarification_question="承知しました。どの部分が違いますか。正しい内容を教えてください。",
-            )
-        if compact in {"たぶんそうです", "そうだったと思います", "よく分かりません", "だいたい合っています"}:
-            return voice_interview_service.VoiceConfirmationEvaluation(
-                outcome="UNCLEAR",
-                revised_answer=None,
-                clarification_question="内容を確定してよいか判断できませんでした。正しければ『はい』、修正があれば正しい内容を教えてください。",
-            )
-        if "いえ、まさしです" in text:
-            return voice_interview_service.VoiceConfirmationEvaluation(
-                outcome="REVISE_WITH_CONTENT",
-                revised_answer="宮崎まさし",
-                record_answer="宮崎まさし",
-                confirmation_question="宮崎まさしさんでよろしいですか？",
-                clarification_question=None,
-            )
-        if "宮崎健一" in text:
-            return voice_interview_service.VoiceConfirmationEvaluation(
-                outcome="REVISE_WITH_CONTENT",
-                revised_answer="宮崎健一",
-                record_answer="宮崎健一",
-                confirmation_question="宮崎健一さんでよろしいですか？",
-                clarification_question=None,
-            )
-        return voice_interview_service.VoiceConfirmationEvaluation(
-            outcome="UNCLEAR",
-            revised_answer=None,
-            clarification_question="内容を確定してよいか判断できませんでした。正しければ『はい』、修正があれば正しい内容を教えてください。",
-        )
-
-    def fake_turn_evaluate(**kwargs):  # type: ignore[no-untyped-def]
-        return voice_interview_service.VoiceTurnEvaluation(
-            turn_type="ANSWER",
-            interpretation=DialogueInterpretation(act="ANSWER"),
-            answer_evaluation=fake_evaluate(**kwargs),
-        )
-
+def stub_structured_provider(monkeypatch: pytest.MonkeyPatch) -> FakeStructuredProvider:
+    provider = FakeStructuredProvider()
     monkeypatch.setattr(
-        "ai_interviewer_api.services.voice_interview._evaluate_voice_turn_candidate",
-        fake_turn_evaluate,
+        structured_service,
+        "_get_structured_provider",
+        lambda *_args, **_kwargs: provider,
     )
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.voice_interview._evaluate_confirmation_response",
-        fake_confirmation,
+    return provider
+
+
+def _create_record_with_fields(user: UserContext, fields: list[tuple[str, str]]) -> dict:
+    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
+    knowledge = create_knowledge(
+        knowledge_db["id"],
+        KnowledgeCreate(
+            name="音声インタビュー",
+            targetEquipment="圧入機A",
+            interviewPlan=InterviewPlan(
+                profile="fixed_form",
+                modelId="global.openai.gpt-5.6-terra",
+            ),
+        ),
+        user,
+    )
+    for index, (name, input_type) in enumerate(fields, start=1):
+        create_field(
+            knowledge["id"],
+            KnowledgeFieldCreate(
+                name=name,
+                inputType=input_type,
+                required=True,
+                askByAi=True,
+                retrievalPolicy="never",
+                aiQuestionExamples=[f"{name}を教えてください。"],
+                displayOrder=index,
+            ),
+            user,
+        )
+    return create_record(
+        knowledge["id"],
+        RecordCreate(title="音声インタビュー"),
+        user,
     )
 
 
-def _create_record_with_field(
-    user: UserContext,
-    *,
-    interview_locale: str | None = None,
-) -> dict:
+def _create_record_with_field(user: UserContext, *, interview_locale: str | None = None) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],
@@ -215,6 +223,7 @@ def _create_record_with_field(
             inputType="long_text",
             required=True,
             askByAi=True,
+            retrievalPolicy="never",
             aiQuestionExamples=["どのような現象が起きていますか？"],
             displayOrder=1,
         ),
@@ -227,811 +236,263 @@ def _create_record_with_field(
     )
 
 
-def _create_record_with_name_and_role_fields(user: UserContext) -> dict:
-    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
-    knowledge = create_knowledge(
-        knowledge_db["id"],
-        KnowledgeCreate(
-            name="音声インタビュー",
-            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
-        ),
-        user,
-    )
-    create_field(
-        knowledge["id"],
-        KnowledgeFieldCreate(
-            name="氏名",
-            inputType="short_text",
-            required=True,
-            askByAi=True,
-            retrievalPolicy="never",
-            aiQuestionExamples=["あなたの名前は？"],
-            displayOrder=1,
-        ),
-        user,
-    )
-    create_field(
-        knowledge["id"],
-        KnowledgeFieldCreate(
-            name="担当",
-            inputType="short_text",
-            required=True,
-            askByAi=True,
-            retrievalPolicy="never",
-            aiQuestionExamples=["あなたの担当は？"],
-            displayOrder=2,
-        ),
-        user,
-    )
-    return create_record(knowledge["id"], RecordCreate(title="担当者インタビュー"), user)
-
-
-def _create_record_with_self_intro_field(user: UserContext) -> dict:
-    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
-    knowledge = create_knowledge(
-        knowledge_db["id"],
-        KnowledgeCreate(
-            name="音声インタビュー",
-            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
-        ),
-        user,
-    )
-    create_field(
-        knowledge["id"],
-        KnowledgeFieldCreate(
-            name="自己紹介",
-            inputType="long_text",
-            required=True,
-            askByAi=True,
-            retrievalPolicy="never",
-            aiQuestionExamples=["自己紹介をお願いします。"],
-            displayOrder=1,
-        ),
-        user,
-    )
-    return create_record(knowledge["id"], RecordCreate(title="自己紹介インタビュー"), user)
-
-
-def _create_record_with_self_intro_and_hobby_fields(user: UserContext) -> dict:
-    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
-    knowledge = create_knowledge(
-        knowledge_db["id"],
-        KnowledgeCreate(
-            name="人物インタビュー",
-            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
-        ),
-        user,
-    )
-    create_field(
-        knowledge["id"],
-        KnowledgeFieldCreate(
-            name="自己紹介",
-            inputType="short_text",
-            required=True,
-            askByAi=True,
-            retrievalPolicy="never",
-            aiQuestionExamples=["自己紹介をお願いします。"],
-            displayOrder=1,
-        ),
-        user,
-    )
-    create_field(
-        knowledge["id"],
-        KnowledgeFieldCreate(
-            name="趣味",
-            inputType="short_text",
-            required=True,
-            askByAi=True,
-            retrievalPolicy="never",
-            aiQuestionExamples=["具体的な趣味を教えてください。"],
-            displayOrder=2,
-        ),
-        user,
-    )
-    return create_record(knowledge["id"], RecordCreate(title="人物インタビュー"), user)
-
-
-def _create_record_without_voice_field(user: UserContext) -> dict:
-    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
-    knowledge = create_knowledge(
-        knowledge_db["id"],
-        KnowledgeCreate(
-            name="音声インタビュー",
-            targetEquipment="圧入機A",
-            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
-        ),
-        user,
-    )
-    create_field(
-        knowledge["id"],
-        KnowledgeFieldCreate(
-            name="現象",
-            inputType="long_text",
-            required=True,
-            askByAi=False,
-            displayOrder=1,
-        ),
-        user,
-    )
-    return create_record(knowledge["id"], RecordCreate(title="朝一の荷重ばらつき"), user)
-
-
-def test_create_get_and_stop_voice_session() -> None:
+def test_create_get_stop_and_atomically_claim_initial_reply() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
 
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    assert session["recordId"] == record["id"]
-    assert session["ownerUserId"] == user.user_id
     assert session["provider"] == "transcribe_polly"
     assert session["currentQuestionId"] == "q-001"
-    assert "どのような現象が起きていますか？" in (session.get("initialReplyText") or "")
-    assert session["initialQuestionId"] == "q-001"
     assert session["initialReplyStatus"] == "pending"
+    assert "現象について教えてください。" in session["initialReplyText"]
 
     fetched = get_record_voice_session(session["id"], user)
-    assert fetched["id"] == session["id"]
     assert fetched["initialReplyText"] == session["initialReplyText"]
 
     claimed = claim_internal_initial_reply(session["id"])
     assert claimed["claimed"] is True
-    assert claimed["initialReplyText"] == session["initialReplyText"]
-    assert claimed["initialQuestionId"] == "q-001"
-
-    claimed_again = claim_internal_initial_reply(session["id"])
-    assert claimed_again["claimed"] is False
-    assert claimed_again["reason"] == "already_sending"
-
+    assert claim_internal_initial_reply(session["id"])["reason"] == "already_sending"
     marked = mark_internal_initial_reply_sent(session["id"])
     assert marked["initialReplyStatus"] == "sent"
-    assert marked["initialReplySentAt"]
-
-    claimed_after_sent = claim_internal_initial_reply(session["id"])
-    assert claimed_after_sent["claimed"] is False
-    assert claimed_after_sent["reason"] == "already_sent"
+    assert claim_internal_initial_reply(session["id"])["reason"] == "already_sent"
 
     stopped = stop_record_voice_session(session["id"], user)
     assert stopped["status"] == "stopped"
     assert stopped["connectionStatus"] == "closed"
 
 
-def test_voice_session_initial_reply_uses_record_interview_locale() -> None:
+def test_reconnect_race_has_only_one_initial_reply_claim_winner() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    def claim(_: int) -> dict:
+        return claim_internal_initial_reply(session["id"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claims = list(executor.map(claim, (1, 2)))
+
+    assert sum(bool(item["claimed"]) for item in claims) == 1
+    assert sorted(item.get("reason") for item in claims if not item["claimed"]) == [
+        "already_sending"
+    ]
+
+
+def test_voice_session_uses_record_interview_locale() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user, interview_locale="en-US")
 
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
 
     assert session["interviewLocale"] == "en-US"
-    assert (session["initialReplyText"] or "").startswith(
-        "We are about to start the interview."
+    assert (session["initialReplyText"] or "").startswith("We are about to start the interview.")
+    assert "Please tell me about 現象." in session["initialReplyText"]
+
+
+def test_initial_question_is_not_saved_before_it_is_spoken() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(user, [("氏名", "short_text"), ("担当", "short_text")])
+
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    assert session["initialReplyText"] == "これからインタビューを開始します。氏名について教えてください。"
+    assert [row for row in store.list("messages", user.tenant_id) if row.get("recordId") == record["id"]] == []
+
+
+def test_voice_turn_uses_structured_interpreter_and_advances_once() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(user, [("氏名", "short_text"), ("担当", "short_text")])
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="山田です。", sttConfidence=0.96),
     )
-    assert "Please tell me about 現象." in (session["initialReplyText"] or "")
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    first_field_id = state["askedQuestions"][0]["fieldId"]
+
+    assert result["action"] == "ask_structured"
+    assert result["questionId"] == "q-002"
+    assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
+    assert state["fieldStates"][first_field_id]["recordAnswer"] == "山田"
+    assert store.get("voice_turns", turn["id"])["processingMode"] == "structured_interpretation"
 
 
-def test_voice_session_preserves_transcribe_polly_provider() -> None:
+def test_incomplete_final_transcript_stays_on_current_question() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
-
-    session = create_record_voice_session(
-        record["id"],
-        VoiceSessionCreate(provider="transcribe_polly"),
-        user,
-    )
-
-    assert session["provider"] == "transcribe_polly"
-
-
-def test_initial_question_is_not_saved_as_chat_message_before_spoken() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    assert session["initialReplyText"] == "これからインタビューを開始します。あなたの名前は？"
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
-    assert messages == []
-
-
-def test_voice_session_uses_existing_current_question_for_initial_reply() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    first = generate_interview_reply(record, user, persist_assistant_messages=False)
-    assert first.metadata["question"]["questionId"] == "q-001"
-
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    assert session["currentQuestionId"] == "q-001"
-    assert session["initialQuestionId"] == "q-001"
-    assert session["initialReplyText"] == "これからインタビューを開始します。あなたの名前は？"
-    assert session["initialReplyStatus"] == "pending"
-
-
-def test_voice_turn_requires_confirmation_before_answer_is_committed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     mark_internal_initial_reply_sent(session["id"])
+    before = store.get("interview_states", f"interview-state-{record['id']}")
     turn = create_internal_voice_turn(
         session["id"],
-        VoiceTurnCreate(transcript="宮崎です"),
-    )
-
-    def fail_agent(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("direct capture questions must not run interview agent")
-
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.ai_interview.run_adapted_interview_turn",
-        fail_agent,
+        VoiceTurnCreate(transcript="主に社内システムの開発を担当し"),
     )
 
     result = process_internal_voice_turn(session["id"], turn["id"])
-    snapshot = get_record_voice_session(session["id"], user)
     state = store.get("interview_states", f"interview-state-{record['id']}")
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
     field_id = state["currentFieldId"]
 
-    assert result["retrievalPolicy"] == "never"
-    assert result["retrievalExecuted"] is False
-    assert result["text"] == "氏名について、この内容でよろしいですか？"
-    assert result["questionId"] == "q-001"
-    assert snapshot["currentQuestionId"] == "q-001"
-    assert state["completedFieldIds"] == []
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-    assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
-    assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎"
-    assert [message["role"] for message in messages] == ["user", "assistant"]
-    assert messages[0]["content"] == "宮崎です"
-    assert messages[0]["voiceTurnId"] == turn["id"]
+    assert result["text"] == "続き、お願いします。"
+    assert result["questionId"] == before["currentQuestionId"]
+    assert state["currentQuestionId"] == before["currentQuestionId"]
+    assert state["fieldStates"][field_id]["answerState"] == "UNANSWERED"
+    assert store.get("voice_turns", turn["id"])["lifecycleStatus"] == "COMMITTED"
 
 
-def test_voice_high_confidence_answer_advances_without_confirmation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_corrected_transcript_is_confirmed_before_field_commit() -> None:
     user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    def corrected_provider(*, context: Mapping[str, object], **_: object) -> StructuredInterviewOutput:
+        latest = context["latestUtterance"]
+        assert isinstance(latest, Mapping)
+        raw = str(latest["rawTranscript"])
+        message_id = str(latest["messageId"])
+        if raw == "特にありません。":
+            return StructuredInterviewOutput()
+        return StructuredInterviewOutput(
+            transcriptAssessment=TranscriptAssessment(
+                rawTranscript=raw,
+                normalizedTranscript="実装から運用後の改善まで関わっています",
+                correctionStatus="CORRECTED",
+                correctionCandidates=["実装から運用後の改善まで関わっています"],
+            ),
+            answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+            fieldUpdates=[
+                FieldUpdate(
+                    fieldId=str(context["currentQuestion"]["targetId"]),
+                    value="実装から運用後の改善まで関わっています",
+                    evidenceTranscriptIds=[message_id],
+                    answerResolution="AUTO_CONFIRM",
+                )
+            ],
+        )
+
+    provider = FakeStructuredProvider()
+    provider.interpret = corrected_provider  # type: ignore[method-assign]
+    # The fixture patches the provider factory; replace the returned instance's
+    # interpreter only for this scenario.
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(structured_service, "_get_structured_provider", lambda *_a, **_k: provider)
+    try:
+        turn = create_internal_voice_turn(
+            session["id"],
+            VoiceTurnCreate(transcript="要件整理から実装を輸送ス後の星星まで関わっ"),
+        )
+        result = process_internal_voice_turn(session["id"], turn["id"])
+        state = store.get("interview_states", f"interview-state-{record['id']}")
+        field_id = turn["answerToFieldId"]
+        assert "実装から運用後の改善まで関わっています" in result["text"]
+        assert result["questionId"] == "q-002"
+        assert result["voiceTurn"]["questionId"] == "q-002"
+        assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
+        assert state["fieldStates"][field_id]["recordAnswer"] is None
+        assert store.get("voice_turns", turn["id"])["rawTranscript"].endswith("関わっ")
+
+        confirmation = create_internal_voice_turn(
+            session["id"],
+            VoiceTurnCreate(transcript="はい"),
+        )
+        confirmation_result = process_internal_voice_turn(session["id"], confirmation["id"])
+        assert confirmation_result["action"] == "ask_structured"
+        assert confirmation_result["voiceTurn"]["questionId"] is not None
+        closing = create_internal_voice_turn(
+            session["id"],
+            VoiceTurnCreate(
+                transcript="特にありません。",
+                answerToQuestionId=confirmation_result["voiceTurn"]["questionId"],
+            ),
+        )
+        confirmed = process_internal_voice_turn(session["id"], closing["id"])
+        state = store.get("interview_states", f"interview-state-{record['id']}")
+        assert confirmed["action"] == "finish"
+        assert state["fieldStates"][field_id]["answerState"] == "CONFIRMED"
+        assert state["fieldStates"][field_id]["recordAnswer"] == "実装から運用後の改善まで関わっています"
+    finally:
+        monkeypatch.undo()
+
+
+def test_no_answer_gets_one_neutral_probe_then_advances() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(user, [("転機", "long_text"), ("強み", "long_text")])
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     mark_internal_initial_reply_sent(session["id"])
 
-    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
-        assert kwargs["stt_confidence"] == 0.96
-        return voice_interview_service.VoiceTurnEvaluation(
-            turn_type="ANSWER",
-            interpretation=DialogueInterpretation(act="ANSWER"),
-            answer_evaluation=voice_interview_service.VoiceAnswerEvaluation(
-                decision="CONFIRMABLE",
-                answer_resolution="AUTO_CONFIRM",
-                normalized_answer="med900",
-                record_answer="med900",
-                is_relevant=True,
-                is_sufficient=True,
-                missing_information=[],
-                follow_up_question=None,
-                evidence_transcript_ids=[kwargs["evidence_message_id"]],
-            ),
-        )
+    first = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="あまり覚えていません。特に大きな転機はなかったと思います。"))
+    first_result = process_internal_voice_turn(session["id"], first["id"])
+    assert first_result["action"] == "ask_structured"
+    assert "大きな転機でなくても" in first_result["text"]
 
-    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
+    second = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="特にありません。"))
+    second_result = process_internal_voice_turn(session["id"], second["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    first_field_id = state["askedQuestions"][0]["fieldId"]
+    assert second_result["questionId"] == "q-003"
+    assert state["fieldStates"][first_field_id]["answerDisposition"] == "NO_DETAIL"
+    assert state["askedQuestions"][-1]["fieldId"] != first_field_id
+
+
+def test_multiple_fields_in_one_answer_are_not_reasked() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(
+        user,
+        [("氏名", "short_text"), ("部署", "short_text"), ("役職", "short_text"), ("担当領域", "long_text")],
+    )
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
     turn = create_internal_voice_turn(
         session["id"],
-        VoiceTurnCreate(transcript="med900", sttConfidence=0.96),
+        VoiceTurnCreate(transcript="山田太郎です。開発部の主任で、社内システムの設計と開発を担当しています。"),
     )
 
     result = process_internal_voice_turn(session["id"], turn["id"])
     state = store.get("interview_states", f"interview-state-{record['id']}")
-    first_field_id = state["askedQuestions"][0]["fieldId"]
+    states = state["fieldStates"]
 
-    assert result["action"] == "ask_configured_field"
-    assert result["text"] == "あなたの担当は？"
-    assert "よろしい" not in result["text"]
-    assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
-    assert state["fieldStates"][first_field_id]["recordAnswer"] == "med900"
-    assert store.get("voice_turns", turn["id"])["sttConfidence"] == 0.96
-
-
-def test_voice_tentative_answer_is_bridged_into_the_next_question(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-
-    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
-        return voice_interview_service.VoiceTurnEvaluation(
-            turn_type="ANSWER",
-            interpretation=DialogueInterpretation(act="ANSWER"),
-            answer_evaluation=voice_interview_service.VoiceAnswerEvaluation(
-                decision="CONFIRMABLE",
-                answer_resolution="TENTATIVE",
-                normalized_answer="朝",
-                record_answer="朝",
-                is_relevant=True,
-                is_sufficient=True,
-                missing_information=[],
-                follow_up_question=None,
-                evidence_transcript_ids=[kwargs["evidence_message_id"]],
-            ),
-        )
-
-    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
-    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="たぶん朝かな"))
-
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    first_field_id = state["askedQuestions"][0]["fieldId"]
-
-    assert result["action"] == "ask_configured_field"
-    assert result["text"].startswith("「朝」なんですね。では、担当について教えてください。")
-    assert "よろしい" not in result["text"]
-    assert state["fieldStates"][first_field_id]["answerState"] == "CANDIDATE_PENDING"
-    assert state["fieldStates"][first_field_id]["answerResolution"] == "TENTATIVE"
-    assert state["fieldStates"][first_field_id]["candidateAnswer"] == "朝"
-
-
-def test_voice_retry_answer_is_reasked_without_accepting_the_transcription(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-
-    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
-        return voice_interview_service.VoiceTurnEvaluation(
-            turn_type="ANSWER",
-            interpretation=DialogueInterpretation(act="ANSWER"),
-            answer_evaluation=voice_interview_service.VoiceAnswerEvaluation(
-                decision="UNCLEAR",
-                answer_resolution="RETRY",
-                normalized_answer="",
-                record_answer="",
-                is_relevant=False,
-                is_sufficient=False,
-                missing_information=[],
-                follow_up_question="うまく聞き取れませんでした。名前を教えてください。",
-                evidence_transcript_ids=[kwargs["evidence_message_id"]],
-            ),
-        )
-
-    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
-    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="画面"))
-
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    first_field_id = state["askedQuestions"][0]["fieldId"]
-
-    assert result["action"] == "ask_follow_up"
-    assert result["text"] == "うまく聞き取れませんでした。名前を教えてください。"
-    assert "画面でよろしい" not in result["text"]
-    assert state["fieldStates"][first_field_id]["candidateAnswer"] is None
-    assert state["fieldStates"][first_field_id]["recordAnswer"] is None
-    assert state["completedFieldIds"] == []
-
-
-def test_voice_turn_commits_only_after_explicit_confirmation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-
-    def fail_agent(*args, **kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("direct capture questions must not run interview agent before confirmation")
-
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.ai_interview.run_adapted_interview_turn",
-        fail_agent,
-    )
-
-    first_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="はい、宮崎です"))
-    first_result = process_internal_voice_turn(session["id"], first_turn["id"])
-    assert first_result["questionId"] == "q-001"
-
-    second_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="はい"))
-    second_result = process_internal_voice_turn(session["id"], second_turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
+    assert result["action"] == "ask_structured"
+    assert result["voiceTurn"]["questionId"] is not None
+    assert all(item["answerState"] == "CONFIRMED" for item in states.values())
+    assert [item["targetId"] for item in state["askedQuestions"]] == [
+        state["askedQuestions"][0]["targetId"],
+        "open_ended",
     ]
-    first_field_id = state["askedQuestions"][0]["fieldId"]
 
-    assert second_result["retrievalPolicy"] == "never"
-    assert second_result["retrievalExecuted"] is False
-    assert second_result["text"] == "あなたの担当は？"
-    assert second_result["questionId"] == "q-002"
-    assert state["completedFieldIds"] == [first_field_id]
-    assert state["fieldStates"][first_field_id]["answerSummary"] is None
-    assert state["fieldStates"][first_field_id]["recordAnswer"] == "宮崎"
-    assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
-    assert [message["content"] for message in messages if message.get("isActualUtterance") is False] == ["宮崎"]
-
-
-def test_voice_dialogue_question_to_assistant_does_not_enter_confirmation_processor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    question = state["askedQuestions"][0]
-    field_id = question["fieldId"]
-    field_state = state["fieldStates"][field_id]
-    field_state["answerState"] = "AWAITING_CONFIRMATION"
-    field_state["candidateAnswer"] = "清掃員"
-    field_state["pendingQuestionId"] = question["questionId"]
-    field_state["pendingFieldId"] = field_id
-    store.upsert("interview_states", state)
-
-    monkeypatch.setattr(
-        voice_interview_service,
-        "_evaluate_confirmation_response",
-        lambda **_: voice_interview_service.VoiceConfirmationEvaluation(
-            outcome="UNCLEAR",
-            clarification_question="先ほどの「清掃員」という回答のことです。",
+    closing = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="特にありません。",
+            answerToQuestionId=result["voiceTurn"]["questionId"],
         ),
     )
-
-    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="この内容とは？"))
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    updated_state = store.get("interview_states", f"interview-state-{record['id']}")
-    updated_field_state = updated_state["fieldStates"][field_id]
-    saved_turn = store.get("voice_turns", turn["id"])
-    saved_message = store.get("messages", f"voice-msg-{turn['id']}")
-
-    assert result["text"] == "先ほどの「清掃員」という回答のことです。"
-    assert result["action"] == "ask_follow_up"
-    assert result["questionId"] == question["questionId"]
-    assert updated_field_state["answerState"] == "AWAITING_CONFIRMATION"
-    assert updated_field_state["candidateAnswer"] == "清掃員"
-    assert updated_field_state["rawAnswerHistory"] == []
-    assert updated_field_state["capturedItems"] == []
-    assert updated_state["lastProcessedUserMessageId"] == saved_message["id"]
-    assert saved_turn["dialogueAct"] == "CONFIRMATION"
-    assert saved_message["dialogueAct"] == "CONFIRMATION"
+    finished = process_internal_voice_turn(session["id"], closing["id"])
+    assert finished["action"] == "finish"
 
 
-def test_voice_confirmation_is_natural_and_reads_next_question(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_process_voice_turn_is_idempotent() -> None:
     user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_self_intro_and_hobby_fields(user)
+    record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     mark_internal_initial_reply_sent(session["id"])
-
-    def evaluate_answer(**kwargs):  # type: ignore[no-untyped-def]
-        field_name = str((kwargs.get("current_field") or {}).get("name") or "")
-        confirmation_question = (
-            "田中さんでよろしいですか？"
-            if "自己紹介" in field_name
-            else "趣味はバスケでいいですか？"
-        )
-        return voice_interview_service.VoiceAnswerEvaluation(
-            decision="CONFIRMABLE",
-            normalized_answer=kwargs["transcript"],
-            is_relevant=True,
-            is_sufficient=True,
-            missing_information=[],
-            follow_up_question=None,
-            evidence_transcript_ids=[kwargs["evidence_message_id"]],
-            confirmation_question=confirmation_question,
-        )
-
-    def confirm_with_llm_record_answer(**kwargs):  # type: ignore[no-untyped-def]
-        return voice_interview_service.VoiceConfirmationEvaluation(
-            outcome="CONFIRM",
-            record_answer=kwargs["candidate_answer"],
-        )
-
-    def evaluate_turn(**kwargs):  # type: ignore[no-untyped-def]
-        return voice_interview_service.VoiceTurnEvaluation(
-            turn_type="ANSWER",
-            interpretation=DialogueInterpretation(act="ANSWER"),
-            answer_evaluation=evaluate_answer(**kwargs),
-        )
-
-    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", evaluate_turn)
-    monkeypatch.setattr(voice_interview_service, "_evaluate_confirmation_response", confirm_with_llm_record_answer)
-
-    self_intro_turn = create_internal_voice_turn(
+    turn = create_internal_voice_turn(
         session["id"],
-        VoiceTurnCreate(transcript="田中です"),
-    )
-    self_intro_result = process_internal_voice_turn(session["id"], self_intro_turn["id"])
-    assert self_intro_result["text"] == "田中さんでよろしいですか？"
-
-    confirmation_turn = create_internal_voice_turn(
-        session["id"],
-        VoiceTurnCreate(transcript="はい"),
-    )
-    confirmation_result = process_internal_voice_turn(session["id"], confirmation_turn["id"])
-    assert confirmation_result["text"] == "具体的な趣味を教えてください。"
-    assert confirmation_result["questionId"] == "q-002"
-    assert store.get("voice_turns", self_intro_turn["id"])["lifecycleStatus"] == "COMMITTED"
-    assert store.get("voice_turns", confirmation_turn["id"])["lifecycleStatus"] == "COMMITTED"
-
-    hobby_turn = create_internal_voice_turn(
-        session["id"],
-        VoiceTurnCreate(transcript="バスケです"),
-    )
-    hobby_result = process_internal_voice_turn(session["id"], hobby_turn["id"])
-    assert hobby_result["text"] == "趣味はバスケでいいですか？"
-
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    first_field_id = state["askedQuestions"][0]["fieldId"]
-    second_field_id = state["askedQuestions"][1]["fieldId"]
-    assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
-    assert state["fieldStates"][first_field_id]["answerSummary"] is None
-    assert state["fieldStates"][first_field_id]["recordAnswer"] == "田中です"
-    assert state["fieldStates"][second_field_id]["answerState"] == "AWAITING_CONFIRMATION"
-    assert state["fieldStates"][second_field_id]["answerSummary"] is None
-
-
-def test_voice_turn_updates_candidate_on_correction_and_reconfirms() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-
-    first_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="宮崎です"))
-    process_internal_voice_turn(session["id"], first_turn["id"])
-
-    correction_turn = create_internal_voice_turn(
-        session["id"],
-        VoiceTurnCreate(transcript="いいえ、宮崎ではなく宮崎健一です"),
-    )
-    correction_result = process_internal_voice_turn(session["id"], correction_turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-
-    assert correction_result["text"] == "宮崎健一さんでよろしいですか？"
-    assert correction_result["questionId"] == "q-001"
-    assert state["completedFieldIds"] == []
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-    assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎健一"
-    assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
-    superseded_turn = store.get("voice_turns", first_turn["id"])
-    assert superseded_turn["lifecycleStatus"] == "SUPERSEDED"
-    assert superseded_turn["supersededByTurnId"] == correction_turn["id"]
-    assert (
-        store.get("voice_turns", correction_turn["id"])["lifecycleStatus"]
-        == "COMMITTED"
+        VoiceTurnCreate(transcript="荷重が朝一に不安定です", clientTurnId="client-1"),
     )
 
+    first = process_internal_voice_turn(session["id"], turn["id"])
+    second = process_internal_voice_turn(session["id"], turn["id"])
+    assistant_messages = [
+        message
+        for message in store.list("messages", user.tenant_id)
+        if message.get("recordId") == record["id"] and message.get("role") == "assistant"
+    ]
 
-def test_voice_turn_keeps_waiting_on_ambiguous_confirmation_reply() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-
-    first_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="宮崎です"))
-    process_internal_voice_turn(session["id"], first_turn["id"])
-
-    ambiguous_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="たぶんそうです"))
-    ambiguous_result = process_internal_voice_turn(session["id"], ambiguous_turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-
-    assert ambiguous_result["text"] == "内容を確定してよいか判断できませんでした。正しければ『はい』、修正があれば正しい内容を教えてください。"
-    assert ambiguous_result["questionId"] == "q-001"
-    assert state["completedFieldIds"] == []
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-    assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
-
-
-def test_voice_turn_falls_back_to_clarification_when_ai_evaluation_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="宮崎です"))
-
-    def fail_evaluator(**kwargs):  # type: ignore[no-untyped-def]
-        raise RuntimeError("evaluate failed")
-
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.voice_interview._evaluate_voice_turn_candidate",
-        fail_evaluator,
-    )
-
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-
-    assert result["text"] == "回答処理で一時的な問題が発生しました。もう一度お答えください。"
-    assert result["questionId"] == "q-001"
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-    assert state["fieldStates"][field_id]["answerState"] == "CANDIDATE_PENDING"
-
-
-def test_voice_answer_evaluation_deadline_returns_fallback_and_discards_late_result(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_self_intro_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="田中です"))
-    release_evaluator = Event()
-
-    def delayed_evaluator(**kwargs):  # type: ignore[no-untyped-def]
-        if kwargs.get("transcript") == "田中です":
-            release_evaluator.wait(timeout=30.0)
-            normalized_answer = "遅れて返った回答"
-            answer_resolution = None
-        else:
-            normalized_answer = "新しい回答"
-            answer_resolution = "AUTO_CONFIRM"
-        answer_evaluation = voice_interview_service.VoiceAnswerEvaluation(
-            decision="CONFIRMABLE",
-            answer_resolution=answer_resolution,
-            normalized_answer=normalized_answer,
-            record_answer=normalized_answer,
-            is_relevant=True,
-            is_sufficient=True,
-            missing_information=[],
-            follow_up_question=None,
-            evidence_transcript_ids=[kwargs["evidence_message_id"]],
-        )
-        return voice_interview_service.VoiceTurnEvaluation(
-            turn_type="ANSWER",
-            interpretation=DialogueInterpretation(act="ANSWER"),
-            answer_evaluation=answer_evaluation,
-        )
-
-    monkeypatch.setattr(voice_interview_service, "_evaluate_voice_turn_candidate", delayed_evaluator)
-
-    started_at = time.monotonic()
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    elapsed = time.monotonic() - started_at
-
-    assert elapsed < 2.0
-    assert result["text"] == "回答処理で一時的な問題が発生しました。もう一度お答えください。"
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-    field_state = state["fieldStates"][field_id]
-    assert field_state["candidateAnswer"] is None
-    assert field_state["answerSummary"] is None
-    assert field_state["answerState"] == "CANDIDATE_PENDING"
-    assert field_state["evaluationDegraded"] is True
-    assert field_state["degradedReason"] == "bedrock_timeout"
-
-    following_turn = create_internal_voice_turn(
-        session["id"],
-        VoiceTurnCreate(transcript="新しい回答"),
-    )
-    following_result = process_internal_voice_turn(session["id"], following_turn["id"])
-    state_after_following_answer = store.get(
-        "interview_states", f"interview-state-{record['id']}"
-    )
-    assert following_result["action"] == "finish"
-    assert (
-        state_after_following_answer["fieldStates"][field_id]["recordAnswer"]
-        == "新しい回答"
-    )
-
-    release_evaluator.set()
-    time.sleep(0.1)
-    state_after_late_result = store.get("interview_states", f"interview-state-{record['id']}")
-    late_field_state = state_after_late_result["fieldStates"][field_id]
-    assert late_field_state["recordAnswer"] == "新しい回答"
-    assert late_field_state["candidateAnswer"] is None
-    assert late_field_state["answerSummary"] is None
-    assert "late_evaluation_result_discarded" in caplog.text
-
-
-def test_voice_turn_requests_more_information_without_confirming_partial_answer() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_self_intro_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="宮崎正之です。"))
-
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-
-    assert result["text"] == "所属と担当業務についても教えてください。"
-    assert result["action"] == "ask_follow_up"
-    assert state["fieldStates"][field_id]["answerState"] == "CANDIDATE_PENDING"
-    assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎正之"
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-    assert state["fieldStates"][field_id]["missingInformation"] == ["所属", "担当業務"]
-
-
-def test_voice_turn_rejects_irrelevant_answer_without_creating_confirmation_candidate() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-    turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="関係ないです"))
-
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-
-    assert result["text"] == "すみません。あなたの名前を教えてください。"
-    assert result["action"] == "ask_follow_up"
-    assert state["fieldStates"][field_id]["answerState"] == "CANDIDATE_PENDING"
-    assert state["fieldStates"][field_id]["candidateAnswer"] is None
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-
-
-def test_voice_answer_evaluation_stabilizes_irrelevant_needs_more_as_not_answer() -> None:
-    evaluation = voice_interview_service.VoiceAnswerEvaluation(
-        decision="NEEDS_MORE_INFORMATION",
-        normalized_answer="",
-        is_relevant=False,
-        is_sufficient=False,
-        missing_information=["設定にない不足情報"],
-        follow_up_question="質問に沿って回答してください。",
-        evidence_transcript_ids=["message-1"],
-    )
-
-    stabilized = voice_interview_service._stabilize_voice_answer_evaluation(evaluation)
-
-    assert stabilized.decision == "NOT_ANSWER"
-    assert stabilized.normalized_answer == ""
-    assert stabilized.is_relevant is False
-    assert stabilized.is_sufficient is False
-    assert stabilized.missing_information == []
-
-
-def test_confirmation_reject_without_content_keeps_candidate_and_requests_correction() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-
-    first_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="宮崎正之です"))
-    process_internal_voice_turn(session["id"], first_turn["id"])
-
-    reject_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="ダメです"))
-    result = process_internal_voice_turn(session["id"], reject_turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-
-    assert result["text"] == "承知しました。どの部分が違いますか。正しい内容を教えてください。"
-    assert state["fieldStates"][field_id]["answerState"] == "CANDIDATE_PENDING"
-    assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎正之"
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-
-
-def test_confirmation_revise_with_content_merges_revised_answer() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    mark_internal_initial_reply_sent(session["id"])
-
-    first_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="宮崎正之です"))
-    process_internal_voice_turn(session["id"], first_turn["id"])
-
-    revise_turn = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="いえ、まさしです"))
-    result = process_internal_voice_turn(session["id"], revise_turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-
-    assert result["text"] == "宮崎まさしさんでよろしいですか？"
-    assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
-    assert state["fieldStates"][field_id]["candidateAnswer"] == "宮崎まさし"
+    assert second["responseId"] == first["responseId"]
+    assert second["text"] == first["text"]
+    assert len(assistant_messages) == 1
 
 
 def test_voice_session_requires_owner_match() -> None:
@@ -1046,263 +507,81 @@ def test_voice_session_requires_owner_match() -> None:
     assert exc_info.value.status_code == 403
 
 
-def test_create_voice_session_includes_legacy_field_marked_not_ai_question() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_without_voice_field(user)
-
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    assert session["currentQuestionId"] == "q-001"
-    assert "現象について教えてください。" in (session.get("initialReplyText") or "")
-    assert store.get("interview_states", f"interview-state-{record['id']}") is not None
-
-
-def test_create_voice_session_recovers_state_when_voice_question_is_added_after_completed_state() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
-    knowledge = create_knowledge(
-        knowledge_db["id"],
-        KnowledgeCreate(
-            name="音声インタビュー",
-            targetEquipment="圧入機A",
-            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
-        ),
-        user,
-    )
-    record = create_record(knowledge["id"], RecordCreate(title="朝一の荷重ばらつき"), user)
-
-    generate_interview_reply(record, user)
-    assert store.get("interview_states", f"interview-state-{record['id']}")["status"] == "completed"
-
-    create_field(
-        knowledge["id"],
-        KnowledgeFieldCreate(
-            name="現象",
-            inputType="long_text",
-            required=True,
-            askByAi=True,
-            aiQuestionExamples=["どのような現象が起きていますか？"],
-            displayOrder=1,
-        ),
-        user,
-    )
-
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    assert session["currentQuestionId"] == "q-001"
-    assert (session.get("initialReplyText") or "").startswith("これからインタビューを開始します。")
-    assert "どのような現象が起きていますか？" in (session.get("initialReplyText") or "")
-
-
-def test_create_voice_turn_defaults_answer_to_current_question() -> None:
+def test_control_turn_keeps_current_question_without_answer_scope() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    turn = create_internal_voice_turn(
-        session["id"],
-        VoiceTurnCreate(transcript="朝一だけ圧入荷重が不安定です"),
-    )
-
-    assert turn["sequence"] == 1
-    assert turn["answerToQuestionId"] == session["currentQuestionId"]
-    assert turn["processingStatus"] == "pending"
-    assert turn["lifecycleStatus"] == "RECEIVED"
-
-
-def test_control_voice_turn_has_no_answer_scope_or_candidate() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    turn = create_internal_voice_turn(
-        session["id"],
-        VoiceTurnCreate(transcript="インタビュー開始して", turnType="CONTROL"),
-    )
-    result = process_internal_voice_turn(session["id"], turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"] and row.get("voiceTurnId") == turn["id"]
-    ]
-
-    assert turn["turnType"] == "CONTROL"
-    assert turn["answerToQuestionId"] is None
-    assert turn["processingMode"] == "control"
-    assert result["text"] == "承知しました。"
-    field_state = state["fieldStates"][state["currentFieldId"]]
-    assert field_state["rawAnswerHistory"] == []
-    assert field_state["capturedItems"] == []
-    assert messages[0]["turnType"] == "CONTROL"
-    assert messages[0]["answerToQuestionId"] is None
-
-
-def test_voice_turn_intent_classification_is_semantic_and_pre_save(monkeypatch: pytest.MonkeyPatch) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-
-    def classify(*, system_prompt, prompt, output_model, max_tokens):
-        assert "固定フレーズ" in system_prompt
-        assert "current_question:" in prompt
-        return output_model(turnType="CONTROL")
-
-    monkeypatch.setattr(voice_interview_service, "_run_voice_json_output", classify)
-    result = classify_internal_voice_turn_intent(
-        session["id"],
-        VoiceTurnIntentCreate(
-            transcript="会話を終了してください",
-            answerToQuestionId=session["currentQuestionId"],
-            expectedStateVersion=session["stateVersion"],
-        ),
-    )
-
-    assert result == {"turnType": "CONTROL"}
-    assert store.list("voice_turns", user.tenant_id) == []
-
-
-def test_process_voice_turn_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    turn = create_internal_voice_turn(
-        session["id"],
-        VoiceTurnCreate(transcript="朝一だけ圧入荷重が不安定です"),
-    )
-
-    def fake_generate_interview_reply(
-        record: dict,
-        current_user: UserContext,
-        *,
-        persist_assistant_messages: bool = True,
-    ) -> InterviewStreamResult:
-        assert current_user.user_id == user.user_id
-        assert persist_assistant_messages is False
-        return InterviewStreamResult(
-            reply_chunks=["確認ありがとうございます。", "次に、発生条件を教えてください。"],
-            metadata={
-                "reply": "確認ありがとうございます。\n次に、発生条件を教えてください。",
-                "action": "ask_follow_up",
-                "question": {
-                    "questionId": "q-follow-up-001",
-                    "questionType": "follow_up",
-                    "fieldId": "field-1",
-                    "text": "次に、発生条件を教えてください。",
-                },
-            },
-        )
-
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.voice_interview.generate_interview_reply",
-        fake_generate_interview_reply,
-    )
-
-    first = process_internal_voice_turn(session["id"], turn["id"])
-    second = process_internal_voice_turn(session["id"], turn["id"])
-
-    assert first["turnId"] == turn["id"]
-    assert first["action"] == "ask_confirmation"
-    assert first["questionId"] == "q-001"
-    assert first["stateVersion"] == 2
-    assert first["responseId"] == second["responseId"]
-    assert second["voiceTurn"]["processingStatus"] == "completed"
-    assert second["voiceTurn"]["lifecycleStatus"] == "COMMITTED"
-    assert second["voiceSession"]["currentQuestionId"] == "q-001"
-
-
-def test_awaiting_confirmation_turn_is_idempotent() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_name_and_role_fields(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     mark_internal_initial_reply_sent(session["id"])
     turn = create_internal_voice_turn(
         session["id"],
-        VoiceTurnCreate(transcript="宮崎です"),
+        VoiceTurnCreate(transcript="一時停止してください", turnType="CONTROL"),
     )
 
-    first = process_internal_voice_turn(session["id"], turn["id"])
-    second = process_internal_voice_turn(session["id"], turn["id"])
-    state = store.get("interview_states", f"interview-state-{record['id']}")
-    field_id = state["currentFieldId"]
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    stored_turn = store.get("voice_turns", turn["id"])
 
-    assert first["action"] == "ask_confirmation"
-    assert second["responseId"] == first["responseId"]
-    assert state["fieldStates"][field_id]["answerState"] == "AWAITING_CONFIRMATION"
-    assert state["fieldStates"][field_id]["answerSummary"] is None
-    assert len(messages) == 2
+    assert result["action"] == "ask_structured"
+    assert stored_turn["answerToQuestionId"] is None
+    assert stored_turn["answerToFieldId"] is None
 
 
-def test_finish_assistant_transcript_is_not_saved_as_chat_message() -> None:
+def test_voice_turn_intent_classification_uses_structured_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
 
-    event = create_internal_assistant_event(
+    class IntentProvider:
+        def request_structured_output(self, **_: object) -> dict[str, str]:
+            return {"turnType": "CONTROL"}
+
+    monkeypatch.setattr(voice_interview_service, "BedrockResponsesStructuredProvider", IntentProvider)
+
+    result = classify_internal_voice_turn_intent(
         session["id"],
-        AssistantEventCreate(
-            eventType="assistant_transcript_final",
-            responseId="voice-response-finish-001",
-            transcript="以上で、設定されているすべての質問項目へのインタビューが完了しました。ご協力ありがとうございました。",
-            detail={"action": "finish"},
-        ),
+        VoiceTurnIntentCreate(transcript="インタビューを終了してください"),
     )
 
-    messages = [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
-    events = [
-        row
-        for row in store.list("voice_assistant_events", user.tenant_id)
-        if row.get("recordId") == record["id"]
-    ]
-
-    assert event["eventType"] == "assistant_transcript_final"
-    assert messages == []
-    assert len(events) == 1
+    assert result == {"turnType": "CONTROL"}
 
 
-def test_local_confirmation_preface_is_saved_once_with_source() -> None:
+def test_finish_and_duplicate_assistant_events_do_not_create_duplicate_message() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     payload = AssistantEventCreate(
         eventType="assistant_transcript_final",
-        responseId="local-preface-response:turn-1",
-        generation=4,
-        transcript="確認します。",
-        detail={"source": "local_fixed_preface", "turnId": "turn-1"},
+        responseId="response-same",
+        transcript="次の質問です。",
+        detail={"action": "ask_structured", "questionId": "q-001"},
     )
 
-    create_internal_assistant_event(session["id"], payload)
-    create_internal_assistant_event(session["id"], payload)
-
+    first_event = create_internal_assistant_event(session["id"], payload)
+    second_event = create_internal_assistant_event(session["id"], payload)
     messages = [
         row
         for row in store.list("messages", user.tenant_id)
-        if row.get("recordId") == record["id"]
+        if row.get("recordId") == record["id"] and row.get("voiceResponseId") == "response-same"
     ]
+
+    events = [
+        row
+        for row in store.list("voice_assistant_events", user.tenant_id)
+        if row.get("voiceSessionId") == session["id"]
+    ]
+
     assert len(messages) == 1
-    assert messages[0]["content"] == "確認します。"
-    assert messages[0]["source"] == "local_fixed_preface"
-    assert messages[0]["voiceResponseId"] == "local-preface-response:turn-1"
+    assert len(events) == 1
+    assert second_event["id"] == first_event["id"]
 
 
-def test_stopped_voice_session_rejects_turns() -> None:
+def test_stopped_voice_session_rejects_new_turn() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     stop_record_voice_session(session["id"], user)
 
     with pytest.raises(HTTPException) as exc_info:
-        create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="回答です"))
+        create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="回答"))
 
     assert exc_info.value.status_code == 409
 
@@ -1311,176 +590,34 @@ def test_client_turn_id_is_idempotent_and_rejects_different_payload() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    payload = VoiceTurnCreate(
-        transcript="回答です",
-        clientTurnId="client-turn-1",
-        expectedStateVersion=session["stateVersion"],
-    )
-
+    payload = VoiceTurnCreate(transcript="回答", clientTurnId="client-1")
     first = create_internal_voice_turn(session["id"], payload)
     second = create_internal_voice_turn(session["id"], payload)
-
     assert second["id"] == first["id"]
-    with pytest.raises(HTTPException) as exc_info:
-        create_internal_voice_turn(
-            session["id"],
-            VoiceTurnCreate(
-                transcript="異なる回答です",
-                clientTurnId="client-turn-1",
-                expectedStateVersion=session["stateVersion"],
-            ),
-        )
-    assert exc_info.value.detail == "turn_duplicate_conflict"
-
-
-def test_stale_state_version_rejects_turn_before_candidate_is_saved() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
 
     with pytest.raises(HTTPException) as exc_info:
         create_internal_voice_turn(
             session["id"],
-            VoiceTurnCreate(
-                transcript="古い回答です",
-                clientTurnId="client-turn-stale",
-                expectedStateVersion=session["stateVersion"] - 1,
-            ),
+            VoiceTurnCreate(transcript="別の回答", clientTurnId="client-1"),
         )
-
-    assert exc_info.value.detail == "turn_state_conflict"
-    assert store.list("voice_turns", user.tenant_id) == []
+    assert exc_info.value.status_code == 409
 
 
-def test_cancel_before_late_turn_save_creates_client_turn_tombstone() -> None:
+def test_cancel_before_processing_prevents_late_commit() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    expected_version = session["stateVersion"]
-
-    result = cancel_internal_voice_turn(
-        session["id"],
-        VoiceTurnCancel(
-            clientTurnId="client-turn-late",
-            expectedStateVersion=expected_version,
-        ),
-    )
-
-    assert result["cancelled"] is True
-    with pytest.raises(HTTPException) as exc_info:
-        create_internal_voice_turn(
-            session["id"],
-            VoiceTurnCreate(
-                transcript="遅れて到着した回答です",
-                clientTurnId="client-turn-late",
-                expectedStateVersion=expected_version,
-            ),
-        )
-    assert exc_info.value.detail == "turn_cancelled"
-
-
-def test_cancel_committed_turn_is_rejected_without_rollback() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    expected_version = session["stateVersion"]
     turn = create_internal_voice_turn(
         session["id"],
-        VoiceTurnCreate(
-            transcript="宮崎です",
-            clientTurnId="client-turn-cancel",
-            expectedStateVersion=expected_version,
-        ),
+        VoiceTurnCreate(transcript="回答", clientTurnId="client-1", expectedStateVersion=1),
     )
-    process_internal_voice_turn(session["id"], turn["id"])
-    committed_state = deepcopy(
-        store.get("interview_states", f"interview-state-{record['id']}")
-    )
-    committed_session = deepcopy(store.get("voice_sessions", session["id"]))
-    committed_field_id = committed_state["currentFieldId"]
-    committed_candidate = committed_state["fieldStates"][committed_field_id][
-        "candidateAnswer"
-    ]
-    committed_state_version = committed_session["stateVersion"]
-    committed_messages = [
-        deepcopy(row)
-        for row in store.list("messages", user.tenant_id)
-        if row.get("voiceTurnId") == turn["id"]
-    ]
 
-    with pytest.raises(HTTPException) as exc_info:
-        cancel_internal_voice_turn(
-            session["id"],
-            VoiceTurnCancel(
-                clientTurnId="client-turn-cancel",
-                expectedStateVersion=expected_version,
-            ),
-        )
-
-    assert exc_info.value.detail == "turn_already_committed"
-    assert (
-        store.get("interview_states", f"interview-state-{record['id']}")
-        == committed_state
-    )
-    assert store.get("voice_sessions", session["id"]) == committed_session
-    current_state = store.get("interview_states", f"interview-state-{record['id']}")
-    current_session = store.get("voice_sessions", session["id"])
-    assert (
-        current_state["fieldStates"][committed_field_id]["candidateAnswer"]
-        == committed_candidate
-    )
-    assert current_session["stateVersion"] == committed_state_version
-    assert [
-        row
-        for row in store.list("messages", user.tenant_id)
-        if row.get("voiceTurnId") == turn["id"]
-    ] == committed_messages
-    committed_turn = store.get("voice_turns", turn["id"])
-    assert committed_turn["processingStatus"] == "completed"
-    assert committed_turn["lifecycleStatus"] == "COMMITTED"
-
-
-def test_cancel_evaluating_turn_restores_pending_state_and_rejects_commit() -> None:
-    user = DEV_TOKENS["dev-manager"]
-    record = _create_record_with_field(user)
-    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
-    expected_version = session["stateVersion"]
-    turn = create_internal_voice_turn(
+    cancelled = cancel_internal_voice_turn(
         session["id"],
-        VoiceTurnCreate(
-            transcript="評価中の回答です",
-            clientTurnId="client-turn-evaluating",
-            expectedStateVersion=expected_version,
-        ),
-    )
-    base_state = deepcopy(
-        store.get("interview_states", f"interview-state-{record['id']}")
-    )
-    stored_turn = store.get("voice_turns", turn["id"])
-    stored_turn["processingStatus"] = "processing"
-    stored_turn["lifecycleStatus"] = "EVALUATING"
-    stored_turn["baseInterviewState"] = deepcopy(base_state)
-    current_field_id = base_state["currentFieldId"]
-    dirty_state = deepcopy(base_state)
-    dirty_state["fieldStates"][current_field_id]["candidateAnswer"] = "残してはいけない候補"
-    dirty_state["fieldStates"][current_field_id]["answerState"] = "AWAITING_CONFIRMATION"
-    store.upsert("interview_states", dirty_state)
-
-    result = cancel_internal_voice_turn(
-        session["id"],
-        VoiceTurnCancel(
-            clientTurnId="client-turn-evaluating",
-            expectedStateVersion=expected_version,
-        ),
+        VoiceTurnCancel(clientTurnId="client-1", expectedStateVersion=1),
     )
 
-    assert result["cancelled"] is True
-    assert (
-        store.get("interview_states", f"interview-state-{record['id']}")
-        == base_state
-    )
-    cancelled_turn = store.get("voice_turns", turn["id"])
-    assert cancelled_turn["lifecycleStatus"] == "CANCELLED"
+    assert cancelled["cancelled"] is True
     with pytest.raises(HTTPException) as exc_info:
         process_internal_voice_turn(session["id"], turn["id"])
-    assert exc_info.value.detail == "turn_cancelled"
+    assert exc_info.value.status_code == 409

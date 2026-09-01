@@ -49,7 +49,7 @@ from ai_interviewer_api.schemas.requests import (
     ReadStatusUpdate,
     RecordCreate,
 )
-from ai_interviewer_api.agents.question_design.agent import load_question_design_prompt
+from ai_interviewer_api.agents.question_design.prompt_loader import load_question_design_prompt
 from ai_interviewer_api.agents.question_design.schemas import QuestionDesignOutput, QuestionFieldSuggestion
 from ai_interviewer_api.agents.question_design.service import DEFAULT_CLARIFICATION
 from ai_interviewer_api.services.field_suggestions import suggest_fields_with_bedrock

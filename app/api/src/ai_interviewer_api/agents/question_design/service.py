@@ -7,7 +7,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ai_interviewer_api.agents.common.tools import READ_ONLY_TOOL_NAMES
 from ai_interviewer_api.agents.interview_knowledge.provider import (
     StructuredInterviewProviderError,
 )
@@ -273,14 +272,6 @@ def _extract_result_text(result: Any) -> str:
     return str(result).strip()
 
 
-def _filter_used_tools(tool_names: list[Any]) -> list[str]:
-    filtered: list[str] = []
-    for tool_name in tool_names:
-        if isinstance(tool_name, str) and tool_name in READ_ONLY_TOOL_NAMES and tool_name not in filtered:
-            filtered.append(tool_name)
-    return filtered
-
-
 def _collapse_text(value: str | None) -> str | None:
     if not isinstance(value, str):
         return None
@@ -296,7 +287,6 @@ def _run_generation(
 ) -> QuestionDesignOutput:
     invocation_state = {
         "knowledge_id": question_input.knowledge_id,
-        "used_tools": [],
     }
     try:
         result = agent_runner(
@@ -320,7 +310,7 @@ def _run_validation(
     try:
         result = validator_runner(
             _build_validation_prompt(question_input, output),
-            invocation_state={"knowledge_id": question_input.knowledge_id, "used_tools": []},
+            invocation_state={"knowledge_id": question_input.knowledge_id},
             structured_output_model=QuestionDesignValidation,
         )
     except StructuredInterviewProviderError as exc:
@@ -400,7 +390,6 @@ def _normalize_output(
     elif not reply and normalized_suggestions:
         reply = "インタビュー前に確認しておきたい質問項目を提案します。"
 
-    merged_used_tools = _filter_used_tools([*output.used_tools, *invocation_state.get("used_tools", [])])
     return output.model_copy(
         update={
             "reply": reply,
@@ -408,6 +397,5 @@ def _normalize_output(
             "clarification_question": clarification_question,
             "reason": reason,
             "suggestions": normalized_suggestions,
-            "used_tools": merged_used_tools,
         }
     )
