@@ -130,6 +130,7 @@ class VoiceTurn(BaseEntity):
     responseId: str | None = None
     questionId: str | None = None
     retrievedSources: list[dict] = Field(default_factory=list)
+    latencyMetrics: dict[str, float | int] = Field(default_factory=dict)
     startedAtMs: int | None = None
     endedAtMs: int | None = None
 

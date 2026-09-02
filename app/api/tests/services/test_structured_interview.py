@@ -2306,6 +2306,9 @@ def test_complete_utterance_commits_and_advances_to_the_next_field() -> None:
     assert result["question"]["targetId"] == "field-department"
     assert result["reply"] == "部署を教えてください。"
     assert len(provider.question_calls) == 2
+    assert result["latencyMetrics"]["interpreter_calls"] == 1
+    assert result["latencyMetrics"]["question_generation_calls"] == 1
+    assert result["latencyMetrics"]["retrieval_calls"] == 1
 
 
 @pytest.mark.parametrize(
@@ -2448,6 +2451,9 @@ def test_unanswerable_uses_one_static_reframe_before_advancing() -> None:
     assert "具体的な出来事" in result["reply"]
     assert "聞き取" not in result["reply"]
     assert len(provider.question_calls) == 1
+    assert result["latencyMetrics"]["interpreter_calls"] == 1
+    assert result["latencyMetrics"]["question_generation_calls"] == 0
+    assert result["latencyMetrics"]["retrieval_calls"] == 0
 
 
 def test_corrected_transcript_is_confirmed_before_becoming_a_formal_answer() -> None:

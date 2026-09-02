@@ -495,6 +495,19 @@ def test_no_answer_gets_one_neutral_probe_then_advances() -> None:
     assert first_result["action"] == "ask_follow_up"
     assert first_result["questionId"] == "q-001"
     assert "具体的な出来事" in first_result["text"]
+    assert first_result["latencyMetrics"]["question_generation_calls"] == 0
+    assert first_result["latencyMetrics"]["retrieval_calls"] == 0
+    assert "api_total_ms" in first_result["latencyMetrics"]
+    assert store.get("voice_turns", first["id"])["latencyMetrics"] == first_result["latencyMetrics"]
+    assert {
+        "interpreter_ms",
+        "medium_retry_ms",
+        "patch_repair_ms",
+        "state_transition_ms",
+        "retrieval_ms",
+        "question_generation_ms",
+        "api_total_ms",
+    } <= set(first_result["latencyMetrics"])
 
     second = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="特にありません。"))
     second_result = process_internal_voice_turn(session["id"], second["id"])

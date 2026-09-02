@@ -25,6 +25,7 @@ class InterviewBridgeResult:
     retrieval_policy: str | None = None
     retrieval_executed: bool = False
     turn_type: str = "ANSWER"
+    latency_metrics: dict[str, float | int] | None = None
 
 
 class InvalidInterviewResponseError(RuntimeError):
@@ -223,6 +224,7 @@ class InterviewBridge:
             retrieval_policy=result.retrieval_policy,
             retrieval_executed=result.retrieval_executed,
             turn_type=result.turn_type,
+            latency_metrics=result.latency_metrics,
         )
 
 

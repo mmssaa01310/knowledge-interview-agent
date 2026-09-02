@@ -16,7 +16,7 @@ import re
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from time import monotonic, time
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from ai_interviewer_voice.runtimes.transcribe_polly.config import (
@@ -194,7 +194,7 @@ class TranscribePollyRuntime:
         self._assistant_response_states: dict[str, AssistantResponseState] = {}
         self._interrupt_emitted_for: set[str] = set()
         self._backchannel_metadata: dict[str, tuple[OutputKind, str]] = {}
-        self._pipeline_timings: dict[str, dict[str, float | int]] = {}
+        self._pipeline_timings: dict[str, dict[str, Any]] = {}
         self._pending_listening_state: Literal[
             "ANSWER_LISTENING",
             "CONFIRMATION_LISTENING",
@@ -283,10 +283,18 @@ class TranscribePollyRuntime:
         the first output chunks in parallel with ICE negotiation removes the initial
         Polly request latency from the user's visible ``preparing_audio`` state.
         """
+        await self._prepare_polly_chunks(
+            reply_text,
+            log_event="voice_initial_reply_audio_preload_scheduled",
+        )
+
+    async def _prepare_polly_chunks(self, text: str, *, log_event: str) -> None:
+        """Schedule cached-or-Polly chunks without waiting for synthesis."""
+
         if self._closed:
             return
         chunks = split_text_for_polly(
-            reply_text,
+            text,
             PollyTextChunkerConfig(
                 first_min_chars=self._config.first_chunk_min_chars,
                 first_max_chars=self._config.first_chunk_max_chars,
@@ -310,7 +318,8 @@ class TranscribePollyRuntime:
             prepared_count += 1
         if prepared_count:
             logger.info(
-                "voice_initial_reply_audio_preload_scheduled voice_session_id=%s prepared_chunks=%s",
+                "%s voice_session_id=%s prepared_chunks=%s",
+                log_event,
                 self._context.voice_session_id if self._context is not None else None,
                 prepared_count,
             )
@@ -715,6 +724,16 @@ class TranscribePollyRuntime:
         result_received = False
         processing_may_continue = False
         api_started_at = monotonic()
+        # Show the final STT text immediately.  Its content and target are
+        # already known at this point; waiting for answer evaluation made the
+        # UI appear frozen for the entire API/LLM pipeline.
+        await self._emit(
+            UserTranscriptFinal(
+                text=transcript,
+                turn_type="ANSWER",
+                question_id=self._current_question_id,
+            )
+        )
         try:
             result = await self._interview_bridge.process_turn(
                 voice_session_id=self._context.voice_session_id,
@@ -724,14 +743,6 @@ class TranscribePollyRuntime:
                 expected_state_version=expected_state_version,
                 client_turn_id=client_turn_id,
                 stt_confidence=stt_confidence,
-            )
-            is_answer = result.turn_type == "ANSWER"
-            await self._emit(
-                UserTranscriptFinal(
-                    text=transcript,
-                    turn_type=result.turn_type,
-                    question_id=self._current_question_id if is_answer else None,
-                )
             )
             result_received = True
         except asyncio.CancelledError:
@@ -754,21 +765,24 @@ class TranscribePollyRuntime:
             return
         self._apply_bridge_result(result)
         api_completed_at = monotonic()
-        pipeline_timing: dict[str, float | int] = {
+        pipeline_timing: dict[str, Any] = {
+            "turn_id": result.turn_id,
             "transcript_final_at_ms": transcript_final_at_ms or int(time() * 1000),
             "api_started_at": api_started_at,
             "api_completed_at": api_completed_at,
             "api_completed_at_ms": int(time() * 1000),
         }
+        pipeline_timing.update(result.latency_metrics or {})
         self._pipeline_timings[result.response_id] = pipeline_timing
         logger.info(
-            "voice_turn_api_completed voice_session_id=%s turn_id=%s response_id=%s question_id=%s api_processing_ms=%s transcribe_to_api_completed_ms=%s",
+            "voice_turn_api_completed voice_session_id=%s turn_id=%s response_id=%s question_id=%s api_processing_ms=%s transcribe_to_api_completed_ms=%s api_metrics=%s",
             self._context.voice_session_id,
             result.turn_id,
             result.response_id,
             result.question_id,
             round((api_completed_at - api_started_at) * 1000, 1),
             max(0, pipeline_timing["api_completed_at_ms"] - pipeline_timing["transcript_final_at_ms"]),
+            result.latency_metrics or {},
         )
         self._clear_active_client_turn(client_turn_id)
         await self.send_reply(
@@ -779,6 +793,7 @@ class TranscribePollyRuntime:
                 action=result.action,
                 question_id=result.question_id,
                 state_version=result.state_version,
+                latency_metrics=result.latency_metrics or {},
             )
         )
 
@@ -896,6 +911,23 @@ class TranscribePollyRuntime:
         self._assistant_response_states[reply.response_id] = AssistantResponseState.PLANNED
         await self._cancel_notice_tasks()
         await self._output.cancel_notices()
+        timing = self._pipeline_timings.get(reply.response_id)
+        if timing is not None and "polly_started_at" not in timing:
+            timing["polly_started_at"] = monotonic()
+            timing["polly_started_at_ms"] = int(time() * 1000)
+            logger.info(
+                "voice_turn_polly_started response_id=%s polly_started_at_ms=%s",
+                reply.response_id,
+                timing["polly_started_at_ms"],
+            )
+        # Polly calls are now scheduled before data-channel transcript
+        # delivery. They run while the browser renders the text and while the
+        # output coordinator is being prepared, without changing the formal
+        # reply that the API has already committed.
+        await self._prepare_polly_chunks(
+            reply.text,
+            log_event="voice_formal_reply_audio_preload_scheduled",
+        )
         await self._emit(
             AssistantResponsePreparing(
                 response_id=reply.response_id,
@@ -989,7 +1021,7 @@ class TranscribePollyRuntime:
         response_id: str | None = None,
     ) -> AsyncIterator[bytes]:
         timing = self._pipeline_timings.get(response_id) if response_id else None
-        if timing is not None:
+        if timing is not None and "polly_started_at" not in timing:
             timing["polly_started_at"] = monotonic()
             timing["polly_started_at_ms"] = int(time() * 1000)
             logger.info(
@@ -1072,12 +1104,31 @@ class TranscribePollyRuntime:
             output_started_at = monotonic()
             timing["output_started_at"] = output_started_at
             timing["output_started_at_ms"] = int(time() * 1000)
+            timing["polly_first_chunk_ms"] = round(
+                (
+                    timing.get("polly_first_chunk_ready_at", output_started_at)
+                    - timing.get("polly_started_at", output_started_at)
+                )
+                * 1000,
+                1,
+            )
+            timing["total_turn_latency_ms"] = max(
+                0,
+                timing["output_started_at_ms"] - timing["transcript_final_at_ms"],
+            )
             logger.info(
-                "voice_turn_pipeline_latency response_id=%s transcribe_to_playback_start_ms=%s api_to_playback_start_ms=%s polly_to_playback_start_ms=%s",
+                "voice_turn_pipeline_latency turn_id=%s response_id=%s interpreter_ms=%s medium_retry_ms=%s patch_repair_ms=%s state_transition_ms=%s retrieval_ms=%s question_generation_ms=%s api_total_ms=%s polly_first_chunk_ms=%s total_turn_latency_ms=%s",
+                timing.get("turn_id"),
                 request.response_id,
-                max(0, timing["output_started_at_ms"] - timing["transcript_final_at_ms"]),
-                round((output_started_at - timing["api_completed_at"]) * 1000, 1),
-                round((output_started_at - timing.get("polly_started_at", output_started_at)) * 1000, 1),
+                timing.get("interpreter_ms", 0),
+                timing.get("medium_retry_ms", 0),
+                timing.get("patch_repair_ms", 0),
+                timing.get("state_transition_ms", 0),
+                timing.get("retrieval_ms", 0),
+                timing.get("question_generation_ms", 0),
+                timing.get("api_total_ms", 0),
+                timing["polly_first_chunk_ms"],
+                timing["total_turn_latency_ms"],
             )
         backchannel = self._backchannel_metadata.get(request.response_id)
         if backchannel is not None:
@@ -1106,7 +1157,30 @@ class TranscribePollyRuntime:
             "assistant_speech_started",
             response_id=request.response_id,
             transcript=None,
-            detail={"kind": request.kind.value},
+            detail={
+                "kind": request.kind.value,
+                **(
+                    {
+                        "turnId": timing.get("turn_id"),
+                        "latencyMetrics": {
+                            name: timing.get(name, 0)
+                            for name in (
+                                "interpreter_ms",
+                                "medium_retry_ms",
+                                "patch_repair_ms",
+                                "state_transition_ms",
+                                "retrieval_ms",
+                                "question_generation_ms",
+                                "api_total_ms",
+                                "polly_first_chunk_ms",
+                                "total_turn_latency_ms",
+                            )
+                        },
+                    }
+                    if timing is not None
+                    else {}
+                ),
+            },
         )
 
     async def _on_output_completed(

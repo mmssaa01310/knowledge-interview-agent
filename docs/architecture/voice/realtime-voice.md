@@ -261,6 +261,22 @@ Transcribe + Pollyの確定Transcriptは、音声サービスで先行意図分�
 `Structured Interview`のCoordinatorへ渡す。確認、必須項目、不足項目、状態更新、正式保存の保証はBackendが持ち、
 AI出力をそのまま正式回答として確定しない。音声サービスは回答評価や質問生成を実行しない。
 
+確定Transcriptの表示は、APIの評価完了を待たずに`UserTranscriptFinal`としてWebへ通知する。正式な
+回答評価、状態遷移、次質問本文、音声再生は引き続きAPI結果にだけ従う。これにより表示の先行は状態機械や
+回答確定を変更しない。
+
+### 6.3.2 ターン遅延計測
+
+APIは同一`voice_turn_id`の`latencyMetrics`として、`interpreter_ms`、`medium_retry_ms`、
+`patch_repair_ms`、`state_transition_ms`、`retrieval_ms`、`question_generation_ms`、`api_total_ms`と
+各呼び出し回数を保存する。`state_transition_ms`は、外部AI・検索時間を除いたCoordinatorの状態更新、
+検証、永続化、対象選択の時間である。
+
+Transcribe + Polly Runtimeは同じturn IDを含む`voice_turn_pipeline_latency`ログと
+`assistant_speech_started`イベントへ、`polly_first_chunk_ms`（Polly開始から最初のPCMまで）と
+`total_turn_latency_ms`（確定STTから最初の再生開始まで）を記録する。これらを結合して、1ターンの
+直列区間と省略された呼び出しを追跡する。
+
 ## 7. WebRTCのv1基本方針
 
 v1では以下を基本構成とする。

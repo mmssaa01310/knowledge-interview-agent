@@ -65,6 +65,7 @@ class VoiceTurnProcessResult:
     retrieval_policy: str | None = None
     retrieval_executed: bool = False
     turn_type: str = "ANSWER"
+    latency_metrics: dict[str, float | int] | None = None
 
 
 class InterviewApiClient:
@@ -292,6 +293,7 @@ class InterviewApiClient:
             retrieval_policy=_optional_str(payload.get("retrievalPolicy")),
             retrieval_executed=bool(payload.get("retrievalExecuted", False)),
             turn_type=str(voice_turn.get("turnType") or "ANSWER"),
+            latency_metrics=_latency_metrics(payload.get("latencyMetrics")),
         )
 
     async def create_assistant_event(
@@ -376,3 +378,13 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _latency_metrics(value: Any) -> dict[str, float | int] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        str(name): metric
+        for name, metric in value.items()
+        if isinstance(metric, (int, float))
+    }

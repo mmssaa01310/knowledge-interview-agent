@@ -449,7 +449,7 @@ async def test_duplicate_transcribe_final_events_create_only_one_interview_turn(
 
 
 @pytest.mark.anyio
-async def test_control_transcript_is_classified_by_api_before_commit() -> None:
+async def test_final_transcript_is_emitted_before_api_control_evaluation() -> None:
     transcribe = FakeTranscribe()
     bridge = ControlBridge()
     runtime = TranscribePollyRuntime(
@@ -476,8 +476,8 @@ async def test_control_transcript_is_classified_by_api_before_commit() -> None:
     while not runtime._events.empty():
         events.append(runtime._events.get_nowait())
     final = next(event for event in events if isinstance(event, UserTranscriptFinal))
-    assert final.turn_type == "CONTROL"
-    assert final.question_id is None
+    assert final.turn_type == "ANSWER"
+    assert final.question_id == "q-1"
     await runtime.close()
 
 
@@ -947,6 +947,12 @@ async def test_output_interrupt_does_not_cancel_pending_interview_turn() -> None
     )
     runtime._processing_task = process_task
     await bridge.process_started.wait()
+
+    pending_events = list(runtime._events._queue)
+    transcript_final = next(
+        event for event in pending_events if isinstance(event, UserTranscriptFinal)
+    )
+    assert transcript_final.text == "評価中の回答です"
 
     await runtime.interrupt()
 

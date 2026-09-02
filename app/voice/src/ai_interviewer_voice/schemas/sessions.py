@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AssistantReply(BaseModel):
@@ -8,6 +8,7 @@ class AssistantReply(BaseModel):
     action: str
     question_id: str | None
     state_version: int
+    latency_metrics: dict[str, float | int] = Field(default_factory=dict)
 
 
 class VoiceRuntimeContext(BaseModel):

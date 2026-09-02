@@ -73,6 +73,41 @@ STRUCTURED_PROFILES: frozenset[str] = frozenset({"fixed_form", "business_process
 logger = logging.getLogger(__name__)
 _STRUCTURED_INTERVIEW_LOCKS: dict[str, Lock] = {}
 _STRUCTURED_INTERVIEW_LOCKS_GUARD = Lock()
+_LATENCY_METRIC_NAMES = (
+    "interpreter_ms",
+    "medium_retry_ms",
+    "patch_repair_ms",
+    "state_transition_ms",
+    "retrieval_ms",
+    "question_generation_ms",
+)
+_LATENCY_CALL_METRIC_NAMES = (
+    "interpreter_calls",
+    "medium_retry_calls",
+    "patch_repair_calls",
+    "retrieval_calls",
+    "question_generation_calls",
+)
+
+
+def _new_latency_metrics() -> dict[str, float]:
+    return {
+        **{name: 0.0 for name in _LATENCY_METRIC_NAMES},
+        **{name: 0.0 for name in _LATENCY_CALL_METRIC_NAMES},
+    }
+
+
+def _elapsed_ms(started_at: float) -> float:
+    return round((monotonic() - started_at) * 1000, 1)
+
+
+def _serialize_latency_metrics(metrics: Mapping[str, float]) -> dict[str, float | int]:
+    serialized: dict[str, float | int] = {}
+    for name in _LATENCY_METRIC_NAMES:
+        serialized[name] = round(float(metrics.get(name, 0.0)), 1)
+    for name in _LATENCY_CALL_METRIC_NAMES:
+        serialized[name] = int(metrics.get(name, 0.0))
+    return serialized
 
 
 def generate_structured_interview_result(
@@ -94,13 +129,32 @@ def generate_structured_interview_result(
     with _STRUCTURED_INTERVIEW_LOCKS_GUARD:
         lock = _STRUCTURED_INTERVIEW_LOCKS.setdefault(record_id, Lock())
     with lock:
-        return _generate_structured_interview_result(
+        started_at = monotonic()
+        latency_metrics = _new_latency_metrics()
+        result = _generate_structured_interview_result(
             record,
             knowledge,
             user,
             persist_assistant_messages=persist_assistant_messages,
             provider=provider,
+            latency_metrics=latency_metrics,
         )
+        structured_total_ms = _elapsed_ms(started_at)
+        # The coordinator portion includes state reads/writes, validation,
+        # target selection, and result construction.  The external calls are
+        # measured separately so a slow turn can be attributed without
+        # counting them twice.
+        latency_metrics["state_transition_ms"] = max(
+            0.0,
+            structured_total_ms
+            - latency_metrics["interpreter_ms"]
+            - latency_metrics["medium_retry_ms"]
+            - latency_metrics["patch_repair_ms"]
+            - latency_metrics["retrieval_ms"]
+            - latency_metrics["question_generation_ms"],
+        )
+        result["latencyMetrics"] = _serialize_latency_metrics(latency_metrics)
+        return result
 
 
 def _generate_structured_interview_result(
@@ -110,7 +164,9 @@ def _generate_structured_interview_result(
     *,
     persist_assistant_messages: bool = True,
     provider: StructuredInterviewProvider | None = None,
+    latency_metrics: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    latency_metrics = latency_metrics if latency_metrics is not None else _new_latency_metrics()
     fields = _list_interview_fields(knowledge, user)
     state = load_structured_interview_state(record, knowledge, user, fields=fields)
     messages = _list_record_messages(record, user)
@@ -215,11 +271,14 @@ def _generate_structured_interview_result(
                 )
                 output = StructuredInterviewOutput(dialogueAct="CONFIRMATION")
             else:
+                interpreter_started_at = monotonic()
                 output = structured_provider.interpret(
                     profile=profile,
                     context=interpreter_context,
                     reasoning_effort=initial_reasoning_effort,
                 )
+                latency_metrics["interpreter_ms"] += _elapsed_ms(interpreter_started_at)
+                latency_metrics["interpreter_calls"] += 1
                 if (
                     initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
                     and _requires_medium_reasoning(state, output)
@@ -228,18 +287,22 @@ def _generate_structured_interview_result(
                         **interpreter_context,
                         "preliminaryOutput": output.model_dump(),
                     }
+                    medium_retry_started_at = monotonic()
                     output = structured_provider.interpret(
                         profile=profile,
                         context=medium_context,
                         reasoning_effort=settings.structured_interview_medium_reasoning_effort,
                     )
+                    latency_metrics["medium_retry_ms"] += _elapsed_ms(medium_retry_started_at)
+                    latency_metrics["medium_retry_calls"] += 1
                     selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
             valid_evidence_ids = {
                 str(message.get("id"))
                 for message in messages
                 if message.get("id")
             }
-            output, selected_reasoning_effort = _repair_invalid_process_patch(
+            patch_repair_started_at = monotonic()
+            output, selected_reasoning_effort, patch_repair_attempted = _repair_invalid_process_patch(
                 output=output,
                 provider=structured_provider,
                 profile=profile,
@@ -249,6 +312,10 @@ def _generate_structured_interview_result(
                 valid_evidence_ids=valid_evidence_ids,
                 selected_reasoning_effort=selected_reasoning_effort,
             )
+            patch_repair_elapsed_ms = _elapsed_ms(patch_repair_started_at)
+            if patch_repair_attempted:
+                latency_metrics["patch_repair_ms"] += patch_repair_elapsed_ms
+                latency_metrics["patch_repair_calls"] += 1
             latest_message_id = str(latest_user_message.get("id") or "")
             raw_transcript = str(
                 latest_user_message.get("rawTranscript")
@@ -690,6 +757,7 @@ def _generate_structured_interview_result(
         fields=fields,
         state=state,
         messages=messages,
+        latency_metrics=latency_metrics,
     )
     if document_candidate is not None:
         target = dict(target)
@@ -1194,7 +1262,7 @@ def _repair_invalid_process_patch(
     record_id: str,
     valid_evidence_ids: set[str],
     selected_reasoning_effort: str,
-) -> tuple[StructuredInterviewOutput, str]:
+) -> tuple[StructuredInterviewOutput, str, bool]:
     """Repair one rejected AI patch without reapplying other extracted values."""
 
     initial_errors = _process_patch_validation_errors_for_state(
@@ -1208,7 +1276,7 @@ def _repair_invalid_process_patch(
         profile,
         valid_evidence_ids,
     ):
-        return output, selected_reasoning_effort
+        return output, selected_reasoning_effort, False
 
     logger.warning(
         "structured_process_patch_validation_failed record_id=%s errors=%s",
@@ -1235,7 +1303,7 @@ def _repair_invalid_process_patch(
         )
     except Exception:
         logger.exception("structured_process_patch_repair_failed record_id=%s", record_id)
-        return output, selected_reasoning_effort
+        return output, selected_reasoning_effort, True
 
     repaired_errors = _process_patch_validation_errors_for_state(
         state,
@@ -1250,7 +1318,7 @@ def _repair_invalid_process_patch(
             record_id,
             list(dict.fromkeys(repaired_errors)),
         )
-        return output, selected_reasoning_effort
+        return output, selected_reasoning_effort, True
 
     logger.info(
         "structured_process_patch_repaired record_id=%s reasoning_effort=%s",
@@ -1260,6 +1328,7 @@ def _repair_invalid_process_patch(
     return (
         output.model_copy(update={"processPatch": repaired_output.processPatch}),
         settings.structured_interview_medium_reasoning_effort,
+        True,
     )
 
 
@@ -1389,6 +1458,7 @@ def _generate_question_text(
     fields: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
+    latency_metrics: dict[str, float] | None = None,
 ) -> tuple[str, list[RetrievedKnowledgeContext], DocumentQuestionCandidate | None]:
     started_at = monotonic()
     pending_transcript = state.get("pendingTranscriptConfirmation")
@@ -1408,17 +1478,27 @@ def _generate_question_text(
         )
     current_field = _field_for_target(target, fields)
     retrieval_policy = _retrieval_policy_for_target(target, current_field)
-    retrieved_context = retrieve_interview_document_context(
-        record=record,
-        knowledge=knowledge,
-        user=user,
-        current_question=None,
-        current_field=current_field,
-        target=target,
-        state=state,
-        messages=messages,
-        retrieval_policy=retrieval_policy,
-    )
+    if str(retrieval_policy or "auto").strip().lower() == "never":
+        # Do not even enter the retrieval path for a target that prohibits
+        # document context. This keeps the request trace unambiguous and
+        # avoids needless query construction on every voice turn.
+        retrieved_context: list[RetrievedKnowledgeContext] = []
+    else:
+        retrieval_started_at = monotonic()
+        retrieved_context = retrieve_interview_document_context(
+            record=record,
+            knowledge=knowledge,
+            user=user,
+            current_question=None,
+            current_field=current_field,
+            target=target,
+            state=state,
+            messages=messages,
+            retrieval_policy=retrieval_policy,
+        )
+        if latency_metrics is not None:
+            latency_metrics["retrieval_ms"] += _elapsed_ms(retrieval_started_at)
+            latency_metrics["retrieval_calls"] += 1
     context = {
         "knowledgeName": knowledge.get("name"),
         "recordTitle": record.get("title"),
@@ -1437,12 +1517,18 @@ def _generate_question_text(
         "activeProbe": state.get("activeProbeTarget"),
         "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
+    question_generation_started_at = monotonic()
     generated = provider.generate_question(
         profile=profile,
         context=context,
         target=target,
         reasoning_effort=settings.structured_interview_reasoning_effort,
     )
+    if latency_metrics is not None:
+        latency_metrics["question_generation_ms"] += _elapsed_ms(
+            question_generation_started_at
+        )
+        latency_metrics["question_generation_calls"] += 1
     logger.info(
         "structured_question_generated model_id=%s target_type=%s target_id=%s reasoning_effort=%s elapsed_ms=%s",
         getattr(provider, "model_id", None),

@@ -105,6 +105,7 @@ class VoiceTurnProcessResult:
     retrieval_policy: str | None = None
     retrieval_executed: bool = False
     retrieved_sources: list[dict[str, Any]] = field(default_factory=list)
+    latency_metrics: dict[str, float | int] = field(default_factory=dict)
 
     def model_dump(self) -> dict:
         return {
@@ -117,6 +118,7 @@ class VoiceTurnProcessResult:
             "retrievalPolicy": self.retrieval_policy,
             "retrievalExecuted": self.retrieval_executed,
             "retrievedSources": self.retrieved_sources,
+            "latencyMetrics": self.latency_metrics,
             "voiceSession": self.voice_session,
             "voiceTurn": self.voice_turn,
         }
@@ -440,6 +442,7 @@ def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
 
 
 def _process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
+    api_started_at = monotonic()
     session = _get_voice_session_for_internal_use(voice_session_id)
     turn = _get_voice_turn_for_session(turn_id, session)
     lifecycle_status = _voice_turn_lifecycle_status(turn)
@@ -480,6 +483,7 @@ def _process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             record=record,
             user=user,
             interview_state=interview_state,
+            api_started_at=api_started_at,
         )
     except Exception:
         latest_turn = voice_turn_repository.get(turn_id)
@@ -505,6 +509,7 @@ def _process_structured_voice_turn(
     record: dict[str, Any],
     user: UserContext,
     interview_state: dict[str, Any],
+    api_started_at: float,
 ) -> dict:
     """Send one answer through the same semantic engine as text."""
 
@@ -517,6 +522,11 @@ def _process_structured_voice_turn(
             user,
             persist_assistant_messages=False,
         )
+        latency_metrics = {
+            str(name): value
+            for name, value in (result.get("latencyMetrics") or {}).items()
+            if isinstance(value, (int, float))
+        }
         sync_record_status_after_interview(record, result.get("status"), user)
         reply_text = str(result.get("reply") or "").strip()
         action = str(result.get("action") or "ask_structured").strip() or "ask_structured"
@@ -554,6 +564,7 @@ def _process_structured_voice_turn(
             raise HTTPException(status_code=409, detail="turn_state_conflict")
 
         next_state_version = int(session.get("stateVersion") or 0) + 1
+        latency_metrics["api_total_ms"] = round((monotonic() - api_started_at) * 1000, 1)
         turn.update(
             {
                 "processingStatus": "completed",
@@ -574,10 +585,31 @@ def _process_structured_voice_turn(
                     for source in (result.get("retrievedSources") or [])
                     if isinstance(source, dict)
                 ],
+                "latencyMetrics": latency_metrics,
                 "updatedAt": utc_now(),
             }
         )
         voice_turn_repository.save(turn)
+        logger.info(
+            "voice_turn_api_latency turn_id=%s interpreter_ms=%s medium_retry_ms=%s "
+            "patch_repair_ms=%s state_transition_ms=%s retrieval_ms=%s "
+            "question_generation_ms=%s api_total_ms=%s interpreter_calls=%s "
+            "medium_retry_calls=%s patch_repair_calls=%s retrieval_calls=%s "
+            "question_generation_calls=%s",
+            turn["id"],
+            latency_metrics.get("interpreter_ms", 0),
+            latency_metrics.get("medium_retry_ms", 0),
+            latency_metrics.get("patch_repair_ms", 0),
+            latency_metrics.get("state_transition_ms", 0),
+            latency_metrics.get("retrieval_ms", 0),
+            latency_metrics.get("question_generation_ms", 0),
+            latency_metrics.get("api_total_ms", 0),
+            latency_metrics.get("interpreter_calls", 0),
+            latency_metrics.get("medium_retry_calls", 0),
+            latency_metrics.get("patch_repair_calls", 0),
+            latency_metrics.get("retrieval_calls", 0),
+            latency_metrics.get("question_generation_calls", 0),
+        )
         session["currentQuestionId"] = question_id
         session["stateVersion"] = next_state_version
         session["status"] = "completed" if action == "finish" else session.get("status", "active")
@@ -996,6 +1028,11 @@ def _build_process_result(session: dict, turn: dict) -> VoiceTurnProcessResult:
             for source in (turn.get("retrievedSources") or [])
             if isinstance(source, dict)
         ],
+        latency_metrics={
+            str(name): value
+            for name, value in (turn.get("latencyMetrics") or {}).items()
+            if isinstance(value, (int, float))
+        },
         voice_session=session,
         voice_turn=turn,
     )
