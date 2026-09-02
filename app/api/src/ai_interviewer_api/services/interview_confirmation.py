@@ -21,6 +21,8 @@ _EXPLICIT_CONFIRMATIONS_BY_LOCALE: dict[InterviewLocale, frozenset[str]] = {
             "はい大丈夫です",
             "はい合っています",
             "はい合ってます",
+            "はいそれで合っています",
+            "はいそれで合ってます",
             "はい正しいです",
             "はいその通りです",
             "はいそのとおりです",

@@ -35,6 +35,11 @@ nav:
       - リポジトリ構成: reference/repository-structure.md
       - docsとspecsの管理: reference/spec-governance.md
       - 応答形式: reference/response-format.md
+      - 音声E2Eケース（一般・正本）: reference/interview-voice-e2e-test-cases-general.md
+      - 音声E2Eケース（システム）: reference/interview_voice_e2e_test_cases-system.md
+      - 音声E2Eケース（業務フロー）: reference/interview_voice_e2e_test_cases-work-flow.md
+      - 音声E2Eケース（保全）: reference/interview_voice_e2e_test_cases-hozen.md
+      - 音声E2Eケース（暗黙知）: reference/interview_voice_e2e_test_cases-unmokuchi.md
   - コードベースガイド:
       - 概要: codebase/index.md
       - ビジュアルマップ: codebase/dashboard/index.html

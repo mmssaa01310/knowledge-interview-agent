@@ -959,9 +959,11 @@ PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信�
 既知の音声長に1,000msの再生ガードを加えてdrainを通知する。既知の音声長は固定の5秒上限で
 切り捨てず、未知の場合だけ`VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS`を復旧待機時間に使う。
 
-ユーザー音声を120ms連続検出した場合はbarge-inとし、`generation`を更新する。古いLLM応答、
-未再生Polly音声、遅延通知はgeneration照合で破棄する。Transcribeは最大2回再接続し、その間の
-音声を最大3秒保持する。Pollyは指数バックオフ付きで1回再試行し、失敗時も正式応答テキストを表示して会話を継続する。
+回答の確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、後続の音声を
+VAD・Transcribeへ渡さない。`assistant_playback_drained`を受けた後にだけ次の入力を受け付けるため、
+このRuntimeでは正式応答中のbarge-inを行わない。古いLLM応答、未再生Polly音声、遅延通知はgeneration
+照合で破棄する。Transcribeは最大2回再接続し、その間の音声を最大3秒保持する。Pollyは指数
+バックオフ付きで1回再試行し、失敗時も正式応答テキストを表示して会話を継続する。
 
 `generation`はVoice Runtime内の音声生成・再生を無効化する識別子であり、InterviewStateの
 排他制御には使用しない。確定turnには`clientTurnId`と`expectedStateVersion`を付与し、
@@ -969,8 +971,10 @@ APIは重複ID、古いversion、非active Sessionを拒否する。
 
 割り込み関連の操作は、次の3種類を別の責務として扱う。
 
-* `OUTPUT_INTERRUPT`: Barge-in成立時にPolly生成、PCM再生、相槌、通知、未再生Assistant responseを
-  中断し、`generation`を更新して新しいUser Turnを開始する。APIのUser Turnは変更しない。
+* `OUTPUT_INTERRUPT`: 割り込みを許可するRuntimeでBarge-inが成立した場合、または明示的な割り込み操作を
+  受けた場合に、Polly生成、PCM再生、相槌、通知、未再生Assistant responseを中断し、`generation`を更新する。
+  APIのUser Turnは変更しない。Transcribe + Polly Runtimeの通常の正式応答中は入力ゲートを閉じるため、
+  Barge-inは成立しない。
 * `PENDING_TURN_CANCEL`: API応答待ちのUser Turnが`RECEIVED`または`EVALUATING`の場合だけ、
   新しいユーザー発話の開始に伴って明示的に実行する。cancel tombstoneを作成し、遅延commitを拒否する。
 * `COMMITTED_TURN_REVERT`: 通常のBarge-inでは実行しない。明示的な訂正を新しいUser Turnとして

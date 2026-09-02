@@ -8,6 +8,7 @@ from ai_interviewer_api.core.interview_locale import (
 def test_confirmation_accepts_common_speech_recognition_variants() -> None:
     assert is_unambiguous_confirmation("はい、大丈夫です。") is True
     assert is_unambiguous_confirmation("はい そうです") is True
+    assert is_unambiguous_confirmation("はい、それで合っています") is True
     assert is_unambiguous_confirmation("問題ありません") is True
 
 

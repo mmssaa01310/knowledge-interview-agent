@@ -482,7 +482,7 @@ async def test_final_transcript_is_emitted_before_api_control_evaluation() -> No
 
 
 @pytest.mark.anyio
-async def test_new_user_generation_discards_delayed_polly_audio() -> None:
+async def test_formal_reply_ignores_audio_until_playback_drained() -> None:
     transcribe = FakeTranscribe()
     polly = FakePolly()
     polly.release = asyncio.Event()
@@ -516,7 +516,11 @@ async def test_new_user_generation_discards_delayed_polly_audio() -> None:
             break
         await asyncio.sleep(0)
     assert polly.calls
+    assert runtime._input_available is False
+    generation_before = runtime._generation
     await runtime.push_audio(_frame(1200))
+    assert runtime._generation == generation_before
+    assert runtime._turn_active is False
     polly.release.set()
     await reply_task
 
@@ -524,11 +528,17 @@ async def test_new_user_generation_discards_delayed_polly_audio() -> None:
     while not runtime._events.empty():
         events.append(runtime._events.get_nowait())
     assert any(isinstance(event, AssistantTranscriptFinal) for event in events)
-    assert not any(
+    assert any(
         isinstance(event, AssistantAudioChunk)
         and event.response_id == "response-old"
         for event in events
     )
+    assert not any(isinstance(event, AssistantInterrupted) for event in events)
+    await runtime.notify_assistant_playback_drained(
+        response_id="response-old",
+        generation=runtime._generation,
+    )
+    assert runtime._input_available is True
     await runtime.close()
 
 
@@ -650,6 +660,77 @@ async def test_parallel_polly_generation_is_emitted_in_text_order() -> None:
 
 
 @pytest.mark.anyio
+async def test_finalized_answer_blocks_transcribe_until_next_question_drains() -> None:
+    bridge = BlockingBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result(
+        "最初の回答です。",
+        stable_text="最初の回答です。",
+        is_partial=False,
+        result_id="first-answer",
+    )
+    await runtime.push_audio(_frame(0))
+    await asyncio.wait_for(bridge.process_started.wait(), timeout=1.0)
+
+    # The final answer is already committed to the runtime, but API evaluation
+    # and the following formal reply are still in flight.
+    assert runtime._input_available is False
+    sent_audio_before_noise = len(transcribe.audio)
+    await runtime.push_audio(_frame(1200))
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result(
+        "ノイズ由来の発話",
+        is_partial=False,
+        result_id="noise-final",
+    )
+    assert runtime._input_available is False
+    assert runtime._turn_active is False
+    assert len(transcribe.audio) == sent_audio_before_noise
+
+    processing_task = runtime._processing_task
+    assert processing_task is not None
+    bridge.release_process.set()
+    await processing_task
+    assert runtime._formal_response_id == "response-1"
+    assert runtime._input_available is False
+
+    await runtime.notify_assistant_playback_drained(
+        response_id="response-1",
+        generation=runtime._generation,
+    )
+    assert runtime._input_available is True
+
+    # A new answer is accepted only after the browser confirms playback drain.
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result(
+        "次の回答です。",
+        stable_text="次の回答です。",
+        is_partial=False,
+        result_id="second-answer",
+    )
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.11)
+    assert len(bridge.process_calls) == 4
+    assert bridge.process_calls[-1]["transcript"] == "次の回答です。"
+    await runtime.close()
+
+
+@pytest.mark.anyio
 async def test_polly_failure_keeps_formal_text_and_emits_nonfatal_error() -> None:
     runtime = TranscribePollyRuntime(
         config=_config(),
@@ -757,13 +838,13 @@ async def test_empty_polly_output_reopens_input_after_formal_text() -> None:
 
 
 @pytest.mark.anyio
-async def test_barge_in_waits_for_threshold_and_increments_generation_once() -> None:
+async def test_formal_reply_does_not_allow_barge_in_before_playback_drain() -> None:
     bridge = FakeBridge()
     runtime = TranscribePollyRuntime(
         config=_config(),
         interview_bridge=bridge,  # type: ignore[arg-type]
         transcribe=FakeTranscribe(),
-        polly=LongPolly(),
+        polly=FakePolly(),
     )
     await runtime.start(
         VoiceRuntimeContext(
@@ -784,42 +865,29 @@ async def test_barge_in_waits_for_threshold_and_increments_generation_once() -> 
             )
         )
     )
-    for _ in range(30):
-        if runtime._assistant_speaking:
-            break
-        await asyncio.sleep(0.01)
+    await reply_task
     assert runtime._assistant_speaking is True
+    assert runtime._input_available is False
     generation_before = runtime._generation
 
-    for _ in range(5):
+    for _ in range(6):
         await runtime.push_audio(_frame(1200))
     assert runtime._generation == generation_before
     assert runtime._turn_active is False
-    assert reply_task.done() is False
-
-    await runtime.push_audio(_frame(1200))
-    assert runtime._generation == generation_before + 1
-    assert runtime._turn_active is True
-    assert runtime._voiced_duration_ms == 120
-
-    await asyncio.gather(reply_task, return_exceptions=True)
+    assert bridge.process_calls == []
+    await runtime.notify_assistant_playback_drained(
+        response_id="formal-barge",
+        generation=runtime._generation,
+    )
+    assert runtime._input_available is True
     events = []
     while not runtime._events.empty():
         events.append(runtime._events.get_nowait())
-    interrupted = [
-        event for event in events if isinstance(event, AssistantInterrupted)
-    ]
-    assert interrupted[-1].response_id == "formal-barge"
-    assert bridge.cancel_calls == []
     assert (
         runtime._assistant_response_states["formal-barge"]
-        == AssistantResponseState.INTERRUPTED
+        == AssistantResponseState.PLAYED
     )
-    assert not any(
-        isinstance(event, AssistantSpeechEnded)
-        and event.response_id == "formal-barge"
-        for event in events
-    )
+    assert not any(isinstance(event, AssistantInterrupted) for event in events)
     await runtime.close()
 
 
@@ -966,13 +1034,14 @@ async def test_output_interrupt_does_not_cancel_pending_interview_turn() -> None
 
 
 @pytest.mark.anyio
-async def test_barge_in_after_commit_keeps_state_and_uses_current_question() -> None:
+async def test_formal_reply_reopens_after_drain_and_uses_current_question() -> None:
     bridge = FakeBridge()
+    transcribe = FakeTranscribe()
     runtime = TranscribePollyRuntime(
         config=_config(),
         interview_bridge=bridge,  # type: ignore[arg-type]
-        transcribe=FakeTranscribe(),
-        polly=LongPolly(),
+        transcribe=transcribe,
+        polly=FakePolly(),
     )
     await runtime.start(
         VoiceRuntimeContext(
@@ -1003,14 +1072,11 @@ async def test_barge_in_after_commit_keeps_state_and_uses_current_question() -> 
             )
         )
     )
-    for _ in range(30):
-        if runtime._assistant_speaking:
-            break
-        await asyncio.sleep(0.01)
-
+    await reply_task
+    assert runtime._input_available is False
     for _ in range(6):
         await runtime.push_audio(_frame(1200))
-    await asyncio.gather(reply_task, return_exceptions=True)
+    assert runtime._turn_active is False
 
     assert bridge.cancel_calls == []
     assert runtime._state_version == 2
@@ -1022,6 +1088,19 @@ async def test_barge_in_after_commit_keeps_state_and_uses_current_question() -> 
             is_partial=False,
             result_id="confirmation-result",
         )
+    )
+    assert bridge.process_calls == []
+
+    await runtime.notify_assistant_playback_drained(
+        response_id="response-committed",
+        generation=runtime._generation,
+    )
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result(
+        "はい",
+        stable_text="はい",
+        is_partial=False,
+        result_id="confirmation-result-after-drain",
     )
     await runtime.push_audio(_frame(0))
     await asyncio.sleep(0.11)

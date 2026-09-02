@@ -19,6 +19,12 @@ cd app/api && TEST_DATABASE_URL=postgresql://... uv run pytest tests/repositorie
 
 # Documentation
 uv run --group dev mkdocs build --strict
+
+# Voice interview critical conversation controls
+cd app/api && uv run pytest \
+  tests/services/test_structured_interview.py \
+  tests/services/test_interview_voice_case_catalog.py \
+  tests/services/test_interview_confirmation.py
 ```
 
 ## 2. 配置と分離
@@ -41,6 +47,10 @@ API通常テストはメモリStoreで動作する。PostgreSQL統合テスト�
 | PostgreSQL integration | 条件付き | `TEST_DATABASE_URL`が必要 |
 | Browser E2E | 未確認 | 専用のE2E設定・テストは見当たらない |
 | 実AWS統合 | 手動確認が必要 | 認証情報、Bedrock、Transcribe / Polly、WebRTC環境に依存 |
+
+音声インタビューのCriticalケースは、`app/api/tests/fixtures/interview_voice_critical_cases.json`を
+機械可読な契約としてAPIの決定的回帰テストと同期する。`audio.file`が未設定のケースは実音声E2Eではなく、
+Fake Providerを使う状態遷移テストとして扱う。実音声・実AWS・ブラウザ境界は別ランナーで実行する。
 
 ## 4. 品質シグナルとギャップ
 

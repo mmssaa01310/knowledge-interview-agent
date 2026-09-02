@@ -16,6 +16,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
 from ai_interviewer_api.agents.interview_knowledge.provider import (
     BedrockResponsesStructuredProvider,
     _make_strict_schema,
+    _interpreter_system_prompt,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     AnswerAssessment,
@@ -190,6 +191,17 @@ def test_structured_model_selection_uses_luna_when_configured() -> None:
     assert resolve_structured_model_id(
         {"interviewPlan": {"modelId": "global.openai.gpt-5.6-luna"}}
     ) == "global.openai.gpt-5.6-luna"
+
+
+def test_interpreter_prompt_separates_question_help_from_answer_unavailability() -> None:
+    prompt = _interpreter_system_prompt("fixed_form")
+
+    assert "どういう意味ですか" in prompt
+    assert "CLARIFICATION_REQUEST" in prompt
+    assert "よく分からないですね" in prompt
+    assert "UNANSWERABLE" in prompt
+    assert "単に「よく分からない」とだけ言われた場合" in prompt
+    assert "STTが不確実でない限りUNCERTAINにはしません" in prompt
 
 
 def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
@@ -2318,6 +2330,7 @@ def test_complete_utterance_commits_and_advances_to_the_next_field() -> None:
         ("へえ", "BACKCHANNEL"),
         ("先ほど回答しました", "OTHER"),
     ],
+    ids=["GEN-009", "GEN-010", "GEN-012"],
 )
 def test_non_answer_dialogue_acts_keep_the_current_question_without_regeneration(
     transcript: str,
@@ -2351,7 +2364,7 @@ def test_non_answer_dialogue_acts_keep_the_current_question_without_regeneration
     assert len(provider.question_calls) == 1
 
 
-def test_question_clarification_is_not_reframed_as_an_stt_retry() -> None:
+def test_GEN_005_question_clarification_is_not_reframed_as_an_stt_retry() -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-question-clarification",
         (("field-role", "役割"),),
@@ -2370,7 +2383,7 @@ def test_question_clarification_is_not_reframed_as_an_stt_retry() -> None:
         user,
         message_id="clarification-request",
         question=first["question"],
-        content="よくわからない",
+        content="どういう意味ですか？",
     )
 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
@@ -2383,7 +2396,48 @@ def test_question_clarification_is_not_reframed_as_an_stt_retry() -> None:
     assert len(provider.question_calls) == 1
 
 
-def test_qualified_confirmation_keeps_candidate_until_the_difference_is_stated() -> None:
+@pytest.mark.parametrize(
+    "transcript",
+    ["よくわからない", "よく分からないですね", "答えが思いつかない"],
+    ids=["GEN-006-bare", "GEN-006-polite", "answer-not-coming-to-mind"],
+)
+def test_unanswerable_language_is_not_treated_as_stt_failure(transcript: str) -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        f"record-unanswerable-language-{transcript}",
+        (("field-role", "強み"), ("field-department", "部署")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                dialogueAct="ANSWER",
+                answerAssessment=AnswerAssessment(
+                    sufficiency="UNANSWERABLE",
+                    probeType="REFRAME",
+                ),
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="unanswerable-language",
+        question=first["question"],
+        content=transcript,
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["question"]["questionId"] == first["question"]["questionId"]
+    assert result["interviewState"]["fieldStates"]["field-role"]["answerState"] == "UNANSWERED"
+    assert result["interviewState"]["lastStructuredOutput"]["answerAssessment"]["sufficiency"] == "UNANSWERABLE"
+    assert "聞き取" not in result["reply"]
+    assert "具体的な出来事" in result["reply"]
+    assert result["latencyMetrics"]["question_generation_calls"] == 0
+    assert result["latencyMetrics"]["retrieval_calls"] == 0
+
+
+def test_GEN_014_qualified_confirmation_keeps_candidate_until_the_difference_is_stated() -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-qualified-confirmation",
         (("field-role", "役割"),),
@@ -2522,6 +2576,71 @@ def test_corrected_transcript_is_confirmed_before_becoming_a_formal_answer() -> 
     assert confirmed_state["answerState"] == "CONFIRMED"
     assert confirmed_state["recordAnswer"] == corrected
     assert confirmed["interviewState"]["pendingTranscriptConfirmation"] is None
+    assert confirmed["question"]["targetId"] == "field-department"
+
+
+def test_GEN_017_numeric_self_correction_keeps_the_latest_value_only() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-gen-017-numeric-correction",
+        (("field-age", "年齢"), ("field-department", "部署")),
+    )
+    raw = "31……いや、32歳です"
+    corrected = "32歳です"
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                transcriptAssessment=TranscriptAssessment(
+                    rawTranscript=raw,
+                    normalizedTranscript=corrected,
+                    correctionStatus="CORRECTED",
+                    correctionCandidates=[corrected],
+                    correctionReason="数字の言い直し",
+                ),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-age",
+                        value=corrected,
+                        evidenceTranscriptIds=["gen-017-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            ),
+            StructuredInterviewOutput(dialogueAct="CONFIRMATION"),
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="gen-017-answer",
+        question=first["question"],
+        content=raw,
+    )
+
+    candidate = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    candidate_state = candidate["interviewState"]["fieldStates"]["field-age"]
+
+    assert candidate["question"]["targetType"] == "transcript_confirmation"
+    assert candidate["question"]["questionId"] != first["question"]["questionId"]
+    assert corrected in candidate["question"]["text"]
+    assert raw not in candidate["question"]["text"]
+    assert candidate_state["answerState"] == "AWAITING_CONFIRMATION"
+    assert candidate_state["recordAnswer"] is None
+    assert candidate_state["candidateAnswer"] == corrected
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="gen-017-confirmation",
+        question=candidate["question"],
+        content="はい、それで合っています",
+    )
+    confirmed = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    confirmed_state = confirmed["interviewState"]["fieldStates"]["field-age"]
+
+    assert confirmed_state["answerState"] == "CONFIRMED"
+    assert confirmed_state["recordAnswer"] == corrected
+    assert "31" not in str(confirmed_state["recordAnswer"])
     assert confirmed["question"]["targetId"] == "field-department"
 
 
@@ -2816,6 +2935,62 @@ def test_unanswerable_target_gets_one_neutral_probe_then_accepts_explicit_no_det
     assert target_state["answerDisposition"] == "NO_DETAIL"
     assert result["interviewState"]["activeProbeTarget"] is None
     assert result["question"]["targetId"] != first_target_id
+
+
+def test_GEN_025_explicit_refusal_is_not_repeated_beyond_one_neutral_probe() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-gen-025-refusal",
+        (("field-age", "年齢"), ("field-department", "部署")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                dialogueAct="ANSWER",
+                answerAssessment=AnswerAssessment(
+                    sufficiency="REFUSAL",
+                    probeType="CLARIFY",
+                ),
+            ),
+            StructuredInterviewOutput(
+                dialogueAct="ANSWER",
+                answerAssessment=AnswerAssessment(
+                    sufficiency="REFUSAL",
+                    probeType="CLARIFY",
+                ),
+            ),
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="gen-025-refusal-1",
+        question=first["question"],
+        content="それは答えたくないです",
+    )
+
+    probe = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    first_field_state = probe["interviewState"]["fieldStates"]["field-age"]
+    assert probe["question"]["questionId"] == first["question"]["questionId"]
+    assert first_field_state["answerState"] == "UNANSWERED"
+    assert probe["interviewState"]["activeProbeTarget"]["targetId"] == "field-age"
+    assert "答えたくないです" not in probe["reply"]
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="gen-025-refusal-2",
+        question=probe["question"],
+        content="やはり答えたくないです",
+    )
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    final_field_state = result["interviewState"]["fieldStates"]["field-age"]
+
+    assert final_field_state["answerState"] == "CONFIRMED"
+    assert final_field_state["answerDisposition"] == "NO_DETAIL"
+    assert result["interviewState"]["activeProbeTarget"] is None
+    assert result["question"]["targetId"] == "field-department"
+    assert result["question"]["questionId"] != first["question"]["questionId"]
 
 
 def test_one_answer_can_confirm_multiple_fields_without_reasking_them() -> None:

@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "source_document": "docs/reference/interview-voice-e2e-test-cases-general.md",
+  "suite_documents": [
+    "docs/reference/interview-voice-e2e-test-cases-general.md",
+    "docs/reference/interview_voice_e2e_test_cases-system.md",
+    "docs/reference/interview_voice_e2e_test_cases-work-flow.md",
+    "docs/reference/interview_voice_e2e_test_cases-hozen.md",
+    "docs/reference/interview_voice_e2e_test_cases-unmokuchi.md"
+  ],
+  "cases": [
+    {
+      "id": "GEN-005",
+      "profile": "fixed_form",
+      "execution": "deterministic_api",
+      "transcript": "どういう意味ですか？",
+      "audio": {"file": null, "variation": "normal"},
+      "expected": {
+        "dialogue_act_allow": ["CLARIFICATION_REQUEST", "QUESTION_TO_ASSISTANT"],
+        "answer_sufficiency": null,
+        "question_id": "KEEP",
+        "field_state": "UNCHANGED",
+        "response_must_not_contain": ["聞き取れませんでした"]
+      }
+    },
+    {
+      "id": "GEN-006",
+      "profile": "fixed_form",
+      "execution": "deterministic_api",
+      "transcript": "よく分からないですね",
+      "audio": {"file": null, "variation": "normal"},
+      "expected": {
+        "dialogue_act_allow": ["ANSWER"],
+        "answer_sufficiency": "UNANSWERABLE",
+        "question_id": "KEEP",
+        "field_state": "UNCHANGED",
+        "response_must_not_contain": ["聞き取れませんでした"]
+      }
+    },
+    {
+      "id": "GEN-009",
+      "profile": "fixed_form",
+      "execution": "deterministic_api",
+      "transcript": "うーん",
+      "audio": {"file": null, "variation": "normal"},
+      "expected": {
+        "dialogue_act_allow": ["HESITATION"],
+        "answer_sufficiency": null,
+        "question_id": "KEEP",
+        "field_state": "UNCHANGED",
+        "question_generation_calls": 0,
+        "retrieval_calls": 0
+      }
+    },
+    {
+      "id": "GEN-012",
+      "profile": "fixed_form",
+      "execution": "deterministic_api",
+      "transcript": "さっき開発って答えました",
+      "audio": {"file": null, "variation": "normal"},
+      "expected": {
+        "dialogue_act_allow": ["OTHER"],
+        "answer_sufficiency": null,
+        "question_id": "KEEP",
+        "field_state": "UNCHANGED",
+        "question_generation_calls": 0,
+        "retrieval_calls": 0
+      }
+    },
+    {
+      "id": "GEN-014",
+      "profile": "fixed_form",
+      "execution": "deterministic_api",
+      "transcript": "ちょっと違うけど、まあいいです",
+      "audio": {"file": null, "variation": "normal"},
+      "expected": {
+        "dialogue_act_allow": ["CORRECTION", "QUALIFIED_CONFIRMATION"],
+        "dialogue_act_must_not": ["CONFIRMATION"],
+        "field_state_must_not": ["CONFIRMED"],
+        "question_id": "KEEP_OR_CORRECTION_FLOW",
+        "response_intent_allow": ["ASK_DIFFERENCE", "CLARIFY_CORRECTION"]
+      }
+    },
+    {
+      "id": "GEN-017",
+      "profile": "fixed_form",
+      "execution": "deterministic_api",
+      "transcript": "31……いや、32歳です",
+      "audio": {"file": null, "variation": "normal"},
+      "expected": {
+        "dialogue_act_allow": ["ANSWER", "CORRECTION"],
+        "question_id": "CORRECTION_FLOW",
+        "candidate_must_contain": "32歳です",
+        "candidate_must_not_contain": "31"
+      }
+    },
+    {
+      "id": "GEN-025",
+      "profile": "fixed_form",
+      "execution": "deterministic_api",
+      "transcript": "それは答えたくないです",
+      "audio": {"file": null, "variation": "normal"},
+      "expected": {
+        "dialogue_act_allow": ["ANSWER"],
+        "answer_sufficiency": "REFUSAL",
+        "question_id": "KEEP_ONCE_THEN_ADVANCE",
+        "response_must_not_contain": ["同じ質問"]
+      }
+    }
+  ]
+}

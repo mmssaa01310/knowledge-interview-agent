@@ -154,6 +154,7 @@ class TranscribePollyRuntime:
         self._started = False
         self._closed = False
         self._input_available = True
+        self._transcribe_unavailable = False
         self._generation = 0
         self._audio_sequence = 0
         self._current_question_id: str | None = None
@@ -226,6 +227,7 @@ class TranscribePollyRuntime:
         self._context = context
         self._closed = False
         self._input_available = True
+        self._transcribe_unavailable = False
         transcribe_start_task = asyncio.create_task(self._transcribe.start(
             on_result=self._on_transcribe_result,
             on_reconnecting=self._on_transcribe_reconnecting,
@@ -416,7 +418,10 @@ class TranscribePollyRuntime:
         if response_id is not None:
             self._assistant_response_states[response_id] = AssistantResponseState.PLAYED
         if next_state is not None:
-            await self._emit_input_state(next_state)
+            await self._resume_input_after_formal_reply(
+                next_state,
+                reason="assistant_playback_drained",
+            )
 
     async def _wait_for_formal_reply_to_finish(self) -> bool:
         """Keep formal replies serialized until the browser has drained audio."""
@@ -505,6 +510,20 @@ class TranscribePollyRuntime:
         ],
     ) -> None:
         await self._emit(InputStateChanged(input_state=state, generation=self._generation))
+
+    def _close_input_gate(self, *, reason: str) -> None:
+        self._input_available = False
+        self._turn_active = False
+        self._speech_active = False
+        self._silence_started_at = None
+        self._audio_batch.clear()
+        self._barge_in_voiced_ms = 0
+        logger.info(
+            "transcribe_polly_input_gate_closed voice_session_id=%s generation=%s reason=%s",
+            self._context.voice_session_id if self._context is not None else None,
+            self._generation,
+            reason,
+        )
 
     async def _handle_vad(self, voiced: bool, duration_ms: int) -> None:
         now = monotonic()
@@ -605,8 +624,9 @@ class TranscribePollyRuntime:
         await self._emit(RuntimeReconnecting())
 
     async def _on_transcribe_fatal_error(self, exc: Exception) -> None:
-        if self._closed or not self._input_available:
+        if self._closed or self._transcribe_unavailable:
             return
+        self._transcribe_unavailable = True
         self._input_available = False
         self._turn_active = False
         self._speech_active = False
@@ -624,7 +644,11 @@ class TranscribePollyRuntime:
         )
 
     async def _endpoint_loop(self) -> None:
-        while not self._closed and self._input_available:
+        # Keep the endpoint watcher alive while the input gate is closed.  The
+        # gate is reopened only after formal assistant playback has drained;
+        # recreating this task at every turn would race with the first frame of
+        # the next answer.
+        while not self._closed:
             await asyncio.sleep(0.025)
             if not self._turn_active or self._silence_started_at is None:
                 continue
@@ -673,9 +697,11 @@ class TranscribePollyRuntime:
         normalized = transcript.strip()
         if not normalized or not self._turn_active:
             return
-        self._turn_active = False
-        self._speech_active = False
-        self._silence_started_at = None
+        # A final answer closes the audio input immediately.  Frames that are
+        # already queued by the browser are discarded here, so trailing noise
+        # cannot start a second Transcribe turn while the API evaluates this
+        # answer or while Polly plays the next question.
+        self._close_input_gate(reason="final_transcript")
         transcript_final_at_ms = int(time() * 1000)
         await self._emit(UserSpeechEnded())
         await self._emit_input_state("ANSWER_PROCESSING")
@@ -750,6 +776,11 @@ class TranscribePollyRuntime:
         except InterviewApiError as exc:
             if exc.code in {"turn_state_conflict", "turn_duplicate_conflict"}:
                 logger.info("discarded_stale_turn client_turn_id=%s code=%s", client_turn_id, exc.code)
+                if not self._closed and self._formal_response_id is None:
+                    await self._resume_input_after_formal_reply(
+                        "ANSWER_LISTENING",
+                        reason="stale_turn_discarded",
+                    )
                 return
             processing_may_continue = await self._handle_interview_failure(exc)
             return
@@ -762,6 +793,11 @@ class TranscribePollyRuntime:
                 self._clear_active_client_turn(client_turn_id)
         if generation != self._generation or self._closed:
             self._clear_active_client_turn(client_turn_id)
+            if not self._closed and self._formal_response_id is None:
+                await self._resume_input_after_formal_reply(
+                    "ANSWER_LISTENING",
+                    reason="stale_turn_generation",
+                )
             return
         self._apply_bridge_result(result)
         api_completed_at = monotonic()
@@ -822,7 +858,10 @@ class TranscribePollyRuntime:
             await self._emit_input_state("ANSWER_PROCESSING")
             return True
         if self._interview_status == "active":
-            await self._emit_input_state("ANSWER_LISTENING")
+            await self._resume_input_after_formal_reply(
+                "ANSWER_LISTENING",
+                reason=f"interview_failure:{category.lower()}",
+            )
         return False
 
     def _schedule_notice(
@@ -908,6 +947,12 @@ class TranscribePollyRuntime:
         if self._generation == 0:
             self._generation = generation
         action = InterviewAction.from_api(reply.action)
+        next_input_state = self._next_input_state(action)
+        # Keep the gate closed for the entire formal reply lifecycle.  This
+        # covers initial questions as well as replies produced after an
+        # evaluated answer, and prevents barge-in/noise from reaching VAD or
+        # Transcribe before browser playback has drained.
+        self._close_input_gate(reason="formal_reply_started")
         self._assistant_response_states[reply.response_id] = AssistantResponseState.PLANNED
         await self._cancel_notice_tasks()
         await self._output.cancel_notices()
@@ -956,7 +1001,7 @@ class TranscribePollyRuntime:
         self._formal_response_id = reply.response_id
         self._formal_generation = generation
         self._formal_playback_drained_event = asyncio.Event()
-        self._pending_listening_state = self._next_input_state(action)
+        self._pending_listening_state = next_input_state
         request = AudioOutputRequest(
             response_id=reply.response_id,
             generation=generation,
@@ -989,7 +1034,10 @@ class TranscribePollyRuntime:
                     fatal=False,
                 )
             )
-            await self._emit_input_state(self._next_input_state(action))
+            await self._resume_input_after_formal_reply(
+                next_input_state,
+                reason="polly_synthesis_failed",
+            )
             return
         if not result.accepted or result.cancelled:
             self._pipeline_timings.pop(reply.response_id, None)
@@ -998,6 +1046,10 @@ class TranscribePollyRuntime:
                 self._formal_generation = None
                 self._pending_listening_state = None
                 self._release_formal_playback_waiter()
+                await self._resume_input_after_formal_reply(
+                    next_input_state,
+                    reason="formal_reply_not_accepted",
+                )
             return
         if action is InterviewAction.END_INTERVIEW:
             self._interview_status = "completed"
@@ -1013,6 +1065,47 @@ class TranscribePollyRuntime:
                 response_id=reply.response_id,
                 generation=generation,
             )
+
+    async def _resume_input_after_formal_reply(
+        self,
+        next_state: Literal[
+            "ANSWER_LISTENING",
+            "CONFIRMATION_LISTENING",
+            "INTERVIEW_COMPLETED",
+        ],
+        *,
+        reason: str,
+    ) -> None:
+        """Reopen input only after a formal reply has finished or failed.
+
+        The browser may still have buffered audio when the runtime emits
+        ``assistant_speech_ended``.  Callers therefore use this helper from
+        the playback-drained callback (or a terminal error path), not from the
+        output-completed callback.
+        """
+        if self._closed or self._transcribe_unavailable:
+            return
+        if (
+            next_state == "INTERVIEW_COMPLETED"
+            or self._interview_status in {"completed", "stopped"}
+        ):
+            self._input_available = False
+        else:
+            self._input_available = True
+            self._turn_active = False
+            self._speech_active = False
+            self._silence_started_at = None
+            self._audio_batch.clear()
+            self._barge_in_voiced_ms = 0
+        logger.info(
+            "transcribe_polly_input_gate_%s voice_session_id=%s generation=%s next_input_state=%s reason=%s",
+            "opened" if self._input_available else "closed",
+            self._context.voice_session_id if self._context is not None else None,
+            self._generation,
+            next_state,
+            reason,
+        )
+        await self._emit_input_state(next_state)
 
     async def _synthesize_chunks(
         self,
@@ -1211,6 +1304,10 @@ class TranscribePollyRuntime:
             self._pipeline_timings.pop(request.response_id, None)
 
     async def _on_output_interrupted(self, request: AudioOutputRequest) -> None:
+        interrupted_formal = self._formal_response_id == request.response_id
+        next_input_state = (
+            self._pending_listening_state if interrupted_formal else None
+        )
         if self._formal_response_id == request.response_id:
             self._formal_response_id = None
             self._formal_generation = None
@@ -1226,13 +1323,18 @@ class TranscribePollyRuntime:
             self._assistant_speaking = False
         if request.response_id in self._interrupt_emitted_for:
             self._interrupt_emitted_for.discard(request.response_id)
-            return
-        await self._emit(
-            AssistantInterrupted(
-                response_id=request.response_id,
-                generation=self._generation,
+        else:
+            await self._emit(
+                AssistantInterrupted(
+                    response_id=request.response_id,
+                    generation=self._generation,
+                )
             )
-        )
+        if interrupted_formal and next_input_state is not None:
+            await self._resume_input_after_formal_reply(
+                next_input_state,
+                reason="formal_reply_interrupted",
+            )
 
     def _release_formal_playback_waiter(self) -> None:
         drained_event = self._formal_playback_drained_event

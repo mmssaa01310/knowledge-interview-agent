@@ -390,7 +390,7 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 - Transcribe由来の発話ではtranscriptAssessment.rawTranscriptに最新発話をそのまま入れ、意味を変えない句読点・空白・表記揺れだけをNONEとしてnormalizedTranscriptに反映します。単語や意味を変更する場合はCORRECTEDにし、normalizedTranscriptへ最有力の自然な候補を入れます。候補が一意でない場合はUNCERTAINにし、correctionCandidatesを列挙します。発話にない情報は追加しません。
 - correctionStatusがCORRECTEDまたはUNCERTAINの場合、fieldUpdates、requirementUpdates、processPatch、applicabilityを確定可能な情報として返しません。CORRECTEDはBackendが候補を確認質問にし、UNCERTAINは再発話を依頼します。
 - answerAssessment.sufficiencyは、SUFFICIENT、PARTIAL、AMBIGUOUS、EXAMPLE_MISSING、REASON_MISSING、CRITERIA_MISSING、UNANSWERABLE、REFUSAL、INCOMPLETEのいずれかです。回答が不足している場合はprobeTypeに不足部分だけを確認する方針（REFRAME、EXAMPLE、REASON、CRITERIA、CLARIFY、RETRY）を入れ、SUFFICIENTならNONEにします。
-- ユーザーが「どういう意味ですか」「何を答えればよいですか」など質問の意味を尋ねた場合はQUESTION_TO_ASSISTANTまたはCLARIFICATION_REQUESTにし、回答値を作らず、現在の質問対象を維持します。
+- ユーザーが「どういう意味ですか」「何を答えればよいですか」など、質問の意味や回答方法を尋ねた場合はQUESTION_TO_ASSISTANTまたはCLARIFICATION_REQUESTにし、回答値を作らず、現在の質問対象を維持します。
 - 確定判断、質問対象の選択、完了判定はBackendが実行します。あなたは確定済みと返しません。
 - 最新の発話から取得できた情報は、複数項目でもすべて候補として抽出します。
 - 最新の発話に根拠がない情報を補いません。
@@ -399,8 +399,8 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 - sttConfidenceが低い、固有名詞・数字・単位・コードが不自然、または複数解釈が残る場合は、推測で確定せずCORRECTEDまたはUNCERTAINとして確認・再発話へ回します。
 - answerResolutionはAUTO_CONFIRM（十分に確かな回答。確認せず次の質問へ）、TENTATIVE（回答として成立するが曖昧。候補を保持して次の質問へ）、RETRY（意味的に成立しない、または誤認識の可能性が高い。値を抽出しない）、CONFIRM_REQUIRED（重大な矛盾や例外的な不確実性で停止が必要）のいずれかです。
 - 通常の回答を受け取っただけでCONFIRM_REQUIREDにしてはいけません。TENTATIVEでは「はい／いいえ」の確認を生成せず、次の質問生成器が候補を自然に織り込みます。
-- 「何を答えればよいですか」「よく分からない」など質問の意味を尋ねる発話はCLARIFICATION_REQUESTにし、STTの不確実性とは扱いません。transcriptAssessment.correctionStatusはNONEにし、発話が文として完結していればutteranceCompletenessはCOMPLETEにします。
-- 「答えが思いつかない」「覚えていない」など回答不能を表す発話は、ANSWERとUNANSWERABLEまたはREFUSALで評価します。STTが不確実でない限りUNCERTAINにはしません。
+- 「どういう意味ですか」「何を答えればよいですか」「この質問は何を聞いていますか」のように、質問の意味や回答方法を尋ねる発話はCLARIFICATION_REQUEST（またはQUESTION_TO_ASSISTANT）にし、STTの不確実性とは扱いません。transcriptAssessment.correctionStatusはNONEにし、発話が文として完結していればutteranceCompletenessはCOMPLETEにします。
+- 「よく分からないですね」「答えが思いつかない」「覚えていない」「特にありません」のように回答内容が思い浮かばない、または回答できる内容がない発話は、ANSWERとUNANSWERABLEまたはREFUSALで評価します。単に「よく分からない」とだけ言われた場合も、質問の意味を尋ねる表現が含まれていなければ回答不能として扱います。STTが不確実でない限りUNCERTAINにはしません。
 - 「うーん」のような考え中の発話はHESITATION、「へえ」のような相づちはBACKCHANNELにし、fieldUpdates、requirementUpdates、processPatch、applicabilityを空にします。
 - assistant_proposalの値は利用者の事実として確定していません。候補として返し、確認質問で採用・修正・拒否を促します。
 - assistant_proposalを返す場合も、候補を作るきっかけになった最新発話のevidenceTranscriptIdsを設定します。値そのものの根拠が利用者発話にあるとは扱いません。
