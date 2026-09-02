@@ -36,12 +36,19 @@ LEGACY_VOICE_DEMO_FIELD_IDS = {
 }
 
 
-def _question_plan(*items: tuple[str, str, str]) -> InterviewQuestionPlan:
+def _question_plan(
+    *items: tuple[str, str, str],
+    optional_items: tuple[tuple[str, str, str], ...] = (),
+) -> InterviewQuestionPlan:
     return InterviewQuestionPlan(
         requiredItems=[
             InterviewPlanItem(itemId=item_id, label=label, description=description)
             for item_id, label, description in items
-        ]
+        ],
+        optionalItems=[
+            InterviewPlanItem(itemId=item_id, label=label, description=description)
+            for item_id, label, description in optional_items
+        ],
     )
 
 
@@ -117,6 +124,9 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             questionPlan=_question_plan(
                 ("role", "現在の役割", "現在担っている役割"),
                 ("responsibilities", "日々の責任", "日々担っている責任範囲"),
+                optional_items=(
+                    ("role_example", "具体的な業務上の工夫や事例", "役割や責任が分かる具体的な業務上の工夫や事例"),
+                ),
             ),
             displayOrder=2,
         ),
@@ -136,6 +146,9 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             questionPlan=_question_plan(
                 ("experience", "現在の専門性につながる主な経験", "現在の専門性につながる主な経験"),
                 ("turning_point", "大きく影響した出来事・転機", "現在の仕事の進め方や専門性に影響した出来事・転機"),
+                optional_items=(
+                    ("experience_application", "現在の仕事への活かし方", "その経験や転機が現在の仕事にどう活かされているか"),
+                ),
             ),
             displayOrder=3,
         ),
@@ -155,6 +168,9 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             questionPlan=_question_plan(
                 ("strength", "強みや専門性", "業務で発揮された強みや専門性"),
                 ("result_example", "成果につながった具体的な事例", "強みや専門性が成果につながった具体的な事例"),
+                optional_items=(
+                    ("impact", "周囲や業務に生じた変化", "その成果によって周囲や業務に生じた変化"),
+                ),
             ),
             displayOrder=4,
         ),
@@ -174,6 +190,9 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             questionPlan=_question_plan(
                 ("challenge", "現在の課題", "現在の仕事で課題と感じていること"),
                 ("improvement", "実施している改善", "課題に対して実施している改善"),
+                optional_items=(
+                    ("improvement_impact", "改善によって生じた変化", "実施した改善によって生じた変化"),
+                ),
             ),
             displayOrder=5,
         ),
@@ -194,6 +213,9 @@ def ensure_dev_voice_demo() -> dict[str, str]:
                 ("future_theme", "今後取り組みたいテーマ", "今後取り組みたいテーマ"),
                 ("skill", "身につけたい能力", "今後身につけたい能力"),
                 ("support", "実現に向けて必要な支援", "目標の実現に向けて必要な支援"),
+                optional_items=(
+                    ("first_step", "取り組む時期や最初の一歩", "目標に向けて取り組む時期や最初の一歩"),
+                ),
             ),
             displayOrder=6,
         ),

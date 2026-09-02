@@ -22,6 +22,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     process_patch_validation_errors,
     record_interpretation_assessment,
     resolve_profile,
+    select_optional_deepening_target,
     select_next_question_target,
     stage_transcript_correction,
     sync_structured_state_fields,
@@ -567,35 +568,68 @@ def _generate_structured_interview_result(
                     ):
                         confirm_tentative_target(state, tentative_target_before)
                     if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
-                        follow_up_count = _follow_up_count(state, current_target)
-                        if follow_up_count >= 1:
-                            accept_no_answer(
+                        if current_question.get("optionalDeepening"):
+                            # Optional deepening is deliberately bounded to one
+                            # attempt. A refusal or no-detail response ends the
+                            # field's optional probe and keeps the interview moving.
+                            confirm_tentative_target(state, current_target)
+                            clear_probe(state, current_target)
+                        else:
+                            follow_up_count = _follow_up_count(state, current_target)
+                            if follow_up_count >= 1:
+                                accept_no_answer(
+                                    state,
+                                    current_target,
+                                    transcript=str(
+                                        state.get("lastTranscriptAssessment", {}).get(
+                                            "normalizedTranscript"
+                                        )
+                                        or raw_transcript
+                                    ),
+                                    message_id=latest_message_id,
+                                    valid_evidence_ids=valid_evidence_ids,
+                                )
+                            else:
+                                register_probe(
+                                    state,
+                                    target=current_target,
+                                    probe_type=output.answerAssessment.probeType,
+                                )
+                                keep_current_question_for_unanswerable = True
+                    elif answer_sufficiency != "SUFFICIENT":
+                        optional_target = select_optional_deepening_target(
+                            state,
+                            current_target,
+                        )
+                        if optional_target is not None:
+                            register_probe(
                                 state,
-                                current_target,
-                                transcript=str(
-                                    state.get("lastTranscriptAssessment", {}).get(
-                                        "normalizedTranscript"
-                                    )
-                                    or raw_transcript
-                                ),
-                                message_id=latest_message_id,
-                                valid_evidence_ids=valid_evidence_ids,
+                                target=optional_target,
+                                probe_type=output.answerAssessment.probeType,
                             )
+                        elif current_question.get("optionalDeepening"):
+                            # Do not turn one optional probe into a loop when
+                            # the answer remains vague or contains no new detail.
+                            confirm_tentative_target(state, current_target)
+                            clear_probe(state, current_target)
+                        elif _field_target_is_complete(state, current_target) and _follow_up_count(
+                            state,
+                            current_target,
+                        ) >= 1:
+                            # Legacy fields without optionalItems still get one
+                            # useful probe, but never an unbounded deepening loop.
+                            confirm_tentative_target(state, current_target)
+                            clear_probe(state, current_target)
                         else:
                             register_probe(
                                 state,
                                 target=current_target,
                                 probe_type=output.answerAssessment.probeType,
                             )
-                            keep_current_question_for_unanswerable = True
-                    elif answer_sufficiency != "SUFFICIENT":
-                        register_probe(
-                            state,
-                            target=current_target,
-                            probe_type=output.answerAssessment.probeType,
-                        )
                     else:
                         clear_probe(state, current_target)
+                        if current_question.get("optionalDeepening"):
+                            confirm_tentative_target(state, current_target)
                     _save_newly_confirmed_field_messages(
                         record=record,
                         state=state,
@@ -1855,6 +1889,9 @@ def _target_from_question(question: Mapping[str, Any] | None) -> dict[str, Any] 
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
     ):
         if key in question:
             target[key] = deepcopy(question[key])
@@ -1873,6 +1910,20 @@ def _follow_up_count(
     if not isinstance(counts, Mapping):
         return 0
     return int(counts.get(f"{target_type}:{target_id}", counts.get(target_id, 0)) or 0)
+
+
+def _field_target_is_complete(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any] | None,
+) -> bool:
+    if not target:
+        return False
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type != "field" or not target_id:
+        return False
+    field_state = state.get("fieldStates", {}).get(target_id)
+    return isinstance(field_state, Mapping) and not field_state.get("missingRequiredItemIds")
 
 
 def _downgrade_current_target_update(
@@ -2041,6 +2092,9 @@ def _build_question(
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
     ):
         if key in target:
             question[key] = deepcopy(target[key])

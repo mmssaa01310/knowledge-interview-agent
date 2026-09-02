@@ -466,6 +466,97 @@ def test_partial_question_plan_asks_only_missing_items_and_advances_after_comple
     assert completed["question"]["targetId"] == "field-next"
 
 
+def test_completed_field_gets_one_useful_deepening_then_moves_on_without_persistence() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-optional-deepening",
+        (("field-role", "現在の役割"), ("field-next", "次の項目")),
+    )
+    role_field = store.get("knowledge_fields", "field-role")
+    assert role_field is not None
+    role_field.update(
+        {
+            "description": "現在の役割と責任範囲を確認する。",
+            "aiQuestionExamples": ["現在の役割と、日々どのような責任を担っているかを教えてください。"],
+            "questionPlan": InterviewQuestionPlan(
+                requiredItems=[
+                    InterviewPlanItem(itemId="role", label="現在の役割", description="現在担っている役割"),
+                    InterviewPlanItem(itemId="responsibilities", label="日々の責任", description="日々担っている責任範囲"),
+                ],
+                optionalItems=[
+                    InterviewPlanItem(
+                        itemId="role_example",
+                        label="具体的な業務上の工夫や事例",
+                        description="役割や責任が分かる具体的な業務上の工夫や事例",
+                    )
+                ],
+            ).model_dump(),
+        }
+    )
+    store.upsert("knowledge_fields", role_field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                answerAssessment=AnswerAssessment(
+                    sufficiency="EXAMPLE_MISSING",
+                    probeType="EXAMPLE",
+                ),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        itemId="role",
+                        value="チームの進行管理を担当しています",
+                        evidenceTranscriptIds=["optional-role-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                    FieldUpdate(
+                        fieldId="field-role",
+                        itemId="responsibilities",
+                        value="日々の進捗確認とメンバー支援を担っています",
+                        evidenceTranscriptIds=["optional-role-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                ],
+            ),
+            StructuredInterviewOutput(
+                answerAssessment=AnswerAssessment(sufficiency="REFUSAL", probeType="CLARIFY"),
+            ),
+        ]
+    )
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="optional-role-answer",
+        question=first["question"],
+        content="チームの進行管理を担当し、日々は進捗確認とメンバー支援をしています。",
+    )
+
+    deepening = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert deepening["question"]["targetId"] == "field-role"
+    assert deepening["question"]["optionalDeepening"] is True
+    assert deepening["question"]["deepeningItemIds"] == ["role_example"]
+    assert deepening["question"]["text"] == "具体的な業務上の工夫や事例を教えてください。"
+    assert deepening["interviewState"]["fieldStates"]["field-role"]["missingRequiredItemIds"] == []
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="optional-role-refusal",
+        question=deepening["question"],
+        content="特にありません。",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    role_state = result["interviewState"]["fieldStates"]["field-role"]
+    assert role_state["answerState"] == "CONFIRMED"
+    assert role_state["capturedItemIds"] == ["role", "responsibilities"]
+    assert result["question"]["targetId"] == "field-next"
+    assert all(call.get("optionalDeepening") is not True for call in provider.question_calls[2:])
+
+
 def test_structured_interview_extracts_candidate_then_requires_confirmation() -> None:
     user: UserContext = DEV_TOKENS["dev-manager"]
     record = {"id": "record-1", "knowledgeId": "knowledge-1", "title": "申請"}

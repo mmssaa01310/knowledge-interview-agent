@@ -16,10 +16,10 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     RequirementUpdate,
     StructuredInterviewOutput,
 )
+from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
 from ai_interviewer_api.services.interview_answer_resolution import (
     normalize_answer_resolution,
 )
-from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
 
 
 APPLICABILITY_TOPICS: tuple[str, ...] = (
@@ -100,6 +100,8 @@ PURPOSE_PROPOSAL_PREREQUISITES: tuple[tuple[str, str], ...] = (
     ("requirement.users", "利用者"),
     ("requirement.request", "要求内容"),
 )
+
+MAX_OPTIONAL_DEEPENING_PER_FIELD = 1
 
 
 def resolve_profile(knowledge: Mapping[str, Any]) -> InterviewProfile:
@@ -208,6 +210,9 @@ def sync_structured_state_fields(
             if key not in field_state:
                 field_state[key] = deepcopy(value)
                 changed = True
+        if "deepeningItemIds" not in field_state:
+            field_state["deepeningItemIds"] = []
+            changed = True
         changed |= _sync_field_progress(field_state)
     return changed
 
@@ -800,6 +805,9 @@ def _active_probe_target(state: Mapping[str, Any]) -> dict[str, Any] | None:
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
     ):
         if key in value:
             target[key] = deepcopy(value[key])
@@ -848,6 +856,9 @@ def register_probe(
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
     ):
         if key in target:
             active_probe[key] = deepcopy(target[key])
@@ -1129,6 +1140,7 @@ def _new_field_state(
         "candidateItems": [],
         "confirmedItems": [],
         "missingRequiredItemIds": [str(item["itemId"]) for item in required_items],
+        "deepeningItemIds": [],
         "answerDisposition": None,
     }
     field_state.update(metadata)
@@ -1253,6 +1265,68 @@ def _field_optional_items(field_state: Mapping[str, Any]) -> list[dict[str, Any]
     return _normalize_plan_items(plan.get("optionalItems"))
 
 
+def select_optional_deepening_target(
+    state: dict[str, Any],
+    target: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Select at most one useful optional follow-up for a completed field."""
+
+    if not isinstance(target, Mapping):
+        return None
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "").strip()
+    if target_type != "field" or not target_id or target.get("optionalDeepening"):
+        return None
+    field_state = state.get("fieldStates", {}).get(target_id)
+    if not isinstance(field_state, dict):
+        return None
+    if field_state.get("answerState") == "CONFIRMED":
+        return None
+    if _field_missing_required_items(field_state):
+        return None
+    if field_state.get("answerDisposition") == "NO_DETAIL":
+        return None
+
+    asked_ids = [
+        item_id
+        for item_id in (
+            _clean_optional_text(value)
+            for value in field_state.get("deepeningItemIds", [])
+        )
+        if item_id
+    ]
+    if len(asked_ids) >= MAX_OPTIONAL_DEEPENING_PER_FIELD:
+        return None
+    captured_ids = set(_field_captured_item_ids(field_state))
+    item = next(
+        (
+            candidate
+            for candidate in _field_optional_items(field_state)
+            if str(candidate["itemId"]) not in captured_ids
+            and str(candidate["itemId"]) not in asked_ids
+        ),
+        None,
+    )
+    if item is None:
+        return None
+
+    item_id = str(item["itemId"])
+    field_state["deepeningItemIds"] = [*asked_ids, item_id]
+    result = _field_target_with_progress(state, target)
+    result.update(
+        {
+            "label": str(item["label"]),
+            "missingItemIds": [item_id],
+            "missingItems": [deepcopy(item)],
+            "deepeningItemIds": list(field_state["deepeningItemIds"]),
+            "deepeningItems": [deepcopy(item)],
+            "optionalDeepening": True,
+            "capturedItemIds": _field_captured_item_ids(field_state),
+        }
+    )
+    return result
+
+
 def _field_captured_items(field_state: Mapping[str, Any]) -> list[dict[str, Any]]:
     answer_state = str(field_state.get("answerState") or "")
     preferred_keys = (
@@ -1316,10 +1390,6 @@ def _sync_field_progress(field_state: dict[str, Any]) -> bool:
     return changed
 
 
-def _field_has_item_plan(field_state: Mapping[str, Any]) -> bool:
-    return len(_field_required_items(field_state)) > 1
-
-
 def _field_target_with_progress(
     state: Mapping[str, Any],
     target: Mapping[str, Any],
@@ -1335,10 +1405,17 @@ def _field_target_with_progress(
     if not isinstance(field_state, Mapping):
         return result
     required_items = _field_required_items(field_state, field)
+    captured_ids = _field_captured_item_ids(field_state)
+    if result.get("optionalDeepening"):
+        result["capturedItemIds"] = captured_ids
+        result["questionPlan"] = deepcopy(field_state.get("questionPlan") or {})
+        for key in ("sourceQuestion", "sourceDescription"):
+            if field_state.get(key):
+                result[key] = field_state.get(key)
+        return result
     if len(required_items) <= 1:
         return result
     missing_items = _field_missing_required_items(field_state, field)
-    captured_ids = _field_captured_item_ids(field_state)
     if missing_items and captured_ids:
         result["label"] = _join_item_labels(missing_items)
     result["missingItemIds"] = [str(item["itemId"]) for item in missing_items]
@@ -1458,6 +1535,10 @@ def _target_for_current_question(
         str(current_question.get("targetLabel") or current_question.get("label") or target_id),
         2,
     )
+    if target_type == "field":
+        for key in ("deepeningItemIds", "deepeningItems", "optionalDeepening"):
+            if key in current_question:
+                target[key] = deepcopy(current_question[key])
     if target_type == "field":
         target = _field_target_with_progress(state, target)
     if target_type == "field":
