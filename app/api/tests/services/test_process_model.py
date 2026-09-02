@@ -8,7 +8,9 @@ from fastapi import HTTPException
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     ProcessModelEditOutput,
+    ProcessInteraction,
     ProcessNode,
+    ProcessParticipant,
     ProcessPatch,
     RequirementEdit,
     RequirementPatch,
@@ -26,6 +28,7 @@ from ai_interviewer_api.schemas.requests import (
     ProcessModelUpdate,
     RecordCreate,
 )
+from ai_interviewer_api.services.ai_interview import get_interview_state_snapshot
 from ai_interviewer_api.services.process_model import edit_process_model, save_process_model
 
 
@@ -191,8 +194,82 @@ def test_process_model_command_applies_structured_patch_and_keeps_command_histor
     assert provider.context is not None
     assert provider.context["instruction"].startswith("最初の処理")
     messages = store.list("messages", manager.tenant_id)
-    assert any(message.get("messageType") == "process_model_edit_command" for message in messages)
-    assert any(message.get("messageType") == "process_model_edit_reply" for message in messages)
+    command_message = next(
+        message for message in messages
+        if message.get("messageType") == "process_model_edit_command"
+    )
+    reply_message = next(
+        message for message in messages
+        if message.get("messageType") == "process_model_edit_reply"
+    )
+    assert command_message["instructionSummary"] == "最初の処理を『申請内容を受け付ける』に変更して"
+    assert command_message["updatedTargets"] == ["flowchart", "sequence"]
+    assert reply_message["processCommandId"] == command_message["id"]
+    assert reply_message["updatedTargets"] == ["flowchart", "sequence"]
+    assert "フローチャートとシーケンス図を更新しました" in reply_message["processChangeSummary"]
+    assert any("申請内容を受け付ける" in point for point in reply_message["processUpdatedPoints"])
+    snapshot = get_interview_state_snapshot(record, manager, persist=False)
+    snapshot_message_types = {message.get("messageType") for message in snapshot["messages"]}
+    assert {"process_model_edit_command", "process_model_edit_reply"}.issubset(snapshot_message_types)
+
+
+def test_process_model_command_persists_sequence_semantics_for_both_diagrams() -> None:
+    manager = DEV_TOKENS["dev-manager"]
+    record = _create_process_record(manager)
+    _seed_process_state(record, manager)
+    provider = FakeProcessModelProvider(
+        ProcessModelEditOutput(
+            reply="権限分岐と非同期生成を追加しました。",
+            processPatch=ProcessPatch(
+                baseProcessVersion=0,
+                addParticipants=[
+                    ProcessParticipant(
+                        participantId="order-system",
+                        name="受注管理システム",
+                        kind="system",
+                    ),
+                    ProcessParticipant(
+                        participantId="csv-worker",
+                        name="CSV生成処理",
+                        kind="system",
+                    ),
+                ],
+                addInteractions=[
+                    ProcessInteraction(
+                        interactionId="system-to-worker",
+                        sequence=1,
+                        sourceParticipantId="order-system",
+                        targetParticipantId="csv-worker",
+                        action="CSV生成を依頼する",
+                        interactionType="async",
+                        fragmentType="alt",
+                        fragmentId="export-mode",
+                        fragmentLabel="件数が多い場合",
+                    ),
+                ],
+            ),
+        )
+    )
+
+    result = edit_process_model(
+        record,
+        ProcessModelCommand(
+            instruction="件数が多い場合はバックグラウンドでCSVを生成する分岐を追加して",
+            baseProcessVersion=0,
+        ),
+        manager,
+        provider=provider,
+    )
+
+    interaction = result["interviewState"]["processState"]["interactions"][0]
+    assert interaction["interactionType"] == "async"
+    assert interaction["fragmentType"] == "alt"
+    assert interaction["fragmentLabel"] == "件数が多い場合"
+    reply_message = next(
+        message for message in store.list("messages", manager.tenant_id)
+        if message.get("messageType") == "process_model_edit_reply"
+    )
+    assert reply_message["updatedTargets"] == ["flowchart", "sequence"]
 
 
 def test_process_model_command_applies_requirement_and_process_patches() -> None:

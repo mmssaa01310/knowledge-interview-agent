@@ -871,7 +871,7 @@ ProcessModelをインタビューの正本として保存してはならない�
 * インタビューから自動抽出した相互作用は、根拠メッセージがある場合だけ表示対象にする。
 * 管理者が全画面の編集または編集指示で追加した相互作用は、監査用の編集メッセージを変更履歴として持つため、インタビュー発話の根拠がなくても表示対象にする。
 
-シーケンス図はUMLの基本形式で描画する。参加者を上部の長方形で表示し、参加者ごとに下方向の破線ライフラインを引く。相互作用は`sequence`の昇順で上から下へ配置し、送信元から送信先へ向かう横向きの矢印とメッセージ名を表示する。候補状態の相互作用は破線矢印で表示する。
+シーケンス図はUMLの基本形式で描画する。参加者を上部の長方形で表示し、参加者ごとに下方向の破線ライフラインを引く。相互作用は`sequence`の昇順で上から下へ配置し、送信元から送信先へ向かう横向きの矢印とメッセージ名を表示する。`interactionType`で通常送信、戻り値、非同期処理、通知、引き継ぎ、例外を区別し、`fragmentType`、`fragmentId`、`fragmentLabel`で`alt`、`opt`、`loop`相当の複合フラグメントを表示する。候補状態の相互作用は破線矢印で表示する。長いラベルはFrontendで折り返し、シーケンス図もフローチャートと同じく拡大・縮小・ドラッグ移動・全体表示・リセットを提供する。
 
 ### 12.4 レイアウトとFrontend
 
@@ -890,9 +890,9 @@ ProcessModelをインタビューの正本として保存してはならない�
 * `admin`と`knowledge_manager`だけが全画面の「編集」と「保存」を使用できる。`interviewer`と`viewer`は全画面で閲覧だけを行う。
 * 手動編集は既存要素の意味属性を変更する。FrontendはProcessStateのID、ライフサイクル、根拠を直接変更してはならない。
 * 手動保存は`PATCH /api/records/{record_id}/process-model`を使用する。BackendはRecord認可、Record状態、ProcessModelのSchema、要素ID集合、参照関係、`baseProcessVersion`、`baseStateVersion`を検証する。
-* 編集指示は`POST /api/records/{record_id}/process-model/commands`を使用する。LLMは`ProcessModelEditOutput`として`requirementPatch`と`processPatch`を返し、Backendが両方を検証して適用する。
+* 編集指示は`POST /api/records/{record_id}/process-model/commands`を使用する。LLMは`ProcessModelEditOutput`として`requirementPatch`と`processPatch`を返し、Backendが両方を検証して適用する。条件分岐、例外、権限、対象件数、非同期処理、通知、引き継ぎを含むProcessModel指示では、共有するProcessStateを通じてフローチャートとシーケンス図の両方へ反映する。
 * `requirementPatch`は既存RequirementStateの値だけを更新する。更新したRequirementStateは`status=CONFIRMED`、`confirmedSource=management_edit`として保存する。
-* 手動修正または編集指示で変更したProcess要素は`confirmationStatus=confirmed`とする。これは管理者によるProcess要素の確認を示すだけであり、Recordまたはナレッジの正式承認を示さない。
+* 手動修正または編集指示で変更したProcess要素は`confirmationStatus=confirmed`とする。これは管理者によるProcess要素の確認を示すだけであり、Recordまたはナレッジの正式承認を示さない。編集指示と変更結果は監査用メッセージとして通常チャットにも表示し、指示、更新対象、主な反映内容を追跡できるようにする。
 * 承認済みRecordへのProcessModel編集は許可しない。再編集が必要な場合は新しいRecordを作成する。
 * 保存対象はRequirementState、ProcessState、編集履歴であり、Mermaidコード、React Flow座標、画像、表示用HTMLを保存しない。
 

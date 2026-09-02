@@ -51,6 +51,18 @@ function buildFieldQuestion(field: KnowledgeLayoutProps["sortedFields"][number],
   return field.aiQuestionExamples?.find((example) => example.trim()) ?? toSpokenQuestionFromLabel(field.name, t);
 }
 
+function isProcessModelEditMessage(message: KnowledgeLayoutProps["interviewMessages"][number]) {
+  return message.messageType === "process_model_edit_command"
+    || message.messageType === "process_model_edit_reply";
+}
+
+function processEditTargetLabel(target: string, t: Translate) {
+  if (target === "flowchart") return t("interview.process.historyFlowchart");
+  if (target === "sequence") return t("interview.process.historySequence");
+  if (target === "requirements") return t("interview.process.historyRequirements");
+  return target;
+}
+
 export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const { t, locale } = useI18n();
   const resolvedInterviewLocale = resolveRecordInterviewLocale(
@@ -94,6 +106,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const assistantMessages = useMemo(
     () => props.interviewMessages.filter((message) => message.role === "assistant" || message.role === "ai"),
     [props.interviewMessages],
+  );
+  const hasInterviewConversationMessages = props.interviewMessages.some(
+    (message) => !isProcessModelEditMessage(message),
   );
   const configuredQuestionMessages = useMemo(
     () => assistantMessages.filter(
@@ -297,7 +312,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     && canAnswerRecord
     && !props.isInterviewStreaming
     && !realtimeVoice.isActive
-    && props.interviewMessages.length === 0
+    && !hasInterviewConversationMessages
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
   const hasDemoResetAction = import.meta.env.DEV && isManagementUser && (
@@ -313,7 +328,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const currentTargetLabel = props.interviewState?.nextQuestionTarget?.label;
   const currentTargetMessage = currentTargetLabel
     ? t("interview.targetNow", { target: currentTargetLabel })
-    : props.interviewMessages.length > 0
+    : hasInterviewConversationMessages
       ? t("interview.organizing")
       : t("interview.startPrompt");
   const publishedLearningGuidance = props.user?.role === "interviewer"
@@ -567,7 +582,10 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             </div>
             <div ref={chatLogRef} className="chat-log">
               {props.interviewMessages.map((message, index) => (
-                <div key={message.id ?? `${message.role}-${index}`} className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}`}>
+                <div
+                  key={message.id ?? `${message.role}-${index}`}
+                  className={`bubble ${message.role === "assistant" || message.role === "ai" ? "ai" : "user"}${isProcessModelEditMessage(message) ? " process-edit-history-bubble" : ""}`}
+                >
                   {message.role === "assistant" || message.role === "ai" ? (
                     <div className="message-meta">
                       <KikoAvatar
@@ -576,8 +594,45 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                       />
                     </div>
                   ) : null}
+                  {message.messageType === "process_model_edit_command" ? (
+                    <span className="process-edit-history-label">
+                      {t("interview.process.historyInstruction")}
+                    </span>
+                  ) : null}
+                  {message.messageType === "process_model_edit_reply" ? (
+                    <span className="process-edit-history-label">
+                      {t("interview.process.historyUpdate")}
+                    </span>
+                  ) : null}
                   {message.candidateSource === "assistant_proposal" ? <span className="proposal-message-label">{t("interview.proposalLabel")}</span> : null}
-                  <p>{message.text}</p>
+                  <p>{message.messageType === "process_model_edit_command"
+                    ? message.instructionSummary || message.text
+                    : message.text}</p>
+                  {message.messageType === "process_model_edit_reply" ? (
+                    <div className="process-edit-history-details">
+                      {message.updatedTargets?.length ? (
+                        <div className="process-edit-history-targets">
+                          <span>{t("interview.process.historyTargets")}</span>
+                          <ul>
+                            {message.updatedTargets.map((target) => (
+                              <li key={target}>{processEditTargetLabel(target, t)}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {message.processChangeSummary ? (
+                        <p className="process-edit-history-summary">{message.processChangeSummary}</p>
+                      ) : null}
+                      {message.processUpdatedPoints?.length ? (
+                        <div className="process-edit-history-points">
+                          <span>{t("interview.process.historyPoints")}</span>
+                          <ul>
+                            {message.processUpdatedPoints.map((point) => <li key={point}>{point}</li>)}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {isCurrentProposal(message) ? (
                     <button
                       type="button"

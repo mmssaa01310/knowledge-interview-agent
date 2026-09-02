@@ -56,6 +56,10 @@ _EDITABLE_FIELDS = {
         "targetParticipantId",
         "action",
         "data",
+        "interactionType",
+        "fragmentType",
+        "fragmentId",
+        "fragmentLabel",
     },
 }
 
@@ -159,6 +163,7 @@ def edit_process_model(
     latest_version = _process_version(latest_process)
     _require_version(payload.baseProcessVersion, latest_version)
     _require_state_version(payload.baseStateVersion, _state_version(latest_state))
+    before_requirement_states = _copy_requirement_states(latest_state)
     if _has_process_operations(output.processPatch):
         next_process, changed_process_ids = _apply_command_patch(
             latest_process,
@@ -170,6 +175,22 @@ def edit_process_model(
         latest_state,
         output.requirementPatch,
         command_id,
+    )
+    edit_history = _build_process_edit_history(
+        before_process=latest_process,
+        after_process=next_process,
+        before_requirement_states=before_requirement_states,
+        after_requirement_states=_copy_requirement_states(latest_state),
+        changed_process_ids=changed_process_ids,
+        changed_requirement_ids=changed_requirement_ids,
+        process_version=_process_version(next_process),
+    )
+    _store_process_command(
+        record,
+        user,
+        command_id,
+        instruction,
+        edit_history=edit_history,
     )
     changed_ids = sorted(set(changed_process_ids + changed_requirement_ids))
     if changed_ids:
@@ -186,7 +207,7 @@ def edit_process_model(
         _persist_state(latest_state, user)
 
     reply = output.reply.strip() or "ProcessModelを更新しました。"
-    _store_process_reply(record, user, command_id, reply)
+    _store_process_reply(record, user, command_id, reply, edit_history=edit_history)
     write_audit_log(
         user,
         "process_model_command",
@@ -596,21 +617,34 @@ def _store_process_command(
     user: UserContext,
     command_id: str,
     instruction: str,
+    *,
+    edit_history: Mapping[str, Any] | None = None,
 ) -> None:
     now = utc_now()
+    existing = store.get("messages", command_id)
+    message = dict(existing) if isinstance(existing, Mapping) else {
+        "id": command_id,
+        "tenantId": user.tenant_id,
+        "recordId": record["id"],
+        "content": instruction,
+        "role": "user",
+        "isActualUtterance": False,
+        "messageType": "process_model_edit_command",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    message.update(
+        {
+            "content": instruction,
+            "updatedAt": now,
+            "instructionSummary": _summarize_process_instruction(instruction),
+        }
+    )
+    if edit_history:
+        message.update(edit_history)
     store.upsert(
         "messages",
-        {
-            "id": command_id,
-            "tenantId": user.tenant_id,
-            "recordId": record["id"],
-            "content": instruction,
-            "role": "user",
-            "isActualUtterance": False,
-            "messageType": "process_model_edit_command",
-            "createdAt": now,
-            "updatedAt": now,
-        },
+        message,
     )
 
 
@@ -619,23 +653,108 @@ def _store_process_reply(
     user: UserContext,
     command_id: str,
     reply: str,
+    *,
+    edit_history: Mapping[str, Any] | None = None,
 ) -> None:
     now = utc_now()
-    store.upsert(
-        "messages",
-        {
-            "id": f"process-reply-{uuid4().hex}",
-            "tenantId": user.tenant_id,
-            "recordId": record["id"],
-            "content": reply,
-            "role": "assistant",
-            "isActualUtterance": False,
-            "messageType": "process_model_edit_reply",
-            "processCommandId": command_id,
-            "createdAt": now,
-            "updatedAt": now,
-        },
-    )
+    message = {
+        "id": f"process-reply-{command_id}",
+        "tenantId": user.tenant_id,
+        "recordId": record["id"],
+        "content": reply,
+        "role": "assistant",
+        "isActualUtterance": False,
+        "messageType": "process_model_edit_reply",
+        "processCommandId": command_id,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    if edit_history:
+        message.update(edit_history)
+    store.upsert("messages", message)
+
+
+def _summarize_process_instruction(instruction: str) -> str:
+    summary = " ".join(instruction.split())
+    if len(summary) <= 240:
+        return summary
+    return f"{summary[:237]}…"
+
+
+def _short_process_history_value(value: Any, fallback: str) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return fallback
+    if len(text) <= 120:
+        return text
+    return f"{text[:117]}…"
+
+
+def _build_process_edit_history(
+    *,
+    before_process: Mapping[str, Any],
+    after_process: Mapping[str, Any],
+    before_requirement_states: Mapping[str, Mapping[str, Any]],
+    after_requirement_states: Mapping[str, Mapping[str, Any]],
+    changed_process_ids: Sequence[str],
+    changed_requirement_ids: Sequence[str],
+    process_version: int,
+) -> dict[str, Any]:
+    updated_targets: list[str] = []
+    updated_points: list[str] = []
+
+    if changed_process_ids:
+        # Both diagrams are derived views of the same ProcessState. Keeping
+        # both targets in the audit message makes that contract explicit to
+        # the normal chat history as well as to the full-screen editor.
+        updated_targets.extend(["flowchart", "sequence"])
+        changed_id_set = set(changed_process_ids)
+        history_labels = {
+            "participants": ("関係者", "participantId", "name"),
+            "nodes": ("処理", "nodeId", "label"),
+            "edges": ("つながり", "edgeId", "label"),
+            "interactions": ("やり取り", "interactionId", "action"),
+        }
+        for collection, (kind, id_key, value_key) in history_labels.items():
+            before_items = {
+                str(item.get(id_key)): item
+                for item in before_process.get(collection, [])
+                if isinstance(item, Mapping)
+            }
+            after_items = {
+                str(item.get(id_key)): item
+                for item in after_process.get(collection, [])
+                if isinstance(item, Mapping)
+            }
+            for entity_id in sorted(changed_id_set & set(before_items | after_items)):
+                item = after_items.get(entity_id) or before_items.get(entity_id) or {}
+                if item.get("lifecycle") == "superseded":
+                    value = "削除"
+                else:
+                    value = _short_process_history_value(item.get(value_key), entity_id)
+                updated_points.append(f"{kind}「{value}」")
+
+    for requirement_id in sorted(set(changed_requirement_ids)):
+        item = after_requirement_states.get(requirement_id) or before_requirement_states.get(requirement_id) or {}
+        label = _short_process_history_value(item.get("label"), requirement_id)
+        value = _short_process_history_value(item.get("value"), "更新")
+        updated_points.append(f"要件「{label}」: {value}")
+        if "requirements" not in updated_targets:
+            updated_targets.append("requirements")
+
+    if "flowchart" in updated_targets and "sequence" in updated_targets:
+        change_summary = "フローチャートとシーケンス図を更新しました。"
+    elif "requirements" in updated_targets:
+        change_summary = "要件整理を更新しました。"
+    else:
+        change_summary = "変更はありませんでした。"
+
+    return {
+        "updatedTargets": updated_targets,
+        "processChangeSummary": change_summary,
+        "processUpdatedPoints": updated_points[:8],
+        "processVersion": process_version,
+    }
 
 
 def _select_edit_reasoning_effort(

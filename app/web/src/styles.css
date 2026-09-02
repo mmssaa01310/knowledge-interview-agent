@@ -1909,15 +1909,28 @@ label {
 .sequence-diagram-scroll {
   width: 100%;
   height: 290px;
-  overflow: auto;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
   border: 1px solid #d7e0e8;
   border-radius: 8px;
   background: #ffffff;
+  cursor: grab;
+  user-select: none;
+}
+
+.sequence-diagram-scroll:active {
+  cursor: grabbing;
 }
 
 .sequence-diagram {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
   max-width: none;
+  transform-origin: 0 0;
+  overflow: visible;
 }
 
 .sequence-participant-box {
@@ -1926,10 +1939,20 @@ label {
   stroke-width: 2;
 }
 
+.sequence-participant-box.candidate {
+  stroke-dasharray: 6 4;
+}
+
 .sequence-participant-label,
 .sequence-message-label {
   fill: #26394d;
   font-size: 12px;
+}
+
+.sequence-message-number {
+  fill: #728397;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .sequence-lifeline {
@@ -1946,6 +1969,70 @@ label {
 
 .sequence-message-line.candidate {
   stroke-dasharray: 5 4;
+}
+
+.sequence-message-line.sequence-message-return {
+  stroke-dasharray: 6 4;
+}
+
+.sequence-message-line.sequence-message-async {
+  stroke-dasharray: 8 4;
+}
+
+.sequence-message-line.sequence-message-notification {
+  stroke-width: 1.5;
+}
+
+.sequence-message-line.sequence-message-handoff {
+  stroke-width: 2.2;
+}
+
+.sequence-message-line.sequence-message-exception {
+  stroke: #b55a55;
+  stroke-width: 2.1;
+}
+
+.sequence-arrow-head {
+  fill: #526b82;
+  stroke: none;
+}
+
+.sequence-return-head {
+  fill: #ffffff;
+  stroke: #526b82;
+  stroke-width: 1.2;
+}
+
+.sequence-fragment {
+  fill: rgba(245, 249, 252, 0.45);
+  stroke: #94a6b7;
+  stroke-width: 1.4;
+}
+
+.sequence-fragment-opt {
+  stroke-dasharray: 6 4;
+}
+
+.sequence-fragment-loop {
+  stroke: #6f91aa;
+}
+
+.sequence-fragment-label-box {
+  fill: #edf3f7;
+  stroke: #94a6b7;
+  stroke-width: 1.2;
+}
+
+.sequence-fragment-label {
+  fill: #415a70;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.sequence-fragment-condition {
+  fill: #61768a;
+  font-size: 10px;
+  font-style: italic;
 }
 
 .process-flow-canvas .react-flow__attribution {
@@ -2709,6 +2796,53 @@ label {
 .bubble.user {
   background: #eaf6ef;
   justify-self: end;
+}
+
+.process-edit-history-bubble {
+  max-width: min(92%, 760px);
+}
+
+.process-edit-history-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #526b82;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.process-edit-history-details {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #d7e0e8;
+  color: #526b82;
+  font-size: 11px;
+}
+
+.process-edit-history-details p,
+.process-edit-history-details ul {
+  margin: 0;
+}
+
+.process-edit-history-details ul {
+  padding-left: 18px;
+}
+
+.process-edit-history-targets,
+.process-edit-history-points {
+  display: grid;
+  gap: 3px;
+}
+
+.process-edit-history-targets > span,
+.process-edit-history-points > span {
+  font-weight: 800;
+}
+
+.process-edit-history-summary {
+  overflow-wrap: anywhere;
 }
 
 .message-box {

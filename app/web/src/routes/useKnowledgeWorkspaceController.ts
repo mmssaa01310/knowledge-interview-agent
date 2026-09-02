@@ -95,6 +95,11 @@ function isSameInterviewAnswerTarget(
     && (left.targetId ?? null) === (right.targetId ?? null);
 }
 
+function isProcessModelHistoryMessage(message: Pick<ChatMessage, "messageType">) {
+  return message.messageType === "process_model_edit_command"
+    || message.messageType === "process_model_edit_reply";
+}
+
 const LAST_KNOWLEDGE_ID_STORAGE_KEY = "ai-interviewer.last-knowledge-id";
 
 function getLastKnowledgeId() {
@@ -345,7 +350,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       markRecordAsSubmitted(recordId);
     }
     const snapshotMessages = snapshot.messages
-      .filter((message) => message.isActualUtterance !== false)
+      .filter((message) => (
+        message.isActualUtterance !== false
+        || message.messageType === "process_model_edit_command"
+        || message.messageType === "process_model_edit_reply"
+      ))
       .map((message) => ({
         id: message.id,
         recordId,
@@ -365,7 +374,17 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         candidateSource: message.candidateSource,
         retrievedSources: message.retrievedSources,
         isActualUtterance: message.isActualUtterance,
-        isLegacy: !message.questionId && !message.answerToQuestionId && !message.turnType,
+        messageType: message.messageType,
+        processCommandId: message.processCommandId,
+        instructionSummary: message.instructionSummary,
+        updatedTargets: message.updatedTargets,
+        processChangeSummary: message.processChangeSummary,
+        processUpdatedPoints: message.processUpdatedPoints,
+        processVersion: message.processVersion,
+        isLegacy: !message.questionId
+          && !message.answerToQuestionId
+          && !message.turnType
+          && !message.messageType,
       }));
     setInterviewMessages((messages) => mergeVoiceMessages(messages, snapshotMessages));
     setStructuredDraft(snapshot.structuredDraft ?? {});
@@ -1185,7 +1204,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     const content = (contentOverride ?? chatInput).trim();
     if (!selectedRecord || !content || isInterviewStreaming) return;
     const interviewHasStarted = Boolean(
-      interviewMessages.length
+      interviewMessages.some((message) => !isProcessModelHistoryMessage(message))
         || interviewState?.currentQuestionId
         || interviewState?.askedQuestions.length
         || interviewState?.lastProcessedUserMessageId,

@@ -126,6 +126,17 @@ class ProcessInteraction(StrictModel):
     targetParticipantId: str
     action: str
     data: str | None = None
+    interactionType: Literal[
+        "message",
+        "return",
+        "async",
+        "notification",
+        "handoff",
+        "exception",
+    ] = "message"
+    fragmentType: Literal["none", "alt", "opt", "loop"] = "none"
+    fragmentId: str | None = None
+    fragmentLabel: str | None = None
     evidenceTranscriptIds: list[str] = Field(default_factory=list)
     lifecycle: Literal["active", "superseded"] = "active"
     confirmationStatus: ProcessConfirmationStatus = "candidate"

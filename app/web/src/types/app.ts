@@ -198,6 +198,13 @@ export type ChatMessage = {
   targetId?: string | null;
   candidateSource?: InterviewCandidateSource | null;
   retrievedSources?: RetrievedSourceReference[];
+  messageType?: "process_model_edit_command" | "process_model_edit_reply" | string;
+  processCommandId?: string | null;
+  instructionSummary?: string | null;
+  updatedTargets?: Array<"requirements" | "flowchart" | "sequence" | string>;
+  processChangeSummary?: string | null;
+  processUpdatedPoints?: string[];
+  processVersion?: number | null;
 };
 
 export type InterviewAnswerTarget = {

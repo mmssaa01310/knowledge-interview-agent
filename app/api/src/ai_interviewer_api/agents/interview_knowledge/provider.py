@@ -458,6 +458,9 @@ def _process_model_edit_system_prompt() -> str:
 - ノードや参加者を削除する必要がある指示は、削除できない旨をreplyで短く説明し、削除以外の変更を返さないでください。
 - sourceNodeId、targetNodeId、sourceParticipantId、targetParticipantIdは入力状態にあるIDだけを使用してください。
 - フローチャートのnodeTypeは、開始をstart、処理をactivity、判断をdecision、終了をend、システムをsystem、入出力データをdata、サブプロセスをsubprocessとして返してください。
+- 条件分岐、例外、権限エラー、対象データなし、即時処理と非同期処理、バックグラウンド完了通知、引き継ぎを編集する指示では、ProcessStateを正本としてフローチャートとシーケンス図の両方に反映してください。対応するProcessNode/ProcessEdgeだけ、またはProcessParticipant/ProcessInteractionだけを更新して片方を古いままにしてはいけません。
+- シーケンス図のProcessInteractionは、通常の送信をmessage、戻り値をreturn、バックグラウンド処理をasync、結果通知をnotification、担当者への引き継ぎをhandoff、異常系をexceptionとしてinteractionTypeに設定してください。条件分岐、任意処理、繰り返しはfragmentTypeのalt、opt、loopで表し、fragmentIdとfragmentLabelで同じ断片と条件を対応づけてください。
+- 既存の参加者で表せないシステム、ジョブ、通知先、担当者が指示に明示されている場合だけProcessParticipantを追加し、その参加者を参照するProcessInteractionも追加してください。ユーザーが言っていない参加者や処理結果を推測して追加してはいけません。
 - 要件だけを変更する場合、processPatchの各操作配列は空にしてください。
 - 変更対象以外の配列は空にしてください。
 - replyは要件またはProcessModelに実施した変更を日本語で1〜2文にしてください。変更できない場合は理由と代替案を示してください。

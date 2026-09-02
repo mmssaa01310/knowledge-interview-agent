@@ -2191,6 +2191,20 @@ label {
   background: var(--ki-primary-soft);
 }
 
+.process-edit-history-bubble {
+  border-color: var(--ki-border-strong);
+  background: var(--ki-surface-tint);
+}
+
+.process-edit-history-label {
+  color: var(--ki-primary-strong);
+}
+
+.process-edit-history-details {
+  border-color: var(--ki-border);
+  color: var(--ki-muted);
+}
+
 .message-meta {
   display: flex;
   align-items: center;
@@ -2568,6 +2582,10 @@ label {
   stroke: #57919a;
 }
 
+.sequence-participant-box.candidate {
+  stroke-dasharray: 6 4;
+}
+
 .sequence-participant-label,
 .sequence-message-label {
   fill: var(--ki-text);
@@ -2579,6 +2597,33 @@ label {
 
 .sequence-message-line {
   stroke: var(--ki-primary);
+}
+
+.sequence-message-line.sequence-message-exception {
+  stroke: var(--ki-error);
+}
+
+.sequence-arrow-head {
+  fill: var(--ki-primary);
+}
+
+.sequence-return-head {
+  stroke: var(--ki-primary);
+}
+
+.sequence-fragment {
+  fill: color-mix(in srgb, var(--ki-surface) 72%, transparent);
+  stroke: var(--ki-border-strong);
+}
+
+.sequence-fragment-label-box {
+  fill: var(--ki-surface-tint);
+  stroke: var(--ki-border-strong);
+}
+
+.sequence-fragment-label,
+.sequence-fragment-condition {
+  fill: var(--ki-muted);
 }
 
 .sequence-interaction-list {

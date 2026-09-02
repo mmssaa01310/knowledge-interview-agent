@@ -1,10 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Background,
+  ControlButton,
   Controls,
   Handle,
   MarkerType,
+  Panel,
   ReactFlow,
   ReactFlowProvider,
   type Edge,
@@ -34,6 +36,22 @@ type ProcessEntity = Record<string, unknown>;
 type Graph = { nodes: Node[]; edges: Edge[] };
 type FlowchartNodeData = { label?: string; nodeType?: FlowchartNodeKind; candidate?: boolean };
 type FlowchartNodeType = Node<FlowchartNodeData>;
+type SequenceInteractionType = "message" | "return" | "async" | "notification" | "handoff" | "exception";
+type SequenceFragmentType = "none" | "alt" | "opt" | "loop";
+type SequenceParticipantData = { label?: string; kind?: string; candidate?: boolean };
+type SequenceMessageData = {
+  sequence?: number;
+  data?: string;
+  interactionType?: SequenceInteractionType;
+  fragmentType?: SequenceFragmentType;
+  fragmentId?: string;
+  fragmentLabel?: string;
+  candidate?: boolean;
+};
+type SequenceGraph = {
+  nodes: Array<Node<SequenceParticipantData>>;
+  edges: Array<Edge<SequenceMessageData>>;
+};
 type SmoothstepFlowEdge = Edge & {
   pathOptions?: { borderRadius?: number; offset?: number };
 };
@@ -218,27 +236,54 @@ function buildFlowchart(processState: ProcessModelState, t: Translate): Graph {
   return { nodes, edges };
 }
 
-function buildSequence(processState: ProcessModelState, t: Translate): Graph {
+const SEQUENCE_INTERACTION_TYPES: SequenceInteractionType[] = [
+  "message",
+  "return",
+  "async",
+  "notification",
+  "handoff",
+  "exception",
+];
+const SEQUENCE_FRAGMENT_TYPES: SequenceFragmentType[] = ["none", "alt", "opt", "loop"];
+
+function sequenceInteractionType(value: unknown, label: string): SequenceInteractionType {
+  if (SEQUENCE_INTERACTION_TYPES.includes(value as SequenceInteractionType)) {
+    return value as SequenceInteractionType;
+  }
+  if (/(?:例外|異常|エラー|失敗|権限なし|exception|error|failure)/iu.test(label)) return "exception";
+  if (/(?:非同期|バックグラウンド|キュー|async|background|queue)/iu.test(label)) return "async";
+  if (/(?:通知|notify|notification)/iu.test(label)) return "notification";
+  if (/(?:引き継|エスカレーション|handoff)/iu.test(label)) return "handoff";
+  if (/(?:応答|返却|結果を返|return|response)/iu.test(label)) return "return";
+  return "message";
+}
+
+function sequenceFragmentType(value: unknown, label: string): SequenceFragmentType {
+  if (SEQUENCE_FRAGMENT_TYPES.includes(value as SequenceFragmentType)) {
+    return value as SequenceFragmentType;
+  }
+  if (/(?:繰り返|反復|毎回|各件|loop|retry)/iu.test(label)) return "loop";
+  if (/(?:任意|必要に応じ|場合のみ|opt)/iu.test(label)) return "opt";
+  if (/(?:条件|分岐|権限|件数|場合|正常|異常|alt)/iu.test(label)) return "alt";
+  return "none";
+}
+
+function buildSequence(processState: ProcessModelState, t: Translate): SequenceGraph {
   const participants = (processState.participants ?? []).filter(
     (participant) => participant.lifecycle !== "superseded",
   );
-  const nodes = participants.map((participant, index): Node => {
+  const nodes = participants.map((participant, index): Node<SequenceParticipantData> => {
     const isCandidate = participant.confirmationStatus !== "confirmed";
     return {
       id: text(participant.participantId, `participant-${index}`),
       position: { x: index * 210, y: 20 },
-      data: { label: text(participant.name, t("interview.process.participant")) },
+      data: {
+        label: text(participant.name, t("interview.process.participant")),
+        kind: text(participant.kind, "unknown"),
+        candidate: isCandidate,
+      },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
-      style: {
-        borderRadius: 10,
-        border: `${isCandidate ? "1px dashed" : "1px solid"} #9c86c4`,
-        background: "#faf7ff",
-        color: "#392b53",
-        padding: "10px 12px",
-        width: 170,
-        fontSize: 13,
-      },
     };
   });
   const participantIds = new Set(nodes.map((node) => node.id));
@@ -250,84 +295,437 @@ function buildSequence(processState: ProcessModelState, t: Translate): Graph {
       || (Array.isArray(interaction.evidenceTranscriptIds) && interaction.evidenceTranscriptIds.length > 0)
     ))
     .filter((interaction) => participantIds.has(text(interaction.sourceParticipantId, "")) && participantIds.has(text(interaction.targetParticipantId, "")))
-    .map((interaction, index): Edge => ({
-      id: text(interaction.interactionId, `interaction-${index}`),
-      source: text(interaction.sourceParticipantId, ""),
-      target: text(interaction.targetParticipantId, ""),
-      label: text(interaction.action, t("interview.process.interaction")),
-      type: "smoothstep",
-      markerEnd: { type: MarkerType.ArrowClosed },
-      style: interaction.confirmationStatus === "confirmed" ? undefined : { strokeDasharray: "5 4" },
-    }));
+    .map((interaction, index): Edge<SequenceMessageData> => {
+      const label = text(interaction.action, t("interview.process.interaction"));
+      return {
+        id: text(interaction.interactionId, `interaction-${index}`),
+        source: text(interaction.sourceParticipantId, ""),
+        target: text(interaction.targetParticipantId, ""),
+        label,
+        data: {
+          sequence: Math.max(1, number(interaction.sequence, index + 1)),
+          data: text(interaction.data, "") || undefined,
+          interactionType: sequenceInteractionType(interaction.interactionType, label),
+          fragmentType: sequenceFragmentType(interaction.fragmentType, label),
+          fragmentId: text(interaction.fragmentId, "") || undefined,
+          fragmentLabel: text(interaction.fragmentLabel, "") || undefined,
+          candidate: interaction.confirmationStatus !== "confirmed",
+        },
+        style: interaction.confirmationStatus === "confirmed" ? undefined : { strokeDasharray: "5 4" },
+      };
+    });
   return { nodes, edges };
 }
 
-function SequenceDiagram({ graph, t }: { graph: Graph; t: Translate }) {
+function visualTextLength(value: string) {
+  return Array.from(value).reduce(
+    (length, character) => length + (character.charCodeAt(0) > 0xff ? 1.8 : 1),
+    0,
+  );
+}
+
+function wrapSequenceText(value: string, maxVisualWidth: number) {
+  const lines: string[] = [];
+  let current = "";
+  let currentWidth = 0;
+  for (const character of Array.from(value || "")) {
+    if (character === "\n") {
+      lines.push(current);
+      current = "";
+      currentWidth = 0;
+      continue;
+    }
+    const characterWidth = character.charCodeAt(0) > 0xff ? 1.8 : 1;
+    if (current && currentWidth + characterWidth > maxVisualWidth) {
+      lines.push(current);
+      current = character;
+      currentWidth = characterWidth;
+    } else {
+      current += character;
+      currentWidth += characterWidth;
+    }
+  }
+  if (current || lines.length === 0) lines.push(current);
+  return lines;
+}
+
+function clampSequenceScale(value: number) {
+  return Math.min(2.5, Math.max(0.45, value));
+}
+
+function sequenceTextWithData(message: Edge<SequenceMessageData>, t: Translate) {
+  const label = text(message.label, t("interview.process.interaction"));
+  const data = text(message.data?.data, "");
+  return data ? t("interview.process.dataWithValue", { action: label, data }) : label;
+}
+
+type SequenceMessageLayout = {
+  message: Edge<SequenceMessageData>;
+  top: number;
+  center: number;
+  height: number;
+  lines: string[];
+};
+
+type SequenceFragmentLayout = {
+  type: Exclude<SequenceFragmentType, "none">;
+  top: number;
+  bottom: number;
+  label: string;
+};
+
+function sequenceFragmentLabel(type: Exclude<SequenceFragmentType, "none">) {
+  return type.toUpperCase();
+}
+
+function SequenceDiagramControlIcon({ type }: { type: "zoomIn" | "zoomOut" | "fitView" }) {
+  if (type === "zoomIn") {
+    return (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+        <path d="M32 18.133H18.133V32h-4.266V18.133H0v-4.266h13.867V0h4.266v13.867H32z" />
+      </svg>
+    );
+  }
+  if (type === "zoomOut") {
+    return (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 5" aria-hidden="true" focusable="false">
+        <path d="M0 0h32v4.2H0z" />
+      </svg>
+    );
+  }
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 30" aria-hidden="true" focusable="false">
+      <path d="M3.692 4.63c0-.53.4-.938.939-.938h5.215V0H4.708C2.13 0 0 2.054 0 4.63v5.216h3.692V4.631zM27.354 0h-5.2v3.692h5.17c.53 0 .984.4.984.939v5.215H32V4.631A4.624 4.624 0 0027.354 0zm.954 24.83c0 .532-.4.94-.939.94h-5.215v3.768h5.215c2.577 0 4.631-2.13 4.631-4.707v-5.139h-3.692v5.139zm-23.677.94c-.531 0-.939-.4-.939-.94v-5.138H0v5.139c0 2.577 2.13 4.707 4.708 4.707h5.138V25.77H4.631z" />
+    </svg>
+  );
+}
+
+function SequenceDiagram({ graph, t, locale }: { graph: SequenceGraph; t: Translate; locale: Parameters<typeof formatNumber>[1] }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const diagramId = useId().replace(/:/gu, "");
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [viewport, setViewport] = useState({ scale: 1, x: 16, y: 16 });
   const participants = graph.nodes;
   const messages = graph.edges;
-  const marginX = 100;
-  const columnGap = 220;
-  const headerY = 18;
-  const headerHeight = 44;
-  const messageStartY = 106;
-  const messageRowHeight = 62;
-  const width = Math.max(560, marginX * 2 + Math.max(participants.length - 1, 0) * columnGap);
-  const height = Math.max(320, messageStartY + messages.length * messageRowHeight + 42);
-  const participantPositions = new Map(
-    participants.map((participant, index) => [participant.id, marginX + index * columnGap]),
+  const participantLayouts = useMemo(() => {
+    const widths = participants.map((participant) => {
+      const label = text(participant.data?.label, t("interview.process.participant"));
+      return {
+        id: participant.id,
+        label,
+        lines: wrapSequenceText(label, 18),
+        width: Math.min(240, Math.max(156, 42 + visualTextLength(label) * 8)),
+        candidate: Boolean(participant.data?.candidate),
+      };
+    });
+    const gap = 84;
+    const contentWidth = widths.reduce((sum, item) => sum + item.width, 0) + Math.max(widths.length - 1, 0) * gap;
+    const width = Math.max(760, contentWidth + 96);
+    let cursor = Math.max(48, (width - contentWidth) / 2);
+    return {
+      width,
+      items: widths.map((item) => {
+        const next = { ...item, x: cursor + item.width / 2 };
+        cursor += item.width + gap;
+        return next;
+      }),
+    };
+  }, [participants, t]);
+  const participantPositions = useMemo(
+    () => new Map(participantLayouts.items.map((participant) => [participant.id, participant])),
+    [participantLayouts.items],
+  );
+  const headerY = 28;
+  const headerHeight = Math.max(
+    58,
+    ...participantLayouts.items.map((participant) => 22 + participant.lines.length * 17),
+  );
+  const messageStartY = headerY + headerHeight + 58;
+  const messageLayouts = useMemo<SequenceMessageLayout[]>(() => {
+    let cursor = messageStartY;
+    return messages.map((message) => {
+      const source = participantPositions.get(message.source);
+      const target = participantPositions.get(message.target);
+      const availableWidth = Math.max(
+        18,
+        Math.abs((source?.x ?? 0) - (target?.x ?? 0)) - 34,
+      );
+      const maxVisualWidth = Math.max(16, Math.min(34, availableWidth / 8));
+      const lines = wrapSequenceText(sequenceTextWithData(message, t), maxVisualWidth);
+      const height = Math.max(82, 42 + lines.length * 17);
+      const layout = { message, top: cursor, center: cursor + height / 2, height, lines };
+      cursor += height;
+      return layout;
+    });
+  }, [messageStartY, messages, participantPositions, t]);
+  const fragmentLayouts = useMemo<SequenceFragmentLayout[]>(() => {
+    const fragments: SequenceFragmentLayout[] = [];
+    let current: SequenceFragmentLayout | null = null;
+    for (const row of messageLayouts) {
+      const type = row.message.data?.fragmentType ?? "none";
+      if (type === "none") {
+        if (current) fragments.push(current);
+        current = null;
+        continue;
+      }
+      const label = text(row.message.data?.fragmentLabel, "");
+      const fragmentId = text(row.message.data?.fragmentId, "");
+      const currentId: string = current?.label.startsWith(`${fragmentId}|`) ? fragmentId : "";
+      if (!current || current.type !== type || (fragmentId && currentId !== fragmentId)) {
+        if (current) fragments.push(current);
+        current = {
+          type,
+          top: row.top - 18,
+          bottom: row.top + row.height + 16,
+          label: `${fragmentId}|${label || sequenceFragmentLabel(type)}`,
+        };
+      } else {
+        current.bottom = row.top + row.height + 16;
+      }
+    }
+    if (current) fragments.push(current);
+    return fragments;
+  }, [messageLayouts]);
+  const height = Math.max(
+    360,
+    (messageLayouts[messageLayouts.length - 1]?.top ?? messageStartY)
+      + (messageLayouts[messageLayouts.length - 1]?.height ?? 0)
+      + 48,
   );
 
+  const fitViewport = useCallback(() => {
+    const container = containerRef.current;
+    if (!container || container.clientWidth <= 0 || container.clientHeight <= 0) return;
+    const scale = clampSequenceScale(Math.min(
+      (container.clientWidth - 28) / participantLayouts.width,
+      (container.clientHeight - 28) / height,
+      1,
+    ));
+    setViewport({
+      scale,
+      x: Math.max(14, (container.clientWidth - participantLayouts.width * scale) / 2),
+      y: Math.max(14, (container.clientHeight - height * scale) / 2),
+    });
+  }, [height, participantLayouts.width]);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+    const updateSize = () => setContainerSize({
+      width: container.clientWidth,
+      height: container.clientHeight,
+    });
+    updateSize();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateSize) : null;
+    observer?.observe(container);
+    window.addEventListener("resize", updateSize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (containerSize.width > 0 && containerSize.height > 0) fitViewport();
+  }, [containerSize, fitViewport]);
+
+  function zoomAt(nextScale: number, clientX: number, clientY: number) {
+    setViewport((current) => {
+      const scale = clampSequenceScale(nextScale);
+      const diagramX = (clientX - current.x) / current.scale;
+      const diagramY = (clientY - current.y) / current.scale;
+      return {
+        scale,
+        x: clientX - diagramX * scale,
+        y: clientY - diagramY * scale,
+      };
+    });
+  }
+
+  function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    zoomAt(viewport.scale * (event.deltaY < 0 ? 1.12 : 0.89), event.clientX - rect.left, event.clientY - rect.top);
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.x;
+    const deltaY = event.clientY - drag.y;
+    dragRef.current = { pointerId: drag.pointerId, x: event.clientX, y: event.clientY };
+    setViewport((current) => ({ ...current, x: current.x + deltaX, y: current.y + deltaY }));
+  }
+
+  function handlePointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  }
+
+  function zoomBy(factor: number) {
+    const container = containerRef.current;
+    if (!container) return;
+    zoomAt(
+      viewport.scale * factor,
+      container.clientWidth / 2,
+      container.clientHeight / 2,
+    );
+  }
+
+  const markerId = (name: string) => `${diagramId}-sequence-${name}`;
+
   return (
-    <div className="sequence-diagram-scroll" role="img" aria-label={t("interview.process.umlAria")}>
-      <svg className="sequence-diagram" viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
+    <div
+      ref={containerRef}
+      className="sequence-diagram-scroll sequence-diagram-viewport"
+      role="img"
+      aria-label={t("interview.process.umlAria")}
+      onWheel={handleWheel}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <svg
+        className="sequence-diagram"
+        viewBox={`0 0 ${participantLayouts.width} ${height}`}
+        width={participantLayouts.width}
+        height={height}
+        style={{
+          transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
+        }}
+        aria-hidden="true"
+      >
         <defs>
-          <marker id="sequence-arrow-head" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-            <path d="M0,0 L8,4 L0,8 z" fill="#526b82" />
+          <marker id={markerId("arrow")} markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto">
+            <path d="M0,0 L9,4 L0,8" className="sequence-arrow-head" />
+          </marker>
+          <marker id={markerId("return")} markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto">
+            <path d="M0,0 L9,4 L0,8" className="sequence-return-head" />
           </marker>
         </defs>
-        {participants.map((participant) => {
-          const x = participantPositions.get(participant.id) ?? marginX;
-          const label = text(participant.data?.label, t("interview.process.participant"));
+        {fragmentLayouts.map((fragment, index) => {
+          const labelParts = fragment.label.split("|");
+          const label = labelParts[1] || sequenceFragmentLabel(fragment.type);
+          const fragmentLabelText = `${sequenceFragmentLabel(fragment.type)}${label && label !== sequenceFragmentLabel(fragment.type) ? ` [${label}]` : ""}`;
+          const fragmentLabelLines = wrapSequenceText(fragmentLabelText, 28);
+          const fragmentLabelWidth = Math.min(
+            participantLayouts.width - 44,
+            Math.max(92, Math.max(...fragmentLabelLines.map(visualTextLength)) * 8 + 24),
+          );
           return (
-            <g key={participant.id}>
-              <rect x={x - 85} y={headerY} width="170" height={headerHeight} rx="4" className="sequence-participant-box" />
-              <text x={x} y={headerY + 27} textAnchor="middle" className="sequence-participant-label">
-                {label.slice(0, 22)}
+            <g key={`${fragment.type}-${fragment.top}-${index}`}>
+              <rect
+                x="22"
+                y={fragment.top}
+                width={participantLayouts.width - 44}
+                height={fragment.bottom - fragment.top}
+                rx="7"
+                className={`sequence-fragment sequence-fragment-${fragment.type}`}
+              />
+              <rect x="22" y={fragment.top} width={fragmentLabelWidth} height={25 + Math.max(0, fragmentLabelLines.length - 1) * 15} className="sequence-fragment-label-box" />
+              <text x="34" y={fragment.top + 17} className="sequence-fragment-label">
+                {fragmentLabelLines.map((line, lineIndex) => (
+                  <tspan key={`${fragment.type}-label-${lineIndex}`} x="34" dy={lineIndex === 0 ? 0 : 15}>{line}</tspan>
+                ))}
               </text>
-              <line x1={x} y1={headerY + headerHeight} x2={x} y2={height - 18} className="sequence-lifeline" />
             </g>
           );
         })}
-        {messages.map((message, index) => {
-          const sourceX = participantPositions.get(message.source) ?? marginX;
-          const targetX = participantPositions.get(message.target) ?? marginX;
-          const y = messageStartY + index * messageRowHeight;
-          const label = text(message.label, t("interview.process.interaction"));
-          const isCandidate = message.style?.strokeDasharray;
+        {participantLayouts.items.map((participant) => (
+          <g key={participant.id}>
+            <line
+              x1={participant.x}
+              y1={headerY + headerHeight}
+              x2={participant.x}
+              y2={height - 18}
+              className="sequence-lifeline"
+            />
+          </g>
+        ))}
+        {participantLayouts.items.map((participant) => (
+          <g key={`${participant.id}-header`}>
+            <rect
+              x={participant.x - participant.width / 2}
+              y={headerY}
+              width={participant.width}
+              height={Math.max(58, 22 + participant.lines.length * 17)}
+              rx="6"
+              className={`sequence-participant-box${participant.candidate ? " candidate" : ""}`}
+            />
+            <text x={participant.x} y={headerY + 21} textAnchor="middle" className="sequence-participant-label">
+              {participant.lines.map((line, index) => (
+                <tspan key={`${participant.id}-line-${index}`} x={participant.x} dy={index === 0 ? 0 : 17}>{line}</tspan>
+              ))}
+            </text>
+          </g>
+        ))}
+        {messageLayouts.map((row) => {
+          const message = row.message;
+          const source = participantPositions.get(message.source);
+          const target = participantPositions.get(message.target);
+          const sourceX = source?.x ?? 48;
+          const targetX = target?.x ?? sourceX;
           const isSelfMessage = sourceX === targetX;
+          const interactionType = message.data?.interactionType ?? "message";
+          const lineY = row.top + row.height - 20;
           const messagePath = isSelfMessage
-            ? `M ${sourceX} ${y} H ${sourceX + 42} V ${y + 22} H ${sourceX + 2}`
-            : `M ${sourceX} ${y} H ${targetX}`;
+            ? `M ${sourceX} ${lineY} H ${sourceX + 48} V ${lineY + 24} H ${sourceX + 3}`
+            : `M ${sourceX} ${lineY} H ${targetX}`;
+          const labelX = isSelfMessage ? sourceX + 24 : (sourceX + targetX) / 2;
+          const classNames = [
+            "sequence-message-line",
+            `sequence-message-${interactionType}`,
+            message.data?.candidate ? "candidate" : "",
+          ].filter(Boolean).join(" ");
+          const marker = interactionType === "return" ? markerId("return") : markerId("arrow");
+          const displayLines = wrapSequenceText(sequenceTextWithData(message, t), Math.max(18, Math.min(34, Math.abs(sourceX - targetX) / 8)));
           return (
             <g key={message.id}>
-              <title>{label}</title>
-              <path
-                d={messagePath}
-                className={`sequence-message-line${isCandidate ? " candidate" : ""}`}
-                markerEnd="url(#sequence-arrow-head)"
-              />
-              <text
-                x={isSelfMessage ? sourceX + 22 : (sourceX + targetX) / 2}
-                y={y - 9}
-                textAnchor="middle"
-                className="sequence-message-label"
-              >
-                {label.slice(0, 38)}
+              <title>{sequenceTextWithData(message, t)}</title>
+              <text x={labelX} y={row.top + 11} textAnchor="middle" className="sequence-message-number">
+                {formatNumber(number(message.data?.sequence, 0), locale)}
               </text>
+              <path d={messagePath} className={classNames} markerEnd={`url(#${marker})`} />
+              <text x={labelX} y={row.top + 24} textAnchor="middle" className="sequence-message-label">
+                {displayLines.map((line, index) => (
+                  <tspan key={`${message.id}-line-${index}`} x={labelX} dy={index === 0 ? 0 : 16}>{line}</tspan>
+                ))}
+              </text>
+              {message.data?.fragmentLabel ? (
+                <text x="38" y={row.top + row.height - 11} className="sequence-fragment-condition">
+                  {message.data.fragmentLabel}
+                </text>
+              ) : null}
             </g>
           );
         })}
       </svg>
+      <Panel
+        className="react-flow__controls"
+        position="bottom-left"
+        role="group"
+        aria-label={t("interview.process.sequenceControlsAria")}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <ControlButton className="react-flow__controls-zoomin" onClick={() => zoomBy(1.18)} aria-label={t("interview.process.zoomIn")} title={t("interview.process.zoomIn")}>
+          <SequenceDiagramControlIcon type="zoomIn" />
+        </ControlButton>
+        <ControlButton className="react-flow__controls-zoomout" onClick={() => zoomBy(0.85)} aria-label={t("interview.process.zoomOut")} title={t("interview.process.zoomOut")}>
+          <SequenceDiagramControlIcon type="zoomOut" />
+        </ControlButton>
+        <ControlButton className="react-flow__controls-fitview" onClick={fitViewport} aria-label={t("interview.process.fit")} title={t("interview.process.fit")}>
+          <SequenceDiagramControlIcon type="fitView" />
+        </ControlButton>
+      </Panel>
     </div>
   );
 }
@@ -379,15 +777,15 @@ function FlowchartCanvas({ graph }: { graph: FlowchartGraph }) {
   );
 }
 
-function ProcessGraph({ graph, view, t }: { graph: Graph; view: "flowchart" | "sequence"; t: Translate }) {
+function ProcessGraph({ graph, view, t, locale }: { graph: Graph | SequenceGraph; view: "flowchart" | "sequence"; t: Translate; locale: Parameters<typeof formatNumber>[1] }) {
   if (view === "sequence") {
-    return <SequenceDiagram graph={graph} t={t} />;
+    return <SequenceDiagram graph={graph as SequenceGraph} t={t} locale={locale} />;
   }
 
   return (
     <div className="process-flow-canvas">
       <ReactFlowProvider>
-        <FlowchartCanvas graph={graph} />
+        <FlowchartCanvas graph={graph as FlowchartGraph} />
       </ReactFlowProvider>
     </div>
   );
@@ -741,7 +1139,7 @@ export function ProcessModelPanel({
           <button type="button" role="tab" aria-selected={view === "flowchart"} className={view === "flowchart" ? "active" : ""} onClick={() => setView("flowchart")}>{t("interview.process.flowchart")}</button>
           <button type="button" role="tab" aria-selected={view === "sequence"} className={view === "sequence" ? "active" : ""} onClick={() => setView("sequence")}>{t("interview.process.sequence")}</button>
         </div>
-        {graphReady ? <ProcessGraph graph={activeGraph} view={view} t={t} /> : (
+        {graphReady ? <ProcessGraph graph={activeGraph} view={view} t={t} locale={locale} /> : (
           <p className="empty process-model-empty">
             {view === "flowchart"
               ? t("interview.process.flowchartEmpty")
@@ -789,7 +1187,7 @@ export function ProcessModelPanel({
             </div>
             <div className={`process-fullscreen-content ${isEditing ? "editing" : ""}`}>
               <div className="process-fullscreen-canvas">
-                {graphReady ? <ProcessGraph graph={activeGraph} view={view} t={t} /> : (
+                {graphReady ? <ProcessGraph graph={activeGraph} view={view} t={t} locale={locale} /> : (
                   <p className="empty process-model-empty">
                     {view === "flowchart"
                       ? t("interview.process.fullscreenFlowchartEmpty")
