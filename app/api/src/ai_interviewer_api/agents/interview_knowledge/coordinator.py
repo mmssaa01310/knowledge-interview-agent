@@ -19,6 +19,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
 from ai_interviewer_api.services.interview_answer_resolution import (
     normalize_answer_resolution,
 )
+from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
 
 
 APPLICABILITY_TOPICS: tuple[str, ...] = (
@@ -118,7 +119,7 @@ def build_initial_structured_state(
     fields: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     field_states = {
-        str(field["id"]): _new_field_state(str(field["id"]))
+        str(field["id"]): _new_field_state(str(field["id"]), field)
         for field in fields
         if field.get("id")
     }
@@ -187,11 +188,27 @@ def sync_structured_state_fields(
     pending_ids = state.setdefault("pendingFieldIds", [])
     for field in fields:
         field_id = str(field.get("id") or "").strip()
-        if not field_id or field_id in field_states:
+        if not field_id:
             continue
-        field_states[field_id] = _new_field_state(field_id)
-        pending_ids.append(field_id)
-        changed = True
+        if field_id not in field_states:
+            field_states[field_id] = _new_field_state(field_id, field)
+            pending_ids.append(field_id)
+            changed = True
+            continue
+        field_state = field_states[field_id]
+        if not isinstance(field_state, dict):
+            field_states[field_id] = _new_field_state(field_id, field)
+            changed = True
+            continue
+        metadata = _field_state_metadata(field_id, field)
+        for key, value in metadata.items():
+            # The question plan is part of the interview's evaluation
+            # contract. Preserve a plan already captured in an in-progress
+            # state, while backfilling it for older states.
+            if key not in field_state:
+                field_state[key] = deepcopy(value)
+                changed = True
+        changed |= _sync_field_progress(field_state)
     return changed
 
 
@@ -474,6 +491,7 @@ def apply_structured_output(
         or (_process_is_present(state, profile) and not process_not_applicable_in_output)
     )
 
+    valid_field_updates: list[FieldUpdate] = []
     for update in output.fieldUpdates:
         if (
             update.fieldId not in field_ids
@@ -492,14 +510,30 @@ def apply_structured_output(
             # Some providers repeat the confirmed candidate in fieldUpdates.
             # Applying it after _confirm_target would reopen the same field.
             continue
-        _apply_field_update(
-            state,
-            update,
-            latest_message_id,
-            valid_evidence_ids,
-            force_awaiting_confirmation=_target_matches(current_target, "field", update.fieldId),
-        )
-        changed_topics.append(f"field:{update.fieldId}")
+        valid_field_updates.append(update)
+
+    grouped_field_updates: dict[str, list[FieldUpdate]] = {}
+    for update in valid_field_updates:
+        grouped_field_updates.setdefault(update.fieldId, []).append(update)
+    for field_id, updates in grouped_field_updates.items():
+        for update in updates:
+            _apply_field_update(
+                state,
+                update,
+                latest_message_id,
+                valid_evidence_ids,
+                force_awaiting_confirmation=_target_matches(current_target, "field", field_id),
+                defer_auto_confirm=True,
+            )
+        if _field_updates_allow_auto_confirm(output, updates):
+            field_state = state.get("fieldStates", {}).get(field_id)
+            if isinstance(field_state, Mapping) and not _field_missing_required_items(field_state):
+                _confirm_target(
+                    state,
+                    {"targetType": "field", "targetId": field_id},
+                    confirmation_message_id=None,
+                )
+        changed_topics.extend(f"field:{field_id}" for _ in updates)
 
     for update in output.requirementUpdates:
         if _should_defer_purpose_proposal_update(state, update, profile):
@@ -753,15 +787,25 @@ def _active_probe_target(state: Mapping[str, Any]) -> dict[str, Any] | None:
     target_id = str(value.get("targetId") or "").strip()
     if target_type not in {"field", "requirement", "process", "applicability"} or not target_id:
         return None
-    return _target(
+    target = _target(
         target_type,
         target_id,
         str(value.get("label") or target_id),
         1,
-    ) | {
-        "probeType": str(value.get("probeType") or "CLARIFY"),
-        "probeCount": int(value.get("probeCount") or 0),
-    }
+    )
+    for key in (
+        "missingItemIds",
+        "missingItems",
+        "capturedItemIds",
+        "questionPlan",
+        "sourceQuestion",
+        "sourceDescription",
+    ):
+        if key in value:
+            target[key] = deepcopy(value[key])
+    target["probeType"] = str(value.get("probeType") or "CLARIFY")
+    target["probeCount"] = int(value.get("probeCount") or 0)
+    return target
 
 
 def target_key(target: Mapping[str, Any] | None) -> str:
@@ -780,6 +824,8 @@ def register_probe(
 ) -> int:
     """Keep the current target active while one focused probe is asked."""
 
+    if target is not None:
+        target = _field_target_with_progress(state, target)
     key = target_key(target)
     if not key:
         return 0
@@ -788,13 +834,24 @@ def register_probe(
     counts[key] = count
     target_type = str(target.get("targetType") or target.get("kind") or "")
     target_id = str(target.get("targetId") or "")
-    state["activeProbeTarget"] = {
+    active_probe = {
         "targetType": target_type,
         "targetId": target_id,
         "label": str(target.get("label") or target_id),
         "probeType": probe_type if probe_type in {"REFRAME", "EXAMPLE", "REASON", "CRITERIA", "CLARIFY", "RETRY"} else "CLARIFY",
         "probeCount": count,
     }
+    for key in (
+        "missingItemIds",
+        "missingItems",
+        "capturedItemIds",
+        "questionPlan",
+        "sourceQuestion",
+        "sourceDescription",
+    ):
+        if key in target:
+            active_probe[key] = deepcopy(target[key])
+    state["activeProbeTarget"] = active_probe
     return count
 
 
@@ -949,12 +1006,23 @@ def list_missing_required_targets(
             if not field_id or not field.get("required"):
                 continue
             field_state = state.get("fieldStates", {}).get(field_id, {})
-            if field_state.get("answerState") != "CONFIRMED" and not (
+            missing_items = _field_missing_required_items(field_state, field)
+            if field_state.get("answerState") == "CONFIRMED" and not missing_items:
+                continue
+            if (
                 not include_tentative
                 and field_state.get("answerState") == "CANDIDATE_PENDING"
                 and field_state.get("answerResolution") == "TENTATIVE"
+                and not missing_items
             ):
-                targets.append(_target("field", field_id, str(field.get("name") or field_id), 3))
+                continue
+            targets.append(
+                _field_target_with_progress(
+                    state,
+                    _target("field", field_id, str(field.get("name") or field_id), 3),
+                    field=field,
+                )
+            )
 
     process_is_present = _process_is_present(state, profile)
     for target_id, label, kind in REQUIREMENT_DEFINITIONS[profile]:
@@ -1032,12 +1100,17 @@ def list_unknown_applicability(state: Mapping[str, Any], profile: InterviewProfi
     ]
 
 
-def _new_field_state(field_id: str) -> dict[str, Any]:
-    return {
+def _new_field_state(
+    field_id: str,
+    field: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = _field_state_metadata(field_id, field)
+    required_items = metadata["questionPlan"]["requiredItems"]
+    field_state = {
         "fieldId": field_id,
         "status": "pending",
         "answerSummary": None,
-        "missingInformation": [],
+        "missingInformation": [str(item["label"]) for item in required_items],
         "answerState": "UNANSWERED",
         "answerResolution": None,
         "candidateAnswer": None,
@@ -1052,11 +1125,240 @@ def _new_field_state(field_id: str) -> dict[str, Any]:
         "rawAnswerHistory": [],
         "recordAnswer": None,
         "capturedItems": [],
+        "capturedItemIds": [],
         "candidateItems": [],
         "confirmedItems": [],
-        "missingRequiredItemIds": [],
+        "missingRequiredItemIds": [str(item["itemId"]) for item in required_items],
         "answerDisposition": None,
     }
+    field_state.update(metadata)
+    return field_state
+
+
+def _field_state_metadata(
+    field_id: str,
+    field: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    field = field if isinstance(field, Mapping) else {}
+    plan = _normalize_question_plan(field_id, field)
+    return {
+        "questionPlan": plan,
+        "sourceQuestion": _field_question_text(field),
+        "sourceDescription": _clean_optional_text(field.get("description")),
+    }
+
+
+def _normalize_question_plan(
+    field_id: str,
+    field: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw_plan = field.get("questionPlan")
+    try:
+        plan = InterviewQuestionPlan.model_validate(raw_plan or {})
+    except (TypeError, ValueError):
+        plan = InterviewQuestionPlan()
+
+    required_items = _normalize_plan_items(plan.requiredItems)
+    optional_items = _normalize_plan_items(plan.optionalItems)
+    if not required_items:
+        label = _clean_optional_text(field.get("name")) or field_id
+        description = _clean_optional_text(field.get("description"))
+        required_items = [
+            {
+                "itemId": field_id,
+                "label": label,
+                "description": description,
+            }
+        ]
+
+    required_ids = {str(item["itemId"]) for item in required_items}
+    optional_items = [
+        item for item in optional_items if str(item["itemId"]) not in required_ids
+    ]
+    return {
+        "version": int(plan.version or 1),
+        "purpose": _clean_optional_text(plan.purpose),
+        "requiredItems": required_items,
+        "optionalItems": optional_items,
+        "completionCriteria": {"mode": "all_required_items"},
+    }
+
+
+def _normalize_plan_items(value: Any) -> list[dict[str, Any]]:
+    items = value if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else ()
+    normalized: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in items:
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        if not isinstance(item, Mapping):
+            continue
+        item_id = _clean_optional_text(item.get("itemId"))
+        label = _clean_optional_text(item.get("label"))
+        if not item_id or not label or item_id in seen_ids:
+            continue
+        normalized.append(
+            {
+                "itemId": item_id,
+                "label": label,
+                "description": _clean_optional_text(item.get("description")),
+            }
+        )
+        seen_ids.add(item_id)
+    return normalized
+
+
+def _field_question_text(field: Mapping[str, Any]) -> str | None:
+    for key in ("questionText", "question"):
+        value = _clean_optional_text(field.get(key))
+        if value:
+            return value
+    examples = field.get("aiQuestionExamples")
+    if isinstance(examples, Sequence) and not isinstance(examples, (str, bytes)):
+        for example in examples:
+            value = _clean_optional_text(example)
+            if value:
+                return value
+    return None
+
+
+def _clean_optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _field_required_items(
+    field_state: Mapping[str, Any],
+    field: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    plan = field_state.get("questionPlan")
+    if isinstance(plan, Mapping):
+        required_items = _normalize_plan_items(plan.get("requiredItems"))
+        if required_items:
+            return required_items
+    field_id = str(field_state.get("fieldId") or "").strip()
+    if field is not None and field_id:
+        return _normalize_question_plan(field_id, field)["requiredItems"]
+    if not field_id:
+        return []
+    return [{"itemId": field_id, "label": field_id, "description": None}]
+
+
+def _field_optional_items(field_state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    plan = field_state.get("questionPlan")
+    if not isinstance(plan, Mapping):
+        return []
+    return _normalize_plan_items(plan.get("optionalItems"))
+
+
+def _field_captured_items(field_state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    answer_state = str(field_state.get("answerState") or "")
+    preferred_keys = (
+        ("confirmedItems", "capturedItems")
+        if answer_state == "CONFIRMED"
+        else ("candidateItems", "capturedItems", "confirmedItems")
+    )
+    for key in preferred_keys:
+        value = field_state.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and value:
+            return [dict(item) for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _field_captured_item_ids(field_state: Mapping[str, Any]) -> list[str]:
+    item_ids: list[str] = []
+    for item in _field_captured_items(field_state):
+        item_id = _clean_optional_text(item.get("itemId"))
+        value = _clean_optional_text(item.get("value"))
+        if item_id and value and item_id not in item_ids:
+            item_ids.append(item_id)
+    required_items = _field_required_items(field_state)
+    if (
+        str(field_state.get("answerState") or "") == "CONFIRMED"
+        and _clean_optional_text(field_state.get("recordAnswer"))
+        and not item_ids
+    ):
+        # States created before item-level tracking are already confirmed at
+        # field level. Preserve those answers when adding the new metadata.
+        return [str(item["itemId"]) for item in required_items]
+    return item_ids
+
+
+def _field_missing_required_items(
+    field_state: Mapping[str, Any],
+    field: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    required_items = _field_required_items(field_state, field)
+    captured_ids = set(_field_captured_item_ids(field_state))
+    if field_state.get("answerDisposition") == "NO_DETAIL":
+        return []
+    return [
+        item for item in required_items if str(item["itemId"]) not in captured_ids
+    ]
+
+
+def _sync_field_progress(field_state: dict[str, Any]) -> bool:
+    missing_items = _field_missing_required_items(field_state)
+    missing_ids = [str(item["itemId"]) for item in missing_items]
+    missing_information = [str(item["label"]) for item in missing_items]
+    captured_ids = _field_captured_item_ids(field_state)
+    changed = False
+    for key, value in (
+        ("missingRequiredItemIds", missing_ids),
+        ("missingInformation", missing_information),
+        ("capturedItemIds", captured_ids),
+    ):
+        if field_state.get(key) != value:
+            field_state[key] = value
+            changed = True
+    return changed
+
+
+def _field_has_item_plan(field_state: Mapping[str, Any]) -> bool:
+    return len(_field_required_items(field_state)) > 1
+
+
+def _field_target_with_progress(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any],
+    *,
+    field: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    result = dict(target)
+    target_type = str(result.get("targetType") or result.get("kind") or "")
+    target_id = str(result.get("targetId") or "").strip()
+    if target_type != "field" or not target_id:
+        return result
+    field_state = state.get("fieldStates", {}).get(target_id, {})
+    if not isinstance(field_state, Mapping):
+        return result
+    required_items = _field_required_items(field_state, field)
+    if len(required_items) <= 1:
+        return result
+    missing_items = _field_missing_required_items(field_state, field)
+    captured_ids = _field_captured_item_ids(field_state)
+    if missing_items and captured_ids:
+        result["label"] = _join_item_labels(missing_items)
+    result["missingItemIds"] = [str(item["itemId"]) for item in missing_items]
+    result["missingItems"] = deepcopy(missing_items)
+    result["capturedItemIds"] = captured_ids
+    result["questionPlan"] = deepcopy(field_state.get("questionPlan") or {})
+    for key in ("sourceQuestion", "sourceDescription"):
+        if field_state.get(key):
+            result[key] = field_state.get(key)
+    return result
+
+
+def _join_item_labels(items: Sequence[Mapping[str, Any]]) -> str:
+    labels = [str(item.get("label") or "").strip() for item in items]
+    labels = [label for label in labels if label]
+    if len(labels) <= 1:
+        return labels[0] if labels else ""
+    if len(labels) == 2:
+        return f"{labels[0]}と、{labels[1]}"
+    return "、".join(labels)
 
 
 def _new_requirement_state(target_id: str, label: str, kind: str) -> dict[str, Any]:
@@ -1156,6 +1458,8 @@ def _target_for_current_question(
         str(current_question.get("targetLabel") or current_question.get("label") or target_id),
         2,
     )
+    if target_type == "field":
+        target = _field_target_with_progress(state, target)
     if target_type == "field":
         field_state = state.get("fieldStates", {}).get(target_id, {})
         target["candidateSource"] = field_state.get("candidateSource")
@@ -1287,6 +1591,21 @@ def _confirm_target(
     if kind == "field":
         field_state = state.get("fieldStates", {}).get(target_id)
         if field_state and field_state.get("candidateAnswer"):
+            missing_items = _field_missing_required_items(field_state)
+            if missing_items:
+                # A candidate can be confirmed as a transcript correction (or
+                # another domain confirmation) before the configured field is
+                # complete. Keep the captured items and continue with only the
+                # remaining items instead of falsely completing the field.
+                field_state["answerState"] = "CANDIDATE_PENDING"
+                field_state["answerResolution"] = "TENTATIVE"
+                field_state["status"] = "asking"
+                state["lastTentativeTarget"] = {
+                    "targetType": "field",
+                    "targetId": target_id,
+                }
+                _sync_field_progress(field_state)
+                return
             field_state["answerState"] = "CONFIRMED"
             field_state["answerResolution"] = "AUTO_CONFIRM"
             field_state["status"] = "completed"
@@ -1304,6 +1623,7 @@ def _confirm_target(
             field_state["candidateAnswer"] = None
             field_state["candidateItems"] = []
             field_state["candidateProposalMessageId"] = None
+            _sync_field_progress(field_state)
             if _target_matches(state.get("lastTentativeTarget"), "field", target_id):
                 state["lastTentativeTarget"] = None
             _mark_field_completed(state, target_id)
@@ -1456,6 +1776,7 @@ def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
             field_state["candidateProposalMessageId"] = None
             field_state["candidateItems"] = []
             field_state["recordAnswer"] = None
+            _sync_field_progress(field_state)
             if _target_matches(state.get("lastTentativeTarget"), "field", target_id):
                 state["lastTentativeTarget"] = None
         return
@@ -1482,8 +1803,12 @@ def _apply_field_update(
     valid_evidence_ids: Set[str] | None = None,
     *,
     force_awaiting_confirmation: bool = False,
+    defer_auto_confirm: bool = False,
 ) -> None:
-    field_state = state.setdefault("fieldStates", {}).setdefault(update.fieldId, _new_field_state(update.fieldId))
+    field_state = state.setdefault("fieldStates", {}).setdefault(
+        update.fieldId,
+        _new_field_state(update.fieldId),
+    )
     resolution = normalize_answer_resolution(update.answerResolution)
     if update.candidateSource == "assistant_proposal" and resolution in {"AUTO_CONFIRM", "TENTATIVE"}:
         # Backend guarantee: an assistant proposal always needs an explicit
@@ -1499,7 +1824,46 @@ def _apply_field_update(
         pending = state.setdefault("pendingFieldIds", [])
         if update.fieldId not in pending:
             pending.append(update.fieldId)
-    if resolution == "AUTO_CONFIRM":
+    required_items = _field_required_items(field_state)
+    item_id = _resolve_field_update_item_id(update, required_items)
+    candidate_item = {
+        "itemId": item_id,
+        "value": update.value.strip(),
+        "evidenceTranscriptIds": _ensure_latest_evidence(
+            update.evidenceTranscriptIds,
+            message_id,
+            valid_evidence_ids,
+        ),
+    }
+    candidate_items = _merge_field_items(
+        field_state.get("candidateItems"),
+        candidate_item,
+    )
+    field_state["candidateItems"] = candidate_items
+    field_state["capturedItems"] = deepcopy(candidate_items)
+    # Use a candidate state while checking item completeness so confirmedItems
+    # from a previous answer cannot hide a newly required item.
+    field_state["answerState"] = "CANDIDATE_PENDING"
+    field_state["answerResolution"] = "TENTATIVE"
+    field_state["status"] = "asking"
+    field_state["recordAnswer"] = None
+    field_state["candidateAnswer"] = _compose_field_answer(candidate_items, required_items)
+    field_state["candidateSource"] = update.candidateSource
+    field_state["candidateSourceIds"] = []
+    field_state["candidateProposalMessageId"] = None
+    field_state["rawAnswer"] = update.value.strip()
+    raw_history = field_state.setdefault("rawAnswerHistory", [])
+    if not raw_history or raw_history[-1] != update.value.strip():
+        raw_history.append(update.value.strip())
+
+    missing_items = _field_missing_required_items(field_state)
+    if missing_items:
+        # Item-level incompleteness takes precedence over a provider's
+        # field-level resolution. The field must stay open until every
+        # required item is captured.
+        answer_state = "CANDIDATE_PENDING"
+        resolution = "TENTATIVE"
+    elif resolution == "AUTO_CONFIRM":
         answer_state = "AWAITING_CONFIRMATION"
     elif resolution == "TENTATIVE":
         answer_state = "CANDIDATE_PENDING"
@@ -1511,38 +1875,78 @@ def _apply_field_update(
         resolution = "CONFIRM_REQUIRED" if answer_state == "AWAITING_CONFIRMATION" else None
     field_state["answerState"] = answer_state
     field_state["answerResolution"] = resolution
-    field_state["status"] = "asking"
-    field_state["recordAnswer"] = None
-    field_state["candidateAnswer"] = update.value.strip()
-    field_state["candidateSource"] = update.candidateSource
-    field_state["candidateSourceIds"] = []
-    field_state["candidateProposalMessageId"] = None
-    field_state["rawAnswer"] = update.value.strip()
-    raw_history = field_state.setdefault("rawAnswerHistory", [])
-    if not raw_history or raw_history[-1] != update.value.strip():
-        raw_history.append(update.value.strip())
-    field_state["candidateItems"] = [
-        {
-            "itemId": update.itemId or update.fieldId,
-            "value": update.value.strip(),
-            "evidenceTranscriptIds": _ensure_latest_evidence(
-                update.evidenceTranscriptIds,
-                message_id,
-                valid_evidence_ids,
-            ),
-        }
-    ]
-    field_state["capturedItems"] = list(field_state["candidateItems"])
+    _sync_field_progress(field_state)
     if resolution == "TENTATIVE":
         state["lastTentativeTarget"] = {"targetType": "field", "targetId": update.fieldId}
     elif _target_matches(state.get("lastTentativeTarget"), "field", update.fieldId):
         state["lastTentativeTarget"] = None
-    if resolution == "AUTO_CONFIRM":
+    if resolution == "AUTO_CONFIRM" and not defer_auto_confirm:
         _confirm_target(
             state,
             {"targetType": "field", "targetId": update.fieldId},
             confirmation_message_id=None,
         )
+
+
+def _resolve_field_update_item_id(
+    update: FieldUpdate,
+    required_items: Sequence[Mapping[str, Any]],
+) -> str:
+    requested = _clean_optional_text(update.itemId)
+    if requested:
+        return requested
+    if len(required_items) == 1:
+        return str(required_items[0]["itemId"])
+    return f"{update.fieldId}:unmapped"
+
+
+def _merge_field_items(
+    existing: Any,
+    new_item: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    items = [dict(item) for item in existing or [] if isinstance(item, Mapping)]
+    item_id = str(new_item.get("itemId") or "")
+    for index, item in enumerate(items):
+        if str(item.get("itemId") or "") == item_id:
+            items[index] = dict(new_item)
+            return items
+    items.append(dict(new_item))
+    return items
+
+
+def _compose_field_answer(
+    items: Sequence[Mapping[str, Any]],
+    required_items: Sequence[Mapping[str, Any]],
+) -> str:
+    order = {
+        str(item.get("itemId")): index
+        for index, item in enumerate(required_items)
+        if item.get("itemId")
+    }
+    indexed_items = list(enumerate(items))
+    indexed_items.sort(
+        key=lambda pair: (order.get(str(pair[1].get("itemId") or ""), len(order)), pair[0])
+    )
+    values = [
+        str(item.get("value") or "").strip()
+        for _, item in indexed_items
+        if str(item.get("value") or "").strip()
+    ]
+    return "、".join(dict.fromkeys(values))
+
+
+def _field_updates_allow_auto_confirm(
+    output: StructuredInterviewOutput,
+    updates: Sequence[FieldUpdate],
+) -> bool:
+    return bool(
+        output.answerAssessment.sufficiency == "SUFFICIENT"
+        and updates
+        and all(
+            normalize_answer_resolution(update.answerResolution) == "AUTO_CONFIRM"
+            for update in updates
+        )
+    )
 
 
 def _apply_requirement_update(

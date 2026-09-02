@@ -17,7 +17,11 @@ from ai_interviewer_api.models.domain import (
     KnowledgeDb,
     KnowledgeField,
 )
-from ai_interviewer_api.models.interview_plan import InterviewPlan
+from ai_interviewer_api.models.interview_plan import (
+    InterviewPlan,
+    InterviewPlanItem,
+    InterviewQuestionPlan,
+)
 from ai_interviewer_api.repositories.store import store
 
 DEV_TENANT_ID = "tenant-demo"
@@ -30,6 +34,15 @@ LEGACY_VOICE_DEMO_FIELD_IDS = {
     "dev-voice-demo-field-hobby",
     "dev-voice-demo-field-role",
 }
+
+
+def _question_plan(*items: tuple[str, str, str]) -> InterviewQuestionPlan:
+    return InterviewQuestionPlan(
+        requiredItems=[
+            InterviewPlanItem(itemId=item_id, label=label, description=description)
+            for item_id, label, description in items
+        ]
+    )
 
 
 def ensure_dev_voice_demo() -> dict[str, str]:
@@ -81,6 +94,11 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             askByAi=True,
             retrievalPolicy="never",
             aiQuestionExamples=["お名前、所属部署、役職または担当領域を教えてください。"],
+            questionPlan=_question_plan(
+                ("name", "お名前", "氏名"),
+                ("department", "所属部署", "所属部署"),
+                ("role_or_domain", "現在の役職または担当領域", "役職または担当領域"),
+            ),
             displayOrder=1,
         ),
         KnowledgeField(
@@ -96,6 +114,10 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             askByAi=True,
             retrievalPolicy="never",
             aiQuestionExamples=["現在の役割と、日々どのような責任を担っているかを具体的に教えてください。"],
+            questionPlan=_question_plan(
+                ("role", "現在の役割", "現在担っている役割"),
+                ("responsibilities", "日々の責任", "日々担っている責任範囲"),
+            ),
             displayOrder=2,
         ),
         KnowledgeField(
@@ -111,6 +133,10 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             askByAi=True,
             retrievalPolicy="never",
             aiQuestionExamples=["これまでの経験の中で、現在の仕事の進め方や専門性に大きく影響した出来事・転機を教えてください。"],
+            questionPlan=_question_plan(
+                ("experience", "現在の専門性につながる主な経験", "現在の専門性につながる主な経験"),
+                ("turning_point", "大きく影響した出来事・転機", "現在の仕事の進め方や専門性に影響した出来事・転機"),
+            ),
             displayOrder=3,
         ),
         KnowledgeField(
@@ -126,6 +152,10 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             askByAi=True,
             retrievalPolicy="never",
             aiQuestionExamples=["ご自身の強みや専門性が実際の業務で発揮され、成果につながった具体的な事例を教えてください。"],
+            questionPlan=_question_plan(
+                ("strength", "強みや専門性", "業務で発揮された強みや専門性"),
+                ("result_example", "成果につながった具体的な事例", "強みや専門性が成果につながった具体的な事例"),
+            ),
             displayOrder=4,
         ),
         KnowledgeField(
@@ -141,6 +171,10 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             askByAi=True,
             retrievalPolicy="never",
             aiQuestionExamples=["現在の仕事で課題と感じていることと、その課題に対して実施している改善を教えてください。"],
+            questionPlan=_question_plan(
+                ("challenge", "現在の課題", "現在の仕事で課題と感じていること"),
+                ("improvement", "実施している改善", "課題に対して実施している改善"),
+            ),
             displayOrder=5,
         ),
         KnowledgeField(
@@ -156,6 +190,11 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             askByAi=True,
             retrievalPolicy="never",
             aiQuestionExamples=["今後取り組みたいテーマや身につけたい能力、実現に向けて必要な支援を教えてください。"],
+            questionPlan=_question_plan(
+                ("future_theme", "今後取り組みたいテーマ", "今後取り組みたいテーマ"),
+                ("skill", "身につけたい能力", "今後身につけたい能力"),
+                ("support", "実現に向けて必要な支援", "目標の実現に向けて必要な支援"),
+            ),
             displayOrder=6,
         ),
     ]

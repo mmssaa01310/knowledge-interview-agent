@@ -38,6 +38,10 @@ from ai_interviewer_api.agents.interview_knowledge.service import (
     resolve_structured_model_id,
 )
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
+from ai_interviewer_api.models.interview_plan import (
+    InterviewPlanItem,
+    InterviewQuestionPlan,
+)
 from ai_interviewer_api.repositories.store import store
 
 
@@ -354,6 +358,112 @@ def test_completed_structured_interview_uses_clear_completion_message() -> None:
     result = generate_structured_interview_result(record, knowledge, user)
 
     assert result["reply"] == "インタビューが完了しました。回答内容を確認してください。"
+
+
+def test_partial_question_plan_asks_only_missing_items_and_advances_after_completion() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-partial-question-plan",
+        (("field-profile", "基本プロフィール"), ("field-next", "次の項目")),
+    )
+    profile_field = store.get("knowledge_fields", "field-profile")
+    assert profile_field is not None
+    profile_field.update(
+        {
+            "description": "氏名、所属部署、役職または担当領域を確認する。",
+            "aiQuestionExamples": ["お名前、所属部署、役職または担当領域を教えてください。"],
+            "questionPlan": InterviewQuestionPlan(
+                requiredItems=[
+                    InterviewPlanItem(itemId="name", label="お名前", description="氏名"),
+                    InterviewPlanItem(itemId="department", label="所属部署", description="所属部署"),
+                    InterviewPlanItem(
+                        itemId="role_or_domain",
+                        label="現在の役職または担当領域",
+                        description="役職または担当領域",
+                    ),
+                ]
+            ).model_dump(),
+        }
+    )
+    store.upsert("knowledge_fields", profile_field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                answerAssessment=AnswerAssessment(sufficiency="PARTIAL", probeType="CLARIFY"),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-profile",
+                        itemId="name",
+                        value="宮崎",
+                        evidenceTranscriptIds=["partial-profile-name"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            ),
+            StructuredInterviewOutput(
+                answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-profile",
+                        itemId="department",
+                        value="営業部",
+                        evidenceTranscriptIds=["partial-profile-rest"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                    FieldUpdate(
+                        fieldId="field-profile",
+                        itemId="role_or_domain",
+                        value="課長",
+                        evidenceTranscriptIds=["partial-profile-rest"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                ],
+            ),
+        ]
+    )
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    assert first["question"]["missingItemIds"] == ["name", "department", "role_or_domain"]
+    _add_structured_answer(
+        record,
+        user,
+        message_id="partial-profile-name",
+        question=first["question"],
+        content="宮崎です。",
+    )
+
+    partial = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    partial_state = partial["interviewState"]["fieldStates"]["field-profile"]
+    assert partial_state["answerState"] == "CANDIDATE_PENDING"
+    assert partial_state["capturedItemIds"] == ["name"]
+    assert partial_state["missingRequiredItemIds"] == ["department", "role_or_domain"]
+    assert partial["question"]["targetId"] == "field-profile"
+    assert partial["question"]["missingItemIds"] == ["department", "role_or_domain"]
+    assert partial["question"]["capturedItemIds"] == ["name"]
+    assert partial["question"]["text"] == "所属部署と、現在の役職または担当領域を教えてください。"
+    assert "お名前" not in partial["question"]["text"]
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="partial-profile-rest",
+        question=partial["question"],
+        content="所属部署は営業部で、現在の役職は課長です。",
+    )
+
+    completed = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    completed_state = completed["interviewState"]["fieldStates"]["field-profile"]
+    assert completed_state["answerState"] == "CONFIRMED"
+    assert completed_state["missingRequiredItemIds"] == []
+    assert completed_state["capturedItemIds"] == ["name", "department", "role_or_domain"]
+    assert [item["itemId"] for item in completed_state["confirmedItems"]] == [
+        "name",
+        "department",
+        "role_or_domain",
+    ]
+    assert "field-profile" in completed["interviewState"]["completedFieldIds"]
+    assert completed["question"]["targetId"] == "field-next"
 
 
 def test_structured_interview_extracts_candidate_then_requires_confirmation() -> None:

@@ -563,6 +563,7 @@ def _generate_structured_interview_result(
                         output,
                         tentative_target_before,
                         current_question,
+                        state,
                     ):
                         confirm_tentative_target(state, tentative_target_before)
                     if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
@@ -1082,6 +1083,7 @@ def _build_interpreter_context(
                 "required": field.get("required"),
                 "inputType": field.get("inputType"),
                 "aiAssistPrompt": field.get("aiAssistPrompt"),
+                "aiQuestionExamples": field.get("aiQuestionExamples"),
                 "questionPlan": field.get("questionPlan"),
             }
             for field in fields
@@ -1365,6 +1367,7 @@ def _should_implicitly_confirm_tentative_target(
     output: StructuredInterviewOutput,
     tentative_target: Mapping[str, Any] | None,
     current_question: Mapping[str, Any] | None,
+    state: Mapping[str, Any],
 ) -> bool:
     """Return whether this turn answered a different target normally.
 
@@ -1379,6 +1382,12 @@ def _should_implicitly_confirm_tentative_target(
         tentative_target.get("targetType") or tentative_target.get("kind") or ""
     )
     tentative_id = str(tentative_target.get("targetId") or "")
+    if tentative_type == "field":
+        field_state = state.get("fieldStates", {}).get(tentative_id, {})
+        if isinstance(field_state, Mapping) and field_state.get("missingRequiredItemIds"):
+            # A field with an explicit item plan remains open even when the
+            # next utterance contains a different field's answer.
+            return False
     current_type = str(
         (current_question or {}).get("targetType")
         or (current_question or {}).get("kind")
@@ -1511,7 +1520,16 @@ def _generate_question_text(
             for message in messages[-12:]
             if message.get("isActualUtterance") is not False
         ],
-        "fields": [{"id": field.get("id"), "name": field.get("name")} for field in fields],
+        "fields": [
+            {
+                "id": field.get("id"),
+                "name": field.get("name"),
+                "description": field.get("description"),
+                "aiQuestionExamples": field.get("aiQuestionExamples"),
+                "questionPlan": field.get("questionPlan"),
+            }
+            for field in fields
+        ],
         "tentativeCandidates": _list_tentative_candidates(state),
         "answerAssessment": state.get("lastAnswerAssessment"),
         "activeProbe": state.get("activeProbeTarget"),
@@ -1825,11 +1843,22 @@ def _target_from_question(question: Mapping[str, Any] | None) -> dict[str, Any] 
     target_id = str(question.get("targetId") or "").strip()
     if not target_type or not target_id:
         return None
-    return {
+    target = {
         "targetType": target_type,
         "targetId": target_id,
         "label": str(question.get("targetLabel") or question.get("label") or target_id),
     }
+    for key in (
+        "missingItemIds",
+        "missingItems",
+        "capturedItemIds",
+        "questionPlan",
+        "sourceQuestion",
+        "sourceDescription",
+    ):
+        if key in question:
+            target[key] = deepcopy(question[key])
+    return target
 
 
 def _follow_up_count(
@@ -2005,6 +2034,16 @@ def _build_question(
         question["candidateValue"] = target.get("candidateValue")
     if target.get("candidateSourceIds"):
         question["candidateSourceIds"] = list(target.get("candidateSourceIds") or [])
+    for key in (
+        "missingItemIds",
+        "missingItems",
+        "capturedItemIds",
+        "questionPlan",
+        "sourceQuestion",
+        "sourceDescription",
+    ):
+        if key in target:
+            question[key] = deepcopy(target[key])
     return question
 
 
