@@ -168,6 +168,8 @@ class AssistantReply:
 
 次質問の対象値がBackendの検索した`indexed`文書に明示されている場合、APIは`document_reference`の候補を`AWAITING_CONFIRMATION`として保持し、音声には文書記載値の確認質問を返す。候補は「はい」などの明示承認後だけ正式回答へ移し、訂正発話があれば利用者の値へ更新する。音声Runtimeはこの判定や文書検索を複製せず、`app/api`が生成した確認質問、状態、出典を利用する。
 
+Transcribe + Pollyの聞き返し文は、Structured Interviewの状態を変更しない音声専用の表現層で整える。`UNCERTAIN`時は最新Transcriptをそのまま復唱せず、最新ターンを根拠とする信頼できる項目だけを短く示し、聞き取れなかった項目を特定して再回答を依頼する。単一候補の`CORRECTED`はBackendが確認待ち状態を作成した場合だけ補正候補を確認し、候補が曖昧な場合は推測を発話しない。通常のテキスト経路とNova Sonicの応答文生成にはこの表現層を適用しない。
+
 ## 5. VoiceRuntimeEvent契約
 
 RuntimeはProvider固有イベントを以下の共通イベントへ変換する。

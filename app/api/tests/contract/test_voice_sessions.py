@@ -342,6 +342,74 @@ def test_incomplete_final_transcript_stays_on_current_question() -> None:
     assert store.get("voice_turns", turn["id"])["lifecycleStatus"] == "COMMITTED"
 
 
+def test_transcribe_polly_retry_names_only_the_unheard_profile_item(
+    stub_structured_provider: FakeStructuredProvider,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(
+        user,
+        [
+            ("基本プロフィール", "long_text"),
+            ("氏名", "short_text"),
+            ("部署", "short_text"),
+            ("担当領域", "long_text"),
+        ],
+    )
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+
+    def uncertain_provider(
+        *, context: Mapping[str, object], **_: object
+    ) -> StructuredInterviewOutput:
+        latest = context["latestUtterance"]
+        assert isinstance(latest, Mapping)
+        message_id = str(latest["messageId"])
+        fields = context["fields"]
+        assert isinstance(fields, list)
+        updates = [
+            FieldUpdate(
+                fieldId=str(field["id"]),
+                value=value,
+                evidenceTranscriptIds=[message_id],
+                answerResolution="AUTO_CONFIRM",
+            )
+            for field in fields
+            if isinstance(field, Mapping)
+            for value in (
+                "山田太郎"
+                if field.get("name") == "氏名"
+                else "社内システムの開発"
+                if field.get("name") == "担当領域"
+                else None,
+            )
+            if value is not None
+        ]
+        return StructuredInterviewOutput(
+            transcriptAssessment=TranscriptAssessment(
+                correctionStatus="UNCERTAIN",
+                correctionReason="所属部分が不自然",
+            ),
+            answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+            fieldUpdates=updates,
+        )
+
+    stub_structured_provider.interpret = uncertain_provider  # type: ignore[method-assign]
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="え山田太郎でかい家族部に所属しており、主に社内システムの開発を担当しています。"
+        ),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+
+    assert "山田太郎" in result["text"]
+    assert "社内システムの開発" in result["text"]
+    assert "所属だけもう一度お願いします" in result["text"]
+    assert "家族部" not in result["text"]
+    assert result["questionId"] == turn["answerToQuestionId"]
+
+
 def test_corrected_transcript_is_confirmed_before_field_commit() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)

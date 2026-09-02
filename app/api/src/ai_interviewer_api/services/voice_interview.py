@@ -34,6 +34,7 @@ from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     localized_interview_fallbacks,
     localized_interview_greeting,
+    localized_interview_transcript_retry,
     resolve_interview_locale,
 )
 from ai_interviewer_api.core.permissions import require_record_action
@@ -58,6 +59,9 @@ from ai_interviewer_api.services.ai_interview import (
     get_interview_state_snapshot,
 )
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
+from ai_interviewer_api.services.voice_transcript_feedback import (
+    build_transcribe_polly_transcript_feedback,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -522,6 +526,19 @@ def _process_structured_voice_turn(
             turn["normalizedTranscript"] = transcript_assessment.get("normalizedTranscript")
             turn["correctionStatus"] = transcript_assessment.get("correctionStatus") or "NONE"
             turn["transcriptAssessment"] = dict(transcript_assessment)
+        if session.get("provider") == "transcribe_polly":
+            voice_feedback = build_transcribe_polly_transcript_feedback(
+                result,
+                turn,
+                field_labels=_voice_interview_field_labels(knowledge, user),
+                locale=resolve_interview_locale(record, knowledge),
+                force_retry=reply_text
+                == localized_interview_transcript_retry(
+                    resolve_interview_locale(record, knowledge)
+                ),
+            )
+            if voice_feedback:
+                reply_text = voice_feedback
         question = result.get("question") if isinstance(result.get("question"), dict) else None
         question_id = question.get("questionId") if question else None
         response_id = f"voice-response-{uuid4().hex[:12]}"
@@ -758,6 +775,18 @@ def _has_voice_interview_fields(record: dict, user: UserContext) -> bool:
         for row in store.list("knowledge_fields", user.tenant_id)
         if row.get("knowledgeId") == record["knowledgeId"]
     )
+
+
+def _voice_interview_field_labels(
+    knowledge: dict[str, Any],
+    user: UserContext,
+) -> dict[str, str]:
+    knowledge_id = str(knowledge.get("id") or "")
+    return {
+        str(row["id"]): str(row.get("name") or row["id"])
+        for row in store.list("knowledge_fields", user.tenant_id)
+        if row.get("knowledgeId") == knowledge_id and row.get("id")
+    }
 
 
 def _get_voice_session_for_user(voice_session_id: str, user: UserContext) -> dict:
