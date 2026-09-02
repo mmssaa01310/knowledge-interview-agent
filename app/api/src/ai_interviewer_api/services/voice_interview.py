@@ -914,6 +914,12 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
         "targetId": question.get("targetId"),
         "voiceSessionId": turn["voiceSessionId"],
         "voiceTurnId": turn["id"],
+        # The structured service orders messages by timestamp.  Voice turns
+        # already have a monotonic creation time; retain it so repeated
+        # answers to the same question are interpreted in turn order rather
+        # than by their random message ids.
+        "createdAt": turn.get("createdAt") or utc_now(),
+        "updatedAt": utc_now(),
     }
     return store.upsert("messages", message)
 

@@ -145,10 +145,49 @@ def localized_interview_question_help(locale: InterviewLocale, target_label: str
         "pt-BR": "este item",
     }[locale]
     return {
-        "ja-JP": f"この質問では、{label}について実際の内容や経験をお聞きしています。答えられる範囲でお話しください。",
-        "en-US": f"This question asks about the actual details or experience related to {label}. Please share what you can.",
-        "zh-CN": f"这个问题想了解{label}的实际内容或经历。请在您方便的范围内说明。",
-        "pt-BR": f"Esta pergunta busca os detalhes ou experiências reais relacionados a {label}. Compartilhe o que puder.",
+        "ja-JP": f"この質問では、{label}について実際の内容や経験をお聞きしています。たとえば、関わった相手や行った作業など、答えられる範囲でお話しください。",
+        "en-US": f"This question asks about the actual details or experience related to {label}. For example, you could share who was involved or what work was done.",
+        "zh-CN": f"这个问题想了解{label}的实际内容或经历。例如，可以说明参与者或做过的工作。",
+        "pt-BR": f"Esta pergunta busca os detalhes ou experiências reais relacionados a {label}. Por exemplo, você pode contar quem participou ou qual trabalho foi realizado.",
+    }[locale]
+
+
+def localized_interview_hesitation_prompt(locale: InterviewLocale) -> str:
+    """Respond briefly to a filler without replacing the current question."""
+
+    return {
+        "ja-JP": "急がなくて大丈夫です。続けられるところからお願いします。",
+        "en-US": "No rush. Please continue whenever you are ready.",
+        "zh-CN": "不用着急，准备好后请继续。",
+        "pt-BR": "Sem pressa. Continue quando estiver pronto.",
+    }[locale]
+
+
+def localized_interview_confirmation_clarification_prompt(locale: InterviewLocale) -> str:
+    """Ask for the difference before committing a qualified confirmation."""
+
+    return {
+        "ja-JP": "少し違う部分があれば、その点だけ教えてください。",
+        "en-US": "Please tell me only which part is different.",
+        "zh-CN": "如果有不一样的地方，请只说明那一点。",
+        "pt-BR": "Conte apenas qual parte está diferente.",
+    }[locale]
+
+
+def localized_interview_unanswerable_prompt(locale: InterviewLocale, target_label: str) -> str:
+    """Offer one neutral, concrete angle when the answer does not come to mind."""
+
+    label = target_label.strip() or {
+        "ja-JP": "この項目",
+        "en-US": "this topic",
+        "zh-CN": "这一项",
+        "pt-BR": "este tema",
+    }[locale]
+    return {
+        "ja-JP": f"思い出せる範囲で大丈夫です。{label}に関して、具体的な出来事や困ったことを一つ教えてください。",
+        "en-US": f"Whatever you can recall is fine. Please share one concrete event or difficulty related to {label}.",
+        "zh-CN": f"能想起多少都可以。请说一件与{label}有关的具体事情或困难。",
+        "pt-BR": f"Tudo bem responder apenas o que lembrar. Conte um acontecimento ou dificuldade concreta sobre {label}.",
     }[locale]
 
 

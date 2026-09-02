@@ -492,14 +492,15 @@ def test_no_answer_gets_one_neutral_probe_then_advances() -> None:
 
     first = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="あまり覚えていません。特に大きな転機はなかったと思います。"))
     first_result = process_internal_voice_turn(session["id"], first["id"])
-    assert first_result["action"] == "ask_structured"
-    assert "大きな転機でなくても" in first_result["text"]
+    assert first_result["action"] == "ask_follow_up"
+    assert first_result["questionId"] == "q-001"
+    assert "具体的な出来事" in first_result["text"]
 
     second = create_internal_voice_turn(session["id"], VoiceTurnCreate(transcript="特にありません。"))
     second_result = process_internal_voice_turn(session["id"], second["id"])
     state = store.get("interview_states", f"interview-state-{record['id']}")
     first_field_id = state["askedQuestions"][0]["fieldId"]
-    assert second_result["questionId"] == "q-003"
+    assert second_result["questionId"] == "q-002"
     assert state["fieldStates"][first_field_id]["answerDisposition"] == "NO_DETAIL"
     assert state["askedQuestions"][-1]["fieldId"] != first_field_id
 

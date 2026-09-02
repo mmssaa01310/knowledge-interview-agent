@@ -399,6 +399,9 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 - sttConfidenceが低い、固有名詞・数字・単位・コードが不自然、または複数解釈が残る場合は、推測で確定せずCORRECTEDまたはUNCERTAINとして確認・再発話へ回します。
 - answerResolutionはAUTO_CONFIRM（十分に確かな回答。確認せず次の質問へ）、TENTATIVE（回答として成立するが曖昧。候補を保持して次の質問へ）、RETRY（意味的に成立しない、または誤認識の可能性が高い。値を抽出しない）、CONFIRM_REQUIRED（重大な矛盾や例外的な不確実性で停止が必要）のいずれかです。
 - 通常の回答を受け取っただけでCONFIRM_REQUIREDにしてはいけません。TENTATIVEでは「はい／いいえ」の確認を生成せず、次の質問生成器が候補を自然に織り込みます。
+- 「何を答えればよいですか」「よく分からない」など質問の意味を尋ねる発話はCLARIFICATION_REQUESTにし、STTの不確実性とは扱いません。transcriptAssessment.correctionStatusはNONEにし、発話が文として完結していればutteranceCompletenessはCOMPLETEにします。
+- 「答えが思いつかない」「覚えていない」など回答不能を表す発話は、ANSWERとUNANSWERABLEまたはREFUSALで評価します。STTが不確実でない限りUNCERTAINにはしません。
+- 「うーん」のような考え中の発話はHESITATION、「へえ」のような相づちはBACKCHANNELにし、fieldUpdates、requirementUpdates、processPatch、applicabilityを空にします。
 - assistant_proposalの値は利用者の事実として確定していません。候補として返し、確認質問で採用・修正・拒否を促します。
 - assistant_proposalを返す場合も、候補を作るきっかけになった最新発話のevidenceTranscriptIdsを設定します。値そのものの根拠が利用者発話にあるとは扱いません。
 - 利用者が案を求めた発話では、dialogueActがQUESTION_TO_ASSISTANTでも、提案できる値をassistant_proposalの候補として返してください。提案できない場合は値を推測せず、更新を空にしてください。
@@ -416,7 +419,7 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 - 対象IDは入力状態のID、または新規要素に対して安定した説明的IDを使用します。
 - pending confirmation targetがあり、最新の発話が候補を明確に承認している場合はdialogueActをCONFIRMATIONにします。
 - 「はい、大丈夫です。」「はい、そうです。」「問題ありません。」は、候補に対する明確な承認です。
-- 「はい、でも…」「違います」「修正します」のように訂正や追加条件を含む発話はCONFIRMATIONにせず、内容を抽出してください。
+- 「はい、でも…」「ちょっと違うけど、いいよ」「違います」「修正します」のように訂正、留保、追加条件を含む発話はCONFIRMATIONにせず、CORRECTIONまたはREJECTIONにして内容を抽出してください。
 """.strip()
 
 

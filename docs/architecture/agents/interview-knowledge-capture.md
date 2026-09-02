@@ -306,6 +306,10 @@ OTHER
 
 Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistant発話、会話履歴を使用して行う。文字列一致や固定挨拶辞書で判定してはならない。
 
+`HESITATION`、`BACKCHANNEL`、`OTHER`は回答候補として適用せず、現在の質問と`questionId`を維持して短い促しだけを返す。このときQuestion Generator、検索、次質問対象の選択は実行しない。質問の意味が分からない発話は`CLARIFICATION_REQUEST`として具体例を含む説明を返し、STT補正の`UNCERTAIN`と混同してはならない。`UNANSWERABLE`または`REFUSAL`は一度だけ別角度の具体的な促しを返す。聞き取り失敗の応答は、`transcriptAssessment.correctionStatus="UNCERTAIN"`の場合だけ使用する。
+
+確認待ち候補に対する`CONFIRMATION`は、訂正・留保・追加条件を含まない明確な肯定の場合だけ確定できる。混在した確認発話は候補を確定せず、差分または訂正内容を確認する。
+
 ### 7.3 `fieldUpdates`
 
 各要素は固定項目の候補を1件表す。

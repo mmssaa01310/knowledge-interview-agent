@@ -39,6 +39,8 @@ from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     interview_language_instruction,
+    localized_interview_confirmation_clarification_prompt,
+    localized_interview_hesitation_prompt,
     localized_interview_confirmation_question,
     localized_interview_document_confirmation_question,
     localized_interview_incomplete_prompt,
@@ -47,6 +49,7 @@ from ai_interviewer_api.core.interview_locale import (
     localized_interview_question_help,
     localized_interview_transcript_confirmation_question,
     localized_interview_transcript_retry,
+    localized_interview_unanswerable_prompt,
     resolve_interview_locale,
 )
 from ai_interviewer_api.models.base import utc_now
@@ -294,6 +297,87 @@ def _generate_structured_interview_result(
                     }
                 )
                 transcript_assessment_status = "UNCERTAIN"
+            if transcript_assessment_status == "UNCERTAIN":
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    reply=localized_interview_transcript_retry(interview_locale),
+                )
+            if output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"} and not _has_structured_updates(output):
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    reply=localized_interview_question_help(
+                        interview_locale,
+                        str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or "この項目"
+                        ),
+                    ),
+                )
+            if output.dialogueAct in {"HESITATION", "BACKCHANNEL", "OTHER"}:
+                # These acts contain no answer for the active target. Do not
+                # create another question for the same target merely because
+                # the latest user message has now been consumed.
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    reply=localized_interview_hesitation_prompt(interview_locale),
+                )
+            if (
+                output.dialogueAct == "CONFIRMATION"
+                and is_current_question_confirmation_target(state, current_question)
+                and not is_unambiguous_confirmation(raw_transcript, locale=interview_locale)
+            ):
+                # A qualified reply must not promote a candidate merely because
+                # the interpreter labeled it CONFIRMATION. The user needs a
+                # chance to state the correction before the candidate changes.
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    reply=localized_interview_confirmation_clarification_prompt(interview_locale),
+                )
             if effective_completeness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
                 apply_structured_output(
                     state,
@@ -328,37 +412,6 @@ def _generate_structured_interview_result(
                         if effective_completeness == "INCOMPLETE"
                         else localized_interview_transcript_retry(interview_locale)
                     ),
-                    question=current_question,
-                    action="ask_follow_up",
-                    status="in_progress",
-                )
-
-            if transcript_assessment_status == "UNCERTAIN":
-                record_interpretation_assessment(
-                    state,
-                    output,
-                    latest_message_id=latest_message_id,
-                    raw_transcript=raw_transcript,
-                )
-                _persist_transcript_assessment(
-                    latest_user_message,
-                    state.get("lastTranscriptAssessment"),
-                )
-                state["lastStructuredOutput"] = output.model_dump()
-                state["lastStructuredModelId"] = model_id
-                state["lastStructuredReasoningEffort"] = selected_reasoning_effort
-                _persist_state(state, user)
-                messages = _replace_message(
-                    messages,
-                    latest_message_id,
-                    latest_user_message,
-                )
-                return _build_result(
-                    record=record,
-                    state=state,
-                    messages=messages,
-                    fields=fields,
-                    reply=localized_interview_transcript_retry(interview_locale),
                     question=current_question,
                     action="ask_follow_up",
                     status="in_progress",
@@ -406,6 +459,7 @@ def _generate_structured_interview_result(
                         status="in_progress",
                     )
 
+            keep_current_question_for_unanswerable = False
             if output.dialogueAct in {
                 "ANSWER",
                 "CORRECTION",
@@ -465,6 +519,7 @@ def _generate_structured_interview_result(
                                 target=current_target,
                                 probe_type=output.answerAssessment.probeType,
                             )
+                            keep_current_question_for_unanswerable = True
                     elif answer_sufficiency != "SUFFICIENT":
                         register_probe(
                             state,
@@ -522,46 +577,6 @@ def _generate_structured_interview_result(
                     normalized_transcript=str(normalized or raw_transcript),
                     valid_evidence_ids=valid_evidence_ids,
                 )
-            if output.dialogueAct in {
-                "QUESTION_TO_ASSISTANT",
-                "CLARIFICATION_REQUEST",
-            } and not _has_structured_updates(output):
-                record_interpretation_assessment(
-                    state,
-                    output,
-                    latest_message_id=latest_message_id,
-                    raw_transcript=raw_transcript,
-                )
-                _persist_transcript_assessment(
-                    latest_user_message,
-                    state.get("lastTranscriptAssessment"),
-                )
-                state["lastStructuredOutput"] = output.model_dump()
-                state["lastStructuredModelId"] = model_id
-                state["lastStructuredReasoningEffort"] = selected_reasoning_effort
-                _persist_state(state, user)
-                messages = _replace_message(
-                    messages,
-                    latest_message_id,
-                    latest_user_message,
-                )
-                return _build_result(
-                    record=record,
-                    state=state,
-                    messages=messages,
-                    fields=fields,
-                    reply=localized_interview_question_help(
-                        interview_locale,
-                        str(
-                            current_question.get("targetLabel")
-                            or current_question.get("label")
-                            or "この項目"
-                        ),
-                    ),
-                    question=current_question,
-                    action="ask_follow_up",
-                    status="in_progress",
-                )
             if (
                 pending_transcript_confirmation
                 and output.dialogueAct == "REJECTION"
@@ -595,6 +610,25 @@ def _generate_structured_interview_result(
             state["lastStructuredOutput"] = output.model_dump()
             state["lastStructuredModelId"] = model_id
             state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+            if keep_current_question_for_unanswerable and current_question.get("targetType") != "closing":
+                _persist_state(state, user)
+                return _build_result(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    reply=localized_interview_unanswerable_prompt(
+                        interview_locale,
+                        str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or "この項目"
+                        ),
+                    ),
+                    question=current_question,
+                    action="ask_follow_up",
+                    status="in_progress",
+                )
             completion = evaluate_completion(state, profile, fields)
             if completion["complete"]:
                 state["status"] = "completed"
@@ -722,6 +756,58 @@ def _generate_structured_interview_result(
             str(item.get("label") or item.get("targetId"))
             for item in completion["missingRequiredTargets"]
         ],
+    )
+
+
+def _keep_current_question(
+    *,
+    record: Mapping[str, Any],
+    state: dict[str, Any],
+    messages: Sequence[Mapping[str, Any]],
+    fields: Sequence[Mapping[str, Any]],
+    user: UserContext,
+    latest_user_message: Mapping[str, Any],
+    latest_message_id: str,
+    output: StructuredInterviewOutput,
+    model_id: str,
+    reasoning_effort: str,
+    raw_transcript: str,
+    current_question: Mapping[str, Any],
+    reply: str,
+) -> dict[str, Any]:
+    """Persist a non-answer without replacing the active question.
+
+    Fillers, question-help requests, qualified confirmations, and unsafe STT
+    results must consume the user turn for idempotency while preserving the
+    same question ID and target.  They intentionally skip target selection,
+    retrieval, and Question Generator.
+    """
+
+    record_interpretation_assessment(
+        state,
+        output,
+        latest_message_id=latest_message_id,
+        raw_transcript=raw_transcript,
+    )
+    _persist_transcript_assessment(
+        latest_user_message,
+        state.get("lastTranscriptAssessment"),
+    )
+    state["lastStructuredOutput"] = output.model_dump()
+    state["lastStructuredDialogueAct"] = output.dialogueAct
+    state["lastStructuredModelId"] = model_id
+    state["lastStructuredReasoningEffort"] = reasoning_effort
+    _persist_state(state, user)
+    updated_messages = _replace_message(messages, latest_message_id, latest_user_message)
+    return _build_result(
+        record=record,
+        state=state,
+        messages=updated_messages,
+        fields=fields,
+        reply=reply,
+        question=current_question,
+        action="ask_follow_up",
+        status="in_progress",
     )
 
 
