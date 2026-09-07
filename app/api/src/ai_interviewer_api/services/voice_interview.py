@@ -8,11 +8,14 @@ evaluator.
 
 from __future__ import annotations
 
+import json
 import logging
 from copy import deepcopy
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from hashlib import sha256
-from threading import Lock
+from queue import Queue
+from threading import Lock, Thread
 from time import monotonic
 from typing import Any, Literal
 from uuid import uuid4
@@ -26,6 +29,7 @@ from ai_interviewer_api.agents.interview_knowledge.provider import (
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
+    start_speculative_retrieval_for_interview_turn,
 )
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
@@ -436,12 +440,93 @@ def claim_initial_reply(voice_session_id: str) -> dict:
     }
 
 
-def process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
+def process_voice_turn(
+    voice_session_id: str,
+    turn_id: str,
+    *,
+    on_stream_started: Callable[[str], None] | None = None,
+    on_question_delta: Callable[[str], None] | None = None,
+) -> dict:
     with _voice_turn_lock(turn_id):
-        return _process_voice_turn(voice_session_id, turn_id)
+        return _process_voice_turn(
+            voice_session_id,
+            turn_id,
+            on_stream_started=on_stream_started,
+            on_question_delta=on_question_delta,
+        )
 
 
-def _process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
+def stream_process_voice_turn(voice_session_id: str, turn_id: str) -> Iterator[bytes]:
+    """Yield turn processing events while Question Generator emits deltas.
+
+    The semantic turn is still committed by ``process_voice_turn`` before the
+    final event is emitted.  Only the read-only question text deltas are sent
+    early; callers must not treat a delta as committed interview state.
+    """
+
+    events: Queue[dict[str, Any] | None] = Queue()
+
+    def emit(event: dict[str, Any]) -> None:
+        events.put(event)
+
+    def worker() -> None:
+        try:
+            payload = process_voice_turn(
+                voice_session_id,
+                turn_id,
+                on_stream_started=lambda response_id: emit(
+                    {"type": "started", "responseId": response_id}
+                ),
+                on_question_delta=lambda delta: emit(
+                    {"type": "delta", "text": delta}
+                ),
+            )
+            emit({"type": "complete", "payload": payload})
+        except HTTPException as exc:
+            emit(
+                {
+                    "type": "error",
+                    "status": exc.status_code,
+                    "detail": str(exc.detail),
+                }
+            )
+        except Exception:  # noqa: BLE001 - stream boundary must close cleanly
+            logger.exception(
+                "voice_turn_stream_failed voice_session_id=%s turn_id=%s",
+                voice_session_id,
+                turn_id,
+            )
+            emit(
+                {
+                    "type": "error",
+                    "status": 500,
+                    "detail": "turn_process_failed",
+                }
+            )
+        finally:
+            events.put(None)
+
+    Thread(
+        target=worker,
+        name=f"voice-turn-stream-{turn_id}",
+        daemon=True,
+    ).start()
+    while True:
+        event = events.get()
+        if event is None:
+            return
+        yield (json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        )
+
+
+def _process_voice_turn(
+    voice_session_id: str,
+    turn_id: str,
+    *,
+    on_stream_started: Callable[[str], None] | None = None,
+    on_question_delta: Callable[[str], None] | None = None,
+) -> dict:
     api_started_at = monotonic()
     session = _get_voice_session_for_internal_use(voice_session_id)
     turn = _get_voice_turn_for_session(turn_id, session)
@@ -484,6 +569,8 @@ def _process_voice_turn(voice_session_id: str, turn_id: str) -> dict:
             user=user,
             interview_state=interview_state,
             api_started_at=api_started_at,
+            on_stream_started=on_stream_started,
+            on_question_delta=on_question_delta,
         )
     except Exception:
         latest_turn = voice_turn_repository.get(turn_id)
@@ -510,17 +597,30 @@ def _process_structured_voice_turn(
     user: UserContext,
     interview_state: dict[str, Any],
     api_started_at: float,
+    on_stream_started: Callable[[str], None] | None = None,
+    on_question_delta: Callable[[str], None] | None = None,
 ) -> dict:
     """Send one answer through the same semantic engine as text."""
 
     del interview_state
+    speculative_retrieval = None
+    response_id = f"voice-response-{uuid4().hex[:12]}"
     try:
         knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
+        speculative_retrieval = start_speculative_retrieval_for_interview_turn(
+            record,
+            knowledge,
+            user,
+        )
+        if on_stream_started is not None:
+            on_stream_started(response_id)
         result = generate_structured_interview_result(
             record,
             knowledge,
             user,
             persist_assistant_messages=False,
+            speculative_retrieval=speculative_retrieval,
+            on_question_delta=on_question_delta,
         )
         latency_metrics = {
             str(name): value
@@ -551,7 +651,6 @@ def _process_structured_voice_turn(
                 reply_text = voice_feedback
         question = result.get("question") if isinstance(result.get("question"), dict) else None
         question_id = question.get("questionId") if question else None
-        response_id = f"voice-response-{uuid4().hex[:12]}"
         latest_session = _get_voice_session_for_internal_use(session["id"])
         latest_turn = _get_voice_turn_for_session(turn["id"], latest_session)
         if latest_turn.get("processingStatus") == "cancelled":
@@ -593,9 +692,13 @@ def _process_structured_voice_turn(
         logger.info(
             "voice_turn_api_latency turn_id=%s interpreter_ms=%s medium_retry_ms=%s "
             "patch_repair_ms=%s state_transition_ms=%s retrieval_ms=%s "
-            "question_generation_ms=%s api_total_ms=%s interpreter_calls=%s "
+            "question_generation_ms=%s api_total_ms=%s interpreter_start=%s "
+            "interpreter_end=%s rag_start=%s rag_end=%s question_llm_start=%s "
+            "question_first_token=%s question_first_sentence=%s question_llm_end=%s "
+            "interpreter_calls=%s "
             "medium_retry_calls=%s patch_repair_calls=%s retrieval_calls=%s "
-            "question_generation_calls=%s",
+            "question_generation_calls=%s speculative_retrieval_ms=%s "
+            "retrieval_reused=%s retrieval_fallbacks=%s",
             turn["id"],
             latency_metrics.get("interpreter_ms", 0),
             latency_metrics.get("medium_retry_ms", 0),
@@ -604,11 +707,22 @@ def _process_structured_voice_turn(
             latency_metrics.get("retrieval_ms", 0),
             latency_metrics.get("question_generation_ms", 0),
             latency_metrics.get("api_total_ms", 0),
+            latency_metrics.get("interpreter_start_ms"),
+            latency_metrics.get("interpreter_end_ms"),
+            latency_metrics.get("rag_start_ms"),
+            latency_metrics.get("rag_end_ms"),
+            latency_metrics.get("question_llm_start_ms"),
+            latency_metrics.get("question_first_token_ms"),
+            latency_metrics.get("question_first_sentence_ms"),
+            latency_metrics.get("question_llm_end_ms"),
             latency_metrics.get("interpreter_calls", 0),
             latency_metrics.get("medium_retry_calls", 0),
             latency_metrics.get("patch_repair_calls", 0),
             latency_metrics.get("retrieval_calls", 0),
             latency_metrics.get("question_generation_calls", 0),
+            latency_metrics.get("speculative_retrieval_ms", 0),
+            latency_metrics.get("retrieval_reused", 0),
+            latency_metrics.get("retrieval_fallbacks", 0),
         )
         session["currentQuestionId"] = question_id
         session["stateVersion"] = next_state_version
@@ -645,6 +759,14 @@ def _process_structured_voice_turn(
             latest_turn["updatedAt"] = utc_now()
             voice_turn_repository.save(latest_turn)
         raise
+    finally:
+        if speculative_retrieval is not None and not speculative_retrieval.future.done():
+            cancelled = speculative_retrieval.cancel()
+            logger.info(
+                "interview_speculative_rag_cancelled turn_id=%s cancelled=%s",
+                turn.get("id"),
+                cancelled,
+            )
 
 
 def _commit_control_turn(

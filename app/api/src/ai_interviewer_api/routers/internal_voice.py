@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import StreamingResponse
 
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.schemas.voice import (
@@ -18,6 +19,7 @@ from ai_interviewer_api.services.voice_interview import (
     mark_initial_reply_failed,
     mark_initial_reply_sent,
     process_voice_turn,
+    stream_process_voice_turn,
 )
 from ai_interviewer_api.services.voice_interview import (
     get_internal_voice_session as get_internal_voice_session_service,
@@ -97,6 +99,18 @@ def process_internal_voice_turn(
     _: None = Depends(require_internal_api_token),
 ) -> dict:
     return process_voice_turn(voice_session_id, turn_id)
+
+
+@router.post("/internal/voice-sessions/{voice_session_id}/turns/{turn_id}/process-stream")
+def process_internal_voice_turn_stream(
+    voice_session_id: str,
+    turn_id: str,
+    _: None = Depends(require_internal_api_token),
+) -> StreamingResponse:
+    return StreamingResponse(
+        stream_process_voice_turn(voice_session_id, turn_id),
+        media_type="application/x-ndjson",
+    )
 
 
 @router.post("/internal/voice-sessions/{voice_session_id}/assistant-events")

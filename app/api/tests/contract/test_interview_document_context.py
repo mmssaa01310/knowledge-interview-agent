@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 
 import pytest
+from ai_interviewer_api.services import interview_document_retrieval as retrieval_service
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     QuestionGenerationOutput,
@@ -15,7 +17,9 @@ from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.schemas.retrieval import RetrievedKnowledgeContext
 from ai_interviewer_api.services.interview_document_retrieval import (
+    build_interview_document_query,
     retrieve_interview_document_context,
+    start_speculative_interview_document_retrieval,
     validate_document_question_candidate,
 )
 
@@ -298,3 +302,58 @@ def test_document_candidate_is_ignored_when_backend_source_does_not_support_valu
     )
 
     assert candidate is None
+
+
+def test_speculative_retrieval_runs_before_target_compatibility_is_confirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record, knowledge, fields = _seed_interview_context(user)
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_retrieve(**_: object) -> list[RetrievedKnowledgeContext]:
+        started.set()
+        release.wait(timeout=1)
+        return []
+
+    monkeypatch.setattr(
+        retrieval_service,
+        "retrieve_indexed_document_context",
+        fake_retrieve,
+    )
+    target = {
+        "targetType": "field",
+        "targetId": fields[0]["id"],
+        "label": fields[0]["name"],
+    }
+    prefetch = start_speculative_interview_document_retrieval(
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        current_field=fields[0],
+        target=target,
+        retrieval_policy="required",
+    )
+
+    assert prefetch is not None
+    assert started.wait(timeout=1)
+    query = build_interview_document_query(
+        record=record,
+        knowledge=knowledge,
+        current_field=fields[0],
+        target=target,
+    )
+    assert prefetch.resolve(
+        query="different-target",
+        knowledge_id=knowledge["id"],
+        tenant_id=user.tenant_id,
+        limit=6,
+    ) is None
+    release.set()
+    assert prefetch.resolve(
+        query=query,
+        knowledge_id=knowledge["id"],
+        tenant_id=user.tenant_id,
+        limit=6,
+    ) == []

@@ -97,6 +97,40 @@ class CaptureHttpClientFactory:
         return CaptureHttpClient(self.captured)
 
 
+class StreamingHttpResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self) -> list[str]:
+        return [
+            'data: {"type":"response.output_text.delta","delta":"利用者は"}',
+            'data: {"type":"response.output_text.delta","delta":"誰ですか？"}',
+            'data: [DONE]',
+        ]
+
+
+class StreamingHttpClient(CaptureHttpClient):
+    def stream(self, _method: str, _url: str, **kwargs: object) -> "StreamingHttpResponseContext":
+        self.captured.update(kwargs)
+        return StreamingHttpResponseContext()
+
+
+class StreamingHttpResponseContext:
+    def __enter__(self) -> StreamingHttpResponse:
+        return StreamingHttpResponse()
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+class StreamingHttpClientFactory:
+    def __init__(self, captured: dict[str, object]) -> None:
+        self.captured = captured
+
+    def __call__(self, **_: object) -> StreamingHttpClient:
+        return StreamingHttpClient(self.captured)
+
+
 class SequenceHttpResponse:
     def __init__(self, payload: dict[str, object]) -> None:
         self.payload = payload
@@ -233,6 +267,31 @@ def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
     assert request_body["max_output_tokens"] == 600
     assert request_body["text"]["format"]["type"] == "json_schema"
     assert request_body["text"]["format"]["strict"] is True
+
+
+def test_bedrock_responses_provider_streams_question_deltas() -> None:
+    captured: dict[str, object] = {}
+    deltas: list[str] = []
+    provider = BedrockResponsesStructuredProvider(
+        model_id="global.openai.gpt-5.6-luna",
+        region_name="us-east-1",
+        session=FakeBedrockSession(),
+        http_client_factory=StreamingHttpClientFactory(captured),
+    )
+
+    result = provider.generate_question_stream(
+        profile="fixed_form",
+        context={"interviewLocale": "ja-JP"},
+        target={"targetType": "field", "targetId": "name", "label": "利用者"},
+        reasoning_effort="low",
+        on_delta=deltas.append,
+    )
+
+    request_body = json.loads(bytes(captured["content"]).decode("utf-8"))
+    assert result.questionText == "利用者は誰ですか？"
+    assert deltas == ["利用者は", "誰ですか？"]
+    assert request_body["stream"] is True
+    assert "text" not in request_body
 
 
 def test_bedrock_responses_provider_uses_process_model_edit_schema() -> None:

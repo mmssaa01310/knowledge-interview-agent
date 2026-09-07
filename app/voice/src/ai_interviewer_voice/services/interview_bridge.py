@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
 
 from ai_interviewer_voice.clients.interview_api import (
     InitialReplyClaimResult,
@@ -30,6 +32,21 @@ class InterviewBridgeResult:
 
 class InvalidInterviewResponseError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class InterviewBridgeStreamStarted:
+    response_id: str
+
+
+@dataclass(frozen=True)
+class InterviewBridgeTextDelta:
+    text: str
+
+
+@dataclass(frozen=True)
+class InterviewBridgeStreamCompleted:
+    result: InterviewBridgeResult
 
 
 class InterviewBridge:
@@ -160,6 +177,60 @@ class InterviewBridge:
             timeout_seconds=self._turn_save_timeout_seconds,
         )
 
+    async def process_turn_stream(
+        self,
+        *,
+        voice_session_id: str,
+        transcript: str,
+        answer_to_question_id: str | None,
+        turn_type: str = "ANSWER",
+        expected_state_version: int | None = None,
+        client_turn_id: str | None = None,
+        started_at_ms: int | None = None,
+        ended_at_ms: int | None = None,
+        stt_confidence: float | None = None,
+    ) -> AsyncIterator[
+        InterviewBridgeStreamStarted
+        | InterviewBridgeTextDelta
+        | InterviewBridgeStreamCompleted
+    ]:
+        save_result = await self.save_turn(
+            voice_session_id,
+            transcript=transcript,
+            answer_to_question_id=answer_to_question_id,
+            turn_type=turn_type,
+            expected_state_version=expected_state_version,
+            client_turn_id=client_turn_id,
+            started_at_ms=started_at_ms,
+            ended_at_ms=ended_at_ms,
+            stt_confidence=stt_confidence,
+        )
+        async for event in self._client.process_turn_stream(
+            voice_session_id,
+            save_result.turn_id,
+            timeout_seconds=self._turn_process_timeout_seconds,
+        ):
+            event_type = event.get("type")
+            if event_type == "started":
+                response_id = str(event.get("responseId") or "")
+                if response_id:
+                    yield InterviewBridgeStreamStarted(response_id=response_id)
+                continue
+            if event_type == "delta":
+                delta = str(event.get("text") or "")
+                if delta:
+                    yield InterviewBridgeTextDelta(text=delta)
+                continue
+            if event_type == "complete":
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    raise InvalidInterviewResponseError("missing streamed interview response")
+                yield InterviewBridgeStreamCompleted(
+                    result=self._validate_process_result(_process_result_from_payload(payload))
+                )
+                continue
+            raise InvalidInterviewResponseError("unknown interview stream event")
+
     async def cancel_turn(
         self,
         *,
@@ -233,4 +304,41 @@ __all__ = [
     "InterviewBridge",
     "InterviewBridgeResult",
     "InvalidInterviewResponseError",
+    "InterviewBridgeStreamCompleted",
+    "InterviewBridgeStreamStarted",
+    "InterviewBridgeTextDelta",
 ]
+
+
+def _process_result_from_payload(payload: dict[str, Any]) -> VoiceTurnProcessResult:
+    voice_session = payload.get("voiceSession") if isinstance(payload.get("voiceSession"), dict) else {}
+    voice_turn = payload.get("voiceTurn") if isinstance(payload.get("voiceTurn"), dict) else {}
+    return VoiceTurnProcessResult(
+        turn_id=str(payload.get("turnId") or ""),
+        response_id=str(payload.get("responseId") or ""),
+        reply_text=str(payload.get("text") or ""),
+        action=str(payload.get("action") or ""),
+        question_id=_optional_str(payload.get("questionId")),
+        state_version=int(payload.get("stateVersion") or 0),
+        interview_status=str(voice_session.get("status") or "active"),
+        retrieval_policy=_optional_str(payload.get("retrievalPolicy")),
+        retrieval_executed=bool(payload.get("retrievalExecuted", False)),
+        turn_type=str(voice_turn.get("turnType") or "ANSWER"),
+        latency_metrics=_latency_metrics(payload.get("latencyMetrics")),
+    )
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
+def _latency_metrics(value: Any) -> dict[str, float | int] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        str(name): metric
+        for name, metric in value.items()
+        if isinstance(metric, (int, float))
+    }

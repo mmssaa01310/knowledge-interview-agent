@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
 import unicodedata
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from time import monotonic, time
 from typing import Any
 
 from ai_interviewer_api.auth.deps import UserContext
@@ -14,6 +18,125 @@ from ai_interviewer_api.schemas.retrieval import (
 )
 
 MAX_INTERVIEW_DOCUMENT_CONTEXT = 6
+logger = logging.getLogger(__name__)
+_SPECULATIVE_RETRIEVAL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="interview-rag",
+)
+
+
+@dataclass
+class SpeculativeInterviewRetrieval:
+    """A read-only retrieval started before the Interpreter has selected a target.
+
+    The result is reusable only when the final retrieval query and authorization
+    scope are identical.  A mismatch is deliberately represented as ``None`` so
+    the caller must execute the ordinary retrieval path instead of guessing that
+    an approximate result is safe to use.
+    """
+
+    query: str
+    knowledge_id: str
+    tenant_id: str
+    limit: int
+    future: Future[list[RetrievedKnowledgeContext]]
+    started_at: float
+    started_at_ms: int
+    ended_at_ms: int | None = None
+
+    def resolve(
+        self,
+        *,
+        query: str,
+        knowledge_id: str,
+        tenant_id: str,
+        limit: int,
+    ) -> list[RetrievedKnowledgeContext] | None:
+        if (
+            query != self.query
+            or knowledge_id != self.knowledge_id
+            or tenant_id != self.tenant_id
+            or int(limit) != self.limit
+        ):
+            return None
+        result = self.future.result()
+        self.ended_at_ms = int(time() * 1000)
+        return result
+
+    def cancel(self) -> bool:
+        """Cancel an unused prefetch when it has not started running yet."""
+
+        return self.future.cancel()
+
+    @property
+    def latency_ms(self) -> float | None:
+        if self.ended_at_ms is None:
+            if not self.future.done():
+                return None
+            self.ended_at_ms = int(time() * 1000)
+        return round(max(0, self.ended_at_ms - self.started_at_ms), 1)
+
+
+def start_speculative_interview_document_retrieval(
+    *,
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    current_question: Mapping[str, Any] | None = None,
+    current_field: Mapping[str, Any] | None = None,
+    target: Mapping[str, Any] | None = None,
+    state: Mapping[str, Any] | None = None,
+    messages: Sequence[Mapping[str, Any]] = (),
+    retrieval_policy: str = "auto",
+    limit: int = MAX_INTERVIEW_DOCUMENT_CONTEXT,
+) -> SpeculativeInterviewRetrieval | None:
+    """Start a best-effort read while the Structured Interpreter is running.
+
+    This function never changes interview state.  It is intentionally separate
+    from ``retrieve_interview_document_context`` so that callers can explicitly
+    decide whether the eventual target is compatible before consuming it.
+    """
+
+    if str(retrieval_policy or "auto").strip().lower() == "never":
+        return None
+    query = build_interview_document_query(
+        record=record,
+        knowledge=knowledge,
+        current_question=current_question,
+        current_field=current_field,
+        target=target,
+        state=state,
+        messages=messages,
+    )
+    knowledge_id = str(knowledge.get("id") or record.get("knowledgeId") or "")
+    tenant_id = str(user.tenant_id or "")
+    if not query or not knowledge_id or not tenant_id:
+        return None
+    bounded_limit = min(int(limit), MAX_INTERVIEW_DOCUMENT_CONTEXT)
+    started_at = monotonic()
+    future = _SPECULATIVE_RETRIEVAL_EXECUTOR.submit(
+        retrieve_indexed_document_context,
+        query=query,
+        knowledge_id=knowledge_id,
+        tenant_id=tenant_id,
+        limit=bounded_limit,
+    )
+    prefetch = SpeculativeInterviewRetrieval(
+        query=query,
+        knowledge_id=knowledge_id,
+        tenant_id=tenant_id,
+        limit=bounded_limit,
+        future=future,
+        started_at=started_at,
+        started_at_ms=int(time() * 1000),
+    )
+    logger.info(
+        "interview_speculative_rag_start query_chars=%s knowledge_id=%s tenant_id=%s",
+        len(query),
+        knowledge_id,
+        tenant_id,
+    )
+    return prefetch
 
 
 def retrieve_interview_document_context(

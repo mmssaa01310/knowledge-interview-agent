@@ -89,6 +89,10 @@ class Settings:
     structured_interview_question_max_output_tokens: int = int(
         os.getenv("STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS", "600")
     )
+    structured_interview_question_streaming_enabled: bool = (
+        os.getenv("STRUCTURED_INTERVIEW_QUESTION_STREAMING_ENABLED", "true").lower()
+        == "true"
+    )
     question_design_model_id: str = os.getenv(
         "QUESTION_DESIGN_MODEL_ID",
         "global.openai.gpt-5.6-luna",

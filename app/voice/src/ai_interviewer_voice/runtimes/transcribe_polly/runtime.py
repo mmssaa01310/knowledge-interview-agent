@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import StrEnum
 from time import monotonic, time
 from typing import Any, Literal
@@ -33,6 +33,7 @@ from ai_interviewer_voice.runtimes.transcribe_polly.polly_synthesizer import (
     PollySynthesizer,
 )
 from ai_interviewer_voice.runtimes.transcribe_polly.text_chunker import (
+    PollyTextChunker,
     PollyTextChunkerConfig,
     split_text_for_polly,
 )
@@ -67,6 +68,9 @@ from ai_interviewer_voice.services.interview_bridge import (
     InterviewApiError,
     InterviewBridge,
     InterviewBridgeResult,
+    InterviewBridgeStreamCompleted,
+    InterviewBridgeStreamStarted,
+    InterviewBridgeTextDelta,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,7 +171,9 @@ class TranscribePollyRuntime:
         self._voiced_duration_ms = 0
         self._barge_in_voiced_ms = 0
         self._silence_started_at: float | None = None
+        self._last_user_speech_end_at_ms: int | None = None
         self._last_transcribe_result_at: float | None = None
+        self._last_transcribe_final_at_ms: int | None = None
         self._has_final_transcript = False
         self._stable_text = ""
         self._latest_partial_text = ""
@@ -565,6 +571,7 @@ class TranscribePollyRuntime:
         if self._turn_active and self._speech_active:
             self._speech_active = False
             self._silence_started_at = now
+            self._last_user_speech_end_at_ms = int(time() * 1000)
 
     async def _start_user_turn(
         self,
@@ -580,6 +587,8 @@ class TranscribePollyRuntime:
         self._turn_active = True
         self._speech_active = True
         self._last_transcribe_result_at = None
+        self._last_transcribe_final_at_ms = None
+        self._last_user_speech_end_at_ms = None
         self._has_final_transcript = False
         self._voiced_duration_ms = initial_voiced_ms
         self._stable_text = ""
@@ -602,6 +611,12 @@ class TranscribePollyRuntime:
                 self._stable_text = result.stable_text
         else:
             self._has_final_transcript = True
+            self._last_transcribe_final_at_ms = int(time() * 1000)
+            logger.info(
+                "voice_turn_transcribe_final transcribe_final=%s result_id=%s",
+                self._last_transcribe_final_at_ms,
+                result.result_id,
+            )
             self._latest_stt_confidence = result.confidence
             key = result.result_id
             if not key:
@@ -702,7 +717,13 @@ class TranscribePollyRuntime:
         # cannot start a second Transcribe turn while the API evaluates this
         # answer or while Polly plays the next question.
         self._close_input_gate(reason="final_transcript")
-        transcript_final_at_ms = int(time() * 1000)
+        turn_finalize_at_ms = int(time() * 1000)
+        logger.info(
+            "voice_turn_timing_event event=turn_finalize user_speech_end=%s transcribe_final=%s turn_finalize=%s",
+            self._last_user_speech_end_at_ms,
+            self._last_transcribe_final_at_ms,
+            turn_finalize_at_ms,
+        )
         await self._emit(UserSpeechEnded())
         await self._emit_input_state("ANSWER_PROCESSING")
         self._processing_task = asyncio.create_task(
@@ -711,7 +732,8 @@ class TranscribePollyRuntime:
                 generation=self._generation,
                 expected_state_version=self._state_version,
                 client_turn_id=uuid4().hex,
-                transcript_final_at_ms=transcript_final_at_ms,
+                transcript_final_at_ms=self._last_transcribe_final_at_ms,
+                turn_finalize_at_ms=turn_finalize_at_ms,
                 stt_confidence=self._latest_stt_confidence,
             )
         )
@@ -724,6 +746,7 @@ class TranscribePollyRuntime:
         expected_state_version: int,
         client_turn_id: str,
         transcript_final_at_ms: int | None = None,
+        turn_finalize_at_ms: int | None = None,
         stt_confidence: float | None = None,
     ) -> None:
         if self._interview_bridge is None or self._context is None:
@@ -750,6 +773,9 @@ class TranscribePollyRuntime:
         result_received = False
         processing_may_continue = False
         api_started_at = monotonic()
+        stream_queue: asyncio.Queue[tuple[str, Any]] | None = None
+        stream_play_task: asyncio.Task[None] | None = None
+        streamed_response_id: str | None = None
         # Show the final STT text immediately.  Its content and target are
         # already known at this point; waiting for answer evaluation made the
         # UI appear frozen for the entire API/LLM pipeline.
@@ -761,16 +787,65 @@ class TranscribePollyRuntime:
             )
         )
         try:
-            result = await self._interview_bridge.process_turn(
-                voice_session_id=self._context.voice_session_id,
-                transcript=transcript,
-                answer_to_question_id=self._current_question_id,
-                turn_type="ANSWER",
-                expected_state_version=expected_state_version,
-                client_turn_id=client_turn_id,
-                stt_confidence=stt_confidence,
-            )
-            result_received = True
+            process_stream = getattr(self._interview_bridge, "process_turn_stream", None)
+            if callable(process_stream):
+                async for stream_event in process_stream(
+                    voice_session_id=self._context.voice_session_id,
+                    transcript=transcript,
+                    answer_to_question_id=self._current_question_id,
+                    turn_type="ANSWER",
+                    expected_state_version=expected_state_version,
+                    client_turn_id=client_turn_id,
+                    stt_confidence=stt_confidence,
+                ):
+                    if isinstance(stream_event, InterviewBridgeStreamStarted):
+                        if stream_queue is not None:
+                            continue
+                        stream_queue = asyncio.Queue()
+                        streamed_response_id = stream_event.response_id
+                        self._pipeline_timings[streamed_response_id] = {
+                            "turn_id": client_turn_id,
+                            "transcript_final_at_ms": transcript_final_at_ms
+                            or int(time() * 1000),
+                            "turn_finalize_at_ms": turn_finalize_at_ms
+                            or int(time() * 1000),
+                            "user_speech_end_at_ms": self._last_user_speech_end_at_ms,
+                            "api_started_at": api_started_at,
+                            "question_stream_started_at_ms": int(time() * 1000),
+                        }
+                        stream_play_task = asyncio.create_task(
+                            self._play_streaming_formal_reply(
+                                response_id=streamed_response_id,
+                                generation=generation,
+                                stream_queue=stream_queue,
+                            )
+                        )
+                    elif isinstance(stream_event, InterviewBridgeTextDelta):
+                        if stream_queue is not None:
+                            await stream_queue.put(("delta", stream_event.text))
+                    elif isinstance(stream_event, InterviewBridgeStreamCompleted):
+                        result = stream_event.result
+                        result_received = True
+                        if stream_queue is not None:
+                            timing = self._pipeline_timings.get(result.response_id)
+                            if timing is not None:
+                                timing.update(result.latency_metrics or {})
+                                timing["turn_id"] = result.turn_id
+                                timing["api_completed_at_ms"] = int(time() * 1000)
+                                timing["api_completed_at"] = monotonic()
+                            await stream_queue.put(("complete", result))
+                        break
+            else:
+                result = await self._interview_bridge.process_turn(
+                    voice_session_id=self._context.voice_session_id,
+                    transcript=transcript,
+                    answer_to_question_id=self._current_question_id,
+                    turn_type="ANSWER",
+                    expected_state_version=expected_state_version,
+                    client_turn_id=client_turn_id,
+                    stt_confidence=stt_confidence,
+                )
+                result_received = True
         except asyncio.CancelledError:
             raise
         except InterviewApiError as exc:
@@ -788,10 +863,15 @@ class TranscribePollyRuntime:
             await self._handle_interview_failure(exc)
             return
         finally:
+            if stream_queue is not None and not result_received:
+                await stream_queue.put(("error", None))
             await self._cancel_notice_tasks()
             if not result_received and not processing_may_continue:
                 self._clear_active_client_turn(client_turn_id)
         if generation != self._generation or self._closed:
+            if stream_play_task is not None and not stream_play_task.done():
+                stream_play_task.cancel()
+                await asyncio.gather(stream_play_task, return_exceptions=True)
             self._clear_active_client_turn(client_turn_id)
             if not self._closed and self._formal_response_id is None:
                 await self._resume_input_after_formal_reply(
@@ -803,12 +883,19 @@ class TranscribePollyRuntime:
         api_completed_at = monotonic()
         pipeline_timing: dict[str, Any] = {
             "turn_id": result.turn_id,
+            "user_speech_end_at_ms": self._last_user_speech_end_at_ms,
+            "transcribe_final_at_ms": transcript_final_at_ms or int(time() * 1000),
             "transcript_final_at_ms": transcript_final_at_ms or int(time() * 1000),
+            "turn_finalize_at_ms": turn_finalize_at_ms or int(time() * 1000),
             "api_started_at": api_started_at,
             "api_completed_at": api_completed_at,
             "api_completed_at_ms": int(time() * 1000),
         }
         pipeline_timing.update(result.latency_metrics or {})
+        existing_timing = self._pipeline_timings.get(result.response_id)
+        if existing_timing is not None:
+            existing_timing.update(pipeline_timing)
+            pipeline_timing = existing_timing
         self._pipeline_timings[result.response_id] = pipeline_timing
         logger.info(
             "voice_turn_api_completed voice_session_id=%s turn_id=%s response_id=%s question_id=%s api_processing_ms=%s transcribe_to_api_completed_ms=%s api_metrics=%s",
@@ -821,17 +908,20 @@ class TranscribePollyRuntime:
             result.latency_metrics or {},
         )
         self._clear_active_client_turn(client_turn_id)
-        await self.send_reply(
-            AssistantReply(
-                turn_id=result.turn_id,
-                response_id=result.response_id,
-                text=result.reply_text,
-                action=result.action,
-                question_id=result.question_id,
-                state_version=result.state_version,
-                latency_metrics=result.latency_metrics or {},
+        if stream_play_task is not None and stream_queue is not None:
+            await stream_play_task
+        else:
+            await self.send_reply(
+                AssistantReply(
+                    turn_id=result.turn_id,
+                    response_id=result.response_id,
+                    text=result.reply_text,
+                    action=result.action,
+                    question_id=result.question_id,
+                    state_version=result.state_version,
+                    latency_metrics=result.latency_metrics or {},
+                )
             )
-        )
 
     async def _handle_interview_failure(self, exc: Exception) -> bool:
         category = exc.category if isinstance(exc, InterviewApiError) else "API_ERROR"
@@ -960,6 +1050,7 @@ class TranscribePollyRuntime:
         if timing is not None and "polly_started_at" not in timing:
             timing["polly_started_at"] = monotonic()
             timing["polly_started_at_ms"] = int(time() * 1000)
+            timing["polly_first_start_ms"] = timing["polly_started_at_ms"]
             logger.info(
                 "voice_turn_polly_started response_id=%s polly_started_at_ms=%s",
                 reply.response_id,
@@ -1066,6 +1157,253 @@ class TranscribePollyRuntime:
                 generation=generation,
             )
 
+    async def _play_streaming_formal_reply(
+        self,
+        *,
+        response_id: str,
+        generation: int,
+        stream_queue: asyncio.Queue[tuple[str, Any]],
+    ) -> None:
+        """Play Polly chunks while the API is still receiving LLM deltas."""
+
+        self._close_input_gate(reason="formal_reply_stream_started")
+        self._assistant_response_states[response_id] = AssistantResponseState.PLANNED
+        await self._cancel_notice_tasks()
+        await self._output.cancel_notices()
+        self._formal_response_id = response_id
+        self._formal_generation = generation
+        self._formal_playback_drained_event = asyncio.Event()
+        self._pending_listening_state = "ANSWER_LISTENING"
+        final_result: InterviewBridgeResult | None = None
+
+        async def on_complete(result: InterviewBridgeResult) -> None:
+            nonlocal final_result
+            if result.response_id != response_id:
+                raise PollySynthesisError("stream response id changed before completion")
+            final_result = result
+            self._pending_listening_state = self._next_input_state(
+                InterviewAction.from_api(result.action)
+            )
+            await self._emit(
+                AssistantTranscriptFinal(
+                    text=result.reply_text,
+                    response_id=response_id,
+                    generation=generation,
+                )
+            )
+            self._record_assistant_event_background(
+                "assistant_transcript_final",
+                response_id=response_id,
+                transcript=result.reply_text,
+                detail={
+                    "plannedReplyText": result.reply_text,
+                    "spokenTranscript": result.reply_text,
+                    "turnId": result.turn_id,
+                    "action": result.action,
+                    "questionId": result.question_id,
+                },
+            )
+
+        await self._emit(
+            AssistantResponsePreparing(
+                response_id=response_id,
+                generation=generation,
+            )
+        )
+        request = AudioOutputRequest(
+            response_id=response_id,
+            generation=generation,
+            kind=OutputKind.FORMAL_REPLY,
+            pcm_chunks=self._synthesize_streaming_chunks(
+                stream_queue,
+                generation,
+                response_id=response_id,
+                on_complete=on_complete,
+            ),
+        )
+        self._assistant_response_states[response_id] = AssistantResponseState.SYNTHESIZING
+        try:
+            result = await self._output.play(request)
+        except PollySynthesisError as exc:
+            self._pipeline_timings.pop(response_id, None)
+            self._assistant_speaking = False
+            self._formal_response_id = None
+            self._formal_generation = None
+            self._release_formal_playback_waiter()
+            self._pending_listening_state = None
+            self._assistant_response_states[response_id] = AssistantResponseState.INTERRUPTED
+            await self._emit(
+                RuntimeError(
+                    message="polly_synthesis_failed",
+                    detail={"errorType": exc.__class__.__name__},
+                    fatal=False,
+                )
+            )
+            await self._resume_input_after_formal_reply(
+                "ANSWER_LISTENING",
+                reason="polly_synthesis_failed",
+            )
+            return
+        if not result.accepted or result.cancelled:
+            self._pipeline_timings.pop(response_id, None)
+            return
+        if final_result is not None and final_result.action == "finish":
+            self._interview_status = "completed"
+            self._input_available = False
+        if result.audio_duration_ms <= 0:
+            await self.notify_assistant_playback_drained(
+                response_id=response_id,
+                generation=generation,
+            )
+
+    async def _synthesize_streaming_chunks(
+        self,
+        stream_queue: asyncio.Queue[tuple[str, Any]],
+        generation: int,
+        *,
+        response_id: str,
+        on_complete: Callable[[InterviewBridgeResult], Awaitable[None]],
+    ) -> AsyncIterator[bytes]:
+        """Bounded Polly worker pool fed by incremental Question Generator text."""
+
+        timing = self._pipeline_timings.get(response_id)
+        if timing is not None and "polly_started_at" not in timing:
+            timing["polly_started_at"] = monotonic()
+            timing["polly_started_at_ms"] = int(time() * 1000)
+            timing["polly_first_start_ms"] = timing["polly_started_at_ms"]
+            logger.info(
+                "voice_turn_polly_first_start response_id=%s polly_first_start=%s",
+                response_id,
+                timing["polly_started_at_ms"],
+            )
+        config = PollyTextChunkerConfig(
+            first_min_chars=self._config.first_chunk_min_chars,
+            first_max_chars=self._config.first_chunk_max_chars,
+            following_min_chars=self._config.following_chunk_min_chars,
+            following_max_chars=self._config.following_chunk_max_chars,
+        )
+        text_queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue(
+            maxsize=max(2, self._config.polly_max_parallel_requests * 2)
+        )
+        pcm_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue()
+        chunker = PollyTextChunker(config)
+        producer_error: BaseException | None = None
+        worker_error: BaseException | None = None
+
+        async def produce() -> None:
+            nonlocal producer_error
+            index = 0
+            streamed_text = ""
+            try:
+                while True:
+                    kind, payload = await stream_queue.get()
+                    if kind == "delta":
+                        delta = str(payload or "")
+                        streamed_text += delta
+                        for chunk in chunker.push(delta, final=False):
+                            await text_queue.put((index, chunk))
+                            index += 1
+                        continue
+                    if kind == "complete":
+                        result = payload
+                        if not isinstance(result, InterviewBridgeResult):
+                            raise PollySynthesisError("missing streamed interview result")
+                        await on_complete(result)
+                        if streamed_text.strip() != result.reply_text.strip():
+                            logger.warning(
+                                "voice_turn_stream_text_mismatch response_id=%s streamed_chars=%s final_chars=%s",
+                                response_id,
+                                len(streamed_text),
+                                len(result.reply_text),
+                            )
+                        if not streamed_text.strip():
+                            final_text = result.reply_text
+                        elif result.reply_text.startswith(streamed_text):
+                            final_text = result.reply_text[len(streamed_text) :]
+                        else:
+                            # The safe streaming path is expected to produce the
+                            # same question text.  Do not repeat the already
+                            # spoken prefix if a backend sanitizer changed it.
+                            final_text = ""
+                        for chunk in chunker.push(final_text, final=True):
+                            await text_queue.put((index, chunk))
+                            index += 1
+                        break
+                    if kind == "error":
+                        raise PollySynthesisError("question stream ended before commit")
+                    raise PollySynthesisError("unknown question stream signal")
+            except BaseException as exc:
+                producer_error = exc
+            finally:
+                for _ in range(max(1, self._config.polly_max_parallel_requests)):
+                    await text_queue.put(None)
+
+        async def synthesize() -> None:
+            nonlocal worker_error
+            while True:
+                item = await text_queue.get()
+                if item is None:
+                    await pcm_queue.put(None)
+                    return
+                index, text = item
+                task = self._take_or_schedule_polly_task(text)
+                try:
+                    await pcm_queue.put((index, await task))
+                except BaseException as exc:
+                    worker_error = exc
+                    if not task.done():
+                        task.cancel()
+                    await pcm_queue.put(None)
+                    return
+
+        producer_task = asyncio.create_task(produce())
+        workers = [
+            asyncio.create_task(synthesize())
+            for _ in range(max(1, self._config.polly_max_parallel_requests))
+        ]
+        pending: dict[int, bytes] = {}
+        next_index = 0
+        completed_workers = 0
+        try:
+            while completed_workers < len(workers):
+                item = await pcm_queue.get()
+                if item is None:
+                    completed_workers += 1
+                    continue
+                index, pcm = item
+                pending[index] = pcm
+                while next_index in pending:
+                    ready = pending.pop(next_index)
+                    if generation != self._generation or self._closed:
+                        return
+                    if timing is not None and next_index == 0:
+                        timing["polly_first_chunk_ready_at"] = monotonic()
+                        timing["polly_first_chunk_ready_at_ms"] = int(time() * 1000)
+                        timing["polly_first_end_ms"] = timing["polly_first_chunk_ready_at_ms"]
+                        logger.info(
+                            "voice_turn_polly_first_end response_id=%s polly_first_end=%s",
+                            response_id,
+                            timing["polly_first_end_ms"],
+                        )
+                    next_index += 1
+                    yield ready
+            await producer_task
+            if producer_error is not None:
+                if isinstance(producer_error, PollySynthesisError):
+                    raise producer_error
+                raise PollySynthesisError("question stream failed") from producer_error
+            if worker_error is not None:
+                if isinstance(worker_error, PollySynthesisError):
+                    raise worker_error
+                raise PollySynthesisError("polly synthesis failed") from worker_error
+        finally:
+            if not producer_task.done():
+                producer_task.cancel()
+            for task in workers:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(producer_task, *workers, return_exceptions=True)
+
     async def _resume_input_after_formal_reply(
         self,
         next_state: Literal[
@@ -1146,6 +1484,7 @@ class TranscribePollyRuntime:
                 if timing is not None and index == 0:
                     timing["polly_first_chunk_ready_at"] = monotonic()
                     timing["polly_first_chunk_ready_at_ms"] = int(time() * 1000)
+                    timing["polly_first_end_ms"] = timing["polly_first_chunk_ready_at_ms"]
                     logger.info(
                         "voice_turn_polly_first_chunk_ready response_id=%s polly_first_chunk_ms=%s",
                         response_id,
@@ -1197,6 +1536,12 @@ class TranscribePollyRuntime:
             output_started_at = monotonic()
             timing["output_started_at"] = output_started_at
             timing["output_started_at_ms"] = int(time() * 1000)
+            timing["playback_first_audio_at_ms"] = timing["output_started_at_ms"]
+            timing["speech_end_to_first_audio_ms"] = (
+                timing["output_started_at_ms"] - timing["user_speech_end_at_ms"]
+                if timing.get("user_speech_end_at_ms")
+                else None
+            )
             timing["polly_first_chunk_ms"] = round(
                 (
                     timing.get("polly_first_chunk_ready_at", output_started_at)
@@ -1210,9 +1555,24 @@ class TranscribePollyRuntime:
                 timing["output_started_at_ms"] - timing["transcript_final_at_ms"],
             )
             logger.info(
-                "voice_turn_pipeline_latency turn_id=%s response_id=%s interpreter_ms=%s medium_retry_ms=%s patch_repair_ms=%s state_transition_ms=%s retrieval_ms=%s question_generation_ms=%s api_total_ms=%s polly_first_chunk_ms=%s total_turn_latency_ms=%s",
+                "voice_turn_pipeline_latency turn_id=%s response_id=%s user_speech_end=%s transcribe_final=%s turn_finalize=%s interpreter_start=%s interpreter_end=%s rag_start=%s rag_end=%s question_llm_start=%s question_first_token=%s question_first_sentence=%s question_llm_end=%s polly_first_start=%s polly_first_end=%s playback_first_audio=%s speech_end_to_first_audio_ms=%s interpreter_ms=%s medium_retry_ms=%s patch_repair_ms=%s state_transition_ms=%s retrieval_ms=%s question_generation_ms=%s api_total_ms=%s polly_first_chunk_ms=%s total_turn_latency_ms=%s",
                 timing.get("turn_id"),
                 request.response_id,
+                timing.get("user_speech_end_at_ms"),
+                timing.get("transcribe_final_at_ms"),
+                timing.get("turn_finalize_at_ms"),
+                timing.get("interpreter_start_ms"),
+                timing.get("interpreter_end_ms"),
+                timing.get("rag_start_ms"),
+                timing.get("rag_end_ms"),
+                timing.get("question_llm_start_ms"),
+                timing.get("question_first_token_ms"),
+                timing.get("question_first_sentence_ms"),
+                timing.get("question_llm_end_ms"),
+                timing.get("polly_first_start_ms"),
+                timing.get("polly_first_end_ms"),
+                timing.get("playback_first_audio_at_ms"),
+                timing.get("speech_end_to_first_audio_ms"),
                 timing.get("interpreter_ms", 0),
                 timing.get("medium_retry_ms", 0),
                 timing.get("patch_repair_ms", 0),
@@ -1258,6 +1618,21 @@ class TranscribePollyRuntime:
                         "latencyMetrics": {
                             name: timing.get(name, 0)
                             for name in (
+                                "user_speech_end_at_ms",
+                                "transcribe_final_at_ms",
+                                "turn_finalize_at_ms",
+                                "interpreter_start_ms",
+                                "interpreter_end_ms",
+                                "rag_start_ms",
+                                "rag_end_ms",
+                                "question_llm_start_ms",
+                                "question_first_token_ms",
+                                "question_first_sentence_ms",
+                                "question_llm_end_ms",
+                                "polly_first_start_ms",
+                                "polly_first_end_ms",
+                                "playback_first_audio_at_ms",
+                                "speech_end_to_first_audio_ms",
                                 "interpreter_ms",
                                 "medium_retry_ms",
                                 "patch_repair_ms",

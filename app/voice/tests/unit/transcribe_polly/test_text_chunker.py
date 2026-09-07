@@ -28,3 +28,23 @@ def test_chunker_never_exceeds_eighty_characters() -> None:
 
     assert "".join(chunks) == "あ" * 190
     assert max(map(len, chunks)) <= 80
+
+
+def test_incremental_chunker_supports_newlines_and_safe_ascii_punctuation() -> None:
+    chunker = PollyTextChunker()
+
+    assert chunker.push("The value is 3.14 and the next step is ready. ") == [
+        "The value is 3.14 and the next step is ready."
+    ]
+    assert chunker.push("URL is https://example.com/path and continue") == []
+    assert chunker.push("\n次の確認をお願いします。", final=True) == [
+        "URL is https://example.com/path and continue",
+        "次の確認をお願いします。",
+    ]
+
+
+def test_incremental_chunker_does_not_split_decimal_across_deltas() -> None:
+    chunker = PollyTextChunker()
+
+    assert chunker.push("値は3.") == []
+    assert chunker.push("14です。", final=True) == ["値は3.14です。"]

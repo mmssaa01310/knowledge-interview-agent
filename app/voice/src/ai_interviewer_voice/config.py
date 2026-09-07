@@ -37,6 +37,12 @@ class Settings:
     transcribe_vad_rms_threshold: int = int(
         os.getenv("TRANSCRIBE_VAD_RMS_THRESHOLD", "600")
     )
+    voice_endpoint_silence_ms: int = int(
+        os.getenv("VOICE_ENDPOINT_SILENCE_MS", "600")
+    )
+    voice_final_result_settle_ms: int = int(
+        os.getenv("VOICE_FINAL_RESULT_SETTLE_MS", "150")
+    )
     polly_voice_id: str = os.getenv("POLLY_VOICE_ID", "Kazuha")
     polly_engine: str = os.getenv("POLLY_ENGINE", "neural")
     polly_max_parallel_requests: int = int(

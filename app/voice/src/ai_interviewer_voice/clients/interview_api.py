@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import json
 from typing import Any, Literal
 
 import httpx
@@ -296,6 +298,81 @@ class InterviewApiClient:
             latency_metrics=_latency_metrics(payload.get("latencyMetrics")),
         )
 
+    async def process_turn_stream(
+        self,
+        voice_session_id: str,
+        turn_id: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Read NDJSON turn events without waiting for the final commit."""
+
+        async with self._client() as client:
+            try:
+                async with client.stream(
+                    "POST",
+                    f"/internal/voice-sessions/{voice_session_id}/turns/{turn_id}/process-stream",
+                    timeout=timeout_seconds,
+                    headers=self.headers if self._http_client is not None else None,
+                ) as response:
+                    if response.status_code >= 400:
+                        await self._raise_stream_response_error(response)
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError as exc:
+                            raise InterviewApiError(
+                                "turn_stream_invalid_event",
+                                "invalid turn stream event",
+                            ) from exc
+                        if not isinstance(payload, dict):
+                            raise InterviewApiError(
+                                "turn_stream_invalid_event",
+                                "invalid turn stream event",
+                            )
+                        if payload.get("type") == "error":
+                            await _raise_stream_event_error(payload)
+                        yield payload
+            except InterviewApiError:
+                raise
+            except httpx.TimeoutException as exc:
+                raise InterviewApiError(
+                    "turn_process_timeout",
+                    str(exc) or "turn process stream timeout",
+                    category="PROCESS_TIMEOUT",
+                ) from exc
+            except httpx.RequestError as exc:
+                raise InterviewApiError(
+                    "turn_process_network_error",
+                    str(exc) or "turn process stream network error",
+                    category="NETWORK_ERROR",
+                ) from exc
+
+    async def _raise_stream_response_error(self, response: httpx.Response) -> None:
+        await response.aread()
+        if response.status_code == 401:
+            raise InterviewApiError("unauthorized", "internal api unauthorized", status_code=401)
+        if response.status_code == 403:
+            raise InterviewApiError("unauthorized", "internal api forbidden", status_code=403)
+        if response.status_code == 404:
+            raise InterviewApiError("voice_session_closed", "voice session not found", status_code=404)
+        detail = None
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                detail = body.get("detail")
+        except (ValueError, httpx.ResponseNotRead):
+            detail = None
+        code = str(detail or "turn_process_failed")
+        raise InterviewApiError(
+            code,
+            code,
+            status_code=response.status_code,
+            category="API_ERROR",
+        )
+
     async def create_assistant_event(
         self,
         voice_session_id: str,
@@ -388,3 +465,17 @@ def _latency_metrics(value: Any) -> dict[str, float | int] | None:
         for name, metric in value.items()
         if isinstance(metric, (int, float))
     }
+
+
+async def _raise_stream_event_error(payload: dict[str, Any]) -> None:
+    status_code = int(payload.get("status") or 500)
+    detail = str(payload.get("detail") or "turn_process_failed")
+    category: Literal["PROCESS_TIMEOUT", "API_ERROR", "NETWORK_ERROR"] = (
+        "PROCESS_TIMEOUT" if status_code == 504 else "API_ERROR"
+    )
+    raise InterviewApiError(
+        detail,
+        detail,
+        status_code=status_code,
+        category=category,
+    )

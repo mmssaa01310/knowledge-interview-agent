@@ -180,3 +180,38 @@ def test_interview_api_client_classifies_process_network_error() -> None:
         assert exc_info.value.category == "NETWORK_ERROR"
 
     asyncio.run(run())
+
+
+def test_interview_api_client_reads_question_stream_events() -> None:
+    async def run() -> list[dict]:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/turns/turn-1/process-stream")
+            body = "".join(
+                [
+                    '{"type":"started","responseId":"resp-1"}\n',
+                    '{"type":"delta","text":"次の質問です。"}\n',
+                    '{"type":"complete","payload":{"turnId":"turn-1","responseId":"resp-1","text":"次の質問です。","action":"NEXT_QUESTION","questionId":"q-2","stateVersion":3,"voiceSession":{"status":"active"},"voiceTurn":{"turnType":"ANSWER"}}}\n',
+                ]
+            )
+            return httpx.Response(
+                200,
+                content=body.encode("utf-8"),
+                headers={"content-type": "application/x-ndjson"},
+            )
+
+        client = InterviewApiClient(
+            "http://test",
+            "internal-token",
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="http://test",
+            ),
+        )
+        return [
+            event
+            async for event in client.process_turn_stream("session-1", "turn-1")
+        ]
+
+    events = asyncio.run(run())
+    assert [event["type"] for event in events] == ["started", "delta", "complete"]
+    assert events[1]["text"] == "次の質問です。"

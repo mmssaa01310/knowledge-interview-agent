@@ -34,7 +34,13 @@ from ai_interviewer_voice.schemas.events import (
     UserTranscriptFinal,
 )
 from ai_interviewer_voice.schemas.sessions import VoiceRuntimeContext
-from ai_interviewer_voice.services.interview_bridge import InterviewApiError, InterviewBridgeResult
+from ai_interviewer_voice.services.interview_bridge import (
+    InterviewApiError,
+    InterviewBridgeResult,
+    InterviewBridgeStreamCompleted,
+    InterviewBridgeStreamStarted,
+    InterviewBridgeTextDelta,
+)
 
 
 def _pcm(sample: int, samples: int = 320) -> bytes:
@@ -196,6 +202,30 @@ class FakeBridge:
     async def cancel_turn(self, **kwargs) -> None:
         self.cancel_calls.append(kwargs)
         self.state_version += 1
+
+
+class StreamingBridge(FakeBridge):
+    def __init__(self) -> None:
+        super().__init__()
+        self.complete_allowed = asyncio.Event()
+        self.completed = asyncio.Event()
+
+    async def process_turn_stream(self, **kwargs):
+        self.process_calls.append(kwargs)
+        yield InterviewBridgeStreamStarted(response_id="response-stream-api")
+        yield InterviewBridgeTextDelta(text="最初の文章を生成しました。")
+        await self.complete_allowed.wait()
+        result = InterviewBridgeResult(
+            turn_id="turn-stream-api",
+            response_id="response-stream-api",
+            reply_text="最初の文章を生成しました。次の文章を続けます。",
+            action="NEXT_QUESTION",
+            question_id="q-2",
+            state_version=2,
+            interview_status="active",
+        )
+        self.completed.set()
+        yield InterviewBridgeStreamCompleted(result=result)
 
 
 class BlockingBridge(FakeBridge):
@@ -1184,6 +1214,65 @@ async def test_first_polly_chunk_plays_before_following_chunk_is_ready() -> None
         )
         == 1
     )
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_question_stream_starts_audio_before_api_commit_and_next_delta() -> None:
+    polly = StreamingPolly()
+    bridge = StreamingBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=polly,
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    processing = asyncio.create_task(
+        runtime._process_interview_turn(
+            transcript="回答です。",
+            generation=runtime._generation,
+            expected_state_version=runtime._state_version,
+            client_turn_id="client-stream-1",
+            transcript_final_at_ms=1,
+            turn_finalize_at_ms=2,
+        )
+    )
+    first_audio = None
+    for _ in range(50):
+        first_audio = next(
+            (
+                event
+                for event in list(runtime._events._queue)
+                if isinstance(event, AssistantAudioChunk)
+                and event.response_id == "response-stream-api"
+            ),
+            None,
+        )
+        if first_audio is not None:
+            break
+        await asyncio.sleep(0.01)
+
+    assert first_audio is not None
+    assert bridge.completed.is_set() is False
+    assert processing.done() is False
+
+    bridge.complete_allowed.set()
+    for _ in range(50):
+        if len(polly.calls) >= 2:
+            break
+        await asyncio.sleep(0.01)
+    polly.release_following.set()
+    await processing
+    assert bridge.completed.is_set() is True
+    assert polly.calls[:2] == ["最初の文章を生成しました。", "次の文章を続けます。"]
     await runtime.close()
 
 

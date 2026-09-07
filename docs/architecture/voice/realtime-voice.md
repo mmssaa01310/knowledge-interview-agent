@@ -244,6 +244,7 @@ Trickle ICE用WebSocketは初回PoCの対象外とする。
 ```http
 POST /internal/voice-sessions/{voice_session_id}/turns
 POST /internal/voice-sessions/{voice_session_id}/turns/{turn_id}/process
+POST /internal/voice-sessions/{voice_session_id}/turns/{turn_id}/process-stream
 POST /internal/voice-sessions/{voice_session_id}/assistant-events
 POST /internal/voice-sessions/{voice_session_id}/connection-events
 ```
@@ -265,6 +266,16 @@ AI出力をそのまま正式回答として確定しない。音声サービス
 回答評価、状態遷移、次質問本文、音声再生は引き続きAPI結果にだけ従う。これにより表示の先行は状態機械や
 回答確定を変更しない。
 
+`process-stream`はNDJSONで`started`、`delta`、`complete`を返す。`delta`はBackendが状態更新を
+確定する前の音声応答候補であり、正式な状態・Turn保存の正本ではない。文書検索結果が存在する場合や、
+文書候補・Transcript確認の可能性がある場合は構造化Question Generatorを優先し、delta配信を行わない。
+これにより、文書由来候補の検証と聞き返し文の整合性を保つ。
+
+検索は、確定Transcript保存後に現在の質問を使った読み取り専用の投機検索を開始し、Structured
+Interpreterと重ねて実行する。Interpreter後のtargetから作ったquery、tenant、knowledge、limitが
+完全一致するときだけ再利用し、不一致・不要・失敗時は正式検索へ戻る。部分Transcriptからの検索は、
+誤認識ごとの検索連発を避けるため現行では実施しない。
+
 ### 6.3.2 ターン遅延計測
 
 APIは同一`voice_turn_id`の`latencyMetrics`として、`interpreter_ms`、`medium_retry_ms`、
@@ -272,10 +283,18 @@ APIは同一`voice_turn_id`の`latencyMetrics`として、`interpreter_ms`、`me
 各呼び出し回数を保存する。`state_transition_ms`は、外部AI・検索時間を除いたCoordinatorの状態更新、
 検証、永続化、対象選択の時間である。
 
+加えて`interpreter_start_ms`/`end_ms`、`rag_start_ms`/`end_ms`、`question_llm_start_ms`、
+`question_first_token_ms`、`question_first_sentence_ms`、`question_llm_end_ms`、投機検索の再利用・
+フォールバック情報を記録する。Runtimeは`user_speech_end`、`transcribe_final`、`turn_finalize`、
+`polly_first_start`、`polly_first_end`、`playback_first_audio`と、最重要指標
+`speech_end_to_first_audio_ms`を記録する。
+
 Transcribe + Polly Runtimeは同じturn IDを含む`voice_turn_pipeline_latency`ログと
 `assistant_speech_started`イベントへ、`polly_first_chunk_ms`（Polly開始から最初のPCMまで）と
-`total_turn_latency_ms`（確定STTから最初の再生開始まで）を記録する。これらを結合して、1ターンの
-直列区間と省略された呼び出しを追跡する。
+`total_turn_latency_ms`（確定STTから最初の再生開始まで）を記録する。Question Generatorのdeltaは
+`PollyTextChunker`へ逐次投入し、文境界に達したチャンクをPollyへ送る。LLMの次delta、Polly生成、
+再生は独立タスクとして進め、全文生成完了を待たない。これらを結合して、1ターンの直列区間と省略された
+呼び出しを追跡する。
 
 ## 7. WebRTCのv1基本方針
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Protocol
 
 import boto3
@@ -154,6 +154,96 @@ class BedrockResponsesStructuredProvider:
                 error = exc
         raise StructuredInterviewProviderError("question output validation failed after retry") from error
 
+    def generate_question_stream(
+        self,
+        *,
+        profile: str,
+        context: Mapping[str, Any],
+        target: Mapping[str, Any],
+        reasoning_effort: str,
+        on_delta: Callable[[str], None],
+    ) -> QuestionGenerationOutput:
+        """Stream a plain question for targets that do not use document RAG.
+
+        The ordinary question contract is structured JSON because document
+        candidates must be validated by the backend.  For ``retrievalPolicy``
+        ``never`` the candidate fields are not applicable, so the same Bedrock
+        Responses endpoint can safely stream the user-facing question text.
+        Callers still receive a validated ``QuestionGenerationOutput`` after
+        the stream has completed.
+        """
+
+        request_body = {
+            "model": self.model_id,
+            "reasoning": {"effort": reasoning_effort},
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": _question_stream_system_prompt(
+                                profile,
+                                normalize_interview_locale(context.get("interviewLocale"))
+                                or "ja-JP",
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": json.dumps(
+                                {"context": context, "target": target},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
+                },
+            ],
+            "max_output_tokens": settings.structured_interview_question_max_output_tokens,
+            "stream": True,
+        }
+        request_url = f"{self.endpoint_url}/responses"
+        request_body_text = json.dumps(
+            request_body,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        output_text = ""
+        try:
+            headers = self._signed_headers(request_url, request_body_text)
+            with self.http_client_factory(timeout=self.timeout) as client:
+                with client.stream(
+                    "POST",
+                    request_url,
+                    headers=headers,
+                    content=request_body_text.encode("utf-8"),
+                ) as response:
+                    response.raise_for_status()
+                    for event in _iter_sse_events(response):
+                        if event.get("type") != "response.output_text.delta":
+                            continue
+                        delta = event.get("delta")
+                        if not isinstance(delta, str) or not delta:
+                            continue
+                        output_text += delta
+                        on_delta(delta)
+        except StructuredInterviewProviderError:
+            raise
+        except (BotoCoreError, httpx.HTTPError, ValueError) as exc:
+            raise StructuredInterviewProviderError(
+                "Amazon Bedrock question streaming request failed"
+            ) from exc
+        question_text = output_text.strip()
+        if not question_text:
+            raise StructuredInterviewProviderError(
+                "Amazon Bedrock question streaming response is empty"
+            )
+        return QuestionGenerationOutput(questionText=question_text)
+
     def edit_process_model(
         self,
         *,
@@ -253,28 +343,12 @@ class BedrockResponsesStructuredProvider:
         }
         request_url = f"{self.endpoint_url}/responses"
         request_body_text = json.dumps(request_body, ensure_ascii=False, separators=(",", ":"))
-        headers = {"content-type": "application/json"}
         try:
-            credentials = self.session.get_credentials()
-            if credentials is None:
-                raise StructuredInterviewProviderError(
-                    "AWS credentials are not configured for Bedrock"
-                )
-            signed_request = AWSRequest(
-                method="POST",
-                url=request_url,
-                data=request_body_text.encode("utf-8"),
-                headers=headers,
-            )
-            SigV4Auth(
-                credentials.get_frozen_credentials(),
-                "bedrock",
-                self.region_name,
-            ).add_auth(signed_request)
+            signed_headers = self._signed_headers(request_url, request_body_text)
             with self.http_client_factory(timeout=self.timeout) as client:
                 response = client.post(
                     request_url,
-                    headers=dict(signed_request.headers),
+                    headers=signed_headers,
                     content=request_body_text.encode("utf-8"),
                 )
             response.raise_for_status()
@@ -324,11 +398,49 @@ class BedrockResponsesStructuredProvider:
             )
         return parsed
 
+    def _signed_headers(self, request_url: str, request_body_text: str) -> dict[str, str]:
+        credentials = self.session.get_credentials()
+        if credentials is None:
+            raise StructuredInterviewProviderError(
+                "AWS credentials are not configured for Bedrock"
+            )
+        signed_request = AWSRequest(
+            method="POST",
+            url=request_url,
+            data=request_body_text.encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+        SigV4Auth(
+            credentials.get_frozen_credentials(),
+            "bedrock",
+            self.region_name,
+        ).add_auth(signed_request)
+        return dict(signed_request.headers)
+
 
 def _retry_max_output_tokens(current: int) -> int:
     """Give a truncated structured response a larger retry budget."""
 
     return max(current, min(current * 2, 10_000))
+
+
+def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
+    """Decode JSON data records emitted by Responses streaming."""
+
+    for raw_line in response.iter_lines():
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else str(raw_line)
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            logger.debug("structured_question_stream_invalid_event")
+            continue
+        if isinstance(event, dict):
+            yield event
 
 
 def _extract_response_text(response: Mapping[str, Any]) -> str:
@@ -443,6 +555,15 @@ retrieved_knowledgeはBackendが検索したindexed済み文書です。document
 documentCandidateValueを返した場合は、questionTextでもその候補を文書由来として確認する質問にしてください。Backendが候補値と根拠を検証し、確認待ち状態を作成します。candidateSourceがassistant_proposalの場合は、候補値だけを説明し、確認文の定型化とOKボタン表示はBackend/UIが行います。answerResolutionがTENTATIVEの候補は確認せず、候補を自然に含めて次の質問へつなげてください。
 applicability対象には、存在するか、存在しないかを明示的に回答できる質問にしてください。
 ProcessModelや図のコードは生成しないでください。
+""".strip()
+
+
+def _question_stream_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> str:
+    return f"""あなたは{profile}用途のインタビュー質問文生成器です。
+Backendが選択したtargetについて、質問を1問だけ生成してください。
+{interview_language_instruction(locale)}
+回答はuser-facingな質問文だけにしてください。JSON、Markdown、箇条書き、前置き、説明、相づちは返さないでください。
+target以外の項目を同時に尋ねず、回答済みの内容を繰り返さず、不足している観点だけを一つの質問にまとめてください。
 """.strip()
 
 

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from threading import Lock
-from time import monotonic
+from time import monotonic, time
 from typing import Any
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
@@ -65,7 +65,11 @@ from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
 )
 from ai_interviewer_api.services.interview_document_retrieval import (
+    MAX_INTERVIEW_DOCUMENT_CONTEXT,
+    SpeculativeInterviewRetrieval,
+    build_interview_document_query,
     retrieve_interview_document_context,
+    start_speculative_interview_document_retrieval,
     validate_document_question_candidate,
 )
 
@@ -89,6 +93,16 @@ _LATENCY_CALL_METRIC_NAMES = (
     "retrieval_calls",
     "question_generation_calls",
 )
+_LATENCY_EVENT_METRIC_NAMES = (
+    "interpreter_start_ms",
+    "interpreter_end_ms",
+    "rag_start_ms",
+    "rag_end_ms",
+    "question_llm_start_ms",
+    "question_first_token_ms",
+    "question_first_sentence_ms",
+    "question_llm_end_ms",
+)
 
 
 def _new_latency_metrics() -> dict[str, float]:
@@ -108,6 +122,19 @@ def _serialize_latency_metrics(metrics: Mapping[str, float]) -> dict[str, float 
         serialized[name] = round(float(metrics.get(name, 0.0)), 1)
     for name in _LATENCY_CALL_METRIC_NAMES:
         serialized[name] = int(metrics.get(name, 0.0))
+    for name in _LATENCY_EVENT_METRIC_NAMES:
+        value = metrics.get(name)
+        if value:
+            serialized[name] = int(value)
+    for name in (
+        "speculative_retrieval_ms",
+        "speculative_retrieval_wait_ms",
+        "retrieval_reused",
+        "retrieval_fallbacks",
+    ):
+        value = metrics.get(name)
+        if value is not None:
+            serialized[name] = int(value) if name.endswith(("reused", "fallbacks")) else round(float(value), 1)
     return serialized
 
 
@@ -118,6 +145,8 @@ def generate_structured_interview_result(
     *,
     persist_assistant_messages: bool = True,
     provider: StructuredInterviewProvider | None = None,
+    speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
+    on_question_delta: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Run one record's Structured Interview turn serially.
 
@@ -139,6 +168,8 @@ def generate_structured_interview_result(
             persist_assistant_messages=persist_assistant_messages,
             provider=provider,
             latency_metrics=latency_metrics,
+            speculative_retrieval=speculative_retrieval,
+            on_question_delta=on_question_delta,
         )
         structured_total_ms = _elapsed_ms(started_at)
         # The coordinator portion includes state reads/writes, validation,
@@ -158,6 +189,48 @@ def generate_structured_interview_result(
         return result
 
 
+def start_speculative_retrieval_for_interview_turn(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+) -> SpeculativeInterviewRetrieval | None:
+    """Prefetch the current question's document context before interpretation.
+
+    The current question is only a hint: ``_generate_question_text`` compares
+    the final target-derived query before reusing the result.  This makes the
+    prefetch useful for follow-ups that keep the same target while preventing a
+    previous target's documents from leaking into a newly selected question.
+    """
+
+    fields = _list_interview_fields(knowledge, user)
+    state = load_structured_interview_state(record, knowledge, user, fields=fields)
+    current_question = _get_current_question(state)
+    if not current_question:
+        return None
+    current_field = _field_for_target(
+        _target_from_question(current_question) or {},
+        fields,
+    )
+    retrieval_policy = _retrieval_policy_for_target(
+        _target_from_question(current_question) or {},
+        current_field,
+    )
+    return start_speculative_interview_document_retrieval(
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        # Keep this query shape identical to _generate_question_text.  The
+        # final generator deliberately omits the previous question text so a
+        # reworded question cannot change retrieval semantics by accident.
+        current_question=None,
+        current_field=current_field,
+        target=_target_from_question(current_question),
+        state=state,
+        messages=_list_record_messages(record, user),
+        retrieval_policy=retrieval_policy,
+    )
+
+
 def _generate_structured_interview_result(
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
@@ -166,6 +239,8 @@ def _generate_structured_interview_result(
     persist_assistant_messages: bool = True,
     provider: StructuredInterviewProvider | None = None,
     latency_metrics: dict[str, float] | None = None,
+    speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
+    on_question_delta: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     latency_metrics = latency_metrics if latency_metrics is not None else _new_latency_metrics()
     fields = _list_interview_fields(knowledge, user)
@@ -273,6 +348,7 @@ def _generate_structured_interview_result(
                 output = StructuredInterviewOutput(dialogueAct="CONFIRMATION")
             else:
                 interpreter_started_at = monotonic()
+                latency_metrics["interpreter_start_ms"] = int(time() * 1000)
                 output = structured_provider.interpret(
                     profile=profile,
                     context=interpreter_context,
@@ -280,6 +356,7 @@ def _generate_structured_interview_result(
                 )
                 latency_metrics["interpreter_ms"] += _elapsed_ms(interpreter_started_at)
                 latency_metrics["interpreter_calls"] += 1
+                latency_metrics["interpreter_end_ms"] = int(time() * 1000)
                 if (
                     initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
                     and _requires_medium_reasoning(state, output)
@@ -793,6 +870,8 @@ def _generate_structured_interview_result(
         state=state,
         messages=messages,
         latency_metrics=latency_metrics,
+        speculative_retrieval=speculative_retrieval,
+        on_question_delta=on_question_delta,
     )
     if document_candidate is not None:
         target = dict(target)
@@ -1502,6 +1581,8 @@ def _generate_question_text(
     state: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
     latency_metrics: dict[str, float] | None = None,
+    speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
+    on_question_delta: Callable[[str], None] | None = None,
 ) -> tuple[str, list[RetrievedKnowledgeContext], DocumentQuestionCandidate | None]:
     started_at = monotonic()
     pending_transcript = state.get("pendingTranscriptConfirmation")
@@ -1527,21 +1608,87 @@ def _generate_question_text(
         # avoids needless query construction on every voice turn.
         retrieved_context: list[RetrievedKnowledgeContext] = []
     else:
-        retrieval_started_at = monotonic()
-        retrieved_context = retrieve_interview_document_context(
+        retrieval_query = build_interview_document_query(
             record=record,
             knowledge=knowledge,
-            user=user,
             current_question=None,
             current_field=current_field,
             target=target,
             state=state,
             messages=messages,
-            retrieval_policy=retrieval_policy,
         )
+        knowledge_id = str(knowledge.get("id") or record.get("knowledgeId") or "")
+        tenant_id = str(user.tenant_id or "")
+        bounded_limit = MAX_INTERVIEW_DOCUMENT_CONTEXT
+        retrieval_started_wall_ms = int(time() * 1000)
+        retrieval_started_at = monotonic()
+        reused_speculative = False
+        if speculative_retrieval is not None:
+            try:
+                speculative_context = speculative_retrieval.resolve(
+                    query=retrieval_query,
+                    knowledge_id=knowledge_id,
+                    tenant_id=tenant_id,
+                    limit=bounded_limit,
+                )
+            except Exception:  # noqa: BLE001 - speculative retrieval must not fail the turn
+                logger.warning(
+                    "interview_speculative_rag_failed record_id=%s",
+                    record.get("id"),
+                    exc_info=True,
+                )
+                speculative_context = None
+            if speculative_context is not None:
+                retrieved_context = speculative_context
+                reused_speculative = True
+                if latency_metrics is not None:
+                    latency_metrics["retrieval_reused"] = 1.0
+                    latency_metrics["speculative_retrieval_ms"] = (
+                        speculative_retrieval.latency_ms or 0.0
+                    )
+                    latency_metrics["rag_start_ms"] = float(
+                        speculative_retrieval.started_at_ms
+                    )
+                    latency_metrics["rag_end_ms"] = float(
+                        speculative_retrieval.ended_at_ms or int(time() * 1000)
+                    )
+            else:
+                if latency_metrics is not None:
+                    latency_metrics["retrieval_fallbacks"] = (
+                        latency_metrics.get("retrieval_fallbacks", 0.0) + 1.0
+                    )
+                retrieved_context = retrieve_interview_document_context(
+                    record=record,
+                    knowledge=knowledge,
+                    user=user,
+                    current_question=None,
+                    current_field=current_field,
+                    target=target,
+                    state=state,
+                    messages=messages,
+                    retrieval_policy=retrieval_policy,
+                )
+        else:
+            retrieved_context = retrieve_interview_document_context(
+                record=record,
+                knowledge=knowledge,
+                user=user,
+                current_question=None,
+                current_field=current_field,
+                target=target,
+                state=state,
+                messages=messages,
+                retrieval_policy=retrieval_policy,
+            )
+        retrieval_elapsed_ms = _elapsed_ms(retrieval_started_at)
         if latency_metrics is not None:
-            latency_metrics["retrieval_ms"] += _elapsed_ms(retrieval_started_at)
+            latency_metrics["retrieval_ms"] += retrieval_elapsed_ms
             latency_metrics["retrieval_calls"] += 1
+            if speculative_retrieval is not None:
+                latency_metrics["speculative_retrieval_wait_ms"] = retrieval_elapsed_ms
+            if not reused_speculative:
+                latency_metrics["rag_start_ms"] = float(retrieval_started_wall_ms)
+                latency_metrics["rag_end_ms"] = float(int(time() * 1000))
     context = {
         "knowledgeName": knowledge.get("name"),
         "recordTitle": record.get("title"),
@@ -1570,17 +1717,77 @@ def _generate_question_text(
         "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
     question_generation_started_at = monotonic()
-    generated = provider.generate_question(
-        profile=profile,
-        context=context,
-        target=target,
-        reasoning_effort=settings.structured_interview_reasoning_effort,
+    if latency_metrics is not None:
+        latency_metrics["question_llm_start_ms"] = float(int(time() * 1000))
+    streamed_delta_count = 0
+    streamed_text = ""
+
+    def emit_question_delta(delta: str) -> None:
+        nonlocal streamed_delta_count, streamed_text
+        value = str(delta or "")
+        if not value:
+            return
+        streamed_delta_count += 1
+        streamed_text += value
+        if latency_metrics is not None:
+            now_ms = float(int(time() * 1000))
+            latency_metrics.setdefault("question_first_token_ms", now_ms)
+            if (
+                "question_first_sentence_ms" not in latency_metrics
+                and re.search(r"[。！？!?]\s*$", streamed_text)
+            ):
+                latency_metrics["question_first_sentence_ms"] = now_ms
+        if on_question_delta is not None:
+            on_question_delta(value)
+
+    stream_method = getattr(provider, "generate_question_stream", None)
+    stream_allowed = (
+        bool(on_question_delta)
+        and bool(getattr(settings, "structured_interview_question_streaming_enabled", True))
+        and callable(stream_method)
+        and (
+            str(retrieval_policy or "auto").strip().lower() == "never"
+            or not retrieved_context
+        )
+        and not _is_awaiting_confirmation_target(target, state)
+        and not _candidate_value_for_target(target, state)
     )
+    if stream_allowed:
+        try:
+            generated = stream_method(
+                profile=profile,
+                context=context,
+                target=target,
+                reasoning_effort=settings.structured_interview_reasoning_effort,
+                on_delta=emit_question_delta,
+            )
+        except Exception:
+            if streamed_delta_count:
+                raise
+            logger.warning(
+                "structured_question_stream_failed_before_delta record_id=%s; falling back",
+                record.get("id"),
+                exc_info=True,
+            )
+            generated = provider.generate_question(
+                profile=profile,
+                context=context,
+                target=target,
+                reasoning_effort=settings.structured_interview_reasoning_effort,
+            )
+    else:
+        generated = provider.generate_question(
+            profile=profile,
+            context=context,
+            target=target,
+            reasoning_effort=settings.structured_interview_reasoning_effort,
+        )
     if latency_metrics is not None:
         latency_metrics["question_generation_ms"] += _elapsed_ms(
             question_generation_started_at
         )
         latency_metrics["question_generation_calls"] += 1
+        latency_metrics["question_llm_end_ms"] = float(int(time() * 1000))
     logger.info(
         "structured_question_generated model_id=%s target_type=%s target_id=%s reasoning_effort=%s elapsed_ms=%s",
         getattr(provider, "model_id", None),
