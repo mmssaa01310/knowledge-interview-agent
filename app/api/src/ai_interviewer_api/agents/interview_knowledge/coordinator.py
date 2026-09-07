@@ -271,7 +271,19 @@ def apply_document_candidate(
     if target_type == "field":
         target_state["status"] = "asking"
         target_state["recordAnswer"] = None
-        target_state["candidateItems"] = []
+        required_items = _field_required_items(target_state)
+        if len(required_items) == 1:
+            target_state["candidateItems"] = [
+                {
+                    "itemId": str(required_items[0]["itemId"]),
+                    "value": candidate_value,
+                    "evidenceTranscriptIds": [],
+                }
+            ]
+            target_state["capturedItems"] = deepcopy(target_state["candidateItems"])
+            _sync_field_progress(target_state)
+        else:
+            target_state["candidateItems"] = []
     else:
         target_state["value"] = None
 
