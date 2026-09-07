@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class VoiceSessionCreate(BaseModel):
-    provider: Literal["nova_sonic", "transcribe_polly"] = "transcribe_polly"
+    provider: Literal["nova_sonic", "transcribe_polly", "openai_realtime"] = "transcribe_polly"
 
 
 class VoiceTurnCreate(BaseModel):

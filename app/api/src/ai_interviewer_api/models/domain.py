@@ -79,7 +79,7 @@ class InterviewRecord(BaseEntity):
 class VoiceSession(BaseEntity):
     recordId: str
     ownerRole: Literal["admin", "knowledge_manager", "interviewer", "viewer"] = "interviewer"
-    provider: str = "nova_sonic"
+    provider: str = "transcribe_polly"
     interviewLocale: InterviewLocale | None = None
     status: str = "active"
     connectionStatus: str = "created"

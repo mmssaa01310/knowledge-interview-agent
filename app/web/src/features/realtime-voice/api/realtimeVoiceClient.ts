@@ -1,5 +1,5 @@
 import { API_BASE_URL, ApiError } from "../../../lib/api";
-import type { VoiceIceConfigResponse, VoiceSessionResponse } from "../types";
+import type { VoiceIceConfigResponse, VoiceProvider, VoiceSessionResponse } from "../types";
 
 const VOICE_API_BASE_URL = "";
 const DEV_AUTH_TOKEN = import.meta.env.VITE_DEV_TOKEN ?? "dev-manager";
@@ -9,6 +9,7 @@ type RequestOptions = {
   method?: "GET" | "POST" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
+  keepalive?: boolean;
 };
 
 async function requestJson<T>(baseUrl: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -23,6 +24,7 @@ async function requestJson<T>(baseUrl: string, path: string, options: RequestOpt
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
       signal: options.signal,
+      keepalive: options.keepalive,
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "network_error";
@@ -53,12 +55,47 @@ async function safeDetail(response: Response): Promise<string> {
   }
 }
 
-export async function createVoiceSession(recordId: string, signal?: AbortSignal) {
+export async function createVoiceSession(
+  recordId: string,
+  provider: VoiceProvider = VOICE_RUNTIME_PROVIDER as VoiceProvider,
+  signal?: AbortSignal,
+) {
   return requestJson<VoiceSessionResponse>(
     API_BASE_URL,
     `/api/records/${recordId}/voice-sessions`,
-    { method: "POST", body: { provider: VOICE_RUNTIME_PROVIDER }, signal },
+    { method: "POST", body: { provider }, signal },
   );
+}
+
+export async function sendOpenAIRealtimeOffer(
+  voiceSessionId: string,
+  offer: RTCSessionDescriptionInit,
+  signal?: AbortSignal,
+) {
+  let response: Response;
+  try {
+    response = await fetch(`${VOICE_API_BASE_URL}/voice/webrtc/${voiceSessionId}/openai-offer`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/sdp",
+        "x-dev-token": DEV_AUTH_TOKEN,
+        Authorization: `Bearer ${DEV_AUTH_TOKEN}`,
+      },
+      body: offer.sdp ?? "",
+      signal,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "network_error";
+    throw new ApiError(detail, { detail });
+  }
+  if (!response.ok) {
+    const detail = await safeDetail(response);
+    throw new ApiError(
+      `${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
+      { status: response.status, detail },
+    );
+  }
+  return { type: "answer" as const, sdp: await response.text() };
 }
 
 export async function getVoiceIceConfig(voiceSessionId: string, signal?: AbortSignal) {
@@ -92,10 +129,11 @@ export async function deleteVoicePeerConnection(
   voiceSessionId: string,
   reason = "client_requested",
   signal?: AbortSignal,
+  keepalive = false,
 ) {
   await requestJson<void>(
     VOICE_API_BASE_URL,
     `/voice/webrtc/${voiceSessionId}?reason=${encodeURIComponent(reason)}`,
-    { method: "DELETE", signal },
+    { method: "DELETE", signal, keepalive },
   );
 }

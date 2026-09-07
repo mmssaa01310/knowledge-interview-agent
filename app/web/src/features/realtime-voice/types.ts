@@ -25,14 +25,18 @@ export type VoiceConversationStatus =
   | "preparing_audio"
   | "processing"
   | "speaking"
+  | "interrupted"
+  | "disconnected"
   | "stopping"
   | "completed"
   | "error";
 
+export type VoiceProvider = "transcribe_polly" | "nova_sonic" | "openai_realtime";
+
 export type VoiceSessionResponse = {
   id: string;
   recordId: string;
-  provider: string;
+  provider: VoiceProvider;
   interviewLocale?: InterviewLocale | null;
   status: string;
   currentQuestionId?: string | null;
@@ -40,6 +44,16 @@ export type VoiceSessionResponse = {
   initialReplyText?: string | null;
   initialQuestionId?: string | null;
   initialReplyStatus?: "pending" | "sending" | "sent" | "failed_retryable" | "failed_terminal" | null;
+};
+
+export type OpenAIRealtimeEvent = {
+  type?: string;
+  event_id?: string;
+  item_id?: string;
+  response_id?: string;
+  delta?: string;
+  transcript?: string;
+  [key: string]: unknown;
 };
 
 export type IceServerConfig = {

@@ -85,21 +85,40 @@ WebへNova Sonic、Transcribe、Polly、Strands固有イベントや固有型を
 
 ## 3. Runtime分離
 
-Nova SonicとTranscribe + Pollyは、共通Runtime契約の下で分離する。
+Nova SonicとTranscribe + Pollyは、共通Runtime契約の下で分離する。OpenAI Realtimeは
+BrowserとOpenAIの直接WebRTCを使うため、既存の`aiortc` Runtime契約とは別のCoordinator経路として分離する。
 
 ```text
 app/voice
   └── runtimes/
       ├── base.py
+      ├── openai_realtime/
       ├── nova_sonic/
       └── transcribe_polly/
 ```
 
+OpenAI Realtimeは次の経路で接続する。
+
+```text
+Browser
+  └── WebRTC audio/data channel ── OpenAI Realtime Session
+                                      ▲
+                                      └── server-side sideband WebSocket
+                                           app/voice/OpenAIRealtimeCoordinator
+```
+
+`openai_realtime`は`/voice/webrtc/{voice_session_id}/openai-offer`でOpenAIの
+`/v1/realtime/calls`へSDPを中継し、BrowserにはSDP answerだけを返す。Realtime Sessionの
+認証、turn event、明示的な`response.create`、barge-inの`response.cancel`、usage、終了処理は
+server-side sidebandが担当する。OpenAI Secret Keyは`app/voice`だけで読み込み、Browserへ渡さない。
+この経路ではTranscribe、Polly、`PollyTextChunker`、既存の600ms endpoint判定を使用しない。
+
 `nova_sonic`と`transcribe_polly`は相互に依存してはいけない。
 
-Nova SonicとTranscribe + Pollyはどちらも実動作Runtimeとして提供する。Voice Session作成時の
-`provider`で選択し、Webの既定値は`VITE_VOICE_RUNTIME_PROVIDER`で変更できる。接続中Sessionの
-Provider fallback、自動切り替え、無停止切り替えは対象外とする。
+Nova Sonic、Transcribe + Polly、OpenAI Realtimeを実動作Providerとして提供する。Voice Session作成時の
+`provider`で選択し、既定値は`transcribe_polly`とする。Webの`VITE_VOICE_RUNTIME_PROVIDER`または
+画面のProvider選択で新規Sessionの方式を指定できる。接続中SessionのProvider fallback、自動切り替え、
+無停止切り替えは対象外とする。
 
 ## 4. Runtime共通契約
 
@@ -229,8 +248,13 @@ BrowserはICE gatheringを最大1秒待ってofferを送信し、`app/voice`も�
 ```http
 GET    /voice/webrtc/{voice_session_id}/ice-config
 POST   /voice/webrtc/{voice_session_id}/offer
+POST   /voice/webrtc/{voice_session_id}/openai-offer
 DELETE /voice/webrtc/{voice_session_id}
 ```
+
+`openai_realtime`では`openai-offer`を使用する。BrowserとOpenAIのWebRTCが音声を運び、
+`app/voice`から同じCall IDへsideband WebSocketを張る。既存Providerは従来どおり`offer`と
+`ice-config`を使用する。Provider mismatchや接続失敗では別Providerへ自動fallbackしない。
 
 Trickle ICE用WebSocketは初回PoCの対象外とする。
 接続時間やネットワーク条件で問題が出た場合に、短期接続tokenとTrickle ICEを別途検討する。
@@ -289,6 +313,12 @@ APIは同一`voice_turn_id`の`latencyMetrics`として、`interpreter_ms`、`me
 `polly_first_start`、`polly_first_end`、`playback_first_audio`と、最重要指標
 `speech_end_to_first_audio_ms`を記録する。
 
+`openai_realtime`は同じturn境界の計測に加え、`webrtc_connected`、`user_speech_started`、
+`user_speech_ended`、`user_transcript_final`、`interview_process_start`、`reply_ready`、
+`realtime_response_create`、`assistant_first_transcript_delta`、`assistant_first_audio`、
+`assistant_audio_done`、`barge_in_detected`、`response_cancelled`を記録する。Realtime APIから
+実際に返ったusageだけをSession単位で保存し、取得できないToken数や音声量は推定保存しない。
+
 Transcribe + Polly Runtimeは同じturn IDを含む`voice_turn_pipeline_latency`ログと
 `assistant_speech_started`イベントへ、`polly_first_chunk_ms`（Polly開始から最初のPCMまで）と
 `total_turn_latency_ms`（確定STTから最初の再生開始まで）を記録する。Question Generatorのdeltaは
@@ -301,8 +331,10 @@ Transcribe + Polly Runtimeは同じturn IDを含む`voice_turn_pipeline_latency`
 v1では以下を基本構成とする。
 
 * シグナリング: `app/voice`が提供
-* Peer Connection: `aiortc`
-* TURN: Kinesis Video Streamsの`GetIceServerConfig`で取得
+* 既存ProviderのPeer Connection: `aiortc`
+* 既存ProviderのTURN: Kinesis Video Streamsの`GetIceServerConfig`で取得
+* OpenAI Realtime: Browserの`RTCPeerConnection`からOpenAI Calls APIへ接続し、server-side
+  sideband WebSocketで制御する。OpenAI経路ではKIKIORIの`aiortc`/KVSを経由しない。
 
 KVSシグナリングチャネルはv1では使用しない。
 
@@ -313,6 +345,9 @@ KVSシグナリングチャネルはv1では使用しない。
 ## 8. WebRTC TransportとRuntimeの責務境界
 
 WebRTC TransportはBrowserと`app/voice`間の音声Transportだけを担当する。
+
+ただし`openai_realtime`ではBrowserとOpenAIが直接WebRTC接続するため、このTransportを経由しない。
+`app/voice`はOpenAIのsideband WebSocketでSession制御と`InterviewBridge`呼び出しだけを担当する。
 
 主な責務は以下。
 

@@ -221,10 +221,13 @@
     "processingDelayed": "回答を処理しています。少し時間がかかっています。",
     "preparingAudio": "音声を準備しています…",
     "speaking": "質問を読み上げています…",
+    "interrupted": "発話を切り替えています…",
+    "disconnected": "音声接続が切断されました。",
     "error": "音声インタビューでエラーが発生しました。",
     "apiError": "インタビュー処理でエラーが発生しました。もう一度お試しください。",
     "networkError": "通信に失敗しました。接続を確認してもう一度お試しください。",
     "reconnecting": "再接続しています…",
-    "continueText": "続けて回答してください。"
+    "continueText": "続けて回答してください。",
+    "providerLabel": "音声Provider"
   }
 }

@@ -221,10 +221,13 @@
     "processingDelayed": "Your answer is still being processed. This is taking a little longer than usual.",
     "preparingAudio": "Preparing audio…",
     "speaking": "Reading the question aloud…",
+    "interrupted": "Switching to your turn…",
+    "disconnected": "The voice connection was disconnected.",
     "error": "A voice interview error occurred.",
     "apiError": "The interview service could not process your answer. Please try again.",
     "networkError": "The network connection failed. Check your connection and try again.",
     "reconnecting": "Reconnecting…",
-    "continueText": "Please continue your answer."
+    "continueText": "Please continue your answer.",
+    "providerLabel": "Voice provider"
   }
 }

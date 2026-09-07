@@ -10,7 +10,7 @@ type VoiceConversationButtonProps = {
 
 export function VoiceConversationButton(props: VoiceConversationButtonProps) {
   const { t } = useI18n();
-  const isActive = !["idle", "completed", "error"].includes(props.status);
+  const isActive = !["idle", "completed", "error", "disconnected"].includes(props.status);
   const label = buttonLabel(props.status, t);
   const iconSource = buttonIconSource(props.status);
 
@@ -44,7 +44,10 @@ function buttonLabel(status: VoiceConversationStatus, t: Translate): string {
     case "preparing_initial_reply":
     case "preparing_audio":
     case "speaking":
+    case "interrupted":
       return t("interview.voice.endConversation");
+    case "disconnected":
+      return t("interview.voice.reconnect");
     case "stopping":
       return t("interview.voice.stopping");
     case "completed":
@@ -69,9 +72,11 @@ function buttonIconSource(status: VoiceConversationStatus): string {
     case "processing_interview":
     case "preparing_audio":
     case "speaking":
+    case "interrupted":
     case "stopping":
       return "/images/kiko-thinking.svg";
     case "error":
+    case "disconnected":
       return "/images/kiko-error.svg";
     case "completed":
     case "idle":

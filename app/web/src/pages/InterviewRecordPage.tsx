@@ -7,6 +7,8 @@ import {
 import { VoiceConversationButton } from "../features/realtime-voice/components/VoiceConversationButton";
 import { VoiceConversationStatus } from "../features/realtime-voice/components/VoiceConversationStatus";
 import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
+import { VOICE_RUNTIME_PROVIDER } from "../features/realtime-voice/api/realtimeVoiceClient";
+import type { VoiceProvider } from "../features/realtime-voice/types";
 import { KikoAvatar, type KikoAvatarState } from "../features/interview-chat/components/KikoAvatar";
 import { ProcessModelPanel } from "../features/interviews/components/ProcessModelPanel";
 import { SystemRequirementProgressPanel } from "../features/interviews/components/SystemRequirementProgressPanel";
@@ -78,6 +80,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const [isInterviewContextOpen, setIsInterviewContextOpen] = useState(false);
   const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
   const [selectedInterviewLocale, setSelectedInterviewLocale] = useState<InterviewLocale>(resolvedInterviewLocale);
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>(normalizeVoiceProvider(VOICE_RUNTIME_PROVIDER));
   const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isInterviewConfigured = isInterviewConfigurationComplete(props.selectedKnowledge);
   const canAnswerRecord = Boolean(
@@ -157,6 +160,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   }, [props.selectedRecord?.id, props.selectedRecord?.interviewLocale, resolvedInterviewLocale]);
   const realtimeVoice = useRealtimeVoiceInterview({
     recordId: props.selectedRecord?.id,
+    provider: voiceProvider,
     hasQuestions: hasVoiceQuestions,
     remoteAudioRef,
     onMessage: props.onAppendInterviewMessage,
@@ -712,6 +716,18 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 </button>
                 {!isChatOnlyInterview ? (
                   <div className="voice-controls">
+                    <label className="voice-provider-select">
+                      <span>{t("interview.voice.providerLabel")}</span>
+                      <select
+                        value={voiceProvider}
+                        onChange={(event) => setVoiceProvider(normalizeVoiceProvider(event.target.value))}
+                        disabled={realtimeVoice.isActive}
+                      >
+                        <option value="transcribe_polly">transcribe_polly</option>
+                        <option value="nova_sonic">nova_sonic</option>
+                        <option value="openai_realtime">openai_realtime</option>
+                      </select>
+                    </label>
                     <VoiceConversationButton
                       status={realtimeVoice.status}
                       disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || realtimeVoice.status === "completed"}
@@ -784,4 +800,11 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       </div>
     </section>
   );
+}
+
+function normalizeVoiceProvider(value: string): VoiceProvider {
+  if (value === "nova_sonic" || value === "openai_realtime") {
+    return value;
+  }
+  return "transcribe_polly";
 }

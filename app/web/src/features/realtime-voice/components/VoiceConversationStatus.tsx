@@ -46,6 +46,10 @@ function statusText(status: VoiceConversationStatus, t: Translate): string {
       return t("interview.voice.processingAnswer");
     case "speaking":
       return t("interview.voice.speaking");
+    case "interrupted":
+      return t("interview.voice.interrupted");
+    case "disconnected":
+      return t("interview.voice.disconnected");
     case "stopping":
       return t("interview.voice.stopping");
     case "completed":
@@ -70,6 +74,10 @@ function statusIcon(status: VoiceConversationStatus): string {
       return "◌";
     case "speaking":
       return "≋";
+    case "interrupted":
+      return "↪";
+    case "disconnected":
+      return "×";
     case "completed":
       return "✓";
     case "error":

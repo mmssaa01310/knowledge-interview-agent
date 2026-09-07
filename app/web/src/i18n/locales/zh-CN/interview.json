@@ -221,10 +221,13 @@
     "processingDelayed": "正在处理您的回答，所需时间比平时稍长。",
     "preparingAudio": "正在准备音频…",
     "speaking": "正在朗读问题…",
+    "interrupted": "正在切换到您的发言…",
+    "disconnected": "语音连接已断开。",
     "error": "语音访谈发生错误。",
     "apiError": "访谈服务无法处理您的回答，请重试。",
     "networkError": "网络连接失败，请检查连接后重试。",
     "reconnecting": "正在重新连接…",
-    "continueText": "请继续回答。"
+    "continueText": "请继续回答。",
+    "providerLabel": "语音提供方"
   }
 }

@@ -43,7 +43,7 @@
 
 ### 2.2.1 現行音声インタビュー経路とコード分類
 
-Transcribe + Pollyを正式な音声入力経路、Structured Interviewを意味解釈と質問進行の正本とする。Nova Sonicは別Runtimeとして既存互換のため保持し、今回の品質改善の対象外である。
+Transcribe + Pollyを既定の音声入力経路、Structured Interviewを意味解釈と質問進行の正本とする。Nova Sonicは別Runtimeとして保持し、`openai_realtime`は同じVoice Session APIから選択できる追加Providerである。既定Providerは変更しない。
 
 ```text
 Transcribe
@@ -60,9 +60,29 @@ Transcribe
   → app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/polly_synthesizer.py (Polly)
 ```
 
+OpenAI Realtime経路は既存の`aiortc`経路と分離している。
+
+```text
+Browser RTCPeerConnection
+  → POST /voice/webrtc/{voice_session_id}/openai-offer
+  → OpenAI /v1/realtime/calls (SDP answer)
+  → OpenAI Realtime音声・Data Channel
+
+app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/coordinator.py::OpenAIRealtimeSession
+  → server-side sideband WebSocket
+  → conversation.item.input_audio_transcription.completed
+  → app/voice InterviewBridge
+  → app/api Structured Interpreter / RAG / Question Generator
+  → response.create (conversation=none, Backend reply_text)
+  → OpenAI Realtime audio
+```
+
+`openai_realtime`ではAmazon Transcribe、Amazon Polly、`PollyTextChunker`、既存の独自VADを使用しない。
+OpenAI Secret Keyは`app/voice`だけで読み込み、Browserへ返さない。Provider failure時の自動fallbackも行わない。
+
 分類は次のとおりである。
 
-* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。
+* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。追加でOpenAI RealtimeのBrowser WebRTC + server-side sideband経路。
 * B（共通）: 認証・Record認可、Store/Repository、VoiceSession/VoiceTurn、Interview Bridge、文書検索、メッセージ・イベントの冪等性。
 * C（旧・削除済み）: 旧Strands Interview Agent、旧Voice回答評価、`dialogue_interpreter`、`interview_answer_processor`、Strands共通Tool、旧Feature Flagと旧専用設定。
 * D（判断不能）: なし。Structured Interviewのみを正式経路とする方針に確定したため、旧経路分岐も削除した。
@@ -262,6 +282,12 @@ JSON形式の文書登録は後続Worker向けのメタデータ登録として�
 * `POST /api/records/{record_id}/voice-sessions`
 * `GET /api/voice-sessions/{voice_session_id}`
 * `POST /api/voice-sessions/{voice_session_id}/stop`
+
+`POST /api/records/{record_id}/voice-sessions`の`provider`は`transcribe_polly`、`nova_sonic`、
+`openai_realtime`を受け付ける。省略時は`transcribe_polly`である。
+
+`openai_realtime`のWebRTC offer endpointは`app/voice`の
+`POST /voice/webrtc/{voice_session_id}/openai-offer`で、OpenAI Calls APIへserver-sideでSDPを中継する。
 
 音声サービス専用の内部API:
 

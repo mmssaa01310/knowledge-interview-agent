@@ -6,15 +6,23 @@ import {
   createVoiceSession,
   deleteVoicePeerConnection,
   getVoiceIceConfig,
+  sendOpenAIRealtimeOffer,
   sendVoiceOffer,
+  VOICE_RUNTIME_PROVIDER,
 } from "../api/realtimeVoiceClient";
 import type {
   VoiceConnectionStats,
   VoiceConversationStatus,
   VoiceDataChannelEvent,
+  OpenAIRealtimeEvent,
+  VoiceProvider,
   VoiceSessionResponse,
 } from "../types";
 import { createVoicePeerConnection, type VoicePeerConnectionHandle } from "../webrtc/voicePeerConnection";
+import {
+  createOpenAIRealtimePeerConnection,
+  type OpenAIRealtimePeerConnectionHandle,
+} from "../webrtc/openaiRealtimePeerConnection";
 
 const VOICE_SIGNALING_TIMEOUT_MS = Number.parseInt(
   import.meta.env.VITE_VOICE_SIGNALING_TIMEOUT_MS ?? "8000",
@@ -23,6 +31,7 @@ const VOICE_SIGNALING_TIMEOUT_MS = Number.parseInt(
 
 type UseRealtimeVoiceInterviewArgs = {
   recordId?: string;
+  provider?: VoiceProvider;
   hasQuestions: boolean;
   remoteAudioRef: RefObject<HTMLAudioElement>;
   onMessage: (message: ChatMessage) => void;
@@ -33,6 +42,7 @@ type UseRealtimeVoiceInterviewArgs = {
 export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
   const {
     recordId,
+    provider = VOICE_RUNTIME_PROVIDER as VoiceProvider,
     hasQuestions,
     remoteAudioRef,
     onMessage,
@@ -50,7 +60,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     remoteAudioTrackReceived: false,
   });
   const voiceSessionRef = useRef<VoiceSessionResponse | null>(null);
-  const peerRef = useRef<VoicePeerConnectionHandle | null>(null);
+  const peerRef = useRef<(VoicePeerConnectionHandle | OpenAIRealtimePeerConnectionHandle) | null>(null);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const onMessageRef = useRef(onMessage);
   const onInterviewStateChangedRef = useRef(onInterviewStateChanged);
@@ -58,7 +68,12 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
   const startingRef = useRef(false);
   const stoppingRef = useRef(false);
   const finalizedMessageKeysRef = useRef(new Set<string>());
+  const openAIUserTranscriptRef = useRef(new Map<string, string>());
+  const openAIAssistantTranscriptRef = useRef(new Map<string, string>());
+  const openAIResponseMetadataRef = useRef(new Map<string, Record<string, string>>());
+  const openAIActiveResponseRef = useRef<string | null>(null);
   const frontendTraceRef = useRef<{
+    userSpeechEndedAt?: number;
     userTranscriptFinalAt?: number;
     processingStartedAt?: number;
     assistantSpeechStartedAt?: number;
@@ -78,6 +93,10 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     }
     setStats({ microphoneTrackLive: false, remoteAudioTrackReceived: false });
     setPartialTranscript("");
+    openAIUserTranscriptRef.current.clear();
+    openAIAssistantTranscriptRef.current.clear();
+    openAIResponseMetadataRef.current.clear();
+    openAIActiveResponseRef.current = null;
     voiceSessionRef.current = null;
     if (voiceSessionId) {
       await withTimeout(
@@ -110,6 +129,196 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     }
   }, [cleanupVoiceTransport]);
 
+  const handleOpenAIEvent = useCallback((event: OpenAIRealtimeEvent) => {
+    const eventType = stringValue(event.type);
+    const voiceSessionId = voiceSessionRef.current?.id;
+    const emitOpenAIAssistantMessage = ({
+      responseId,
+      text,
+      metadata,
+    }: {
+      responseId: string;
+      text: string;
+      voiceSessionId?: string;
+      metadata?: Record<string, string>;
+    }) => {
+      onMessageRef.current({
+        id: responseId,
+        role: "assistant",
+        text,
+        questionId: metadata?.kikiori_question_id || undefined,
+        voiceSessionId,
+        voiceResponseId: responseId,
+      });
+    };
+    switch (eventType) {
+      case "kikiori.data_channel.open":
+      case "session.created":
+      case "session.updated":
+        setStatus(hasPendingInitialReply(voiceSessionRef.current) ? "preparing_initial_reply" : "listening");
+        return;
+      case "input_audio_buffer.speech_started":
+        if (openAIActiveResponseRef.current) {
+          console.info("openai_realtime_latency", {
+            event: "barge_in_detected",
+            response_id: openAIActiveResponseRef.current,
+            timestamp_ms: Math.round(performance.now()),
+          });
+          setStatus("interrupted");
+        } else {
+          setStatus("listening");
+        }
+        setPartialTranscript("");
+        return;
+      case "input_audio_buffer.speech_stopped":
+        frontendTraceRef.current.userSpeechEndedAt = performance.now();
+        setStatus("finalizing_transcript");
+        return;
+      case "conversation.item.input_audio_transcription.delta": {
+        const itemId = stringValue(event.item_id);
+        const delta = stringValue(event.delta);
+        if (!itemId || !delta) return;
+        const transcript = `${openAIUserTranscriptRef.current.get(itemId) ?? ""}${delta}`;
+        openAIUserTranscriptRef.current.set(itemId, transcript);
+        setPartialTranscript(transcript);
+        return;
+      }
+      case "conversation.item.input_audio_transcription.completed": {
+        const itemId = stringValue(event.item_id);
+        const transcript = stringValue(event.transcript).trim();
+        if (!transcript) return;
+        openAIUserTranscriptRef.current.delete(itemId);
+        setPartialTranscript("");
+        const key = `openai-user-${itemId || transcript}`;
+        if (!finalizedMessageKeysRef.current.has(key)) {
+          finalizedMessageKeysRef.current.add(key);
+          onMessageRef.current({
+            id: key,
+            role: "user",
+            text: transcript,
+            turnType: "ANSWER",
+            answerToQuestionId: voiceSessionRef.current?.currentQuestionId ?? undefined,
+            voiceSessionId,
+            voiceTurnId: itemId || undefined,
+          });
+        }
+        frontendTraceRef.current.userTranscriptFinalAt = performance.now();
+        frontendTraceRef.current.processingStartedAt = performance.now();
+        setStatus("processing_interview");
+        return;
+      }
+      case "response.created": {
+        const response = objectValue(event.response);
+        const responseId = stringValue(response?.id) || stringValue(event.response_id);
+        if (responseId) {
+          openAIActiveResponseRef.current = responseId;
+          const metadata = objectValue(response?.metadata);
+          if (metadata) {
+            openAIResponseMetadataRef.current.set(responseId, stringRecord(metadata));
+          }
+        }
+        setStatus("preparing_audio");
+        return;
+      }
+      case "response.output_audio_transcript.delta": {
+        const responseId = stringValue(event.response_id);
+        const delta = stringValue(event.delta);
+        if (!responseId || !delta) return;
+        const transcript = `${openAIAssistantTranscriptRef.current.get(responseId) ?? ""}${delta}`;
+        openAIAssistantTranscriptRef.current.set(responseId, transcript);
+        console.info("openai_realtime_latency", {
+          event: "assistant_transcript_delta",
+          response_id: responseId,
+          timestamp_ms: Math.round(performance.now()),
+        });
+        emitOpenAIAssistantMessage({
+          responseId,
+          text: transcript,
+          voiceSessionId,
+          metadata: openAIResponseMetadataRef.current.get(responseId),
+        });
+        return;
+      }
+      case "response.output_audio.delta": {
+        const firstAudioAt = performance.now();
+        frontendTraceRef.current.audioPlayEventAt = firstAudioAt;
+        console.info("openai_realtime_latency", {
+          event: "assistant_first_audio",
+          response_id: stringValue(event.response_id) || undefined,
+          timestamp_ms: Math.round(firstAudioAt),
+          speech_end_to_first_audio_ms:
+            frontendTraceRef.current.userSpeechEndedAt === undefined
+              ? undefined
+              : Math.round(firstAudioAt - frontendTraceRef.current.userSpeechEndedAt),
+        });
+        setStatus("speaking");
+        return;
+      }
+      case "response.output_audio_transcript.done": {
+        const responseId = stringValue(event.response_id);
+        const transcript = stringValue(event.transcript).trim();
+        if (!responseId || !transcript) return;
+        openAIAssistantTranscriptRef.current.set(responseId, transcript);
+        emitOpenAIAssistantMessage({
+          responseId,
+          text: transcript,
+          voiceSessionId,
+          metadata: openAIResponseMetadataRef.current.get(responseId),
+        });
+        return;
+      }
+      case "response.output_audio.done":
+        return;
+      case "response.cancelled":
+      case "response.canceled":
+        console.info("openai_realtime_latency", {
+          event: "response_cancelled",
+          response_id: stringValue(event.response_id) || undefined,
+          timestamp_ms: Math.round(performance.now()),
+        });
+        openAIActiveResponseRef.current = null;
+        setStatus("listening");
+        return;
+      case "response.done": {
+        const response = objectValue(event.response);
+        const responseId = stringValue(response?.id) || stringValue(event.response_id);
+        const responseStatus = stringValue(response?.status);
+        const metadata = responseId
+          ? openAIResponseMetadataRef.current.get(responseId)
+          : undefined;
+        if (responseStatus === "cancelled" || responseStatus === "canceled" || responseStatus === "incomplete") {
+          console.info("openai_realtime_latency", {
+            event: "response_cancelled",
+            response_id: responseId || undefined,
+            timestamp_ms: Math.round(performance.now()),
+          });
+        }
+        openAIActiveResponseRef.current = null;
+        openAIResponseMetadataRef.current.delete(responseId);
+        if (responseStatus === "completed" && metadata?.kikiori_interview_status === "completed") {
+          setStatus("completed");
+          onCompletedRef.current();
+        } else if (responseStatus === "completed") {
+          onInterviewStateChangedRef.current();
+          setStatus((current) => current === "completed" ? current : "listening");
+        }
+        if (metadata?.kikiori_kind !== "interview" || metadata?.kikiori_interview_status !== "completed") {
+          setStatus((current) => current === "completed" ? current : "listening");
+        }
+        return;
+      }
+      case "error": {
+        const error = objectValue(event.error);
+        const code = stringValue(error?.code);
+        setStatus("error");
+        setMessage(toUserFacingError(code || "openai_realtime_error", t));
+        return;
+      }
+      default:
+        return;
+    }
+  }, [hasQuestions, t]);
+
   const handleEvent = useCallback((event: VoiceDataChannelEvent) => {
     switch (event.type) {
       case "connection_state":
@@ -118,8 +327,8 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
           setStatus((current) => current === "connecting" ? "listening" : current);
         }
         if (event.state === "failed" || event.state === "closed") {
-            setMessage(event.state === "failed" ? t("errors.webrtcFailed") : t("errors.connectionFailed"));
-          setStatus((current) => current === "completed" ? current : "error");
+          setMessage(event.state === "failed" ? t("errors.webrtcFailed") : t("errors.connectionFailed"));
+          setStatus((current) => current === "completed" ? current : event.state === "closed" ? "disconnected" : "error");
         }
         return;
       case "runtime_ready":
@@ -161,6 +370,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         setStatus("listening");
         return;
       case "user_speech_ended":
+        frontendTraceRef.current.userSpeechEndedAt = performance.now();
         setStatus("finalizing_transcript");
         return;
       case "user_transcript_partial":
@@ -230,7 +440,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         onInterviewStateChangedRef.current();
         return;
       case "assistant_interrupted":
-        setStatus("processing");
+        setStatus("interrupted");
         return;
       case "assistant_backchannel":
         return;
@@ -324,11 +534,69 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
 
       let stageStartedAt = performance.now();
       const voiceSession = await withTimeout(
-        (signal) => createVoiceSession(recordId, signal),
+        (signal) => createVoiceSession(recordId, provider, signal),
         VOICE_SIGNALING_TIMEOUT_MS,
       );
       trace.voice_session_ms = Math.round(performance.now() - stageStartedAt);
       voiceSessionRef.current = voiceSession;
+
+      if (voiceSession.provider === "openai_realtime") {
+        failedStage = "microphone";
+        setStatus("connecting");
+        const microphoneStream = await microphonePromise;
+        microphoneStreamForStart = microphoneStream;
+        microphoneStreamRef.current = microphoneStream;
+        setStats((current) => ({
+          ...current,
+          microphoneTrackLive: microphoneStream.getAudioTracks().some((track) => track.readyState === "live"),
+        }));
+
+        failedStage = "peer_connection";
+        stageStartedAt = performance.now();
+        const peerHandle = await createOpenAIRealtimePeerConnection({
+          voiceSessionId: voiceSession.id,
+          microphoneStream,
+          remoteAudioElement: remoteAudioRef.current,
+          onEvent: handleOpenAIEvent,
+          onConnectionStateChange: (state) => {
+            setConnectionState(state);
+            if (state === "connected" || state === "completed") {
+              if (state === "connected") {
+                console.info("openai_realtime_latency", {
+                  event: "webrtc_connected",
+                  voice_session_id: voiceSession.id,
+                  timestamp_ms: Math.round(performance.now()),
+                });
+              }
+              setStatus((current) => current === "connecting" ? "listening" : current);
+            }
+            if (state === "failed" || state === "closed") {
+              setMessage(state === "failed" ? t("errors.webrtcFailed") : t("errors.connectionFailed"));
+              setStatus((current) => current === "completed" ? current : state === "closed" ? "disconnected" : "error");
+            }
+          },
+          onStatsChange: setStats,
+        });
+        trace.peer_connection_ms = Math.round(performance.now() - stageStartedAt);
+        peerRef.current = peerHandle;
+
+        failedStage = "offer";
+        stageStartedAt = performance.now();
+        const answer = await withTimeout(
+          (signal) => sendOpenAIRealtimeOffer(voiceSession.id, peerHandle.offer, signal),
+          VOICE_SIGNALING_TIMEOUT_MS,
+        );
+        trace.offer_ms = Math.round(performance.now() - stageStartedAt);
+        failedStage = "answer";
+        stageStartedAt = performance.now();
+        await peerHandle.peerConnection.setRemoteDescription(answer);
+        trace.answer_ms = Math.round(performance.now() - stageStartedAt);
+        failedStage = "playback";
+        await remoteAudioRef.current?.play().catch(() => undefined);
+        trace.total_ms = Math.round(performance.now() - startStartedAt);
+        console.info("openai_realtime_connection_latency", trace);
+        return;
+      }
 
       failedStage = "microphone_or_ice_config";
       const iceStartedAt = performance.now();
@@ -376,7 +644,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
           }
           if (state === "failed" || state === "closed") {
             setMessage(state === "failed" ? t("errors.webrtcFailed") : t("errors.connectionFailed"));
-            setStatus((current) => current === "completed" ? current : "error");
+            setStatus((current) => current === "completed" ? current : state === "closed" ? "disconnected" : "error");
           }
         },
         onStatsChange: setStats,
@@ -426,12 +694,16 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     } finally {
       startingRef.current = false;
     }
-  }, [recordId, hasQuestions, handleEvent, remoteAudioRef, t]);
+  }, [recordId, provider, hasQuestions, handleEvent, handleOpenAIEvent, remoteAudioRef, t]);
 
   useEffect(() => {
     const onBeforeUnload = () => {
+      const voiceSessionId = voiceSessionRef.current?.id;
       microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
       peerRef.current?.stop();
+      if (voiceSessionId) {
+        void deleteVoicePeerConnection(voiceSessionId, "browser_unload", undefined, true).catch(() => undefined);
+      }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
@@ -440,7 +712,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     };
   }, [stop]);
 
-  const isActive = !["idle", "completed", "error"].includes(status);
+  const isActive = !["idle", "completed", "error", "disconnected"].includes(status);
 
   return {
     status,
@@ -538,6 +810,22 @@ function hasPendingInitialReply(session: VoiceSessionResponse | null) {
     return false;
   }
   return session.initialReplyStatus === "pending" || session.initialReplyStatus === "sending";
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringRecord(value: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
 }
 
 async function withTimeout<T>(

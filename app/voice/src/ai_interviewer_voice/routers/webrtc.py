@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Response
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 from ai_interviewer_voice.config import settings
@@ -10,6 +12,13 @@ from ai_interviewer_voice.schemas.signaling import (
     IceServerResponseItem,
     OfferRequest,
 )
+from ai_interviewer_voice.runtimes.openai_realtime.client import (
+    OpenAIRealtimeProviderError,
+)
+from ai_interviewer_voice.runtimes.openai_realtime.coordinator import (
+    OpenAIRealtimeCoordinator,
+)
+from ai_interviewer_voice.runtimes.openai_realtime.config import OpenAIRealtimeConfig
 from ai_interviewer_voice.services.ice_server_service import IceServerService
 from ai_interviewer_voice.services.runtime_factory import create_runtime
 from ai_interviewer_voice.services.voice_session_service import VoiceSessionService
@@ -29,6 +38,21 @@ _ice_server_service = IceServerService(
     cache_ttl_seconds=settings.kvs_turn_cache_ttl_seconds,
 )
 _registry = PeerConnectionRegistry()
+_openai_realtime_coordinator = OpenAIRealtimeCoordinator(
+    config=OpenAIRealtimeConfig(
+        api_key=settings.openai_secret_key,
+        enabled=settings.openai_realtime_enabled,
+        model=settings.openai_realtime_model,
+        voice=settings.openai_realtime_voice,
+        reasoning_effort=settings.openai_realtime_reasoning_effort,
+        max_session_minutes=settings.openai_realtime_max_session_minutes,
+        turn_detection=settings.openai_realtime_turn_detection,
+        semantic_eagerness=settings.openai_realtime_semantic_eagerness,
+        transcription_model=settings.openai_realtime_transcription_model,
+        sideband_connect_timeout_seconds=settings.openai_realtime_sideband_connect_timeout_seconds,
+    ),
+    voice_session_service=_voice_session_service,
+)
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -46,7 +70,15 @@ async def get_ice_config(
     authorization: str | None = Header(default=None),
 ) -> IceConfigResponse:
     bearer_token = _extract_bearer_token(authorization)
-    await _voice_session_service.authorize_session(voice_session_id, bearer_token=bearer_token)
+    session = await _voice_session_service.authorize_session(
+        voice_session_id,
+        bearer_token=bearer_token,
+    )
+    if session.provider == "openai_realtime":
+        return IceConfigResponse(
+            iceServers=(),
+            expiresAt=datetime.now(timezone.utc).isoformat(),
+        )
     config = await _ice_server_service.get_ice_servers()
     return IceConfigResponse(
         iceServers=tuple(
@@ -69,6 +101,8 @@ async def post_offer(
 ) -> AnswerResponse:
     bearer_token = _extract_bearer_token(authorization)
     session = await _voice_session_service.authorize_session(voice_session_id, bearer_token=bearer_token)
+    if session.provider == "openai_realtime":
+        raise HTTPException(status_code=400, detail="openai_realtime_offer_endpoint_required")
     existing = await _registry.get(voice_session_id)
     if existing is not None:
         raise HTTPException(status_code=409, detail="voice_session_already_connected")
@@ -110,6 +144,51 @@ async def post_offer(
     return AnswerResponse(sdp=sdp)
 
 
+@router.post("/webrtc/{voice_session_id}/openai-offer")
+async def post_openai_offer(
+    voice_session_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    """Forward a browser SDP offer to OpenAI's current WebRTC Calls API.
+
+    The OpenAI API key and the Realtime call ID remain on the voice server. The
+    browser receives only the SDP answer required by its RTCPeerConnection.
+    """
+
+    bearer_token = _extract_bearer_token(authorization)
+    session = await _voice_session_service.authorize_session(
+        voice_session_id,
+        bearer_token=bearer_token,
+    )
+    if session.provider != "openai_realtime":
+        raise HTTPException(status_code=400, detail="voice_session_provider_mismatch")
+    if await _registry.get(voice_session_id) is not None:
+        raise HTTPException(status_code=409, detail="voice_session_already_connected")
+    if await _openai_realtime_coordinator.get(voice_session_id) is not None:
+        raise HTTPException(status_code=409, detail="voice_session_already_connected")
+
+    content_type = request.headers.get("content-type", "")
+    if not content_type.startswith("application/sdp"):
+        raise HTTPException(status_code=415, detail="application_sdp_required")
+    try:
+        offer_sdp = (await request.body()).decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="invalid_sdp_offer") from exc
+    if not offer_sdp.strip().startswith("v=0"):
+        raise HTTPException(status_code=422, detail="invalid_sdp_offer")
+
+    try:
+        answer_sdp = await _openai_realtime_coordinator.create_offer(
+            voice_session=session,
+            offer_sdp=offer_sdp,
+        )
+    except OpenAIRealtimeProviderError as exc:
+        status_code = _openai_provider_error_status(exc)
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
+    return Response(content=answer_sdp, media_type="application/sdp")
+
+
 @router.delete("/webrtc/{voice_session_id}", status_code=204)
 async def delete_peer_connection(
     voice_session_id: str,
@@ -118,10 +197,36 @@ async def delete_peer_connection(
 ) -> Response:
     bearer_token = _extract_bearer_token(authorization)
     await _voice_session_service.get_session(voice_session_id, bearer_token=bearer_token)
+    await _openai_realtime_coordinator.close(voice_session_id, reason=reason)
     peer = await _registry.remove(voice_session_id)
     if peer is not None:
         await peer.close(reason=reason, source="webrtc_delete_endpoint")
     return Response(status_code=204)
+
+
+def _openai_provider_error_status(error: OpenAIRealtimeProviderError) -> int:
+    if error.status_code == 409 or error.code == "voice_session_already_connected":
+        return 409
+    if error.code in {
+        "openai_realtime_disabled",
+        "openai_realtime_dependency_missing",
+        "openai_realtime_admin_key_unsupported",
+        "openai_realtime_secret_missing",
+        "openai_realtime_model_missing",
+        "openai_realtime_max_session_invalid",
+        "openai_realtime_turn_detection_invalid",
+        "openai_realtime_semantic_eagerness_invalid",
+    }:
+        return 503
+    if error.code == "openai_realtime_credit_exhausted":
+        return 402
+    if error.code == "openai_realtime_rate_limited":
+        return 429
+    if error.code == "openai_realtime_model_unavailable":
+        return 404
+    if error.code == "openai_realtime_authentication_failed":
+        return 502
+    return 502
 
 
 @router.get("/dev/webrtc", response_class=HTMLResponse)

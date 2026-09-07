@@ -11,6 +11,34 @@ class Settings:
     api_base_url: str = os.getenv("VOICE_API_BASE_URL", "http://127.0.0.1:8001")
     internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")
     runtime_provider: str = os.getenv("VOICE_RUNTIME_PROVIDER", "transcribe_polly")
+    openai_realtime_enabled: bool = os.getenv(
+        "OpenAI_Realtime_Enabled", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    openai_secret_key: str = os.getenv("OpenAI_Secret_Key", "")
+    openai_realtime_model: str = os.getenv(
+        "OpenAI_Realtime_Model", "gpt-realtime-2"
+    )
+    openai_realtime_voice: str | None = (
+        os.getenv("OpenAI_Realtime_Voice", "").strip() or None
+    )
+    openai_realtime_reasoning_effort: str | None = (
+        os.getenv("OpenAI_Realtime_Reasoning_Effort", "").strip() or None
+    )
+    openai_realtime_max_session_minutes: int = int(
+        os.getenv("OpenAI_Realtime_Max_Session_Minutes", "30")
+    )
+    openai_realtime_turn_detection: str = os.getenv(
+        "OpenAI_Realtime_Turn_Detection", "semantic_vad"
+    )
+    openai_realtime_semantic_eagerness: str = os.getenv(
+        "OpenAI_Realtime_Semantic_Eagerness", "low"
+    )
+    openai_realtime_transcription_model: str = os.getenv(
+        "OpenAI_Realtime_Transcription_Model", "gpt-4o-transcribe"
+    )
+    openai_realtime_sideband_connect_timeout_seconds: float = float(
+        os.getenv("OpenAI_Realtime_Sideband_Connect_Timeout_Seconds", "10")
+    )
     aws_region: str = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1"))
     nova_sonic_model_id: str = os.getenv("NOVA_SONIC_MODEL_ID", "amazon.nova-2-sonic-v1:0")
     nova_sonic_voice_id: str = os.getenv("NOVA_SONIC_VOICE_ID", "matthew")

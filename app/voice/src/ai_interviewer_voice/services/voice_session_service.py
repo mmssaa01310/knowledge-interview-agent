@@ -104,7 +104,7 @@ class VoiceSessionService:
             voice_session_id=str(payload["id"]),
             record_id=str(payload["recordId"]),
             owner_user_id=owner_user_id,
-            provider=str(payload.get("provider") or "nova_sonic"),
+            provider=str(payload.get("provider") or "transcribe_polly"),
             status=status,
             current_question_id=str(current_question_id) if current_question_id is not None else None,
             state_version=int(payload.get("stateVersion") or 0),
