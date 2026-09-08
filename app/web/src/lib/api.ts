@@ -189,6 +189,7 @@ export type InterviewStateResponse = {
     answerToFieldId?: string | null;
     turnType?: "ANSWER" | "CONTROL";
     voiceSessionId?: string | null;
+    voiceClientTurnId?: string | null;
     voiceTurnId?: string | null;
     voiceResponseId?: string | null;
     isActualUtterance?: boolean;

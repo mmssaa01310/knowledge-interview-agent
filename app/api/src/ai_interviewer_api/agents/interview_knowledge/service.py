@@ -104,6 +104,7 @@ _FAST_BACKGROUND_EXECUTOR = ThreadPoolExecutor(
 )
 _FAST_BACKGROUND_TAILS: dict[str, tuple[Future[Any], "_FastValidationJoin"]] = {}
 _FAST_BACKGROUND_TAILS_GUARD = Lock()
+_QUESTION_GENERATOR_RECENT_MESSAGE_LIMIT = 6
 _LATENCY_METRIC_NAMES = (
     "interpreter_ms",
     "medium_retry_ms",
@@ -149,6 +150,7 @@ class FastInterviewTurnResult:
     retrieved_sources: list[dict[str, Any]]
     latency_metrics: dict[str, Any]
     source_target_key: str
+    needs_question_explanation: bool = False
 
 
 class _FastValidationJoin:
@@ -422,8 +424,16 @@ def start_fast_interview_turn(
     profile = _effective_profile(state, resolve_profile(knowledge))
     model_id = resolve_structured_model_id(knowledge)
     messages = _list_record_messages(record, user)
+    source_target = _target_from_question(current_question)
+    source_field = _field_for_target(source_target or {}, fields)
+    question_definition = _question_definition_context(
+        source_target,
+        source_field,
+    )
+    fast_question = dict(current_question)
+    fast_question["questionDefinition"] = question_definition
     fast_context = build_fast_interpreter_context(
-        current_question=current_question,
+        current_question=fast_question,
         latest_answer=latest_user_message,
         messages=messages,
     )
@@ -431,7 +441,6 @@ def start_fast_interview_turn(
     selected_fast_provider = fast_provider or BedrockFastInterpreterProvider()
     source_turn_id = str(latest_user_message.get("voiceTurnId") or latest_user_message.get("turnId") or "")
     source_message_id = str(latest_user_message.get("id") or "")
-    source_target = _target_from_question(current_question)
     source_key = target_key(source_target)
     join = _FastValidationJoin(
         record_id=str(record.get("id") or ""),
@@ -502,14 +511,16 @@ def start_fast_interview_turn(
         )
     fast_elapsed_ms = _elapsed_ms(fast_started_at)
     fast_finished_ms = int(time() * 1000)
-    fast_can_proceed = can_proceed(assessment)
+    needs_question_explanation = bool(assessment.needsQuestionExplanation)
+    fast_can_proceed = can_proceed(assessment) and not needs_question_explanation
     join.set_fast_result(fast_can_proceed)
     logger.info(
-        "fast_interpreter_end record_id=%s source_turn_id=%s latency_ms=%s fast_can_proceed=%s",
+        "fast_interpreter_end record_id=%s source_turn_id=%s latency_ms=%s fast_can_proceed=%s needs_question_explanation=%s",
         record.get("id"),
         source_turn_id,
         fast_elapsed_ms,
         fast_can_proceed,
+        needs_question_explanation,
     )
     latency_metrics: dict[str, Any] = {
         **_new_latency_metrics(),
@@ -517,12 +528,26 @@ def start_fast_interview_turn(
         "fast_interpreter_end_ms": fast_finished_ms,
         "fast_interpreter_latency_ms": fast_elapsed_ms,
         "fast_can_proceed": fast_can_proceed,
+        "fast_needs_question_explanation": needs_question_explanation,
     }
 
     if not fast_can_proceed:
         join.set_provisional_question(None)
         locale = resolve_interview_locale(record, knowledge)
-        if assessment.clearlyIncomplete:
+        if needs_question_explanation:
+            reply = localized_interview_question_help(
+                locale,
+                str(
+                    current_question.get("targetLabel")
+                    or current_question.get("label")
+                    or question_definition.get("title")
+                    or "この項目"
+                ),
+                question_text=question_definition.get("originalQuestion"),
+                description=question_definition.get("description"),
+                required_items=question_definition.get("requiredItems") or [],
+            )
+        elif assessment.clearlyIncomplete:
             reply = localized_interview_incomplete_prompt(locale)
         else:
             reply = localized_interview_unanswerable_prompt(
@@ -544,6 +569,7 @@ def start_fast_interview_turn(
             retrieved_sources=[],
             latency_metrics=latency_metrics,
             source_target_key=source_key,
+            needs_question_explanation=needs_question_explanation,
         )
 
     provisional_state = _state_with_question_overlay(state, current_question)
@@ -569,6 +595,7 @@ def start_fast_interview_turn(
             retrieved_sources=[],
             latency_metrics=latency_metrics,
             source_target_key=source_key,
+            needs_question_explanation=needs_question_explanation,
         )
 
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None
@@ -638,6 +665,7 @@ def start_fast_interview_turn(
             retrieved_sources=source_references(retrieved_context),
             latency_metrics=latency_metrics,
             source_target_key=source_key,
+            needs_question_explanation=needs_question_explanation,
         )
     except Exception:
         logger.exception(
@@ -657,6 +685,7 @@ def start_fast_interview_turn(
             retrieved_sources=[],
             latency_metrics=latency_metrics,
             source_target_key=source_key,
+            needs_question_explanation=needs_question_explanation,
         )
     finally:
         if speculative_retrieval is not None and not speculative_retrieval.future.done():
@@ -1365,6 +1394,11 @@ def _generate_structured_interview_result(
                     reply=localized_interview_transcript_retry(interview_locale),
                 )
             if output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"} and not _has_structured_updates(output):
+                current_target = _target_from_question(current_question)
+                question_definition = _question_definition_context(
+                    current_target,
+                    _field_for_target(current_target or {}, fields),
+                )
                 return _keep_current_question(
                     record=record,
                     state=state,
@@ -1385,6 +1419,9 @@ def _generate_structured_interview_result(
                             or current_question.get("label")
                             or "この項目"
                         ),
+                        question_text=question_definition.get("originalQuestion"),
+                        description=question_definition.get("description"),
+                        required_items=question_definition.get("requiredItems") or [],
                     ),
                 )
             if output.dialogueAct in {"HESITATION", "BACKCHANNEL", "OTHER"}:
@@ -1822,7 +1859,9 @@ def _generate_structured_interview_result(
     if target.get("targetType") == "closing":
         state["closingState"] = "ASKING"
     state["lastQuestionModelId"] = model_id
-    state["lastQuestionReasoningEffort"] = settings.structured_interview_reasoning_effort
+    state["lastQuestionReasoningEffort"] = (
+        settings.structured_interview_question_reasoning_effort
+    )
     question = _build_question(
         state,
         target,
@@ -2178,6 +2217,133 @@ def _compact_state(state: Mapping[str, Any]) -> dict[str, Any]:
     result.pop("createdAt", None)
     result.pop("updatedAt", None)
     return result
+
+
+def _question_generator_state_context(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Return only state that can affect wording for the selected target.
+
+    Target selection and interview-state mutation remain backend-owned. The
+    question generator needs the last assessment, active probe, and pending
+    candidate to phrase the already-selected target safely; it does not need
+    the complete accumulated field/process state.
+    """
+
+    return {
+        "status": state.get("status"),
+        "closingState": state.get("closingState"),
+        "answerAssessment": state.get("lastAnswerAssessment"),
+        "activeProbe": state.get("activeProbeTarget"),
+        "tentativeCandidates": _list_tentative_candidates(state),
+    }
+
+
+def _question_generator_field_context(
+    field: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "id": field.get("id"),
+        "name": field.get("name"),
+        "description": field.get("description"),
+        "questionText": field.get("questionText") or field.get("question"),
+        "aiQuestionExamples": field.get("aiQuestionExamples"),
+        "questionPlan": field.get("questionPlan"),
+        "required": field.get("required"),
+        "optional": field.get("optional"),
+    }
+
+
+def _question_definition_context(
+    target: Mapping[str, Any] | None,
+    field: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the immutable definition for the already-selected target.
+
+    The Question Generator may receive a small state/history context for
+    latency, but it must still receive the configured wording and extraction
+    contract.  In particular, a field title alone is not enough to recover a
+    profile question such as name, department, and role.
+    """
+
+    target = target or {}
+    field = field or {}
+    raw_plan = target.get("questionPlan")
+    if not isinstance(raw_plan, Mapping):
+        raw_plan = field.get("questionPlan")
+    plan = dict(raw_plan) if isinstance(raw_plan, Mapping) else {}
+
+    def normalized_items(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+            return []
+        return [
+            deepcopy(dict(item))
+            for item in value
+            if isinstance(item, Mapping)
+            and str(item.get("itemId") or item.get("label") or "").strip()
+        ]
+
+    required_items = normalized_items(plan.get("requiredItems"))
+    optional_items = normalized_items(plan.get("optionalItems"))
+    if not required_items:
+        field_id = str(field.get("id") or target.get("targetId") or "").strip()
+        field_name = str(field.get("name") or target.get("label") or field_id).strip()
+        if field_id or field_name:
+            required_items = [
+                {
+                    "itemId": field_id,
+                    "label": field_name,
+                    "description": field.get("description"),
+                }
+            ]
+
+    original_question: str | None = None
+    for value in (
+        target.get("sourceQuestion"),
+        target.get("questionText"),
+        field.get("questionText"),
+        field.get("question"),
+    ):
+        if isinstance(value, Mapping):
+            value = value.get("text") or value.get("questionText") or value.get("question")
+        if isinstance(value, str) and value.strip():
+            original_question = value.strip()
+            break
+    if original_question is None:
+        examples = field.get("aiQuestionExamples")
+        if isinstance(examples, Sequence) and not isinstance(examples, (str, bytes)):
+            for example in examples:
+                if isinstance(example, str) and example.strip():
+                    original_question = example.strip()
+                    break
+
+    description: str | None = None
+    for value in (
+        target.get("sourceDescription"),
+        target.get("targetDescription"),
+        field.get("description"),
+    ):
+        if isinstance(value, str) and value.strip():
+            description = value.strip()
+            break
+
+    required = target.get("required") if "required" in target else field.get("required")
+    optional = target.get("optional") if "optional" in target else field.get("optional")
+    if optional is None and required is not None:
+        optional = not bool(required)
+
+    return {
+        "targetId": target.get("targetId") or field.get("id"),
+        "title": target.get("label") or field.get("name"),
+        "originalQuestion": original_question,
+        "description": description,
+        "purpose": plan.get("purpose"),
+        "required": required,
+        "optional": optional,
+        "requiredItems": required_items,
+        "optionalItems": optional_items,
+        "completionCriteria": deepcopy(plan.get("completionCriteria")),
+        "missingItems": deepcopy(target.get("missingItems") or []),
+        "capturedItemIds": list(target.get("capturedItemIds") or []),
+    }
 
 
 def _select_reasoning_effort(state: Mapping[str, Any]) -> str:
@@ -2620,31 +2786,35 @@ def _generate_question_text(
             if not reused_speculative:
                 latency_metrics["rag_start_ms"] = float(retrieval_started_wall_ms)
                 latency_metrics["rag_end_ms"] = float(int(time() * 1000))
+    question_state = _question_generator_state_context(state)
+    question_definition = _question_definition_context(target, current_field)
     context = {
         "knowledgeName": knowledge.get("name"),
         "recordTitle": record.get("title"),
         "customPrompt": knowledge.get("systemPrompt"),
         "interviewLocale": resolve_interview_locale(record, knowledge),
-        "languageInstruction": interview_language_instruction(resolve_interview_locale(record, knowledge)),
-        "currentState": _compact_state(state),
+        "languageInstruction": interview_language_instruction(
+            resolve_interview_locale(record, knowledge)
+        ),
+        # The interpreter still receives the complete state. The question
+        # generator only needs the decision-relevant state that explains the
+        # selected target; sending the whole state adds latency without
+        # changing the target that the backend already chose.
+        "currentState": question_state,
         "recentConversation": [
             {"role": message.get("role"), "content": message.get("content")}
-            for message in messages[-12:]
+            for message in messages[-_QUESTION_GENERATOR_RECENT_MESSAGE_LIMIT:]
             if message.get("isActualUtterance") is not False
         ],
-        "fields": [
-            {
-                "id": field.get("id"),
-                "name": field.get("name"),
-                "description": field.get("description"),
-                "aiQuestionExamples": field.get("aiQuestionExamples"),
-                "questionPlan": field.get("questionPlan"),
-            }
-            for field in fields
-        ],
-        "tentativeCandidates": _list_tentative_candidates(state),
-        "answerAssessment": state.get("lastAnswerAssessment"),
-        "activeProbe": state.get("activeProbeTarget"),
+        # A question is generated for one backend-selected target. Keep the
+        # selected field's wording/plan, but do not resend unrelated fields.
+        "fields": [_question_generator_field_context(current_field)]
+        if current_field is not None
+        else [],
+        "questionDefinition": question_definition,
+        "tentativeCandidates": question_state["tentativeCandidates"],
+        "answerAssessment": question_state["answerAssessment"],
+        "activeProbe": question_state["activeProbe"],
         "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
     question_generation_started_at = monotonic()
@@ -2689,7 +2859,7 @@ def _generate_question_text(
                 profile=profile,
                 context=context,
                 target=target,
-                reasoning_effort=settings.structured_interview_reasoning_effort,
+                reasoning_effort=settings.structured_interview_question_reasoning_effort,
                 on_delta=emit_question_delta,
             )
         except Exception:
@@ -2704,14 +2874,14 @@ def _generate_question_text(
                 profile=profile,
                 context=context,
                 target=target,
-                reasoning_effort=settings.structured_interview_reasoning_effort,
+                reasoning_effort=settings.structured_interview_question_reasoning_effort,
             )
     else:
         generated = provider.generate_question(
             profile=profile,
             context=context,
             target=target,
-            reasoning_effort=settings.structured_interview_reasoning_effort,
+            reasoning_effort=settings.structured_interview_question_reasoning_effort,
         )
     if latency_metrics is not None:
         latency_metrics["question_generation_ms"] += _elapsed_ms(
@@ -2724,7 +2894,7 @@ def _generate_question_text(
         getattr(provider, "model_id", None),
         target.get("targetType") or target.get("kind"),
         target.get("targetId"),
-        settings.structured_interview_reasoning_effort,
+        settings.structured_interview_question_reasoning_effort,
         round((monotonic() - started_at) * 1000),
     )
     question_text = _sanitize_question_text(generated.questionText)
@@ -3027,6 +3197,10 @@ def _target_from_question(question: Mapping[str, Any] | None) -> dict[str, Any] 
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "questionText",
+        "targetDescription",
+        "required",
+        "optional",
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
@@ -3231,6 +3405,10 @@ def _build_question(
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "questionText",
+        "targetDescription",
+        "required",
+        "optional",
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",

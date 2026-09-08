@@ -369,6 +369,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         targetId: message.targetId,
         turnType: message.turnType,
         voiceSessionId: message.voiceSessionId,
+        voiceClientTurnId: message.voiceClientTurnId,
         voiceTurnId: message.voiceTurnId,
         voiceResponseId: message.voiceResponseId,
         candidateSource: message.candidateSource,
@@ -1552,6 +1553,9 @@ function isSameInterviewMessage(current: ChatMessage, incoming: ChatMessage) {
     const sameVoiceSession =
       (current.voiceSessionId ?? incoming.voiceSessionId ?? null) ===
       (incoming.voiceSessionId ?? current.voiceSessionId ?? null);
+    if (current.voiceClientTurnId && incoming.voiceClientTurnId) {
+      return current.voiceClientTurnId === incoming.voiceClientTurnId && sameVoiceSession;
+    }
     if (current.voiceTurnId && incoming.voiceTurnId) {
       return current.voiceTurnId === incoming.voiceTurnId && sameVoiceSession;
     }

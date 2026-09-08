@@ -256,6 +256,16 @@ def stop_voice_session(voice_session_id: str, user: UserContext) -> dict:
 
 
 def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
+    # The Realtime sideband and a reconnect can submit the same completed
+    # transcript at nearly the same time. Serialize the lookup-and-save pair
+    # for a client id so both requests cannot create separate VoiceTurn rows.
+    if payload.clientTurnId:
+        with _voice_turn_lock(f"client-turn:{voice_session_id}:{payload.clientTurnId}"):
+            return _create_voice_turn(voice_session_id, payload)
+    return _create_voice_turn(voice_session_id, payload)
+
+
+def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
     _ensure_session_accepts_turns(session)
     if payload.clientTurnId and payload.clientTurnId in session.get("cancelledClientTurnIds", []):
@@ -277,6 +287,13 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
                 existing.get("transcript") == payload.transcript.strip()
                 and existing.get("expectedStateVersion") == payload.expectedStateVersion
             ):
+                logger.info(
+                    "voice_turn_reused voice_session_id=%s turn_id=%s client_turn_id=%s sequence=%s",
+                    voice_session_id,
+                    existing.get("id"),
+                    payload.clientTurnId,
+                    existing.get("sequence"),
+                )
                 return existing
             raise HTTPException(status_code=409, detail="turn_duplicate_conflict")
     if (
@@ -332,6 +349,13 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     session["lastTurnSequence"] = turn["sequence"]
     session["updatedAt"] = utc_now()
     voice_session_repository.save(session)
+    logger.info(
+        "voice_turn_created voice_session_id=%s turn_id=%s client_turn_id=%s sequence=%s",
+        voice_session_id,
+        turn["id"],
+        payload.clientTurnId,
+        turn["sequence"],
+    )
     return turn
 
 
@@ -1251,6 +1275,7 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
             "answerToFieldId": None,
             "voiceSessionId": turn["voiceSessionId"],
             "voiceTurnId": turn["id"],
+            "voiceClientTurnId": turn.get("clientTurnId"),
             "targetType": None,
             "targetId": None,
         }
@@ -1286,6 +1311,7 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
         "targetId": question.get("targetId"),
         "voiceSessionId": turn["voiceSessionId"],
         "voiceTurnId": turn["id"],
+        "voiceClientTurnId": turn.get("clientTurnId"),
         # The structured service orders messages by timestamp.  Voice turns
         # already have a monotonic creation time; retain it so repeated
         # answers to the same question are interpreted in turn order rather

@@ -618,10 +618,21 @@ def test_process_voice_turn_is_idempotent() -> None:
         for message in store.list("messages", user.tenant_id)
         if message.get("recordId") == record["id"] and message.get("role") == "assistant"
     ]
+    user_messages = [
+        message
+        for message in store.list("messages", user.tenant_id)
+        if message.get("recordId") == record["id"] and message.get("role") == "user"
+    ]
+    voice_user_messages = [
+        message
+        for message in user_messages
+        if message.get("voiceClientTurnId") == "client-1"
+    ]
 
     assert second["responseId"] == first["responseId"]
     assert second["text"] == first["text"]
     assert len(assistant_messages) == 1
+    assert len(voice_user_messages) == 1
 
 
 def test_voice_session_requires_owner_match() -> None:

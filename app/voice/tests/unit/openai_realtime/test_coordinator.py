@@ -142,6 +142,53 @@ def test_final_transcript_is_forwarded_to_interview_bridge_then_replied() -> Non
     assert events[0]["response"]["metadata"]["kikiori_interview_status"] == "active"
 
 
+def test_duplicate_final_transcript_event_is_processed_once() -> None:
+    async def run() -> tuple[FakeBridge, list[dict]]:
+        bridge = FakeBridge()
+        session = make_session(bridge)
+        websocket = FakeWebSocket()
+        session._websocket = websocket
+        event = {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-duplicate",
+            "transcript": "こんにちは。",
+        }
+        await session._handle_event(event)
+        await session._handle_event(event)
+        await asyncio.gather(*session._turn_tasks)
+        return bridge, websocket.sent
+
+    bridge, events = asyncio.run(run())
+
+    assert len(bridge.processed) == 1
+    assert len([event for event in events if event["type"] == "response.create"]) == 1
+
+
+def test_answer_turn_waits_for_initial_reply_task() -> None:
+    class InitialBridge(FakeBridge):
+        async def claim_initial_reply(self, voice_session_id: str):
+            return type(
+                "Claim",
+                (),
+                {"claimed": True, "initial_reply_text": "最初の質問です。", "initial_question_id": "q-1"},
+            )()
+
+    async def run() -> list[dict]:
+        session = make_session(InitialBridge())
+        websocket = FakeWebSocket()
+        session._websocket = websocket
+        session._initial_task = asyncio.create_task(session._send_initial_reply())
+        await session._process_turn(item_id="item-2", transcript="回答です。")
+        return websocket.sent
+
+    events = asyncio.run(run())
+
+    assert [event["response"]["metadata"]["kikiori_kind"] for event in events] == [
+        "initial",
+        "interview",
+    ]
+
+
 def test_dependency_error_is_explicit() -> None:
     error = OpenAIRealtimeProviderError("openai_realtime_dependency_missing")
 

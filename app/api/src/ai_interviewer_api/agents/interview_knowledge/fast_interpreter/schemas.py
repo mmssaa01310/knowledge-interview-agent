@@ -15,4 +15,5 @@ class FastAnswerAssessment(BaseModel):
     minimumInformationPresent: bool
     understandable: bool
     clearlyIncomplete: bool
+    needsQuestionExplanation: bool = False
     reason: str | None = Field(default=None, max_length=160)

@@ -94,6 +94,10 @@ class Settings:
         "STRUCTURED_INTERVIEW_REASONING_EFFORT",
         "low",
     )
+    structured_interview_question_reasoning_effort: str = os.getenv(
+        "STRUCTURED_INTERVIEW_QUESTION_REASONING_EFFORT",
+        "none",
+    )
     structured_interview_medium_reasoning_effort: str = os.getenv(
         "STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT",
         "medium",

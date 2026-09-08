@@ -3104,6 +3104,125 @@ def test_generated_question_is_reduced_to_one_question_without_a_thematic_preamb
     assert result["reply"].count("教えてください") == 1
 
 
+def test_question_generator_uses_target_context_and_dedicated_reasoning_effort() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-question-context",
+        (
+            ("field-role", "現在の役割"),
+            ("field-department", "部署"),
+            ("field-location", "勤務地"),
+        ),
+    )
+
+    class CapturingQuestionProvider(FakeStructuredProvider):
+        def __init__(self) -> None:
+            super().__init__([StructuredInterviewOutput()])
+            self.question_context: dict[str, object] | None = None
+            self.question_reasoning_effort: str | None = None
+
+        def generate_question(
+            self,
+            *,
+            context: Mapping[str, object],
+            reasoning_effort: str,
+            target: Mapping[str, object],
+            **_: object,
+        ) -> QuestionGenerationOutput:
+            self.question_context = dict(context)
+            self.question_reasoning_effort = reasoning_effort
+            return QuestionGenerationOutput(
+                questionText=f"{target['label']}を教えてください。"
+            )
+
+    provider = CapturingQuestionProvider()
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=provider,
+    )
+
+    assert provider.question_reasoning_effort == "none"
+    assert provider.question_context is not None
+    assert provider.question_context["recentConversation"] == []
+    fields_context = provider.question_context["fields"]
+    assert isinstance(fields_context, list)
+    assert len(fields_context) == 1
+    assert isinstance(fields_context[0], Mapping)
+    assert fields_context[0]["id"] == result["question"]["targetId"]
+    current_state = provider.question_context["currentState"]
+    assert isinstance(current_state, Mapping)
+    assert set(current_state) == {
+        "status",
+        "closingState",
+        "answerAssessment",
+        "activeProbe",
+        "tentativeCandidates",
+    }
+
+
+def test_question_generator_receives_the_configured_question_definition() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-question-definition",
+        (("field-profile", "基本プロフィール"),),
+    )
+    question_text = "お名前、所属部署、役職または担当領域を教えてください。"
+    store.upsert(
+        "knowledge_fields",
+        {
+            "id": "field-profile",
+            "knowledgeId": knowledge["id"],
+            "tenantId": user.tenant_id,
+            "name": "基本プロフィール",
+            "description": "氏名、所属部署、役職または担当領域を確認する。",
+            "questionText": question_text,
+            "aiQuestionExamples": [question_text],
+            "questionPlan": InterviewQuestionPlan(
+                purpose="本人を識別し、所属と担当領域を確認する",
+                requiredItems=[
+                    InterviewPlanItem(itemId="name", label="名前", description="氏名"),
+                    InterviewPlanItem(itemId="department", label="所属部署", description="所属部署"),
+                    InterviewPlanItem(itemId="role", label="役職または担当領域", description="役職または担当領域"),
+                ],
+            ).model_dump(),
+            "required": True,
+            "displayOrder": 1,
+        },
+    )
+
+    class CapturingDefinitionProvider(FakeStructuredProvider):
+        def __init__(self) -> None:
+            super().__init__([StructuredInterviewOutput()])
+            self.context: Mapping[str, object] | None = None
+
+        def generate_question(
+            self,
+            *,
+            context: Mapping[str, object],
+            target: Mapping[str, object],
+            **_: object,
+        ) -> QuestionGenerationOutput:
+            self.context = context
+            return QuestionGenerationOutput(questionText=question_text)
+
+    provider = CapturingDefinitionProvider()
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert provider.context is not None
+    definition = provider.context["questionDefinition"]
+    assert isinstance(definition, Mapping)
+    assert definition["title"] == "基本プロフィール"
+    assert definition["originalQuestion"] == question_text
+    assert definition["description"] == "氏名、所属部署、役職または担当領域を確認する。"
+    assert [item["label"] for item in definition["requiredItems"]] == [
+        "名前",
+        "所属部署",
+        "役職または担当領域",
+    ]
+    assert result["question"]["sourceQuestion"] == question_text
+    assert result["question"]["sourceDescription"] == "氏名、所属部署、役職または担当領域を確認する。"
+
+
 def test_generated_reply_does_not_echo_a_long_answer_with_a_fixed_reaction() -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-no-long-echo",

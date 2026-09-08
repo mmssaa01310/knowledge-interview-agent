@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
 
@@ -135,8 +135,19 @@ def localized_interview_transcript_retry(locale: InterviewLocale) -> str:
     }[locale]
 
 
-def localized_interview_question_help(locale: InterviewLocale, target_label: str) -> str:
-    """Explain the current question without asking a second question."""
+def localized_interview_question_help(
+    locale: InterviewLocale,
+    target_label: str,
+    *,
+    question_text: str | None = None,
+    description: str | None = None,
+    required_items: Sequence[Mapping[str, object]] = (),
+) -> str:
+    """Explain the current question using its configured definition.
+
+    The fallback deliberately stays generic.  It must not invent example
+    subtopics when a configured question definition is unavailable.
+    """
 
     label = target_label.strip() or {
         "ja-JP": "この項目",
@@ -144,12 +155,61 @@ def localized_interview_question_help(locale: InterviewLocale, target_label: str
         "zh-CN": "这一项",
         "pt-BR": "este item",
     }[locale]
-    return {
-        "ja-JP": f"この質問では、{label}について実際の内容や経験をお聞きしています。たとえば、関わった相手や行った作業など、答えられる範囲でお話しください。",
-        "en-US": f"This question asks about the actual details or experience related to {label}. For example, you could share who was involved or what work was done.",
-        "zh-CN": f"这个问题想了解{label}的实际内容或经历。例如，可以说明参与者或做过的工作。",
-        "pt-BR": f"Esta pergunta busca os detalhes ou experiências reais relacionados a {label}. Por exemplo, você pode contar quem participou ou qual trabalho foi realizado.",
+    normalized_question = question_text.strip() if isinstance(question_text, str) else ""
+    normalized_description = description.strip() if isinstance(description, str) else ""
+    item_labels = [
+        str(item.get("label") or "").strip()
+        for item in required_items
+        if isinstance(item, Mapping) and str(item.get("label") or "").strip()
+    ]
+    item_summary = {
+        "ja-JP": "、".join(item_labels),
+        "en-US": ", ".join(item_labels),
+        "zh-CN": "、".join(item_labels),
+        "pt-BR": ", ".join(item_labels),
     }[locale]
+
+    if locale == "ja-JP":
+        if item_summary:
+            reply = f"この質問では、{item_summary}についてお聞きしています。"
+        else:
+            reply = f"この質問では、{label}についてお聞きしています。"
+        if normalized_description:
+            reply += f"項目の説明は「{normalized_description}」です。"
+        if normalized_question:
+            reply += f"元の質問は「{normalized_question}」です。"
+        if not normalized_description and not normalized_question:
+            reply += f"たとえば、{item_summary or label}について答えられる範囲でお話しください。"
+        return reply
+
+    if locale == "en-US":
+        reply = f"This question asks about {item_summary or label}."
+        if normalized_description:
+            reply += f" The item description is: “{normalized_description}”."
+        if normalized_question:
+            reply += f" The original question is: “{normalized_question}”."
+        if not normalized_description and not normalized_question:
+            reply += f" For example, share what you can about {item_summary or label}."
+        return reply
+
+    if locale == "zh-CN":
+        reply = f"这个问题想了解{item_summary or label}。"
+        if normalized_description:
+            reply += f"项目说明是“{normalized_description}”。"
+        if normalized_question:
+            reply += f"原问题是“{normalized_question}”。"
+        if not normalized_description and not normalized_question:
+            reply += f"例如，可以说说您知道的{item_summary or label}。"
+        return reply
+
+    reply = f"Esta pergunta trata de {item_summary or label}."
+    if normalized_description:
+        reply += f" A descrição do item é: “{normalized_description}”."
+    if normalized_question:
+        reply += f" A pergunta original é: “{normalized_question}”."
+    if not normalized_description and not normalized_question:
+        reply += f" Por exemplo, compartilhe o que puder sobre {item_summary or label}."
+    return reply
 
 
 def localized_interview_hesitation_prompt(locale: InterviewLocale) -> str:

@@ -799,7 +799,7 @@ Structured OutputはResponses APIの`text.format`で指定する。この実装�
 
 モデルには、Global Inference Profileの`global.openai.gpt-5.6-luna`を既定値として指定する。Global profileは、対応する商用AWSリージョンの容量へルーティングされる。処理リージョンを単一リージョンまたは特定地域に限定する要件がある場合は、このGlobal profileを使用してはならず、別途リージョン要件を満たすprofileを定義する。
 
-ナレッジ単位で、実行設定の「構造化インタビュー実行モデル」から次の2つを選択できる。選択したモデルはInterpreterとQuestion Generatorの両方に適用する。モデルの自動切り替えは行わない。設定がない既存ナレッジはBackend設定の`STRUCTURED_INTERVIEW_MODEL_ID`を使用し、その既定値はLunaとする。
+ナレッジ単位で、実行設定の「構造化インタビュー実行モデル」から次の2つを選択できる。選択したモデルはInterpreterとQuestion Generatorの両方に適用する。モデルの自動切り替えは行わない。設定がない既存ナレッジはBackend設定の`STRUCTURED_INTERVIEW_MODEL_ID`を使用し、その既定値はLunaとする。Interpreterの推論強度と、短い次質問を生成するQuestion Generatorの推論強度は別々に設定できる。
 
 質問項目設計では、実行設定の「質問項目の設計モデル」から同じ2つを選択できる。選択値はKnowledgeの`defaultModelId`に保存し、Question Design AgentとそのValidatorの両方に適用する。設定がない、または旧モデルが保存された既存ナレッジは、Backend設定の`QUESTION_DESIGN_MODEL_ID`を使用する。許可値はTerraとLunaだけであり、既定値はLunaとする。質問項目設計モデルとインタビュー実行モデルは別々に選択できる。
 
@@ -828,7 +828,7 @@ Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.fo
 | Requirement抽出 | `global.openai.gpt-5.6-luna` | `low` |
 | Process抽出 | `global.openai.gpt-5.6-luna` | `low` |
 | 矛盾・曖昧性判定 | `global.openai.gpt-5.6-luna` | `low` |
-| 次の質問文生成 | `global.openai.gpt-5.6-luna` | `low` |
+| 次の質問文生成 | `global.openai.gpt-5.6-luna` | `none` |
 
 質問項目設計では、通常時も検証時もKnowledgeで選択された`defaultModelId`を使用する。未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。質問項目設計においてTerraとLunaを自動切り替えしてはならない。
 
@@ -855,6 +855,7 @@ Question Design AgentとValidatorは、同じ選択モデルへそれぞれStruc
 | `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` | Bedrock Runtimeへ接続する呼び出し元リージョン |
 | `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` | Bedrock inference profile IDまたはARN |
 | `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` | 通常時の推論強度 |
+| `STRUCTURED_INTERVIEW_QUESTION_REASONING_EFFORT` | いいえ | `none` | Question Generatorの推論強度 |
 | `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` | 複雑条件検知時の推論強度 |
 | `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000` | Interpreterの1回のLLM出力上限。長文回答でJSONが上限に達した場合、最大10000トークンまで増やして1回だけ再試行する |
 | `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` | Question Generatorの1回のLLM出力上限。短い質問文のStructured Outputに適用する |

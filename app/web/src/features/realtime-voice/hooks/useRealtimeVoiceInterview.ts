@@ -142,13 +142,14 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       voiceSessionId?: string;
       metadata?: Record<string, string>;
     }) => {
+      const backendResponseId = metadata?.kikiori_response_id || responseId;
       onMessageRef.current({
-        id: responseId,
+        id: backendResponseId,
         role: "assistant",
         text,
         questionId: metadata?.kikiori_question_id || undefined,
         voiceSessionId,
-        voiceResponseId: responseId,
+        voiceResponseId: backendResponseId,
       });
     };
     switch (eventType) {
@@ -190,6 +191,12 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         openAIUserTranscriptRef.current.delete(itemId);
         setPartialTranscript("");
         const key = `openai-user-${itemId || transcript}`;
+        console.info("openai_realtime_transcript_final", {
+          voice_session_id: voiceSessionId,
+          item_id: itemId || undefined,
+          voice_client_turn_id: itemId ? `openai-${itemId}` : undefined,
+          message_key: key,
+        });
         if (!finalizedMessageKeysRef.current.has(key)) {
           finalizedMessageKeysRef.current.add(key);
           onMessageRef.current({
@@ -199,6 +206,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             turnType: "ANSWER",
             answerToQuestionId: voiceSessionRef.current?.currentQuestionId ?? undefined,
             voiceSessionId,
+            voiceClientTurnId: itemId ? `openai-${itemId}` : undefined,
             voiceTurnId: itemId || undefined,
           });
         }

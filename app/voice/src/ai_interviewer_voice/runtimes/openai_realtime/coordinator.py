@@ -201,7 +201,15 @@ class OpenAIRealtimeSession:
         if event_type == "conversation.item.input_audio_transcription.completed":
             item_id = str(event.get("item_id") or "")
             transcript = str(event.get("transcript") or "").strip()
-            if not item_id or not transcript or item_id in self._processed_transcript_items:
+            if not item_id or not transcript:
+                return
+            if item_id in self._processed_transcript_items:
+                logger.info(
+                    "openai_realtime_transcript_duplicate_ignored call_id=%s voice_session_id=%s item_id=%s",
+                    self.call_id,
+                    self.voice_session.voice_session_id,
+                    item_id,
+                )
                 return
             self._processed_transcript_items.add(item_id)
             self._mark("user_transcript_final")
@@ -211,6 +219,14 @@ class OpenAIRealtimeSession:
             )
             self._turn_tasks.add(task)
             task.add_done_callback(self._turn_tasks.discard)
+            logger.info(
+                "openai_realtime_transcript_final call_id=%s voice_session_id=%s item_id=%s task_id=%s transcript_chars=%s",
+                self.call_id,
+                self.voice_session.voice_session_id,
+                item_id,
+                id(task),
+                len(transcript),
+            )
             return
         if event_type == "response.created":
             response = event.get("response")
@@ -306,6 +322,31 @@ class OpenAIRealtimeSession:
                 )
 
     async def _process_turn(self, *, item_id: str, transcript: str) -> None:
+        task = asyncio.current_task()
+        logger.info(
+            "openai_realtime_process_turn_start call_id=%s voice_session_id=%s item_id=%s task_id=%s",
+            self.call_id,
+            self.voice_session.voice_session_id,
+            item_id,
+            id(task) if task is not None else None,
+        )
+        # A user can speak as soon as the media connection is live.  Do not let
+        # that turn acquire the state lock before the initial configured
+        # question has been claimed and sent.  Await this outside the lock so
+        # the initial task can acquire it and finish normally.
+        initial_task = self._initial_task
+        current_task = asyncio.current_task()
+        if initial_task is not None and initial_task is not current_task:
+            try:
+                await asyncio.shield(initial_task)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - initial reply is already logged
+                logger.warning(
+                    "openai_realtime_initial_reply_wait_failed voice_session_id=%s error_type=%s",
+                    self.voice_session.voice_session_id,
+                    exc.__class__.__name__,
+                )
         async with self._turn_lock:
             if self._closed:
                 return
@@ -347,8 +388,12 @@ class OpenAIRealtimeSession:
             self._log_interview_latency(result.latency_metrics or {})
             self._mark("reply_ready")
             logger.info(
-                "openai_realtime_interview_ready voice_session_id=%s response_id=%s process_ms=%s retrieval_executed=%s",
+                "openai_realtime_interview_ready call_id=%s voice_session_id=%s item_id=%s task_id=%s turn_id=%s response_id=%s process_ms=%s retrieval_executed=%s",
+                self.call_id,
                 self.voice_session.voice_session_id,
+                item_id,
+                id(task) if task is not None else None,
+                result.turn_id,
                 result.response_id,
                 round((monotonic() - process_started_at) * 1000),
                 result.retrieval_executed,

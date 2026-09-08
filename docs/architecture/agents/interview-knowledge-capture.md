@@ -132,7 +132,8 @@ LLMは情報の抽出と自然文の生成を担当する。Backendは状態、�
 | Endpoint | `bedrock-runtime.{BEDROCK_AWS_REGION}.amazonaws.com/openai/v1` |
 | API | OpenAI互換 Responses API |
 | 主モデルID | `global.openai.gpt-5.6-luna` |
-| `reasoning.effort` | `low` |
+| Interpreterの`reasoning.effort` | `low` |
+| Question Generatorの`reasoning.effort` | `none` |
 | Structured Output | 必須 |
 | 画像生成 | 使用しない |
 
@@ -215,6 +216,7 @@ GPT-5.6 Terra、BedrockのOpenAI互換Responses API、Structured Outputの仕様
 | `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
 | `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
 | `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` |
+| `STRUCTURED_INTERVIEW_QUESTION_REASONING_EFFORT` | いいえ | `none` |
 | `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` |
 | `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000`。長文回答でJSONが上限に達した場合、最大10000トークンまで増やして1回だけ再試行する |
 | `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` |
@@ -1239,7 +1241,7 @@ Structured InterviewのProvider、状態機械、音声I/O境界を、テキス�
 
 * 初期の既定インタビュー意味処理モデルはBedrock Global inference profile `global.openai.gpt-5.6-luna`である。
 * ナレッジ設定で`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`を選択できる。選択値はInterpreterとQuestion Generatorの両方に適用する。
-* 初期の`reasoning.effort`は`low`である。
+* Interpreterの初期`reasoning.effort`は`low`、Question Generatorの初期`reasoning.effort`は`none`である。
 * 構造条件を検知した場合は、選択済みのTerraまたはLunaを`medium`で再実行する。
 * TerraとLunaの自動ルーティングおよびSolの利用を行わない。
 * Structured Output不正時に1回だけ再実行する。

@@ -216,6 +216,7 @@ def test_fast_provider_retries_only_a_technical_schema_failure(
         "minimumInformationPresent",
         "understandable",
         "clearlyIncomplete",
+        "needsQuestionExplanation",
         "reason",
     }
 
@@ -443,6 +444,37 @@ def test_fast_fail_keeps_current_question_while_background_still_runs(
     assert result.can_proceed is False
     assert result.question["questionId"] == "q-001"
     assert "具体的" in result.reply
+    assert background_finished.wait(2)
+
+
+def test_fast_question_explanation_keeps_definition_and_current_target() -> None:
+    user, record, knowledge, state, message = _seed_case()
+    background_finished = Event()
+    result = start_fast_interview_turn(
+        record,
+        knowledge,
+        user,
+        state=state,
+        current_question=state["askedQuestions"][0],
+        latest_user_message=message,
+        provider=FakeStructuredProvider(_structured_output(str(message["id"]))),
+        fast_provider=FakeFastProvider(
+            FastAnswerAssessment(
+                minimumInformationPresent=False,
+                understandable=True,
+                clearlyIncomplete=False,
+                needsQuestionExplanation=True,
+                reason="質問の意味を確認している",
+            )
+        ),
+        on_background_validation=lambda _: background_finished.set(),
+    )
+
+    assert result.can_proceed is False
+    assert result.needs_question_explanation is True
+    assert "担当業務" in result.reply
+    assert "関わった相手" not in result.reply
+    assert "行った作業" not in result.reply
     assert background_finished.wait(2)
 
 

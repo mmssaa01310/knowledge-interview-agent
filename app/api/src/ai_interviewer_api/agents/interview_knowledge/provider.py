@@ -173,6 +173,23 @@ class BedrockResponsesStructuredProvider:
         the stream has completed.
         """
 
+        stream_system_prompt = _question_stream_system_prompt(
+            profile,
+            normalize_interview_locale(context.get("interviewLocale")) or "ja-JP",
+        )
+        stream_user_payload_text = json.dumps(
+            {"context": context, "target": target},
+            ensure_ascii=False,
+        )
+        logger.info(
+            "structured_question_request model_id=%s reasoning_effort=%s streaming=true "
+            "prompt_chars=%s estimated_input_tokens=%s max_output_tokens=%s",
+            self.model_id,
+            reasoning_effort,
+            len(stream_system_prompt) + len(stream_user_payload_text),
+            _estimated_input_tokens(stream_system_prompt, stream_user_payload_text),
+            settings.structured_interview_question_max_output_tokens,
+        )
         request_body = {
             "model": self.model_id,
             "reasoning": {"effort": reasoning_effort},
@@ -182,11 +199,7 @@ class BedrockResponsesStructuredProvider:
                     "content": [
                         {
                             "type": "input_text",
-                            "text": _question_stream_system_prompt(
-                                profile,
-                                normalize_interview_locale(context.get("interviewLocale"))
-                                or "ja-JP",
-                            ),
+                            "text": stream_system_prompt,
                         }
                     ],
                 },
@@ -195,10 +208,7 @@ class BedrockResponsesStructuredProvider:
                     "content": [
                         {
                             "type": "input_text",
-                            "text": json.dumps(
-                                {"context": context, "target": target},
-                                ensure_ascii=False,
-                            ),
+                            "text": stream_user_payload_text,
                         }
                     ],
                 },
@@ -213,6 +223,7 @@ class BedrockResponsesStructuredProvider:
             separators=(",", ":"),
         )
         output_text = ""
+        usage: Mapping[str, Any] | None = None
         try:
             headers = self._signed_headers(request_url, request_body_text)
             with self.http_client_factory(timeout=self.timeout) as client:
@@ -224,6 +235,16 @@ class BedrockResponsesStructuredProvider:
                 ) as response:
                     response.raise_for_status()
                     for event in _iter_sse_events(response):
+                        event_usage = event.get("usage")
+                        if not isinstance(event_usage, Mapping):
+                            event_response = event.get("response")
+                            event_usage = (
+                                event_response.get("usage")
+                                if isinstance(event_response, Mapping)
+                                else None
+                            )
+                        if isinstance(event_usage, Mapping):
+                            usage = event_usage
                         if event.get("type") != "response.output_text.delta":
                             continue
                         delta = event.get("delta")
@@ -242,6 +263,13 @@ class BedrockResponsesStructuredProvider:
             raise StructuredInterviewProviderError(
                 "Amazon Bedrock question streaming response is empty"
             )
+        _log_provider_usage(
+            schema_name="interview_question",
+            model=self.model_id,
+            reasoning_effort=reasoning_effort,
+            output_chars=len(question_text),
+            usage=usage,
+        )
         return QuestionGenerationOutput(questionText=question_text)
 
     def edit_process_model(
@@ -313,6 +341,17 @@ class BedrockResponsesStructuredProvider:
         user_payload: Mapping[str, Any],
         max_output_tokens: int,
     ) -> dict[str, Any]:
+        user_payload_text = json.dumps(user_payload, ensure_ascii=False)
+        logger.info(
+            "structured_llm_request schema=%s model_id=%s reasoning_effort=%s "
+            "prompt_chars=%s estimated_input_tokens=%s max_output_tokens=%s",
+            schema_name,
+            model,
+            reasoning_effort,
+            len(system_prompt) + len(user_payload_text),
+            _estimated_input_tokens(system_prompt, user_payload_text),
+            max_output_tokens,
+        )
         request_body = {
             "model": model,
             "reasoning": {"effort": reasoning_effort},
@@ -326,7 +365,7 @@ class BedrockResponsesStructuredProvider:
                     "content": [
                         {
                             "type": "input_text",
-                            "text": json.dumps(user_payload, ensure_ascii=False),
+                            "text": user_payload_text,
                         }
                     ],
                 },
@@ -380,6 +419,15 @@ class BedrockResponsesStructuredProvider:
             raise StructuredInterviewProviderError(
                 "Amazon Bedrock Structured Outputs response is empty"
             )
+        _log_provider_usage(
+            schema_name=schema_name,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            output_chars=len(text),
+            usage=response_json.get("usage")
+            if isinstance(response_json.get("usage"), Mapping)
+            else None,
+        )
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -422,6 +470,34 @@ def _retry_max_output_tokens(current: int) -> int:
     """Give a truncated structured response a larger retry budget."""
 
     return max(current, min(current * 2, 10_000))
+
+
+def _estimated_input_tokens(system_prompt: str, user_payload_text: str) -> int:
+    """Return a coarse, explicitly estimated prompt-token count for telemetry."""
+
+    prompt_chars = len(system_prompt) + len(user_payload_text)
+    return max(1, (prompt_chars + 3) // 4)
+
+
+def _log_provider_usage(
+    *,
+    schema_name: str,
+    model: str,
+    reasoning_effort: str,
+    output_chars: int,
+    usage: Mapping[str, Any] | None,
+) -> None:
+    logger.info(
+        "structured_llm_usage schema=%s model_id=%s reasoning_effort=%s output_chars=%s "
+        "input_tokens=%s output_tokens=%s total_tokens=%s",
+        schema_name,
+        model,
+        reasoning_effort,
+        output_chars,
+        usage.get("input_tokens") if usage is not None else None,
+        usage.get("output_tokens") if usage is not None else None,
+        usage.get("total_tokens") if usage is not None else None,
+    )
 
 
 def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
@@ -543,9 +619,12 @@ def _question_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> 
     return f"""あなたは{profile}用途のインタビュー質問文生成器です。
 Backendが選択したtargetについて、質問を1問だけ生成してください。
 {interview_language_instruction(locale)}
+questionDefinitionに含まれるtargetId、title、description、originalQuestion、requiredItems、optionalItems、現在のmissingItemsを、この質問の唯一の仕様として扱ってください。Backendが渡した質問定義を厳密に守り、項目の意味・取得対象を追加、削除、一般化、置換しないでください。originalQuestionがある場合は、その意味を維持した自然な言い換えだけを行ってください。
+questionDefinitionに存在しない「関わった相手」「行った作業」「経験」などの観点を、推測で追加してはいけません。titleだけから質問内容を推測せず、requiredItemsとdescriptionを優先してください。
 返却は指定されたJSON Schemaに従ってください。questionTextに加えて、文書から対象項目の値を明示的に読み取れる場合だけdocumentCandidateValueとdocumentCandidateSourceIdsを返してください。根拠がない場合はdocumentCandidateValue=null、documentCandidateSourceIds=[]にしてください。
 - questionTextはuser-facingな実際の質問文だけにしてください。回答全文の引用、「なるほど」「そうなんですね」「〜なんですね」の定型リアクション、勝手な長いコメント、target名の説明と同義質問の組み合わせ、「では○○について」＋「○○を教えてください」の二重構造は禁止です。
 - 1回の生成で質問は必ず1問だけにしてください。同義の質問を2つ並べたり、targetに含まれない項目を尋ねたりしないでください。targetType=fieldでmissingItemsが指定されている場合は、その一覧にある不足観点だけを1問にまとめて尋ね、capturedItemIdsに含まれる観点や回答済みの内容を聞き直さないでください。
+- 質問は原則として短い1文（日本語では60文字以内を目安）にし、独立した質問を接続詞で連結しないでください。意味を保つために必要な対象語や不足観点は省略しないでください。
 - currentState.answerAssessmentまたはactiveProbeがある場合は、回答済みの内容を繰り返さず、probeTypeが示す不足部分だけを一度に確認してください。activeProbe.missingItemsがあれば、その項目名・説明を使って具体的に質問し、「もう少し詳しく」「他に紹介したいこと」などの抽象的な深掘りに置き換えないでください。UNANSWERABLEやREFUSALへのprobeは中立的な別の聞き方にし、拒否が再度明示されたら質問を続ける前提にしないでください。
 - targetType=fieldでoptionalDeepening=trueの場合は、deepeningItemsにある観点を具体的に1問だけ確認してください。回答済みのrequiredItemsやcapturedItemIdsを聞き直さず、対象者が答えたくない・情報がないと示した場合は深掘りを繰り返さない前提で質問してください。
 - targetTypeがclosingの場合は、ここまでの質問で扱わなかった重要なことを自由に追加できる、誘導しないopen-endedな質問を1問だけ作ってください。
@@ -563,8 +642,10 @@ def _question_stream_system_prompt(profile: str, locale: InterviewLocale = "ja-J
     return f"""あなたは{profile}用途のインタビュー質問文生成器です。
 Backendが選択したtargetについて、質問を1問だけ生成してください。
 {interview_language_instruction(locale)}
+questionDefinitionに含まれるtargetId、title、description、originalQuestion、requiredItems、optionalItems、現在のmissingItemsを唯一の質問仕様として厳密に守ってください。項目の意味・取得対象を追加、削除、一般化、置換せず、originalQuestionがある場合は意味を維持した自然な言い換えだけにしてください。定義にない「関わった相手」「行った作業」「経験」などを推測で追加しないでください。
 回答はuser-facingな質問文だけにしてください。JSON、Markdown、箇条書き、前置き、説明、相づちは返さないでください。
 target以外の項目を同時に尋ねず、回答済みの内容を繰り返さず、不足している観点だけを一つの質問にまとめてください。
+質問は原則として短い1文（日本語では60文字以内を目安）にしてください。
 """.strip()
 
 

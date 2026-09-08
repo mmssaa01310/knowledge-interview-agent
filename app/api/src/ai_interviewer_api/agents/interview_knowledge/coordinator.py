@@ -976,6 +976,10 @@ def _active_probe_target(state: Mapping[str, Any]) -> dict[str, Any] | None:
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "questionText",
+        "targetDescription",
+        "required",
+        "optional",
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
@@ -1004,7 +1008,41 @@ def register_probe(
     """Keep the current target active while one focused probe is asked."""
 
     if target is not None:
-        target = _field_target_with_progress(state, target)
+        # Keep the active-probe bookkeeping object compact.  The selected
+        # question's definition is reconstructed when the probe becomes the
+        # current question, so it should not expand this persisted object.
+        target = _field_target_with_progress(
+            state,
+            target,
+            include_definition=False,
+            include_single_item_progress=False,
+        )
+        target_type = str(target.get("targetType") or target.get("kind") or "")
+        target_id = str(target.get("targetId") or "").strip()
+        field_state = state.get("fieldStates", {}).get(target_id, {})
+        if target_type == "field" and isinstance(field_state, Mapping):
+            # Before question-definition propagation, a single-item field
+            # returned from list_missing_required_targets had only the base
+            # target keys.  Preserve that active-probe shape while retaining
+            # the definition on the current question itself.
+            if len(_field_required_items(field_state)) <= 1:
+                target = {
+                    key: value
+                    for key, value in target.items()
+                    if key
+                    not in {
+                        "missingItemIds",
+                        "missingItems",
+                        "capturedItemIds",
+                        "questionPlan",
+                        "sourceQuestion",
+                        "sourceDescription",
+                        "questionText",
+                        "targetDescription",
+                        "required",
+                        "optional",
+                    }
+                }
     key = target_key(target)
     if not key:
         return 0
@@ -1027,6 +1065,10 @@ def register_probe(
         "questionPlan",
         "sourceQuestion",
         "sourceDescription",
+        "questionText",
+        "targetDescription",
+        "required",
+        "optional",
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
@@ -1566,6 +1608,8 @@ def _field_target_with_progress(
     target: Mapping[str, Any],
     *,
     field: Mapping[str, Any] | None = None,
+    include_definition: bool = True,
+    include_single_item_progress: bool = False,
 ) -> dict[str, Any]:
     result = dict(target)
     target_type = str(result.get("targetType") or result.get("kind") or "")
@@ -1577,26 +1621,56 @@ def _field_target_with_progress(
         return result
     required_items = _field_required_items(field_state, field)
     captured_ids = _field_captured_item_ids(field_state)
+    missing_items = _field_missing_required_items(field_state, field)
+    if include_definition:
+        _copy_field_definition(result, field_state, field)
     if result.get("optionalDeepening"):
         result["capturedItemIds"] = captured_ids
-        result["questionPlan"] = deepcopy(field_state.get("questionPlan") or {})
-        for key in ("sourceQuestion", "sourceDescription"):
-            if field_state.get(key):
-                result[key] = field_state.get(key)
         return result
     if len(required_items) <= 1:
+        if not include_single_item_progress:
+            return result
+        result["missingItemIds"] = [str(item["itemId"]) for item in missing_items]
+        result["missingItems"] = deepcopy(missing_items)
+        result["capturedItemIds"] = captured_ids
         return result
-    missing_items = _field_missing_required_items(field_state, field)
     if missing_items and captured_ids:
         result["label"] = _join_item_labels(missing_items)
     result["missingItemIds"] = [str(item["itemId"]) for item in missing_items]
     result["missingItems"] = deepcopy(missing_items)
     result["capturedItemIds"] = captured_ids
-    result["questionPlan"] = deepcopy(field_state.get("questionPlan") or {})
-    for key in ("sourceQuestion", "sourceDescription"):
-        if field_state.get(key):
-            result[key] = field_state.get(key)
     return result
+
+
+def _copy_field_definition(
+    target: dict[str, Any],
+    field_state: Mapping[str, Any],
+    field: Mapping[str, Any] | None,
+) -> None:
+    """Keep immutable question-definition data on every field target.
+
+    A single required item used to return before copying this metadata. That
+    made the Question Generator see only the field label and forced it to
+    infer the intended interview content.
+    """
+
+    for key in ("questionPlan", "sourceQuestion", "sourceDescription"):
+        value = field_state.get(key)
+        if value is None and field is not None:
+            value = field.get(key)
+        if value is not None:
+            target[key] = deepcopy(value)
+    if field is None:
+        return
+    if "questionText" in field:
+        target["questionText"] = deepcopy(field.get("questionText"))
+    if "targetDescription" in field:
+        target["targetDescription"] = deepcopy(field.get("targetDescription"))
+    if "required" in field:
+        target["required"] = bool(field.get("required"))
+        target["optional"] = not target["required"]
+    elif "optional" in field:
+        target["optional"] = bool(field.get("optional"))
 
 
 def _join_item_labels(items: Sequence[Mapping[str, Any]]) -> str:
