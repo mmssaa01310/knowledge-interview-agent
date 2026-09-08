@@ -14,9 +14,9 @@ class Settings:
     openai_realtime_enabled: bool = os.getenv(
         "OpenAI_Realtime_Enabled", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
-    openai_secret_key: str = os.getenv("OpenAI_Secret_Key", "")
+    openai_secret_key: str = os.getenv("OPENAI_SECRET_KEY", "")
     openai_realtime_model: str = os.getenv(
-        "OpenAI_Realtime_Model", "gpt-realtime-2"
+        "OPENAI_REALTIME_MODEL", "gpt-realtime-2"
     )
     openai_realtime_voice: str | None = (
         os.getenv("OpenAI_Realtime_Voice", "").strip() or None

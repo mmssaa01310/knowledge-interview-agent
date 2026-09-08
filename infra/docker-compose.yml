@@ -97,10 +97,10 @@ services:
       VOICE_TURN_PROCESS_TIMEOUT_SECONDS: ${VOICE_TURN_PROCESS_TIMEOUT_SECONDS:-30}
       VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS: ${VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS:-5}
       # OpenAI Realtime credentials/configuration stay in the voice server.
-      # Do not expose OpenAI_Secret_Key through any VITE_* variable.
-      OpenAI_Secret_Key: ${OpenAI_Secret_Key:-}
+      # Do not expose OPENAI_SECRET_KEY through any VITE_* variable.
+      OPENAI_SECRET_KEY: ${OPENAI_SECRET_KEY:-}
       OpenAI_Realtime_Enabled: ${OpenAI_Realtime_Enabled:-false}
-      OpenAI_Realtime_Model: ${OpenAI_Realtime_Model:-gpt-realtime-2}
+      OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2}
       OpenAI_Realtime_Voice: ${OpenAI_Realtime_Voice:-}
       OpenAI_Realtime_Reasoning_Effort: ${OpenAI_Realtime_Reasoning_Effort:-}
       OpenAI_Realtime_Max_Session_Minutes: ${OpenAI_Realtime_Max_Session_Minutes:-30}
