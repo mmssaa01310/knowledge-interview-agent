@@ -11,11 +11,11 @@ from __future__ import annotations
 import json
 import logging
 from copy import deepcopy
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from hashlib import sha256
 from queue import Queue
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread
 from time import monotonic
 from typing import Any, Literal
 from uuid import uuid4
@@ -29,6 +29,7 @@ from ai_interviewer_api.agents.interview_knowledge.provider import (
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
+    start_fast_interview_turn,
     start_speculative_retrieval_for_interview_turn,
 )
 from ai_interviewer_api.auth.deps import UserContext
@@ -69,7 +70,7 @@ from ai_interviewer_api.services.voice_transcript_feedback import (
 
 
 logger = logging.getLogger(__name__)
-_VOICE_TURN_LOCKS: dict[str, Lock] = {}
+_VOICE_TURN_LOCKS: dict[str, Any] = {}
 _VOICE_TURN_LOCKS_GUARD = Lock()
 
 
@@ -294,6 +295,13 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         if question_id != session.get("currentQuestionId"):
             raise HTTPException(status_code=409, detail="turn_question_conflict")
         question = _find_question_by_id(interview_state, question_id)
+        if question is None and question_id == session.get("currentQuestionId"):
+            provisional_question = session.get("provisionalQuestion")
+            if (
+                isinstance(provisional_question, dict)
+                and provisional_question.get("questionId") == question_id
+            ):
+                question = provisional_question
         if not question_id or question is None:
             raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
         field_id = question.get("fieldId")
@@ -568,6 +576,7 @@ def _process_voice_turn(
             record=record,
             user=user,
             interview_state=interview_state,
+            user_message=user_message,
             api_started_at=api_started_at,
             on_stream_started=on_stream_started,
             on_question_delta=on_question_delta,
@@ -584,9 +593,9 @@ def _process_voice_turn(
         raise
 
 
-def _voice_turn_lock(turn_id: str) -> Lock:
+def _voice_turn_lock(turn_id: str) -> Any:
     with _VOICE_TURN_LOCKS_GUARD:
-        return _VOICE_TURN_LOCKS.setdefault(turn_id, Lock())
+        return _VOICE_TURN_LOCKS.setdefault(turn_id, RLock())
 
 
 def _process_structured_voice_turn(
@@ -596,32 +605,86 @@ def _process_structured_voice_turn(
     record: dict[str, Any],
     user: UserContext,
     interview_state: dict[str, Any],
+    user_message: dict[str, Any],
     api_started_at: float,
     on_stream_started: Callable[[str], None] | None = None,
     on_question_delta: Callable[[str], None] | None = None,
 ) -> dict:
     """Send one answer through the same semantic engine as text."""
 
-    del interview_state
     speculative_retrieval = None
     response_id = f"voice-response-{uuid4().hex[:12]}"
+    fast_result = None
     try:
         knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
-        speculative_retrieval = start_speculative_retrieval_for_interview_turn(
-            record,
-            knowledge,
-            user,
-        )
         if on_stream_started is not None:
             on_stream_started(response_id)
-        result = generate_structured_interview_result(
-            record,
-            knowledge,
-            user,
-            persist_assistant_messages=False,
-            speculative_retrieval=speculative_retrieval,
-            on_question_delta=on_question_delta,
+        current_question = _find_question_by_id(
+            interview_state,
+            turn.get("answerToQuestionId"),
         )
+        if current_question is None:
+            provisional_question = _get_provisional_question(session)
+            if provisional_question and provisional_question.get("questionId") == turn.get(
+                "answerToQuestionId"
+            ):
+                current_question = provisional_question
+        fast_eligible = (
+            bool(current_question)
+            and str((current_question or {}).get("targetType") or "")
+            not in {"closing", "transcript_confirmation", "contradiction"}
+        )
+        if settings.structured_interview_fast_path_enabled and fast_eligible:
+            fast_state = deepcopy(interview_state)
+            provisional_keys = session.get("provisionalAnsweredTargetKeys")
+            if isinstance(provisional_keys, list):
+                fast_state["provisionalAnsweredTargetKeys"] = [
+                    str(key)
+                    for key in provisional_keys
+                    if str(key).strip()
+                ]
+            fast_result = start_fast_interview_turn(
+                record,
+                knowledge,
+                user,
+                state=fast_state,
+                current_question=current_question or {},
+                latest_user_message=user_message,
+                on_background_validation=lambda payload: _handle_fast_background_validation(
+                    session["id"],
+                    turn["id"],
+                    payload,
+                ),
+                on_question_delta=on_question_delta,
+            )
+            result = {
+                "status": "in_progress",
+                "action": fast_result.action,
+                "reply": fast_result.reply,
+                "question": fast_result.question,
+                "interviewState": interview_state,
+                "retrievalPolicy": fast_result.retrieval_policy,
+                "retrievalExecuted": fast_result.retrieval_executed,
+                "retrievedSources": fast_result.retrieved_sources,
+                "latencyMetrics": fast_result.latency_metrics,
+            }
+            turn["fastAssessment"] = fast_result.assessment.model_dump()
+            turn["fastCanProceed"] = fast_result.can_proceed
+            turn["backgroundValidationStatus"] = "pending"
+        else:
+            speculative_retrieval = start_speculative_retrieval_for_interview_turn(
+                record,
+                knowledge,
+                user,
+            )
+            result = generate_structured_interview_result(
+                record,
+                knowledge,
+                user,
+                persist_assistant_messages=False,
+                speculative_retrieval=speculative_retrieval,
+                on_question_delta=on_question_delta,
+            )
         latency_metrics = {
             str(name): value
             for name, value in (result.get("latencyMetrics") or {}).items()
@@ -664,6 +727,24 @@ def _process_structured_voice_turn(
 
         next_state_version = int(session.get("stateVersion") or 0) + 1
         latency_metrics["api_total_ms"] = round((monotonic() - api_started_at) * 1000, 1)
+        latest_turn_fields: dict[str, Any] = {}
+        if fast_result is not None:
+            latest_turn_fields = voice_turn_repository.get(turn["id"]) or {}
+            latency_metrics.update(
+                {
+                    str(name): value
+                    for name, value in (latest_turn_fields.get("latencyMetrics") or {}).items()
+                    if isinstance(value, (int, float))
+                }
+            )
+            for key in (
+                "backgroundValidationStatus",
+                "backgroundCanProceed",
+                "backgroundAgreesWithFast",
+                "clarificationEnqueued",
+            ):
+                if key in latest_turn_fields:
+                    turn[key] = latest_turn_fields[key]
         turn.update(
             {
                 "processingStatus": "completed",
@@ -725,6 +806,32 @@ def _process_structured_voice_turn(
             latency_metrics.get("retrieval_fallbacks", 0),
         )
         session["currentQuestionId"] = question_id
+        if fast_result is not None and fast_result.can_proceed and question is not None:
+            background_completed = (
+                latest_turn_fields.get("backgroundValidationStatus") == "completed"
+            )
+            if background_completed:
+                session.pop("provisionalQuestion", None)
+                session.pop("provisionalSourceTurnId", None)
+            else:
+                session["provisionalQuestion"] = deepcopy(question)
+                session["provisionalSourceTurnId"] = turn["id"]
+            latest_overlay_session = voice_session_repository.get(session["id"]) or {}
+            existing_provisional_keys = latest_overlay_session.get(
+                "provisionalAnsweredTargetKeys"
+            )
+            provisional_keys = (
+                list(existing_provisional_keys)
+                if isinstance(existing_provisional_keys, list)
+                else []
+            )
+            if (
+                latest_turn_fields.get("backgroundValidationStatus") != "completed"
+                and fast_result.source_target_key
+                and fast_result.source_target_key not in provisional_keys
+            ):
+                provisional_keys.append(fast_result.source_target_key)
+            session["provisionalAnsweredTargetKeys"] = provisional_keys
         session["stateVersion"] = next_state_version
         session["status"] = "completed" if action == "finish" else session.get("status", "active")
         session["updatedAt"] = utc_now()
@@ -744,6 +851,7 @@ def _process_structured_voice_turn(
                     "targetType": question.get("targetType") if question else None,
                     "targetId": question.get("targetId") if question else None,
                     "source": "structured_interview_turn_commit",
+                    "fastPath": fast_result is not None,
                     "retrievedSources": turn["retrievedSources"],
                 },
             ),
@@ -767,6 +875,107 @@ def _process_structured_voice_turn(
                 turn.get("id"),
                 cancelled,
             )
+
+
+def _get_provisional_question(session: Mapping[str, Any]) -> dict[str, Any] | None:
+    value = session.get("provisionalQuestion")
+    return deepcopy(value) if isinstance(value, dict) else None
+
+
+def _handle_fast_background_validation(
+    voice_session_id: str,
+    turn_id: str,
+    payload: Mapping[str, Any],
+) -> None:
+    # ``process_voice_turn`` owns this turn lock while it commits the Fast
+    # foreground result.  Waiting here keeps the late Background write from
+    # racing with that commit; the foreground never waits for this callback.
+    with _voice_turn_lock(turn_id):
+        _persist_fast_background_validation(voice_session_id, turn_id, payload)
+
+
+def _persist_fast_background_validation(
+    voice_session_id: str,
+    turn_id: str,
+    payload: Mapping[str, Any],
+) -> None:
+    """Persist background telemetry without changing the foreground reply."""
+
+    turn = voice_turn_repository.get(turn_id)
+    if turn is None:
+        return
+    background_status = str(payload.get("backgroundStatus") or "failed")
+    turn["backgroundValidationStatus"] = background_status
+    turn["backgroundCanProceed"] = bool(payload.get("backgroundCanProceed", False))
+    turn["backgroundAgreesWithFast"] = bool(
+        payload.get("backgroundAgreesWithFast", False)
+    )
+    turn["clarificationEnqueued"] = bool(payload.get("clarificationEnqueued", False))
+    transcript_assessment = payload.get("transcriptAssessment")
+    if isinstance(transcript_assessment, Mapping):
+        turn["rawTranscript"] = transcript_assessment.get("rawTranscript") or turn.get(
+            "transcript"
+        )
+        turn["normalizedTranscript"] = transcript_assessment.get("normalizedTranscript")
+        turn["correctionStatus"] = transcript_assessment.get("correctionStatus") or "NONE"
+        turn["transcriptAssessment"] = dict(transcript_assessment)
+    metrics = dict(turn.get("latencyMetrics") or {})
+    metrics.update(
+        {
+            str(name): value
+            for name, value in (payload.get("latencyMetrics") or {}).items()
+            if isinstance(value, (int, float))
+        }
+    )
+    turn["latencyMetrics"] = metrics
+    turn["updatedAt"] = utc_now()
+    voice_turn_repository.save(turn)
+    session = voice_session_repository.get(voice_session_id)
+    result = payload.get("result")
+    result_state = result.get("interviewState") if isinstance(result, Mapping) else None
+    source_target_key = str(payload.get("sourceTargetKey") or "")
+    if (
+        isinstance(session, dict)
+        and source_target_key
+        and background_status == "completed"
+    ):
+        provisional_keys = session.get("provisionalAnsweredTargetKeys")
+        if isinstance(provisional_keys, list):
+            session["provisionalAnsweredTargetKeys"] = [
+                key for key in provisional_keys if str(key) != source_target_key
+            ]
+    if (
+        isinstance(session, dict)
+        and session.get("provisionalSourceTurnId") == payload.get("sourceTurnId")
+        and isinstance(result_state, Mapping)
+        and result_state.get("status") != "completed"
+        and background_status == "completed"
+    ):
+        session.pop("provisionalQuestion", None)
+        session.pop("provisionalSourceTurnId", None)
+    if (
+        isinstance(session, dict)
+        and isinstance(result_state, Mapping)
+        and result_state.get("status") == "completed"
+    ):
+        session["currentQuestionId"] = None
+        session["status"] = "completed"
+        session.pop("provisionalQuestion", None)
+        session.pop("provisionalSourceTurnId", None)
+        session.pop("provisionalAnsweredTargetKeys", None)
+        session["updatedAt"] = utc_now()
+        voice_session_repository.save(session)
+    elif isinstance(session, dict):
+        session["updatedAt"] = utc_now()
+        voice_session_repository.save(session)
+    logger.info(
+        "background_validation_persisted voice_session_id=%s turn_id=%s status=%s agrees=%s clarification_enqueued=%s",
+        voice_session_id,
+        turn_id,
+        background_status,
+        payload.get("backgroundAgreesWithFast"),
+        payload.get("clarificationEnqueued"),
+    )
 
 
 def _commit_control_turn(
@@ -1047,6 +1256,15 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
         }
         return store.upsert("messages", message)
     question = _find_question_by_id(interview_state, current_question_id)
+    if question is None and current_question_id:
+        session = voice_session_repository.get(turn.get("voiceSessionId")) or {}
+        if current_question_id == session.get("currentQuestionId"):
+            provisional_question = session.get("provisionalQuestion")
+            if (
+                isinstance(provisional_question, dict)
+                and provisional_question.get("questionId") == current_question_id
+            ):
+                question = provisional_question
     if not current_question_id or question is None:
         raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
     message = {

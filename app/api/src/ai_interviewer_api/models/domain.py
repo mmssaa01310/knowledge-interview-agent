@@ -90,6 +90,9 @@ class VoiceSession(BaseEntity):
     initialReplySentAt: str | None = None
     lastTurnSequence: int = 0
     stateVersion: int = 0
+    provisionalQuestion: dict | None = None
+    provisionalSourceTurnId: str | None = None
+    provisionalAnsweredTargetKeys: list[str] = Field(default_factory=list)
     startedAt: str | None = None
     stoppedAt: str | None = None
 
@@ -131,6 +134,12 @@ class VoiceTurn(BaseEntity):
     questionId: str | None = None
     retrievedSources: list[dict] = Field(default_factory=list)
     latencyMetrics: dict[str, float | int] = Field(default_factory=dict)
+    fastAssessment: dict | None = None
+    fastCanProceed: bool | None = None
+    backgroundValidationStatus: str | None = None
+    backgroundCanProceed: bool | None = None
+    backgroundAgreesWithFast: bool | None = None
+    clarificationEnqueued: bool = False
     startedAtMs: int | None = None
     endedAtMs: int | None = None
 

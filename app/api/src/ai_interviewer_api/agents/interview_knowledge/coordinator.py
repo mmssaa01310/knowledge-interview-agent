@@ -178,6 +178,10 @@ def build_initial_structured_state(
         "contradictions": [],
         "openIssues": [],
         "processVersion": 0,
+        "clarificationQueue": [],
+        "activeClarificationRequest": None,
+        "clarificationHistory": [],
+        "pendingBackgroundValidations": [],
     }
 
 
@@ -697,8 +701,53 @@ def select_next_question_target(
     state: dict[str, Any],
     profile: InterviewProfile,
     fields: Sequence[Mapping[str, Any]],
+    *,
+    excluded_target_keys: Iterable[str] = (),
 ) -> dict[str, Any] | None:
     """Select exactly one target using the fixed backend priority."""
+
+    excluded = {str(key) for key in excluded_target_keys if str(key).strip()}
+    provisional_answered = state.get("provisionalAnsweredTargetKeys")
+    if isinstance(provisional_answered, list):
+        excluded.update(
+            str(key)
+            for key in provisional_answered
+            if str(key).strip()
+        )
+
+    active_clarification = state.get("activeClarificationRequest")
+    if not isinstance(active_clarification, Mapping):
+        clarification_queue = state.get("clarificationQueue")
+        if isinstance(clarification_queue, list) and clarification_queue:
+            clarification_queue.sort(
+                key=lambda item: int(item.get("priority") or 9)
+                if isinstance(item, Mapping)
+                else 9
+            )
+            candidate = clarification_queue.pop(0)
+            if isinstance(candidate, Mapping):
+                active_clarification = dict(candidate)
+                active_clarification["status"] = "active"
+                state["activeClarificationRequest"] = active_clarification
+                logger.info(
+                    "clarification_dequeued request_id=%s source_turn_id=%s priority=%s",
+                    active_clarification.get("requestId"),
+                    active_clarification.get("sourceTurnId"),
+                    active_clarification.get("priority"),
+                )
+    if isinstance(active_clarification, Mapping):
+        source_target = active_clarification.get("sourceTarget")
+        if isinstance(source_target, Mapping):
+            target = deepcopy(dict(source_target))
+            target["priority"] = int(active_clarification.get("priority") or 2)
+            target["clarificationRequest"] = {
+                "requestId": active_clarification.get("requestId"),
+                "reason": active_clarification.get("reason"),
+                "sourceTurnId": active_clarification.get("sourceTurnId"),
+                "sourceMessageId": active_clarification.get("sourceMessageId"),
+            }
+            if target_key(target) not in excluded:
+                return target
 
     pending_transcript = state.get("pendingTranscriptConfirmation")
     if isinstance(pending_transcript, Mapping):
@@ -714,7 +763,7 @@ def select_next_question_target(
             )
 
     active_probe = _active_probe_target(state)
-    if active_probe is not None:
+    if active_probe is not None and target_key(active_probe) not in excluded:
         return active_probe
 
     # Preserve the legacy queue of ordinary candidates, but deliberately leave
@@ -722,18 +771,31 @@ def select_next_question_target(
     # them implicitly.
     _promote_one_candidate(state, include_tentative=False)
     contradictions = [
-        item for item in state.get("contradictions", []) if item.get("status", "open") == "open"
+        item
+        for item in state.get("contradictions", [])
+        if item.get("status", "open") == "open"
+        and target_key(
+            {
+                "targetType": "contradiction",
+                "targetId": item.get("contradictionId"),
+            }
+        )
+        not in excluded
     ]
     if contradictions:
         item = contradictions[0]
         return _target("contradiction", str(item.get("contradictionId")), str(item.get("topic") or "矛盾"), 1)
 
-    pending_confirmations = list_pending_confirmation_targets(state)
+    pending_confirmations = [
+        target
+        for target in list_pending_confirmation_targets(state)
+        if target_key(target) not in excluded
+    ]
     if pending_confirmations:
         return pending_confirmations[0]
 
     deferred_context = _select_deferred_proposal_context(state, profile)
-    if deferred_context:
+    if deferred_context and target_key(deferred_context) not in excluded:
         return deferred_context
 
     # A TENTATIVE candidate is intentionally excluded here. This lets the
@@ -744,6 +806,9 @@ def select_next_question_target(
         fields,
         include_tentative=False,
     )
+    missing_required = [
+        target for target in missing_required if target_key(target) not in excluded
+    ]
     unknown_applicability = list_unknown_applicability(state, profile)
     if missing_required:
         process_model_only = all(
@@ -754,7 +819,11 @@ def select_next_question_target(
             return missing_required[0]
 
     if unknown_applicability:
-        if profile == "system_requirement" and "process" in unknown_applicability:
+        if (
+            profile == "system_requirement"
+            and "process" in unknown_applicability
+            and "applicability:process" not in excluded
+        ):
             return _target("applicability", "process", "処理の流れがあるか", 4)
         grouped_topics = {
             "branch",
@@ -767,6 +836,7 @@ def select_next_question_target(
         if (
             not state.get("applicabilityOverviewAsked")
             and any(topic in grouped_topics for topic in unknown_applicability)
+            and "applicability_overview:optional_cases" not in excluded
         ):
             return _target(
                 "applicability_overview",
@@ -774,26 +844,115 @@ def select_next_question_target(
                 "通常と異なるケースや条件による処理変更の有無",
                 4,
             )
-        topic = unknown_applicability[0]
-        if topic == "process" and profile == "system_requirement":
-            label = "処理の流れがあるか"
-        else:
-            label = APPLICABILITY_LABELS.get(topic, topic)
-        return _target("applicability", topic, label, 4)
+        available_topics = [
+            topic
+            for topic in unknown_applicability
+            if f"applicability:{topic}" not in excluded
+        ]
+        if available_topics:
+            topic = available_topics[0]
+            if topic == "process" and profile == "system_requirement":
+                label = "処理の流れがあるか"
+            else:
+                label = APPLICABILITY_LABELS.get(topic, topic)
+            return _target("applicability", topic, label, 4)
 
     optional = _select_optional_target(state, profile)
-    if optional:
+    if optional and target_key(optional) not in excluded:
         return optional
-    if str(state.get("closingState") or "UNANSWERED") != "CONFIRMED":
+    if (
+        str(state.get("closingState") or "UNANSWERED") != "CONFIRMED"
+        and "closing:open_ended" not in excluded
+    ):
         return _target("closing", CLOSING_TARGET_ID, CLOSING_TARGET_LABEL, 6)
     # Once there is no other useful question, fall back to an explicit stop
     # only for the remaining candidate. This is the exceptional confirmation
     # path, not the default after every answer.
     _promote_one_candidate(state, include_tentative=True)
-    pending_confirmations = list_pending_confirmation_targets(state)
+    pending_confirmations = [
+        target
+        for target in list_pending_confirmation_targets(state)
+        if target_key(target) not in excluded
+    ]
     if pending_confirmations:
         return pending_confirmations[0]
     return None
+
+
+def enqueue_clarification_request(
+    state: dict[str, Any],
+    *,
+    source_turn_id: str | None,
+    source_message_id: str | None,
+    source_target: Mapping[str, Any] | None,
+    reason: str,
+    priority: int,
+) -> dict[str, Any] | None:
+    """Queue a safe, post-turn clarification without interrupting playback."""
+
+    if not isinstance(source_target, Mapping):
+        return None
+    target_type = str(source_target.get("targetType") or source_target.get("kind") or "").strip()
+    target_id = str(source_target.get("targetId") or "").strip()
+    if not target_type or not target_id:
+        return None
+    source_turn = str(source_turn_id or "").strip()
+    source_message = str(source_message_id or "").strip()
+    request_id = "clarification-" + "-".join(
+        part
+        for part in (source_turn or source_message or "unknown", target_type, target_id)
+        if part
+    )
+    queue = state.setdefault("clarificationQueue", [])
+    if not isinstance(queue, list):
+        queue = []
+        state["clarificationQueue"] = queue
+    active = state.get("activeClarificationRequest")
+    existing = []
+    if isinstance(active, Mapping):
+        existing.append(active)
+    existing.extend(item for item in queue if isinstance(item, Mapping))
+    if any(str(item.get("requestId") or "") == request_id for item in existing):
+        return None
+    request = {
+        "requestId": request_id,
+        "sourceTurnId": source_turn or None,
+        "sourceMessageId": source_message or None,
+        "sourceTarget": deepcopy(dict(source_target)),
+        "reason": str(reason).strip()[:240],
+        "priority": max(1, min(int(priority), 9)),
+        "status": "pending",
+    }
+    queue.append(request)
+    queue.sort(key=lambda item: int(item.get("priority") or 9))
+    return request
+
+
+def complete_clarification_request(
+    state: dict[str, Any],
+    current_question: Mapping[str, Any] | None,
+) -> bool:
+    """Close the active clarification only after its answer was processed."""
+
+    if not isinstance(current_question, Mapping):
+        return False
+    request = current_question.get("clarificationRequest")
+    if not isinstance(request, Mapping):
+        return False
+    request_id = str(request.get("requestId") or "").strip()
+    active = state.get("activeClarificationRequest")
+    if not request_id or not isinstance(active, Mapping):
+        return False
+    if str(active.get("requestId") or "") != request_id:
+        return False
+    completed = dict(active)
+    completed["status"] = "completed"
+    history = state.setdefault("clarificationHistory", [])
+    if isinstance(history, list):
+        history.append(completed)
+        del history[:-20]
+    state.pop("activeClarificationRequest", None)
+    return True
 
 
 def _active_probe_target(state: Mapping[str, Any]) -> dict[str, Any] | None:

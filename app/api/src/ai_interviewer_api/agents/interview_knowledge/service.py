@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from threading import Lock
+from dataclasses import dataclass
+from threading import Event, Lock
 from time import monotonic, time
 from typing import Any
 
@@ -14,9 +16,11 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     apply_structured_output,
     build_initial_structured_state,
     clear_probe,
+    complete_clarification_request,
     confirm_closing_answer,
     confirm_tentative_target,
     evaluate_completion,
+    enqueue_clarification_request,
     is_current_question_confirmation_target,
     register_probe,
     process_patch_validation_errors,
@@ -26,10 +30,22 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     select_next_question_target,
     stage_transcript_correction,
     sync_structured_state_fields,
+    target_key,
 )
 from ai_interviewer_api.agents.interview_knowledge.provider import (
     BedrockResponsesStructuredProvider,
     StructuredInterviewProvider,
+)
+from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.provider import (
+    BedrockFastInterpreterProvider,
+    FastInterpreterProvider,
+)
+from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.schemas import (
+    FastAnswerAssessment,
+)
+from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.service import (
+    build_fast_interpreter_context,
+    can_proceed,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     InterviewProfile,
@@ -78,6 +94,16 @@ STRUCTURED_PROFILES: frozenset[str] = frozenset({"fixed_form", "business_process
 logger = logging.getLogger(__name__)
 _STRUCTURED_INTERVIEW_LOCKS: dict[str, Lock] = {}
 _STRUCTURED_INTERVIEW_LOCKS_GUARD = Lock()
+_FAST_INTERPRETER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="structured-fast-interpreter",
+)
+_FAST_BACKGROUND_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="structured-background-validation",
+)
+_FAST_BACKGROUND_TAILS: dict[str, tuple[Future[Any], "_FastValidationJoin"]] = {}
+_FAST_BACKGROUND_TAILS_GUARD = Lock()
 _LATENCY_METRIC_NAMES = (
     "interpreter_ms",
     "medium_retry_ms",
@@ -102,7 +128,119 @@ _LATENCY_EVENT_METRIC_NAMES = (
     "question_first_token_ms",
     "question_first_sentence_ms",
     "question_llm_end_ms",
+    "fast_interpreter_start_ms",
+    "fast_interpreter_end_ms",
+    "background_interpreter_start_ms",
+    "background_interpreter_end_ms",
 )
+
+
+@dataclass(frozen=True)
+class FastInterviewTurnResult:
+    """Foreground result; the detailed validation is deliberately detached."""
+
+    assessment: FastAnswerAssessment
+    can_proceed: bool
+    reply: str
+    action: str
+    question: dict[str, Any] | None
+    retrieval_policy: str | None
+    retrieval_executed: bool
+    retrieved_sources: list[dict[str, Any]]
+    latency_metrics: dict[str, Any]
+    source_target_key: str
+
+
+class _FastValidationJoin:
+    """Join Fast output and background output without delaying the Fast path."""
+
+    def __init__(
+        self,
+        *,
+        record_id: str,
+        user: UserContext,
+        source_turn_id: str,
+        source_message_id: str,
+        source_target: Mapping[str, Any] | None,
+        fast_can_proceed: bool,
+        on_complete: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        self.record_id = record_id
+        self.user = user
+        self.source_turn_id = source_turn_id
+        self.source_message_id = source_message_id
+        self.source_target = deepcopy(dict(source_target or {}))
+        self.fast_can_proceed = fast_can_proceed
+        self.on_complete = on_complete
+        self._lock = Lock()
+        self._background: dict[str, Any] | None = None
+        self._provisional_ready = False
+        self._provisional_question: dict[str, Any] | None = None
+        self._completed = False
+        self.reconciliation_event = Event()
+
+    def set_fast_result(self, value: bool) -> None:
+        with self._lock:
+            self.fast_can_proceed = value
+
+    def set_provisional_question(self, question: dict[str, Any] | None) -> None:
+        with self._lock:
+            self._provisional_ready = True
+            self._provisional_question = deepcopy(question) if question else None
+        self._try_complete()
+
+    def set_background_result(self, result: dict[str, Any]) -> None:
+        with self._lock:
+            self._background = result
+        self._try_complete()
+
+    def _try_complete(self) -> None:
+        with self._lock:
+            if self._completed or not self._provisional_ready or self._background is None:
+                return
+            self._completed = True
+            background = self._background
+            provisional = deepcopy(self._provisional_question)
+            fast_can_proceed = self.fast_can_proceed
+        try:
+            payload = _reconcile_fast_background_validation(
+                record_id=self.record_id,
+                user=self.user,
+                source_turn_id=self.source_turn_id,
+                source_message_id=self.source_message_id,
+                source_target=self.source_target,
+                fast_can_proceed=fast_can_proceed,
+                provisional_question=provisional,
+                background=background,
+            )
+        except Exception as exc:  # noqa: BLE001 - background failure is telemetry only
+            logger.exception(
+                "background_validation_reconciliation_failed source_turn_id=%s",
+                self.source_turn_id,
+            )
+            payload = {
+                "sourceTurnId": self.source_turn_id,
+                "sourceMessageId": self.source_message_id,
+                "sourceTargetKey": target_key(self.source_target),
+                "backgroundStatus": "failed",
+                "backgroundAgreesWithFast": False,
+                "backgroundCanProceed": False,
+                "clarificationEnqueued": False,
+                "error": exc.__class__.__name__,
+                "latencyMetrics": dict(background.get("backgroundLatencyMetrics") or {}),
+            }
+        finally:
+            # Later voice turns may already be in their own Fast path. Do not
+            # let their Background evaluator overtake this reconciliation.
+            self.reconciliation_event.set()
+        if self.on_complete is not None:
+            try:
+                self.on_complete(payload)
+            except Exception:  # noqa: BLE001 - validation must not fail the voice turn
+                logger.exception(
+                    "structured_background_validation_callback_failed source_turn_id=%s",
+                    self.source_turn_id,
+                )
 
 
 def _new_latency_metrics() -> dict[str, float]:
@@ -156,37 +294,65 @@ def generate_structured_interview_result(
     """
 
     record_id = str(record.get("id") or "")
-    with _STRUCTURED_INTERVIEW_LOCKS_GUARD:
-        lock = _STRUCTURED_INTERVIEW_LOCKS.setdefault(record_id, Lock())
+    lock = _structured_interview_lock(record_id)
     with lock:
-        started_at = monotonic()
-        latency_metrics = _new_latency_metrics()
-        result = _generate_structured_interview_result(
+        return _generate_structured_interview_result_locked(
             record,
             knowledge,
             user,
             persist_assistant_messages=persist_assistant_messages,
             provider=provider,
-            latency_metrics=latency_metrics,
             speculative_retrieval=speculative_retrieval,
             on_question_delta=on_question_delta,
+            defer_question_generation=False,
         )
-        structured_total_ms = _elapsed_ms(started_at)
-        # The coordinator portion includes state reads/writes, validation,
-        # target selection, and result construction.  The external calls are
-        # measured separately so a slow turn can be attributed without
-        # counting them twice.
-        latency_metrics["state_transition_ms"] = max(
-            0.0,
-            structured_total_ms
-            - latency_metrics["interpreter_ms"]
-            - latency_metrics["medium_retry_ms"]
-            - latency_metrics["patch_repair_ms"]
-            - latency_metrics["retrieval_ms"]
-            - latency_metrics["question_generation_ms"],
-        )
-        result["latencyMetrics"] = _serialize_latency_metrics(latency_metrics)
-        return result
+
+
+def _structured_interview_lock(record_id: str) -> Lock:
+    with _STRUCTURED_INTERVIEW_LOCKS_GUARD:
+        return _STRUCTURED_INTERVIEW_LOCKS.setdefault(record_id, Lock())
+
+
+def _generate_structured_interview_result_locked(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    *,
+    persist_assistant_messages: bool,
+    provider: StructuredInterviewProvider | None,
+    speculative_retrieval: SpeculativeInterviewRetrieval | None,
+    on_question_delta: Callable[[str], None] | None,
+    defer_question_generation: bool,
+) -> dict[str, Any]:
+    started_at = monotonic()
+    latency_metrics = _new_latency_metrics()
+    result = _generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        persist_assistant_messages=persist_assistant_messages,
+        provider=provider,
+        latency_metrics=latency_metrics,
+        speculative_retrieval=speculative_retrieval,
+        on_question_delta=on_question_delta,
+        defer_question_generation=defer_question_generation,
+    )
+    structured_total_ms = _elapsed_ms(started_at)
+    # The coordinator portion includes state reads/writes, validation,
+    # target selection, and result construction.  The external calls are
+    # measured separately so a slow turn can be attributed without
+    # counting them twice.
+    latency_metrics["state_transition_ms"] = max(
+        0.0,
+        structured_total_ms
+        - latency_metrics["interpreter_ms"]
+        - latency_metrics["medium_retry_ms"]
+        - latency_metrics["patch_repair_ms"]
+        - latency_metrics["retrieval_ms"]
+        - latency_metrics["question_generation_ms"],
+    )
+    result["latencyMetrics"] = _serialize_latency_metrics(latency_metrics)
+    return result
 
 
 def start_speculative_retrieval_for_interview_turn(
@@ -231,6 +397,745 @@ def start_speculative_retrieval_for_interview_turn(
     )
 
 
+def start_fast_interview_turn(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    *,
+    state: Mapping[str, Any],
+    current_question: Mapping[str, Any],
+    latest_user_message: Mapping[str, Any],
+    provider: StructuredInterviewProvider | None = None,
+    fast_provider: FastInterpreterProvider | None = None,
+    on_background_validation: Callable[[dict[str, Any]], None] | None = None,
+    on_question_delta: Callable[[str], None] | None = None,
+) -> FastInterviewTurnResult:
+    """Run the provisional voice path and detailed validation concurrently.
+
+    Only the Fast result is awaited on the foreground path. The background
+    future uses the existing Structured Interview service with question
+    generation deferred, so all existing detailed interpretation and backend
+    application rules remain in one place.
+    """
+
+    fields = _list_interview_fields(knowledge, user)
+    profile = _effective_profile(state, resolve_profile(knowledge))
+    model_id = resolve_structured_model_id(knowledge)
+    messages = _list_record_messages(record, user)
+    fast_context = build_fast_interpreter_context(
+        current_question=current_question,
+        latest_answer=latest_user_message,
+        messages=messages,
+    )
+    structured_provider = _get_structured_provider(provider, model_id=model_id)
+    selected_fast_provider = fast_provider or BedrockFastInterpreterProvider()
+    source_turn_id = str(latest_user_message.get("voiceTurnId") or latest_user_message.get("turnId") or "")
+    source_message_id = str(latest_user_message.get("id") or "")
+    source_target = _target_from_question(current_question)
+    source_key = target_key(source_target)
+    join = _FastValidationJoin(
+        record_id=str(record.get("id") or ""),
+        user=user,
+        source_turn_id=source_turn_id,
+        source_message_id=source_message_id,
+        source_target=source_target,
+        fast_can_proceed=False,
+        on_complete=on_background_validation,
+    )
+
+    background_future = _submit_ordered_background_validation(
+        join=join,
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        source_question=dict(current_question),
+        source_turn_id=source_turn_id,
+        source_message_id=source_message_id,
+        provider=structured_provider,
+    )
+
+    def background_done(future: Future[Any]) -> None:
+        try:
+            background = future.result()
+        except Exception as exc:  # noqa: BLE001 - callback turns failures into telemetry
+            logger.exception(
+                "background_interpreter_failed record_id=%s source_turn_id=%s",
+                record.get("id"),
+                source_turn_id,
+            )
+            background = {
+                "error": exc.__class__.__name__,
+                "result": None,
+                "backgroundLatencyMetrics": {},
+            }
+        join.set_background_result(background)
+
+    background_future.add_done_callback(background_done)
+
+    fast_started_at = monotonic()
+    fast_started_ms = int(time() * 1000)
+    logger.info(
+        "fast_interpreter_start record_id=%s source_turn_id=%s model_id=%s reasoning_effort=%s",
+        record.get("id"),
+        source_turn_id,
+        settings.structured_interview_fast_model_id,
+        settings.structured_interview_fast_reasoning_effort,
+    )
+    fast_future = _FAST_INTERPRETER_EXECUTOR.submit(
+        selected_fast_provider.assess,
+        context=fast_context,
+    )
+    try:
+        assessment = fast_future.result()
+    except Exception as exc:  # noqa: BLE001 - fail closed without semantic retry
+        logger.exception(
+            "fast_interpreter_failed record_id=%s source_turn_id=%s error_type=%s",
+            record.get("id"),
+            source_turn_id,
+            exc.__class__.__name__,
+        )
+        assessment = FastAnswerAssessment(
+            minimumInformationPresent=False,
+            understandable=False,
+            clearlyIncomplete=False,
+            reason="fast_interpreter_failure",
+        )
+    fast_elapsed_ms = _elapsed_ms(fast_started_at)
+    fast_finished_ms = int(time() * 1000)
+    fast_can_proceed = can_proceed(assessment)
+    join.set_fast_result(fast_can_proceed)
+    logger.info(
+        "fast_interpreter_end record_id=%s source_turn_id=%s latency_ms=%s fast_can_proceed=%s",
+        record.get("id"),
+        source_turn_id,
+        fast_elapsed_ms,
+        fast_can_proceed,
+    )
+    latency_metrics: dict[str, Any] = {
+        **_new_latency_metrics(),
+        "fast_interpreter_start_ms": fast_started_ms,
+        "fast_interpreter_end_ms": fast_finished_ms,
+        "fast_interpreter_latency_ms": fast_elapsed_ms,
+        "fast_can_proceed": fast_can_proceed,
+    }
+
+    if not fast_can_proceed:
+        join.set_provisional_question(None)
+        locale = resolve_interview_locale(record, knowledge)
+        if assessment.clearlyIncomplete:
+            reply = localized_interview_incomplete_prompt(locale)
+        else:
+            reply = localized_interview_unanswerable_prompt(
+                locale,
+                str(
+                    current_question.get("targetLabel")
+                    or current_question.get("label")
+                    or "この項目"
+                ),
+            )
+        return FastInterviewTurnResult(
+            assessment=assessment,
+            can_proceed=False,
+            reply=reply,
+            action="ask_follow_up",
+            question=dict(current_question),
+            retrieval_policy=str(current_question.get("retrievalPolicy") or "auto"),
+            retrieval_executed=False,
+            retrieved_sources=[],
+            latency_metrics=latency_metrics,
+            source_target_key=source_key,
+        )
+
+    provisional_state = _state_with_question_overlay(state, current_question)
+    target = select_next_question_target(
+        provisional_state,
+        profile,
+        fields,
+        excluded_target_keys=(source_key,) if source_key else (),
+    )
+    if target is None:
+        # A detailed completion decision still belongs to Background. Keep the
+        # current question as a safe fallback if the provisional state has no
+        # next target yet.
+        join.set_provisional_question(None)
+        return FastInterviewTurnResult(
+            assessment=assessment,
+            can_proceed=True,
+            reply=str(current_question.get("text") or ""),
+            action="ask_structured",
+            question=dict(current_question),
+            retrieval_policy=str(current_question.get("retrievalPolicy") or "auto"),
+            retrieval_executed=False,
+            retrieved_sources=[],
+            latency_metrics=latency_metrics,
+            source_target_key=source_key,
+        )
+
+    speculative_retrieval: SpeculativeInterviewRetrieval | None = None
+    try:
+        current_field = _field_for_target(target, fields)
+        retrieval_policy = _retrieval_policy_for_target(target, current_field)
+        speculative_retrieval = start_speculative_interview_document_retrieval(
+            record=record,
+            knowledge=knowledge,
+            user=user,
+            current_question=None,
+            current_field=current_field,
+            target=target,
+            state=provisional_state,
+            messages=messages,
+            retrieval_policy=retrieval_policy,
+        )
+        question_text, retrieved_context, document_candidate = _generate_question_text(
+            structured_provider,
+            profile=profile,
+            target=target,
+            record=record,
+            knowledge=knowledge,
+            user=user,
+            fields=fields,
+            state=provisional_state,
+            messages=messages,
+            latency_metrics=latency_metrics,
+            speculative_retrieval=speculative_retrieval,
+            on_question_delta=on_question_delta,
+        )
+        if document_candidate is not None:
+            target = dict(target)
+            if apply_document_candidate(
+                provisional_state,
+                target,
+                value=document_candidate.value,
+                source_ids=document_candidate.source_ids,
+            ):
+                question_text = localized_interview_document_confirmation_question(
+                    resolve_interview_locale(record, knowledge),
+                    str(target.get("label") or "").strip(),
+                    document_candidate.value,
+                )
+            else:
+                document_candidate = None
+        question = _build_question(
+            provisional_state,
+            target,
+            question_text,
+            retrieval_policy=retrieval_policy,
+            retrieved_sources=source_references(retrieved_context),
+        )
+        provisional_state.setdefault("askedQuestions", []).append(question)
+        provisional_state["currentFieldId"] = question.get("fieldId")
+        provisional_state["currentQuestionId"] = question["questionId"]
+        provisional_state["nextQuestionTarget"] = target
+        join.set_provisional_question(question)
+        return FastInterviewTurnResult(
+            assessment=assessment,
+            can_proceed=True,
+            reply=question["text"],
+            action="ask_structured",
+            question=question,
+            retrieval_policy=retrieval_policy,
+            retrieval_executed=bool(retrieved_context),
+            retrieved_sources=source_references(retrieved_context),
+            latency_metrics=latency_metrics,
+            source_target_key=source_key,
+        )
+    except Exception:
+        logger.exception(
+            "fast_path_question_generation_failed record_id=%s source_turn_id=%s",
+            record.get("id"),
+            source_turn_id,
+        )
+        join.set_provisional_question(None)
+        return FastInterviewTurnResult(
+            assessment=assessment,
+            can_proceed=True,
+            reply=str(current_question.get("text") or ""),
+            action="ask_structured",
+            question=dict(current_question),
+            retrieval_policy=str(current_question.get("retrievalPolicy") or "auto"),
+            retrieval_executed=False,
+            retrieved_sources=[],
+            latency_metrics=latency_metrics,
+            source_target_key=source_key,
+        )
+    finally:
+        if speculative_retrieval is not None and not speculative_retrieval.future.done():
+            speculative_retrieval.cancel()
+
+
+def _submit_ordered_background_validation(
+    *,
+    join: _FastValidationJoin,
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    source_question: Mapping[str, Any],
+    source_turn_id: str,
+    source_message_id: str,
+    provider: StructuredInterviewProvider,
+) -> Future[Any]:
+    record_id = str(record.get("id") or "")
+    with _FAST_BACKGROUND_TAILS_GUARD:
+        previous = _FAST_BACKGROUND_TAILS.get(record_id)
+        previous_join = previous[1] if previous is not None else None
+        future = _FAST_BACKGROUND_EXECUTOR.submit(
+            _run_ordered_background_validation,
+            previous_join=previous_join,
+            record=record,
+            knowledge=knowledge,
+            user=user,
+            source_question=source_question,
+            source_turn_id=source_turn_id,
+            source_message_id=source_message_id,
+            provider=provider,
+        )
+        _FAST_BACKGROUND_TAILS[record_id] = (future, join)
+
+    def remove_tail(done: Future[Any]) -> None:
+        with _FAST_BACKGROUND_TAILS_GUARD:
+            current = _FAST_BACKGROUND_TAILS.get(record_id)
+            if current is not None and current[0] is done:
+                _FAST_BACKGROUND_TAILS.pop(record_id, None)
+
+    future.add_done_callback(remove_tail)
+    return future
+
+
+def _run_ordered_background_validation(
+    *,
+    previous_join: _FastValidationJoin | None,
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    source_question: Mapping[str, Any],
+    source_turn_id: str,
+    source_message_id: str,
+    provider: StructuredInterviewProvider,
+) -> dict[str, Any]:
+    if previous_join is not None:
+        previous_join.reconciliation_event.wait()
+    return _run_fast_background_validation(
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        source_question=source_question,
+        source_turn_id=source_turn_id,
+        source_message_id=source_message_id,
+        provider=provider,
+    )
+
+
+def _run_fast_background_validation(
+    *,
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    source_question: Mapping[str, Any],
+    source_turn_id: str,
+    source_message_id: str,
+    provider: StructuredInterviewProvider,
+) -> dict[str, Any]:
+    started_at = monotonic()
+    started_ms = int(time() * 1000)
+    record_id = str(record.get("id") or "")
+    logger.info(
+        "background_interpreter_start record_id=%s source_turn_id=%s model_id=%s reasoning_effort=%s",
+        record_id,
+        source_turn_id,
+        getattr(provider, "model_id", settings.structured_interview_model_id),
+        settings.structured_interview_reasoning_effort,
+    )
+    lock = _structured_interview_lock(record_id)
+    with lock:
+        fields = _list_interview_fields(knowledge, user)
+        state = load_structured_interview_state(record, knowledge, user, fields=fields)
+        changed = _install_background_question_overlay(state, source_question)
+        pending = state.setdefault("pendingBackgroundValidations", [])
+        if not isinstance(pending, list):
+            pending = []
+            state["pendingBackgroundValidations"] = pending
+            changed = True
+        if not any(
+            isinstance(item, Mapping)
+            and str(item.get("turnId") or "") == source_turn_id
+            for item in pending
+        ):
+            pending.append(
+                {
+                    "turnId": source_turn_id,
+                    "messageId": source_message_id,
+                    "questionId": source_question.get("questionId"),
+                    "status": "pending",
+                }
+            )
+            changed = True
+        if changed:
+            _persist_state(state, user)
+        result = _generate_structured_interview_result_locked(
+            record,
+            knowledge,
+            user,
+            persist_assistant_messages=False,
+            provider=provider,
+            speculative_retrieval=None,
+            on_question_delta=None,
+            defer_question_generation=True,
+        )
+    elapsed_ms = _elapsed_ms(started_at)
+    background_metrics = {
+        "background_interpreter_start_ms": started_ms,
+        "background_interpreter_end_ms": int(time() * 1000),
+        "background_interpreter_latency_ms": elapsed_ms,
+        "background_interpreter_calls": int(
+            (result.get("latencyMetrics") or {}).get("interpreter_calls", 0)
+        ),
+        "background_medium_retry_calls": int(
+            (result.get("latencyMetrics") or {}).get("medium_retry_calls", 0)
+        ),
+        "background_patch_repair_calls": int(
+            (result.get("latencyMetrics") or {}).get("patch_repair_calls", 0)
+        ),
+    }
+    logger.info(
+        "background_interpreter_end record_id=%s source_turn_id=%s latency_ms=%s",
+        record_id,
+        source_turn_id,
+        elapsed_ms,
+    )
+    return {
+        "result": result,
+        "backgroundLatencyMetrics": background_metrics,
+    }
+
+
+def _install_background_question_overlay(
+    state: dict[str, Any],
+    question: Mapping[str, Any],
+) -> bool:
+    question_id = str(question.get("questionId") or "").strip()
+    if not question_id:
+        return False
+    asked_questions = state.setdefault("askedQuestions", [])
+    if not isinstance(asked_questions, list):
+        asked_questions = []
+        state["askedQuestions"] = asked_questions
+    changed = False
+    if not any(
+        isinstance(item, Mapping)
+        and str(item.get("questionId") or "") == question_id
+        for item in asked_questions
+    ):
+        asked_questions.append(deepcopy(dict(question)))
+        changed = True
+    if state.get("currentQuestionId") != question_id:
+        state["currentQuestionId"] = question_id
+        changed = True
+    field_id = question.get("fieldId")
+    if state.get("currentFieldId") != field_id:
+        state["currentFieldId"] = field_id
+        changed = True
+    target = _target_from_question(question)
+    if target is not None and state.get("nextQuestionTarget") != target:
+        state["nextQuestionTarget"] = target
+        changed = True
+    clarification = question.get("clarificationRequest")
+    if isinstance(clarification, Mapping):
+        request_id = str(clarification.get("requestId") or "").strip()
+        if request_id:
+            queue = state.get("clarificationQueue")
+            queued_request = None
+            if isinstance(queue, list):
+                retained = []
+                for item in queue:
+                    if (
+                        isinstance(item, Mapping)
+                        and str(item.get("requestId") or "") == request_id
+                    ):
+                        queued_request = dict(item)
+                    else:
+                        retained.append(item)
+                if len(retained) != len(queue):
+                    state["clarificationQueue"] = retained
+                    changed = True
+            active = state.get("activeClarificationRequest")
+            if not isinstance(active, Mapping) or str(active.get("requestId") or "") != request_id:
+                state["activeClarificationRequest"] = queued_request or {
+                    "requestId": request_id,
+                    "reason": clarification.get("reason"),
+                    "sourceTurnId": clarification.get("sourceTurnId"),
+                    "sourceMessageId": clarification.get("sourceMessageId"),
+                    "sourceTarget": deepcopy(target or {}),
+                    "priority": 2,
+                    "status": "active",
+                }
+                changed = True
+    return changed
+
+
+def _state_with_question_overlay(
+    state: Mapping[str, Any],
+    question: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = deepcopy(dict(state))
+    _install_background_question_overlay(result, question)
+    provisional_keys = result.get("provisionalAnsweredTargetKeys")
+    if not isinstance(provisional_keys, list):
+        provisional_keys = []
+    pending_validations = result.get("pendingBackgroundValidations")
+    if not isinstance(pending_validations, list):
+        pending_validations = []
+    for pending in pending_validations:
+        if not isinstance(pending, Mapping):
+            continue
+        pending_question_id = str(pending.get("questionId") or "").strip()
+        pending_question = next(
+            (
+                item
+                for item in result.get("askedQuestions", [])
+                if isinstance(item, Mapping)
+                and str(item.get("questionId") or "").strip() == pending_question_id
+            ),
+            None,
+        )
+        pending_key = target_key(_target_from_question(pending_question))
+        if pending_key and pending_key not in provisional_keys:
+            provisional_keys.append(pending_key)
+    source_target = _target_from_question(question)
+    if source_target is not None:
+        source_key = target_key(source_target)
+        if source_key and source_key not in provisional_keys:
+            provisional_keys.append(source_key)
+    if provisional_keys:
+        result["provisionalAnsweredTargetKeys"] = provisional_keys
+    return result
+
+
+def _reconcile_fast_background_validation(
+    *,
+    record_id: str,
+    user: UserContext,
+    source_turn_id: str,
+    source_message_id: str,
+    source_target: Mapping[str, Any] | None,
+    fast_can_proceed: bool,
+    provisional_question: Mapping[str, Any] | None,
+    background: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = background.get("result")
+    background_metrics = dict(background.get("backgroundLatencyMetrics") or {})
+    if not isinstance(result, Mapping):
+        lock = _structured_interview_lock(record_id)
+        with lock:
+            state = store.get("interview_states", f"interview-state-{record_id}") or {}
+            pending = state.get("pendingBackgroundValidations")
+            if isinstance(pending, list):
+                remaining = [
+                    item
+                    for item in pending
+                    if not (
+                        isinstance(item, Mapping)
+                        and str(item.get("turnId") or "") == source_turn_id
+                    )
+                ]
+                if len(remaining) != len(pending):
+                    state["pendingBackgroundValidations"] = remaining
+                    _persist_state(state, user)
+        payload = {
+            "sourceTurnId": source_turn_id,
+            "sourceMessageId": source_message_id,
+            "sourceTargetKey": target_key(source_target),
+            "backgroundStatus": "failed",
+            "backgroundAgreesWithFast": False,
+            "backgroundCanProceed": False,
+            "clarificationEnqueued": False,
+            "latencyMetrics": background_metrics,
+        }
+        logger.info(
+            "background_agrees_with_fast source_turn_id=%s value=false status=failed",
+            source_turn_id,
+        )
+        return payload
+
+    lock = _structured_interview_lock(record_id)
+    clarification_request: dict[str, Any] | None = None
+    with lock:
+        state = store.get("interview_states", f"interview-state-{record_id}") or {}
+        pending = state.get("pendingBackgroundValidations")
+        if isinstance(pending, list):
+            state["pendingBackgroundValidations"] = [
+                item
+                for item in pending
+                if not (
+                    isinstance(item, Mapping)
+                    and str(item.get("turnId") or "") == source_turn_id
+                )
+            ]
+        if provisional_question and state.get("status") != "completed":
+            changed = _install_background_question_overlay(state, provisional_question)
+            if changed or isinstance(pending, list):
+                _persist_state(state, user)
+        elif isinstance(pending, list):
+            _persist_state(state, user)
+
+        current_state = store.get("interview_states", f"interview-state-{record_id}") or state
+        if fast_can_proceed:
+            clarification_request = _background_clarification_request(
+                current_state,
+                source_target=source_target,
+                source_turn_id=source_turn_id,
+                source_message_id=source_message_id,
+            )
+            if clarification_request is not None:
+                _persist_state(current_state, user)
+
+    output_state = result.get("interviewState")
+    if not isinstance(output_state, Mapping):
+        output_state = current_state if "current_state" in locals() else {}
+    background_can_proceed = _background_can_proceed(
+        output_state,
+        clarification_request=clarification_request,
+    )
+    agrees = bool(fast_can_proceed and background_can_proceed)
+    payload = {
+        "sourceTurnId": source_turn_id,
+        "sourceMessageId": source_message_id,
+        "sourceTargetKey": target_key(source_target),
+        "backgroundStatus": "completed",
+        "backgroundAgreesWithFast": agrees,
+        "backgroundCanProceed": background_can_proceed,
+        "clarificationEnqueued": clarification_request is not None,
+        "clarificationRequest": clarification_request,
+        "latencyMetrics": background_metrics,
+        "transcriptAssessment": current_state.get("lastTranscriptAssessment"),
+        "answerAssessment": current_state.get("lastAnswerAssessment"),
+        "result": dict(result),
+    }
+    logger.info(
+        "background_agrees_with_fast source_turn_id=%s value=%s background_can_proceed=%s",
+        source_turn_id,
+        agrees,
+        background_can_proceed,
+    )
+    if clarification_request is not None:
+        logger.info(
+            "clarification_enqueued source_turn_id=%s request_id=%s priority=%s",
+            source_turn_id,
+            clarification_request.get("requestId"),
+            clarification_request.get("priority"),
+        )
+    return payload
+
+
+def _background_clarification_request(
+    state: dict[str, Any],
+    *,
+    source_target: Mapping[str, Any] | None,
+    source_turn_id: str,
+    source_message_id: str,
+) -> dict[str, Any] | None:
+    if not source_target:
+        return None
+    output = state.get("lastStructuredOutput")
+    if not isinstance(output, Mapping):
+        return None
+    transcript_assessment = output.get("transcriptAssessment")
+    answer_assessment = output.get("answerAssessment")
+    correction_status = (
+        transcript_assessment.get("correctionStatus")
+        if isinstance(transcript_assessment, Mapping)
+        else None
+    )
+    if correction_status == "UNCERTAIN":
+        return enqueue_clarification_request(
+            state,
+            source_turn_id=source_turn_id,
+            source_message_id=source_message_id,
+            source_target=source_target,
+            reason="発話内容の解釈確認が必要",
+            priority=1,
+        )
+    if output.get("contradictions") or output.get("openIssues"):
+        reason = "既存回答との矛盾または未解決事項があるため確認が必要"
+        return enqueue_clarification_request(
+            state,
+            source_turn_id=source_turn_id,
+            source_message_id=source_message_id,
+            source_target=source_target,
+            reason=reason,
+            priority=1,
+        )
+    target_type = str(source_target.get("targetType") or "")
+    target_id = str(source_target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        requires_confirmation = target_state.get("answerState") == "AWAITING_CONFIRMATION"
+    elif target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        requires_confirmation = target_state.get("status") == "AWAITING_CONFIRMATION"
+    else:
+        target_state = {}
+        requires_confirmation = False
+    if requires_confirmation:
+        return enqueue_clarification_request(
+            state,
+            source_turn_id=source_turn_id,
+            source_message_id=source_message_id,
+            source_target=source_target,
+            reason="回答候補の確認が必要",
+            priority=2,
+        )
+    sufficiency = (
+        answer_assessment.get("sufficiency")
+        if isinstance(answer_assessment, Mapping)
+        else None
+    )
+    reasons = {
+        "INCOMPLETE": ("回答が途中のため補足が必要", 1),
+        "AMBIGUOUS": ("意味が変わる曖昧さの確認が必要", 1),
+        "PARTIAL": ("必須観点の補足が必要", 2),
+        "REASON_MISSING": ("重要な判断理由の補足が必要", 2),
+        "CRITERIA_MISSING": ("重要な判断基準の補足が必要", 2),
+    }
+    reason_and_priority = reasons.get(str(sufficiency or ""))
+    if reason_and_priority is None:
+        # EXAMPLE_MISSING is intentionally left to optional deepening.
+        return None
+    reason, priority = reason_and_priority
+    return enqueue_clarification_request(
+        state,
+        source_turn_id=source_turn_id,
+        source_message_id=source_message_id,
+        source_target=source_target,
+        reason=reason,
+        priority=priority,
+    )
+
+
+def _background_can_proceed(
+    state: Mapping[str, Any],
+    *,
+    clarification_request: Mapping[str, Any] | None,
+) -> bool:
+    if clarification_request is not None:
+        return False
+    output = state.get("lastStructuredOutput")
+    if not isinstance(output, Mapping):
+        return False
+    transcript = output.get("transcriptAssessment")
+    answer = output.get("answerAssessment")
+    if isinstance(transcript, Mapping) and transcript.get("correctionStatus") == "UNCERTAIN":
+        return False
+    if isinstance(answer, Mapping) and answer.get("sufficiency") in {
+        "INCOMPLETE",
+        "AMBIGUOUS",
+        "PARTIAL",
+        "REASON_MISSING",
+        "CRITERIA_MISSING",
+    }:
+        return False
+    return not bool(output.get("contradictions") or output.get("openIssues"))
+
+
 def _generate_structured_interview_result(
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
@@ -241,6 +1146,7 @@ def _generate_structured_interview_result(
     latency_metrics: dict[str, float] | None = None,
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
     on_question_delta: Callable[[str], None] | None = None,
+    defer_question_generation: bool = False,
 ) -> dict[str, Any]:
     latency_metrics = latency_metrics if latency_metrics is not None else _new_latency_metrics()
     fields = _list_interview_fields(knowledge, user)
@@ -808,6 +1714,16 @@ def _generate_structured_interview_result(
                     action="ask_follow_up",
                     status="in_progress",
                 )
+            clarification_completed = complete_clarification_request(
+                state,
+                current_question,
+            )
+            if clarification_completed:
+                logger.info(
+                    "clarification_completed record_id=%s question_id=%s",
+                    record.get("id"),
+                    current_question.get("questionId"),
+                )
             completion = evaluate_completion(state, profile, fields)
             if completion["complete"]:
                 state["status"] = "completed"
@@ -826,6 +1742,21 @@ def _generate_structured_interview_result(
                     status="completed",
                 )
             _persist_state(state, user)
+
+    if defer_question_generation:
+        # Background validation has already applied the detailed output above.
+        # The foreground voice path owns the provisional next question, so do
+        # not select or generate another question here.
+        return _build_result(
+            record=record,
+            state=state,
+            messages=messages,
+            fields=fields,
+            reply="",
+            question=_get_current_question(state),
+            action="background_validation",
+            status="completed" if state.get("status") == "completed" else "in_progress",
+        )
 
     target = select_next_question_target(state, profile, fields)
     if target is None:
@@ -2099,6 +3030,7 @@ def _target_from_question(question: Mapping[str, Any] | None) -> dict[str, Any] 
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
+        "clarificationRequest",
     ):
         if key in question:
             target[key] = deepcopy(question[key])
@@ -2302,6 +3234,7 @@ def _build_question(
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
+        "clarificationRequest",
     ):
         if key in target:
             question[key] = deepcopy(target[key])

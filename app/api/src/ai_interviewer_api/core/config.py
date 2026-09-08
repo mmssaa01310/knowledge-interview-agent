@@ -69,6 +69,21 @@ class Settings:
         "STRUCTURED_INTERVIEW_MODEL_ID",
         "global.openai.gpt-5.6-luna",
     )
+    structured_interview_fast_path_enabled: bool = (
+        os.getenv("STRUCTURED_INTERVIEW_FAST_PATH_ENABLED", "false").lower()
+        == "true"
+    )
+    structured_interview_fast_model_id: str = os.getenv(
+        "STRUCTURED_INTERVIEW_FAST_MODEL_ID",
+        "global.openai.gpt-5.6-luna",
+    )
+    structured_interview_fast_reasoning_effort: str = os.getenv(
+        "STRUCTURED_INTERVIEW_FAST_REASONING_EFFORT",
+        "none",
+    )
+    structured_interview_fast_max_output_tokens: int = int(
+        os.getenv("STRUCTURED_INTERVIEW_FAST_MAX_OUTPUT_TOKENS", "160")
+    )
     structured_interview_connect_timeout_seconds: float = float(
         os.getenv("STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS", "5")
     )

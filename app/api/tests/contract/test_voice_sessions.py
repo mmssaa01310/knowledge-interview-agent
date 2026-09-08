@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
+from dataclasses import replace
 
 import pytest
 from fastapi import HTTPException
@@ -13,6 +14,9 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     QuestionGenerationOutput,
     StructuredInterviewOutput,
     TranscriptAssessment,
+)
+from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.schemas import (
+    FastAnswerAssessment,
 )
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
 from ai_interviewer_api.models.interview_plan import InterviewPlan
@@ -49,7 +53,6 @@ from ai_interviewer_api.schemas.voice import (
     VoiceTurnIntentCreate,
 )
 from ai_interviewer_api.services import voice_interview as voice_interview_service
-from ai_interviewer_api.services.ai_interview import generate_interview_reply
 
 
 class FakeStructuredProvider:
@@ -318,6 +321,50 @@ def test_voice_turn_uses_structured_interpreter_and_advances_once() -> None:
     assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
     assert state["fieldStates"][first_field_id]["recordAnswer"] == "山田"
     assert store.get("voice_turns", turn["id"])["processingMode"] == "structured_interpretation"
+
+
+def test_voice_fast_path_commits_provisional_next_question_before_background_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(user, [("氏名", "short_text"), ("担当", "short_text")])
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+
+    monkeypatch.setattr(
+        voice_interview_service,
+        "settings",
+        replace(voice_interview_service.settings, structured_interview_fast_path_enabled=True),
+    )
+
+    class PassFastProvider:
+        def assess(self, *, context: Mapping[str, object]) -> FastAnswerAssessment:
+            assert set(context) == {"currentQuestion", "latestUserAnswer", "previousTurns"}
+            return FastAnswerAssessment(
+                minimumInformationPresent=True,
+                understandable=True,
+                clearlyIncomplete=False,
+                reason="回答として通る",
+            )
+
+    monkeypatch.setattr(structured_service, "BedrockFastInterpreterProvider", PassFastProvider)
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="山田です。", sttConfidence=0.96),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+
+    assert result["questionId"] == "q-002"
+    assert result["voiceTurn"]["fastCanProceed"] is True
+    assert result["voiceTurn"]["fastAssessment"]["minimumInformationPresent"] is True
+    persisted_session = voice_interview_service.get_internal_voice_session(session["id"])
+    persisted_state = store.get("interview_states", f"interview-state-{record['id']}")
+    assert persisted_state is not None
+    assert (
+        persisted_session.get("provisionalQuestion", {}).get("questionId") == "q-002"
+        or persisted_state.get("currentQuestionId") == "q-002"
+    )
 
 
 def test_incomplete_final_transcript_stays_on_current_question() -> None:
