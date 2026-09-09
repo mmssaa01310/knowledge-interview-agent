@@ -81,6 +81,26 @@ def make_session(
     )
 
 
+def test_transport_start_does_not_wait_for_browser_dependent_initial_dispatch() -> None:
+    async def run() -> None:
+        session = make_session(initial_reply_text="最初の質問です。")
+
+        async def sideband() -> None:
+            session._transport_ready.set()
+            # session.created may arrive only after the browser gets the SDP.
+            await asyncio.Event().wait()
+
+        session._run_sideband = sideband
+        try:
+            await asyncio.wait_for(session.start(), timeout=0.1)
+            assert not session._conversation_ready.is_set()
+            assert not session._initial_question_dispatched
+        finally:
+            await session.close(reason="test_cleanup")
+
+    asyncio.run(run())
+
+
 def test_backend_reply_uses_explicit_response_without_default_conversation() -> None:
     async def run() -> dict:
         session = make_session()

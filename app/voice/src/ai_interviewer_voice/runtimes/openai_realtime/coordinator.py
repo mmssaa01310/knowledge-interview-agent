@@ -54,6 +54,7 @@ class OpenAIRealtimeSession:
         self._websocket: Any = None
         self._run_task: asyncio.Task[None] | None = None
         self._expiry_task: asyncio.Task[None] | None = None
+        self._startup_watchdog_task: asyncio.Task[None] | None = None
         self._turn_tasks: set[asyncio.Task[None]] = set()
         self._initial_task: asyncio.Task[None] | None = None
         self._turn_lock = asyncio.Lock()
@@ -104,7 +105,7 @@ class OpenAIRealtimeSession:
         )
         try:
             await asyncio.wait_for(
-                self._conversation_ready.wait(),
+                self._transport_ready.wait(),
                 timeout=self._config.sideband_connect_timeout_seconds,
             )
         except TimeoutError as exc:
@@ -114,6 +115,25 @@ class OpenAIRealtimeSession:
             error = self._startup_error
             await self.close(reason="sideband_start_failed")
             raise error
+        # Return the SDP now. Waiting for initial dispatch here prevents the
+        # browser from applying the answer and establishing the media session.
+        # Canonical turns remain gated by _conversation_ready independently.
+        self._mark_once("sdp_answer_ready")
+        self._startup_watchdog_task = asyncio.create_task(
+            self._wait_for_conversation_start(),
+            name=f"openai-realtime-startup-{self.voice_session.voice_session_id}",
+        )
+
+    async def _wait_for_conversation_start(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self._conversation_ready.wait(),
+                timeout=self._config.sideband_connect_timeout_seconds,
+            )
+        except TimeoutError:
+            self._fail_startup(OpenAIRealtimeProviderError("openai_realtime_initial_dispatch_timeout"))
+        if self._startup_error is not None and not self._closed:
+            await self.close(reason="initial_dispatch_failed")
 
     async def close(self, *, reason: str) -> None:
         if self._closed and self._finished:
@@ -122,7 +142,7 @@ class OpenAIRealtimeSession:
         if not self._conversation_ready.is_set() and self._startup_error is None:
             self._fail_startup(OpenAIRealtimeProviderError("openai_realtime_startup_cancelled"))
         current_task = asyncio.current_task()
-        for task in (*self._turn_tasks, self._initial_task):
+        for task in (*self._turn_tasks, self._initial_task, self._startup_watchdog_task):
             if task is not None and not task.done() and task is not current_task:
                 task.cancel()
         if self._run_task is not None and self._run_task is not current_task and not self._run_task.done():
@@ -607,6 +627,7 @@ class OpenAIRealtimeSession:
     def _fail_startup(self, error: OpenAIRealtimeProviderError) -> None:
         if self._startup_error is None:
             self._startup_error = error
+        self._transport_ready.set()
         self._conversation_ready.set()
 
     async def _send_event(self, event: dict[str, Any]) -> bool:
