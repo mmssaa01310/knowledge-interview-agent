@@ -357,7 +357,6 @@ class OpenAIRealtimeSession:
                     voice_session_id=self.voice_session.voice_session_id,
                     transcript=transcript,
                     answer_to_question_id=self._current_question_id,
-                    turn_type="ANSWER",
                     expected_state_version=self._state_version,
                     client_turn_id=f"openai-{item_id}",
                     started_at_ms=self._speech_started_at_ms,

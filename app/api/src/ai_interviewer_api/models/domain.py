@@ -132,6 +132,12 @@ class VoiceTurn(BaseEntity):
     stateVersion: int | None = None
     responseId: str | None = None
     questionId: str | None = None
+    canonicalIntent: str | None = None
+    canonicalAction: str | None = None
+    canonicalRouterLatencyMs: float | None = None
+    fastCheckExecuted: bool = False
+    structuredDialogueAct: str | None = None
+    dialogueActMismatch: bool = False
     retrievedSources: list[dict] = Field(default_factory=list)
     latencyMetrics: dict[str, float | int] = Field(default_factory=dict)
     fastAssessment: dict | None = None

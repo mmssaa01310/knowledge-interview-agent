@@ -447,7 +447,7 @@ def test_fast_fail_keeps_current_question_while_background_still_runs(
     assert background_finished.wait(2)
 
 
-def test_fast_question_explanation_keeps_definition_and_current_target() -> None:
+def test_fast_legacy_question_explanation_field_does_not_route_the_turn() -> None:
     user, record, knowledge, state, message = _seed_case()
     background_finished = Event()
     result = start_fast_interview_turn(
@@ -471,7 +471,7 @@ def test_fast_question_explanation_keeps_definition_and_current_target() -> None
     )
 
     assert result.can_proceed is False
-    assert result.needs_question_explanation is True
+    assert result.needs_question_explanation is False
     assert "担当業務" in result.reply
     assert "関わった相手" not in result.reply
     assert "行った作業" not in result.reply

@@ -16,6 +16,9 @@ from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
     get_structured_interview_state_snapshot,
 )
+from ai_interviewer_api.agents.interview_knowledge.coordinator import (
+    is_current_question_confirmation_target,
+)
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.interview_locale import (
     localized_interview_fallbacks,
@@ -24,6 +27,10 @@ from ai_interviewer_api.core.interview_locale import (
 from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
+from ai_interviewer_api.services.conversation_policy import (
+    resolve_canonical_action,
+    resolve_canonical_intent,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -68,11 +75,21 @@ def generate_interview_reply(
 
     knowledge = store.get("knowledges", record["knowledgeId"]) or {}
     try:
+        canonical_policy = _resolve_text_turn_policy(record, knowledge, user)
+        policy_kwargs = (
+            {
+                "canonical_intent": canonical_policy[0],
+                "canonical_action": canonical_policy[1],
+            }
+            if canonical_policy is not None
+            else {}
+        )
         result = generate_structured_interview_result(
             record,
             knowledge,
             user,
             persist_assistant_messages=persist_assistant_messages,
+            **policy_kwargs,
         )
         sync_record_status_after_interview(record, result.get("status"), user)
         return InterviewStreamResult(
@@ -90,6 +107,75 @@ def generate_interview_reply(
             reply_chunks=[localized_interview_fallbacks(locale)["error"]],
             metadata={"error": "structured_interview_failed"},
         )
+
+
+def _resolve_text_turn_policy(
+    record: dict,
+    knowledge: dict,
+    user: UserContext,
+) -> tuple[str, str] | None:
+    """Route text turns through the same canonical policy as voice turns."""
+
+    snapshot = get_structured_interview_state_snapshot(
+        record,
+        knowledge,
+        user,
+        persist=False,
+    )
+    state = snapshot.get("interviewState") or {}
+    messages = snapshot.get("messages") or []
+    current_question_id = state.get("currentQuestionId")
+    current_question = next(
+        (
+            question
+            for question in state.get("askedQuestions", [])
+            if question.get("questionId") == current_question_id
+        ),
+        None,
+    )
+    if not isinstance(current_question, dict):
+        return None
+    latest_user_message = next(
+        (
+            message
+            for message in reversed(messages)
+            if message.get("role") == "user"
+            and message.get("isActualUtterance") is not False
+            and message.get("answerToQuestionId") == current_question_id
+            and message.get("id") != state.get("lastProcessedUserMessageId")
+        ),
+        None,
+    )
+    if not isinstance(latest_user_message, dict):
+        return None
+    current_target = {
+        "targetType": current_question.get("targetType"),
+        "targetId": current_question.get("targetId"),
+        "label": current_question.get("targetLabel") or current_question.get("label"),
+    }
+    decision = resolve_canonical_intent(
+        utterance=str(
+            latest_user_message.get("rawTranscript")
+            or latest_user_message.get("content")
+            or ""
+        ),
+        current_question=current_question,
+        current_target=current_target,
+        pending_confirmation=is_current_question_confirmation_target(
+            state,
+            current_question,
+        ),
+        recent_conversation=messages,
+    )
+    action = resolve_canonical_action(
+        decision.dialogueAct,
+        pending_confirmation=is_current_question_confirmation_target(
+            state,
+            current_question,
+        ),
+        current_target=current_target,
+    )
+    return decision.dialogueAct, action
 
 
 def get_interview_state_snapshot(

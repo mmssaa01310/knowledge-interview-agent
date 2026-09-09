@@ -69,6 +69,7 @@ def test_interview_api_client_gets_session_and_processes_turn() -> None:
     assert processed.reply_text == "確認します。"
     assert processed.question_id == "q-2"
     assert calls[1][2]["answerToQuestionId"] == "q-1"
+    assert "turnType" not in calls[1][2]
     assert calls[1][2]["sttConfidence"] == 0.91
 
 

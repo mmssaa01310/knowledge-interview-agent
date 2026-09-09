@@ -1,0 +1,817 @@
+# Conversation Algorithm 現行監査・仕様化
+
+更新日: 2026-09-09
+対象: `text` / `transcribe_polly` / `nova_sonic` / `openai_realtime`
+状態: 現行コードの監査、characterization、再設計案。Conversation Router本体はまだ実装していない。
+
+この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
+
+## 1. 監査結果の要約
+
+現在の実装には、全Providerに共通する単一の `Canonical User Turn -> Intent -> Action` パイプラインはない。
+
+最も近い「Stateの正本」は `app/api` の `interview_state` と `VoiceTurn` である。しかし、会話制御の判断は次の実装に分散している。
+
+| 判断 | 現在の主な実装 | 監査結果 |
+|---|---|---|
+| User Turnの受領・一部重複排除 | OpenAI sideband、Voice API、Transcribe runtime、Nova tool coordinator | Providerごとにキーと寿命が違う。耐久性のある共通Canonical IDではない |
+| Turn Type | `InterviewBridge.process_turn()` の既定値、Voice intent API、OpenAI coordinator | OpenAIは `ANSWER` を固定してVoice intent APIを迂回する |
+| dialogueAct | Structured Interpreterの出力 | `ANSWER`、`QUESTION_TO_ASSISTANT`、`CONFIRMATION`等を持つが、Fast foregroundの正本ではない |
+| Fast判定 | `start_fast_interview_turn()` | `minimumInformationPresent`等のBooleanだけで、dialogueActを分類しない |
+| State更新 | `coordinator.apply_structured_output()`、`voice_interview`のcommit | Backendが行うが、Fast provisionalとBackground validationの2経路がある |
+| 次target | `select_next_question_target()` | Backend coordinatorが決める。Question Generatorはtargetを決めない |
+| Question definition | Field / question / questionPlan | 現行Question Generator入力には定義が残っている。タイトルだけに縮退していることはコード上では確認できない |
+| Question rendering | `_generate_question_text()`、Question Generator provider | Backendが選んだtargetの表現を生成する。RealtimeはPhase 1では読み上げる役割 |
+| 初回質問 | `create_voice_session()` -> `_initialize_initial_question()`、OpenAIの `session.created` | 通常Turnとは別の初期化経路。OpenAIはsidebandで初期応答を送る |
+
+したがって、以下の症状をそれぞれ別の `if` で直す前に、次の2つを正本契約として固定する必要がある。
+
+1. Provider固有IDを、永続的に追跡できるCanonical User Turnへ一度だけ変換すること。
+2. 1つのUser Turnから1つの会話分類、1つのCanonical Action、1つのState transitionだけを生成すること。
+
+この文書ではその契約を提案として定義するが、本番のRouterやState遷移コードは追加していない。
+
+## 2. 現在の全体フロー
+
+### 2.1 Text
+
+```text
+Browser text input
+  ↓ app/web/src/routes/useKnowledgeWorkspaceController.ts:1200-1267
+POST /api/records/{record_id}/messages
+  ↓ app/api/src/ai_interviewer_api/routers/records.py:244-363
+User message保存・turnType決定
+  ↓ app/api/src/ai_interviewer_api/routers/records.py:431-452
+generate_interview_reply()
+  ↓ app/api/src/ai_interviewer_api/services/ai_interview.py:61-115
+knowledge取得
+  ↓
+generate_structured_interview_result()
+  ↓ app/api/src/ai_interviewer_api/agents/interview_knowledge/service.py:281-357
+Structured Interpreter / State apply / target selection / RAG / Question Generator
+  ↓
+reply textをSSEへ分割してBrowserへ返却
+  ↓ app/api/src/ai_interviewer_api/services/ai_interview.py:61-115
+```
+
+Text入口ではVoiceのFast Pathは通らない。Fast flagを参照する `_process_structured_voice_turn()` はVoice API経路に限られる（`voice_interview.py:625-705`）。
+
+### 2.2 `transcribe_polly`
+
+```text
+Browser WebRTC audio track
+  ↓ app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py:335-359
+独自VAD + 100ms単位のTranscribe送信
+  ↓ _on_transcribe_result():604-635
+partial/final transcript保持
+  ↓ _endpoint_loop():661-683
+endpoint silence + final settle
+  ↓ _finalize_user_turn():711-739
+UserSpeechEnded / ANSWER_PROCESSING
+  ↓ asyncio.create_task(_process_interview_turn())
+InterviewBridge.process_turn_stream()
+  ↓ app/voice/src/ai_interviewer_voice/services/interview_bridge.py:180-232
+POST /internal/voice-sessions/{id}/turns
+POST /internal/voice-sessions/{id}/turns/{turn_id}/process-stream
+  ↓ app/api/src/ai_interviewer_api/routers/internal_voice.py:31-126
+_process_voice_turn() -> _process_structured_voice_turn()
+  ↓ app/api/src/ai_interviewer_api/services/voice_interview.py:555-617, 625-904
+FastまたはStructured -> RAG -> Question Generator -> reply text
+  ↓ process-streamのstarted/delta/complete
+_play_streaming_formal_reply()
+  ↓ runtime.py:1160-1257
+PollyTextChunker + Polly worker pool
+  ↓ _synthesize_streaming_chunks():1259以降
+PCM output -> Browser audio
+```
+
+Transcribe側は、partialをUIに出すが、Backend Turnを作るのはendpointで `_finalize_user_turn()` が作る処理タスクだけである。Transcribe final自体はRAGを開始しない（`runtime.py:604-635`）。
+
+### 2.3 `nova_sonic`
+
+```text
+Browser WebRTC audio
+  ↓ runtime.py:385-454
+Bedrock Nova Sonic bidirectional stream
+  ↓ protocol dispatcher
+User transcript + forced tool use
+  ↓ tool_turn_coordinator.py:98-166
+条件成立時に process_interview_bridge_turn() を create_task
+  ↓ tool_turn_coordinator.py:271-361
+InterviewBridge.save_turn() -> process_saved_turn()
+  ↓ app/voice/services/interview_bridge.py:154-152 / API
+app/apiのVoice Interview処理
+  ↓
+Tool resultをNovaへ返す
+  ↓
+Nova Sonic audio output -> Browser
+```
+
+共通runtime factoryは `nova_sonic` と `transcribe_polly` を生成する（`app/voice/src/ai_interviewer_voice/services/runtime_factory.py:21-99`）。`openai_realtime` はこのfactoryの分岐ではなく、WebRTC router/coordinatorで別に生成される。
+
+### 2.4 `openai_realtime`
+
+```text
+Browser microphone
+  ↓ app/web/src/features/realtime-voice/webrtc/openaiRealtimePeerConnection.ts:25-126
+createOffer / setLocalDescription / ICE待ち
+  ↓ useRealtimeVoiceInterview.ts:562-600
+POST /voice/webrtc/{voice_session_id}/openai-offer
+  ↓ app/voice/src/ai_interviewer_voice/routers/webrtc.py:147-204
+OpenAIRealtimeCoordinator.create_offer()
+  ↓ webrtc.py:604-639
+OpenAIRealtimeCallClient.create_call()
+  ↓ app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/client.py:29-89
+POST https://api.openai.com/v1/realtime/calls
+multipart sdp + session
+  ↓
+SDP answerをBrowserへ返却
+  ↓ Browser setRemoteDescription()
+OpenAI Realtime Session
+  ├─ Browser WebRTC: audio input / audio output / DataChannel event受信
+  └─ app/voice sideband: session update / transcript / Backend処理 / response.create
+        ↓ coordinator.py:116-285
+conversation.item.input_audio_transcription.completed
+        ↓ _process_turn():324-408
+InterviewBridge.process_turn(turn_type="ANSWER")
+        ↓ app/voice/services/interview_bridge.py:116-152
+save_turn -> process_saved_turn
+        ↓ HTTP app/api
+_process_voice_turn -> _process_structured_voice_turn
+        ↓ app/api/services/voice_interview.py:555-904
+FastまたはStructured -> RAG -> Question Generator全文完了
+        ↓
+reply_ready
+        ↓ coordinator.py:401-408
+response.create(input=[reply_text], output_modalities=["audio"])
+        ↓ coordinator.py:410-458
+response.output_audio.delta
+        ↓ Browser DataChannel / remote audio track
+Audio element playback
+```
+
+OpenAIのBrowser側 `conversation.item.input_audio_transcription.completed` はUI更新だけで、Backend処理を直接呼ばない（`useRealtimeVoiceInterview.ts:187-216`）。Backend処理の契機はsideband側の同名eventだけである（`coordinator.py:201-221`）。
+
+## 3. 責務とDecision Ownership
+
+以下が現行実装の責務表である。`foreground` はそのTurnのreply生成前に待たれる処理、`background` はreply commit後も継続し得る処理を示す。
+
+| 責務 | file / function / line | 入力 | 出力 | State変更 | 前景/背景 | Provider |
+|---|---|---|---|---|---|---|
+| Voice session作成 | `app/api/src/ai_interviewer_api/services/voice_interview.py:create_voice_session()` 132-177 | record, provider | VoiceSession, initial question | VoiceSession、initial state | 前景 | 全Voice |
+| 初回質問生成 | `voice_interview.py:_initialize_initial_question()` 1101-1132 | record, knowledge, fields, state | greeting + question | initial question / session snapshot | 前景 | 全Voice session開始 |
+| OpenAI call作成 | `app/voice/.../openai_realtime/client.py:create_call()` 29-89 | SDP, session payload | call id, SDP answer, Location | OpenAI call | 前景 | OpenAI |
+| OpenAI sideband開始 | `app/voice/.../openai_realtime/coordinator.py:OpenAIRealtimeSession.start()` 78-99、`_run_sideband()` 116-167 | call id, key | WebSocket/event loop | in-memory session | 背景task | OpenAI |
+| User transcript final受領 | `coordinator.py:_handle_event()` 201-221 | item_id, transcript | turn task | `_processed_transcript_items` | 前景task起動 | OpenAI |
+| OpenAI User Turn type | `coordinator.py:_process_turn()` 350-365 | transcript, current q | Bridge呼出し | なし | 前景 | OpenAI固定 `ANSWER` |
+| 任意VoiceのTurn type分類 | `app/voice/.../services/interview_bridge.py:process_turn()` 116-152、`interview_api.py:217-246` | transcript, current q | `ANSWER`/`CONTROL` | なし | 前景 | Bridge callerが`None`の時 |
+| Turn ID reuse | `app/api/.../services/voice_interview.py:create_voice_turn()` 258-359 | clientTurnId, transcript | VoiceTurn | VoiceTurn / sequence | 前景 | 全Voice API |
+| Turn lifecycle/idempotency | `voice_interview.py:_process_voice_turn()` 555-617 | voice_session_id, turn_id | process result | processing/EVALUATING/COMMITTED/failed | 前景 | 全Voice |
+| Dialogue Act | `app/api/.../agents/interview_knowledge/schemas.py:27-39`、Structured provider呼出し `service.py:1285-1311` | full interpreter context | `StructuredInterviewOutput.dialogueAct` | 後続applyでStateへ記録 | 前景（Fast時は背景） | Full Structured |
+| Fast answer sufficiency | `service.py:start_fast_interview_turn()` 402-693、Fast schema 6-19 | current q, latest utterance, q definition | 3 Boolean + `needsQuestionExplanation` | provisional target/response | 前景 | Voice flagがONのVoice |
+| Full answer sufficiency | `service.py:_generate_structured_interview()` 1168-1911 | full context, current q | answer assessment, updates, act | State apply | 前景またはFast背景 |
+| Transcript correction | `service.py:1332-1380` | transcriptAssessment | normalized/correction status | user message / pending transcript confirmation | Full Structured | 全ProviderがAPI経由で使用 |
+| Clarification / prompt explanation | `service.py:1396-1425`、`_keep_current_question()` 1914-1963 | `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST` | help text, current question | current target維持 | Full Structured |
+| Hesitation / backchannel | `service.py:1427-1445` | `HESITATION` / `BACKCHANNEL` / `OTHER` | localized retry/wait text | current target維持 | Full Structured |
+| Confirmation | `service.py:1272-1284`、`coordinator.py:_confirm_target()` 1881-1978 | awaiting target + unambiguous confirmation | synthetic `CONFIRMATION` or full output | field/requirement `CONFIRMED` | Full Structured |
+| Rejection | `coordinator.py:_reject_target()` 2056-2123、service primary branch 1550-1669 | `REJECTION` | pending candidate reset | target `UNANSWERED`等 | Full Structured |
+| Field / requirement apply | `coordinator.py:apply_structured_output()` 457-666、`_apply_field_update()` 2125-2215 | fieldUpdates / requirementUpdates | changed topics | candidate / awaiting / confirmed | Full Structured |
+| Candidate / probe | `coordinator.py:probe_register` 1002-1090、`service.py:1508以降` | incomplete / candidate | probe/candidate | pending state | Full Structured |
+| Completion | `coordinator.py:evaluate_completion()` 669-697 | contradictions, pending, required, closing | complete bool | completion判定 | Full Structured |
+| Next target | `coordinator.py:select_next_question_target()` 700-879 | current State, fields, profile | exactly one target | active clarification/current target等 | 前景 | Text/Voice共通API |
+| Question definition | `service.py:_question_definition_context()` 2255-2347 | selected target/field | title, originalQuestion, description, required items等 | なし | 前景 | QG |
+| Question wording | `service.py:_generate_question_text()` 2669-2905、provider `_question_system_prompt()` 618-638 | selected target + definition + bounded context | questionText | askedQuestions when commit | 前景 |
+| Backend reply送信 | OpenAI `coordinator.py:_send_backend_reply()` 410-458 | committed `reply_text` | Realtime `response.create` | active response flag | 前景の最後 | OpenAI |
+| UI User message | `app/web/.../useRealtimeVoiceInterview.ts:187-216` | Browser DataChannel completed | user message | React message state | UI | OpenAI |
+| UI assistant merge | `useRealtimeVoiceInterview.ts:231-276`、`useKnowledgeWorkspaceController.ts:1270-1285,1531-1589` | transcript delta/done + metadata | streaming/completed message | React message state | UI | OpenAI/共通 |
+
+### 3.1 正本の評価
+
+「Stateの保存先」という意味では `app/api` が正本である。しかし、会話Policyの最終決定権は1つではない。
+
+* OpenAI coordinatorが `turn_type="ANSWER"` を固定し、APIのVoice intent分類を迂回する。
+* `InterviewBridge.process_turn()` は `turn_type is None` の場合だけ `classify_voice_turn_intent` を呼ぶ（`interview_bridge.py:129-137`）。
+* Full Structured Interpreterだけが豊富な `dialogueAct` を持つ。
+* Fast Pathは `dialogueAct` ではなく回答十分性のBooleanで先にforeground replyを決める。
+* Background Structuredは後から別のState/clarification情報を書き込む（`voice_interview.py:909-1055`）。
+* Question Generatorはtargetを選ばないが、生成文はLLM出力である。
+* BrowserはUser finalをUIへ登録し、sidebandはBackend Turnを登録するという役割分担だが、同一Canonical Turnの永続契約ではない。
+
+このため、`Structured Interpreter` は詳細抽出のOwner、`coordinator` はState/targetのOwner、`Fast` はprovisional foreground decisionのOwnerという三層になっている。IntentとActionの共通Ownerは存在しない。
+
+## 4. 現行State Machineの復元
+
+### 4.1 Interview State
+
+初期Stateは `build_initial_structured_state()` が作り、`status`、`stateVersion`、`currentFieldId`、`currentQuestionId`、`askedQuestions`、`fieldStates`、`requirementStates`、`activeProbeTarget`、`pendingTranscriptConfirmation`、`clarificationQueue`、`activeClarificationRequest`、`tentativeCandidates`、`contradictions`、`openIssues`、`closingState`等を持つ（`coordinator.py:119-185`）。
+
+主要な値は次のとおりである。
+
+| State領域 | 現行値・構造 | 根拠 |
+|---|---|---|
+| Interview status | `in_progress` / `completed`等 | `coordinator.py:119-185`、`voice_interview.py:555-617` |
+| Field answer state | `UNANSWERED`、`CANDIDATE_PENDING`、`AWAITING_CONFIRMATION`、`CONFIRMED`を含む | `coordinator.py:2125-2215`, `1881-1978`, `2056-2123` |
+| Answer resolution | `TENTATIVE`、`AUTO_CONFIRM`、`CONFIRMED`等の正規化値 | `schemas.py`、`coordinator.py:apply_structured_output()` |
+| Closing state | 初期 `UNANSWERED`、完了条件は `CONFIRMED` | `coordinator.py:669-697`, `700-879` |
+| Transcript correction | `pendingTranscriptConfirmation`、correction status | `service.py:1332-1380`, `coordinator.py:700-763` |
+| Clarification | queue -> active -> history | `coordinator.py:882-955`, `700-750` |
+| Probe | active probe / probe history等 | `coordinator.py:1002-1090`, `service.py:1508以降` |
+| Candidate | tentative candidates / pending confirmations | `coordinator.py:700-879`, `service.py:1550-1669` |
+| Detailed findings | contradictions / openIssues / applicability | `coordinator.py:619-666` |
+
+### 4.2 Field / target transition
+
+| FROM | Event / condition | TO | 更新実装 |
+|---|---|---|---|
+| 初期State | required target選択 | `currentQuestionId` / target設定 | `coordinator.py:700-879`、`service.py:1798-1825` |
+| `UNANSWERED` | valid field update、まだ確定不可 | `CANDIDATE_PENDING` または `AWAITING_CONFIRMATION` | `coordinator.py:_apply_field_update()` 2125-2215 |
+| `UNANSWERED` / candidate | all required itemが揃いauto confirm可能 | `CONFIRMED` | `coordinator.py:_confirm_target()` 1881-1978、`apply_structured_output()` 457-666 |
+| `AWAITING_CONFIRMATION` | unambiguous `CONFIRMATION` | `CONFIRMED` | `service.py:1272-1284` -> `coordinator.py:_confirm_target()` |
+| `AWAITING_CONFIRMATION` | `REJECTION` | `UNANSWERED`等へ戻し候補破棄 | `coordinator.py:_reject_target()` 2056-2123 |
+| 任意target | `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`かつupdateなし | current target維持、説明文 | `service.py:1396-1425` -> `_keep_current_question()` 1914-1963 |
+| 任意target | `HESITATION` / `BACKCHANNEL` / `OTHER` | current target維持、再開促進文 | `service.py:1427-1445` -> `_keep_current_question()` |
+| 任意target | transcript `UNCERTAIN` | current target維持、transcript retry | `service.py:1380-1395` -> `_keep_current_question()` |
+| valid answer | insufficient | current/active probeまたはfollow-up target | `service.py:1469-1506`, `coordinator.py:700-879` |
+| valid answer | sufficient | next target selection | `service.py:1550-1825`、`coordinator.py:700-879` |
+| no unresolved issue | required/closing等が未完了 | next target | `coordinator.py:evaluate_completion()` 669-697, `select_next_question_target()` 700-879 |
+| all completion conditions | closing `CONFIRMED`等 | `completed` | `service.py:1764-1781`、`voice_interview.py:625-904` |
+
+### 4.3 VoiceTurn lifecycle
+
+`VoiceTurn`はAPIで `clientTurnId` を検索し、同じtranscriptとstate versionなら既存行を返す（`voice_interview.py:258-359`）。処理時は `processingStatus="processing"`、`lifecycleStatus="EVALUATING"` としてから、成功時にcommit結果を保存する（`voice_interview.py:555-617`）。既に `COMMITTED` のTurnは保存済み結果を返す（同:566-569）。
+
+これはAPI内の冪等性であり、OpenAIの `item_id` を専用カラムで永続化するExactly-once契約ではない。OpenAI側は `clientTurnId="openai-{item_id}"` に変換しているだけである（`coordinator.py:356-364`）。
+
+### 4.4 VoiceSession / Runtime / UIの状態
+
+会話Stateとは別に、接続と再生の状態が存在する。
+
+| State領域 | 現行値・遷移 | 更新箇所 |
+|---|---|---|
+| VoiceSession | 作成時にactive系のsessionを保存し、停止時に `status="stopped"`、`connectionStatus="closed"` | `voice_interview.py:132-177, 247-255` |
+| OpenAI session | `_closed` / `_finished`、active response pending、active response id | `openai_realtime/coordinator.py:35-76, 231-276` |
+| OpenAI response | Browser側は `response.created` -> `preparing_audio` -> audio deltaで `speaking` -> `response.done`で`listening`等 | `useRealtimeVoiceInterview.ts:218-316` |
+| Transcribe input | `ANSWER_LISTENING` -> `ANSWER_PROCESSING`、formal reply中はinput gateを閉じ、playback drain後に再開 | `transcribe_polly/runtime.py:661-739, 1160-1257` |
+| Browser hook | `checking`, `connecting`, `listening`, `finalizing_transcript`, `processing_interview`, `preparing_audio`, `speaking`, `interrupted`, `completed`, `error`, `disconnected`等 | `app/web/src/features/realtime-voice/types.ts:16-34`, `useRealtimeVoiceInterview.ts:488-705` |
+| Assistant output | OpenAIではRealtime responseの状態、Transcribeでは `PLANNED` / `SYNTHESIZING` / interrupted等をruntimeが管理 | `openai_realtime/coordinator.py:231-276`, `transcribe_polly/runtime.py:1035-1158` |
+
+これらは会話PolicyのStateと同じではない。例えばBrowserが `processing_interview` になったこと自体は、Backend Stateが `EVALUATING`になったことを意味しない。現行はUI、transport、BackendのStateをIDで関連付けているが、1つのCanonical Conversation State objectとしては公開していない。
+
+## 5. 実例のState Trace
+
+### 5.1 Characterization harness
+
+現行アルゴリズムを変更前後で観測できるよう、次を追加した。
+
+* `app/api/tests/characterization/conversation_algorithm_harness.py:25-466`
+* `app/api/tests/characterization/test_conversation_algorithm_characterization.py:19-101`
+
+これは本番Routerを実装せず、`generate_structured_interview_result()` に決定論的Providerを注入して、現行のStructured service / coordinatorの出力を記録する。`routerIntent`と`fastDecision`は現行にRouterがないため `N/A` として出力する（harness.py:34-39, 356-375）。
+
+出力項目は次のとおり。
+
+```json
+{
+  "input": "...",
+  "routerIntent": "N/A",
+  "fastDecision": "N/A",
+  "structuredDialogueAct": "...",
+  "stateBefore": {},
+  "stateAfter": {},
+  "currentTarget": {},
+  "nextTarget": {},
+  "action": "...",
+  "generatedQuestion": "...",
+  "questionDefinitionSeenByGenerator": {},
+  "stateChanged": true
+}
+```
+
+現在追加したcharacterizationは次を確認する。
+
+* 正常回答で `ANSWER`、profileのrequired itemsを適用し、次のfieldへ進む。
+* `AWAITING_CONFIRMATION` に対する「大丈夫です。」が `CONFIRMATION` -> `CONFIRMED`になる。
+* `QUESTION_TO_ASSISTANT`、`REJECTION`、`HESITATION`、`CORRECTION`をFull Structured出力として記録し、current targetを維持する。
+* 同じOpenAI source itemを `clientTurnId` に変換したAPI保存が1 VoiceTurnを再利用する。
+
+検証結果:
+
+```text
+tests/characterization/test_conversation_algorithm_characterization.py
+7 passed
+```
+
+これはAPIの同一 `clientTurnId` 再利用と、既存Structured serviceの決定分岐を検証するもので、実Browserでsideband eventが何回届いたかを測るE2Eではない。
+
+### 5.2 Case A: 正常回答 -> Confirmation
+
+入力を2Turnに分けた場合のコード上の成立条件は次のとおり。
+
+```text
+Turn 1: 宮崎です。スマート技術開発部にいて、エンジニアをやっています。
+  ↓ Structured output: ANSWER + fieldUpdates
+  ↓ coordinator.apply_structured_output()
+  ↓ required item / candidate / confirmation条件をStateへ適用
+  ↓ current targetが確認対象なら確認質問を生成
+
+Turn 2: 大丈夫です。
+  ↓ current targetが awaiting confirmation
+  ↓ is_unambiguous_confirmation()
+  ↓ synthetic StructuredDialogueAct=CONFIRMATION
+  ↓ _confirm_target()
+  ↓ select_next_question_target()
+```
+
+「大丈夫です。」の明示的な処理は `service.py:1272-1284` にある。ただしこの分岐は、処理時点の `current_question` / Stateが確認対象として認識されていることが前提である。別のtarget、provisional state、state version conflict、または別Turnとして入力された場合に同じ分岐になるとはコードだけから断定できない。
+
+従って「確認後に同じ基本プロフィールへ戻る」事象は、まず同じTurn IDと `stateBefore/stateAfter/nextTarget` をこのharnessまたは実E2Eログで取得してから根因を確定すべきであり、現行コードから単一の原因と断定していない。
+
+### 5.3 Case B: 質問の意味を聞き返す
+
+Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、`service.py:1396-1425` が `questionDefinition` を作り、`localized_interview_question_help()` を返し、`_keep_current_question()` へ入る。したがってtargetを進めず、現在質問の説明へ進むコードは存在する。
+
+一方Fast経路では、Fast schemaは `needsQuestionExplanation` を持つが、dialogueActそのものを持たない（`fast_interpreter/schemas.py:6-19`）。`start_fast_interview_turn()` は `can_proceed(assessment) and not needs_question_explanation` で進行可否を決める（`service.py:512-523`）。Falseの場合の説明文は `question_definition` のoriginal question、description、required itemsを使う（同:534-573）。よってFastで「質問の意味」を拾えるかは、Boolean `needsQuestionExplanation` のモデル出力に依存し、Full StructuredのdialogueAct分類とは別契約である。
+
+### 5.4 Case C: 「すでに回答している」
+
+OpenAI coordinatorは全completed transcriptを `turn_type="ANSWER"` で送る（`coordinator.py:356-364`）。Textや、Bridge callerがtypeを省略する経路ではAPIの `ANSWER` / `CONTROL` 2値分類を使えるが、これは `QUESTION_TO_ASSISTANT`、`CORRECTION`等を返す分類ではない（`voice_interview.py:184-244`、`interview_api.py:217-246`）。
+
+Full Structuredに到達すれば、Structured `dialogueAct` と `transcriptAssessment` により correction / clarification / retry 分岐がある。しかしOpenAIでは入口のtype固定により、Voice intent APIは呼ばれない。実際に「すでに回答している」がどのdialogueActになったかは、同じ入力をFull providerへ渡した実行traceが必要である。
+
+### 5.5 Case D: Confirmation拒否
+
+`REJECTION` がFull Structured出力として返り、対象がpending confirmationなら、`_reject_target()` が候補を破棄し、対象を未確定側へ戻す（`coordinator.py:2056-2123`）。この後のtargetは `select_next_question_target()` の優先順に従う（`coordinator.py:700-879`）。Fast foregroundだけでは `REJECTION`を表すschemaがないため、Fast ON時の最終的な拒否処理はBackground StructuredまたはFast FAIL側の挙動に依存する。
+
+### 5.6 Case E: Hesitation
+
+Full Structuredでは `HESITATION`、`BACKCHANNEL`、`OTHER` が `service.py:1427-1445` で `_keep_current_question()` に送られるため、target維持の応答になる。Fast schemaにはHESITATIONという型がなく、`clearlyIncomplete`等のBooleanに落ちる可能性がある。これがFast ON時の会話制御上のGapである。
+
+### 5.7 Case F: 初回質問
+
+Session作成時にAPIが `_initialize_initial_question()` を呼び、既存current questionがあれば再利用し、なければ `generate_interview_reply(..., persist=False)` で初回文を作る（`voice_interview.py:132-177, 1101-1132`）。OpenAI側はsidebandの `session.created` を受けた時に `_send_initial_reply()` をtask化する（`coordinator.py:172-185, 286-322`）。
+
+OpenAIのUser Turnが初期応答より先に届く場合、`_process_turn()` は `_initial_task` を `asyncio.shield()` で待つ（`coordinator.py:324-349`）。これにより初回質問と最初のUser Turnは同じ `_turn_lock` の直列区間へ入るが、初回質問自体は通常TurnのCanonical Actionを通っていない。
+
+### 5.8 Case traceの比較可能な項目
+
+同じ入力をProviderやFast設定間で比較する際は、表示文だけでなく次の列を1 Turn単位で記録する。現在のharnessの `stateProjection` はこのうちStateに関する列を保持する。
+
+| Case | currentTarget | dialogueAct / fast | fieldUpdates / answerResolution | pendingCandidate | state before -> after | next target / question |
+|---|---|---|---|---|---|---|
+| A normal answer | current profile target | Fullは `ANSWER`。FastはBooleanのみ | profile required items、candidate/auto-confirmの実値 | profile candidateの有無 | field stateの適用、必要ならawaiting/confirmed | `select_next_question_target()`の結果とQG文 |
+| A confirmation | confirmation target | Fullは `CONFIRMATION`。OpenAI固定ANSWERでもFull serviceのconfirmation特別分岐は条件付き | 通常のfield updateではなく `_confirm_target()` | candidate -> confirmed | `AWAITING_CONFIRMATION` -> `CONFIRMED` | 次field/target |
+| B clarification | current question | Full `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`。Fastは `needsQuestionExplanation` | 通常updateなし | 維持 | `_keep_current_question()` | current targetのdefinitionに基づく説明 |
+| C already answered | current question | OpenAI入口は `ANSWER`固定。Fullの実dialogueActは実行結果を採取する必要 | correction/answer updateの有無 | 維持または更新 | correctionStatus / Stateの変化 | currentまたはnext target |
+| D rejection | confirmation target | Full `REJECTION`。Fast schemaには専用値なし | candidate rejection | candidate破棄 | `_reject_target()`で未確定側へ | 再回答用target |
+| E hesitation | current question | Full `HESITATION` / `BACKCHANNEL`。FastはBooleanへ縮退 | 通常updateなし | 維持 | current target維持 | retry / current question |
+| F initial | 未回答の初期target | Router/Actionなし。session.created -> initial task | initial question生成結果 | なし | initial session snapshot | initial question text |
+
+モデルが返す`dialogueAct`やfieldUpdatesは入力ごとに変わるため、上表の型は分岐契約であり、固定された実行結果ではない。Case A〜Eの具体的なJSONを得るには、実際のprovider responseをharnessの注入出力またはE2E traceへ記録する必要がある。
+
+## 6. Provider差分監査
+
+| Provider | 入力境界 | Turn生成契機 | Turn type | 会話処理 | 出力 |
+|---|---|---|---|---|---|
+| `text` | Browser HTTP | `POST /records/{id}/messages` | targetの有無から `ANSWER`/`CONTROL` | `generate_interview_reply()` -> Full Structured | HTTP/SSE |
+| `transcribe_polly` | WebRTC audio -> Transcribe | endpoint + final settle -> `_finalize_user_turn()` | Bridge既定 `ANSWER`（別途stream API） | Voice API。Fast flag ONならFast foreground + Background | API stream -> Polly chunker -> PCM |
+| `nova_sonic` | WebRTC audio -> Bedrock | transcript + forced tool conditions | `InterviewBridge.save_turn()`はanswer target | ToolTurnCoordinator -> Voice API | Nova tool result -> audio |
+| `openai_realtime` | WebRTC audio -> OpenAI | sideband `input_audio_transcription.completed` | coordinatorが `ANSWER`固定 | `process_turn()` -> Voice API。OpenAI intent classifierは未使用 | reply_textをsideband `response.create`へinput_textとして渡しRealtime audio |
+
+`openai_realtime`は、Browserのcompleted eventでもUser UI messageを追加するが、Backend Turnはsidebandだけで作る（`useRealtimeVoiceInterview.ts:187-216`、`coordinator.py:201-221`）。従ってコード上の意図は二重Backend処理ではないが、UIのmergeとsidebandのAPI処理は別ID層である。
+
+## 7. Fast Path ON / OFF差分
+
+### OFF
+
+`settings.structured_interview_fast_path_enabled` の既定値は `false`（`app/api/src/ai_interviewer_api/core/config.py:72-75`）。Voiceのeligible targetでは、`_process_structured_voice_turn()` が speculative retrievalを開始し、`generate_structured_interview_result()` をforegroundで呼ぶ（`voice_interview.py:656-705`）。Full interpreter、State apply、target選択、RAG resolve、Question Generator、commitまでがforegroundである。
+
+### ON
+
+同じflagがONで、closing / transcript confirmation / contradiction以外のcurrent questionなら、`start_fast_interview_turn()` を呼ぶ（`voice_interview.py:656-683`）。この関数は次の順で処理する。
+
+```text
+fields / profile / current target / question definitionを構築
+  ↓ service.py:423-464
+Background validationをThreadPool Futureへsubmit
+  ↓ service.py:423-482, 695-837
+Fast providerをThreadPoolへsubmit
+  ↓ service.py:484-516
+fast_future.result()だけをforegroundで待つ
+  ↓ service.py:497-524
+Fast PASSならprovisional state上でnext targetを選択
+  ↓ service.py:575-598
+final target用のspeculative retrievalを開始
+  ↓ service.py:601-615
+そのfutureをresolveしながらQuestion Generator全文を待つ
+  ↓ service.py:616-669, _generate_question_text():2669-2905
+foreground replyをcommit
+  ↓ voice_interview.py:684-904
+Backgroundは後でcallback経由でpersist/reconcile
+  ↓ voice_interview.py:909-1055
+```
+
+Fastの設定は `global.openai.gpt-5.6-luna`、reasoning `none`、max output 160（`core/config.py:76-86`）。Full Structuredはmodel `global.openai.gpt-5.6-luna`、reasoning `low`、max output 6000。Question Generatorは同じmodel default、reasoning `none`、max output 600、streaming enabled default true（`core/config.py:93-114`）。
+
+### Fast ON時の重要な差
+
+* `Background Structured` は `background_future` としてFast futureと重なる。Fast future直後にbackgroundをawaitしていない（`service.py:482-524`）。
+* しかしQuestion GeneratorはFast PASS後にforegroundで実行され、speculative retrieval futureを `resolve()` するため、RAG結果が必要ならそこで待つ（`service.py:601-629`, `_generate_question_text():2723-2779`）。
+* Backgroundの結果はreplyを作らないが、turn telemetryとState/sessionの一部を後から更新する（`voice_interview.py:909-1055`）。したがって、foreground provisional StateとBackground reconciliationが同じ会話を別時点で書く構造である。
+* Fast schemaは `minimumInformationPresent`、`understandable`、`clearlyIncomplete`、`needsQuestionExplanation`、`reason`だけで、dialogueAct、fieldUpdates、confirmation、correction、contradiction、next targetを持たない（`fast_interpreter/schemas.py:6-19`）。
+
+### Dialogue Act別の比較
+
+| 発話意図 | Fast OFF | Fast ON foreground | Background |
+|---|---|---|---|
+| `ANSWER` | Full dialogueAct + updates + sufficiency | BooleanでPASS/FAIL、PASSならprovisional advance | Full act/updateを後処理 |
+| `CONFIRMATION` | awaiting targetならsynthetic confirmationまたはFull | Fast schemaには専用型なし。current target条件でeligible外になるとは限らない | Fullで確認・State適用 |
+| `REJECTION` | Fullでreject target | Fast schemaには専用型なし | Fullでreject可能 |
+| `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST` | help + current target維持 | `needsQuestionExplanation`がtrueならhelp、falseならPASSの可能性 | Fullでclarificationを検出・queue可能 |
+| `CORRECTION` | transcript correction / field update | Fast schemaには専用型なし | Fullでcorrectionを検出 |
+| `HESITATION` | current target維持 | `clearlyIncomplete`等へ縮退する可能性 | FullでHESITATIONを記録 |
+
+これは、Fast ONでStructuredの会話制御が完全に置換されたという意味ではなく、foregroundから詳細なdialogueActが外れ、Backgroundへ後置されたという意味である。
+
+## 8. RAGとQuestion Generator
+
+### 8.1 RAG
+
+Full Structured OFFでは、`start_speculative_retrieval_for_interview_turn()` がcurrent questionを手掛かりにRetrieval futureを開始する（`service.py:360-399`）。その後 `_generate_question_text()` が最終target由来のqueryを作り、futureのquery/knowledge/tenant/limitが一致した場合だけ再利用する（`service.py:2669-2779`）。不一致なら正式検索へfallbackする。
+
+Fast ONでは、Fast PASSでprovisional targetが決まった後、そのfinal target向けのRetrieval futureを開始し、同じ関数の `resolve()` をQuestion Generator呼出しの前段で実行する（`service.py:601-629`）。従って現在のFast経路は「FastとRAGを最初から常時並列」ではなく、Fast PASS後のtarget決定に続いてRAGを先行し、Question Generatorが結果を待つ構造である。
+
+`retrievalPolicy=never` のtargetでは `_generate_question_text()` がRetrieval pathへ入らない（`service.py:2700-2706`）。
+
+### 8.2 Question definitionの保持
+
+現行コードではQuestion Generatorのcontextに、次の情報が残っている。
+
+* `target`のid/type/label
+* selected fieldの `name`、`description`、`questionText`、`aiQuestionExamples`、`questionPlan`、required/optional
+* `questionDefinition`の `title`、`originalQuestion`、`description`、`purpose`、`requiredItems`、`optionalItems`、`completionCriteria`、missing/captured
+* bounded state、直近6件のconversation、answerAssessment、activeProbe、tentativeCandidates
+* retrieved knowledge（検索対象時）
+
+根拠は `service.py:_question_generator_field_context()` 2240-2252、`_question_definition_context()` 2255-2347、`_generate_question_text()` 2789-2818。直近会話の上限は `_QUESTION_GENERATOR_RECENT_MESSAGE_LIMIT = 6`（同ファイル107）。
+
+従って、Fast化で「全State / 全fields / 履歴30件」をQGへ渡さなくなったことは確認できるが、`questionText`やfield descriptionがコード上から削除されたことは確認できない。`基本プロフィール`から「関わった相手」等へ変質した実例は、実行時に実際に送信された `questionDefinition`、provider prompt、responseを保存して初めて判定できる。
+
+Question Generatorは `select_next_question_target()` の後に呼ばれ、selected targetを受け取る（`service.py:1798-1894`, `2669-2905`）。つまりコード上の責務は「何を聞くか」ではなく「選択済みtargetをどう表現するか」に近い。Provider system promptもBackend target/questionDefinitionを仕様とする（`app/api/src/ai_interviewer_api/agents/interview_knowledge/provider.py:618-638`）。
+
+### 8.3 QG streamingの実態
+
+`_generate_question_text()` は callback、flag、provider streamがあり、検索contextが空で、confirmation/candidate targetでない場合にのみ `generate_question_stream()` を選ぶ（`service.py:2820-2885`）。deltaとfirst sentenceのmetricsは記録するが、呼び出し元が `generate_structured_interview_result()` をawaitして最終question textをresultへ組み立てる。
+
+OpenAI coordinatorは `InterviewBridge.process_turn()` の非stream APIを呼ぶ（`coordinator.py:356-365`）。そのためOpenAI経路ではQG deltaをRealtimeへ逐次渡していない。reply text完成後に `_send_backend_reply()` が1回の `response.create`を送る（`coordinator.py:389-458`）。
+
+## 9. Duplicateの根本監査
+
+### 9.1 現在のID変換
+
+```text
+OpenAI call_id
+  ↓ OpenAIRealtimeSession.call_id
+voice_session_id
+  ↓ coordinatorが保持
+OpenAI conversation item_id
+  ↓ clientTurnId = "openai-{item_id}"
+VoiceTurn.id
+  ↓ APIのturn_id
+Frontend message id = "openai-user-{item_id}"
+Assistant response id
+  ↓ response metadata の kikiori_response_id / response_id
+Frontend merge key = voiceResponseId 等
+```
+
+根拠:
+
+* OpenAI sidebandは `_processed_transcript_items: set[str]` をsessionメモリに持ち、`item_id`単位でcompleted eventを一度だけ `_process_turn` task化する（`coordinator.py:69`, `201-221`）。
+* `_process_turn()` は `client_turn_id=f"openai-{item_id}"` としてBridgeへ渡す（`coordinator.py:356-364`）。
+* APIは同一session + clientTurnIdをlock内で検索し、同じtranscript/state versionなら既存VoiceTurnを返す（`voice_interview.py:258-298`）。
+* `COMMITTED`のTurnを再処理せず保存済み結果を返す（`voice_interview.py:566-569`）。
+* Browser completed eventは `openai-user-{item_id}` をUI keyにして一度だけ追加する（`useRealtimeVoiceInterview.ts:187-216`）。Workspace側は `voiceClientTurnId`、`voiceTurnId`、`voiceResponseId`等でmergeする（`useKnowledgeWorkspaceController.ts:1531-1589`）。
+
+### 9.2 1 -> 2になる可能性がある境界
+
+現行コード上、Browser completedが直接Backendを二重送信する構造は確認できない。しかし、以下は別々の防波堤であり、全体で永続Exactly-onceを保証する単一契約ではない。
+
+| 境界 | 現行防止策 | 残る観測上の弱点 |
+|---|---|---|
+| Realtime event -> sideband process | in-memory `item_id` set | session/process restartで失われる |
+| sideband -> VoiceTurn | `openai-{item_id}` clientTurnId + in-process lock | DB schemaにsource item専用unique keyがない |
+| VoiceTurn -> process | lifecycle `COMMITTED` | concurrent process / state conflictはAPIのlock・status依存 |
+| Browser final -> UI | finalized key | metadata/keyが欠ける場合のfallback mergeに依存 |
+| assistant -> UI | response id map + workspace merge | transport/UIの同一性とDB Turn identityは別管理 |
+
+現時点で実E2Eから「completed event数」「_process_turn task数」「保存行数」「UI追加数」を取得していないため、実際の画面の2重表示がどの境界で1->2になったかはコード監査だけでは確定できない。追加したharnessはAPIの同一client ID再利用を確認するが、Browser event回数の測定は別E2E traceが必要である。
+
+## 10. OpenAIの実際のクリティカルパス
+
+### 10.1 Transcript Final -> First Audio
+
+```text
+OpenAI semantic VAD / input audio
+  ↓ sideband event: input_audio_buffer.speech_started / speech_stopped
+conversation.item.input_audio_transcription.completed
+  ↓ coordinator._handle_event():201-221
+_process_turn task生成
+  ↓ coordinator._process_turn():324-349
+initial_taskが存在すれば shield(initial_task) をawait
+  ↓ coordinator.py:337-349
+_turn_lock取得
+  ↓ coordinator.py:350-365
+InterviewBridge.process_turn()
+  ↓ Bridge.process_turn():116-152
+POST /internal/.../turns で save_turn
+  ↓ interview_api.py:178-215
+POST /internal/.../turns/{turn_id}/process
+  ↓ interview_api.py:269-299
+_process_voice_turn()
+  ↓ voice_interview.py:555-617
+TurnをEVALUATINGへ保存、user message保存
+  ↓
+CONTROLなら `_commit_control_turn()`、それ以外は `_process_structured_voice_turn()`
+  ↓ voice_interview.py:591-607
+
+Fast OFF:
+  speculative retrieval開始
+  ↓ full Structured Interpreter
+  ↓ transcript correction / dialogueAct / updates
+  ↓ State apply / completion / next target
+  ↓ RAG future resolve または正式RAG
+  ↓ Question Generator全文完了
+
+Fast ON eligible:
+  Background Structured Future submit
+  ↓ Fast future.result()をawait
+  ↓ provisional next target
+  ↓ target用RAG future resolve
+  ↓ Question Generator全文完了
+  ↓ Backgroundは別Futureで継続
+
+Turn / VoiceSession / assistant message commit
+  ↓
+reply_ready
+  ↓ coordinator._process_turn():386-408
+sideband response.create
+  ↓ coordinator._send_backend_reply():410-458
+response.created
+  ↓
+response.output_audio.delta
+  ↓ coordinator.py:237-244 / Browser DataChannel
+remote audio track -> HTMLAudioElement.play()
+```
+
+Realtimeには `reply_text` が完成するまで `response.create` を送らない。`response.create`の `input` に `reply_text` を埋め込み、instructionsで内容変更・追加を禁止している（`coordinator.py:430-457`）。`conversation.item.create`はこの経路では送っていない。RealtimeはBackendが決めた文を音声化する役割に近いが、Realtimeモデルが完全逐語であることをBackend側で検証しているわけではない。
+
+### 10.2 主要await一覧
+
+Transcript FinalからOpenAI First Audioまでの主な直列awaitは次のとおり。
+
+1. `coordinator.py:341` — `await asyncio.shield(initial_task)`。初回reply taskが存在する場合だけ、初回reply送信完了を待つ。
+2. `coordinator.py:350` — `async with self._turn_lock`。前の初回/Turn処理がlockを保持していれば待つ。
+3. `interview_bridge.py:138` — `await self.save_turn(...)`。VoiceTurn保存の内部HTTP。
+4. `interview_bridge.py:149` — `await self.process_saved_turn(...)`。process endpointのHTTP。
+5. `voice_interview.py:578-589` — Turn lifecycle保存、record/user message/state snapshot読み込み。
+6. Fast ONの場合 `service.py:498` — `fast_future.result()`。Fast providerの完了を待つ（ThreadPool futureだが呼び出し元は同期関数）。
+7. Fast ONの場合 `service.py:605-629` -> `_generate_question_text():2723-2779` — speculative RAG futureの `resolve()`。final queryと一致しない場合は正式Retrievalもこの区間で行う。
+8. Full/Fast共通 `service.py:2856-2885` — Question Generator streamまたはnon-stream providerの完了。OpenAI coordinatorではon-delta callbackを渡さないため、最終文字列完了待ちになる。
+9. `voice_interview.py:625-904` — State/Turn/assistant messageのcommitとprocess result構築。
+10. `coordinator.py:401-408` — `_send_backend_reply()`、さらに `coordinator.py:460-467` の `_send_lock`でsideband送信を待つ。
+11. OpenAI側の `response.output_audio.delta` 到着 — `coordinator.py:237-244` がfirst audioを記録し、Browser側remote audio trackが再生する。
+
+`background_future`はこのawait chainに含まれない。Fast ONのforegroundはBackground Structured完了をawaitしないが、Background callbackが後でState/sessionを更新するため、処理の正本が時系列で一つではない。
+
+### 10.3 OpenAI create_task一覧
+
+| 作成箇所 | task | 実効性 |
+|---|---|---|
+| `OpenAIRealtimeSession.start()` 78-94 | `_run_sideband()`、`_expire_after_limit()` | sidebandとexpiryは並行 |
+| `_handle_event()` 172-185 | `_send_initial_reply()` | sideband event loopと初回reply処理が別task。ただしTurn側がinitial taskをawaitする |
+| `_handle_event()` 201-221 | `_process_turn()` | event loopとTurn処理が並行。Turn内部はlockで直列化 |
+| `start_fast_interview_turn()` 423-482 | Background validation Future | Fast providerとBackground providerを重ねる。Backgroundは直後awaitされない |
+| `start_fast_interview_turn()` 493-516 | Fast provider Future | `.result()`でFastだけforeground待ち |
+| `start_fast_interview_turn()` 601-615 | speculative Retrieval Future | target確定後に作られ、QGがresolveで待つ |
+| Transcribe `start()` 237-267 | Transcribe start、state load、endpoint loop | Transcribe startとstate loadは同時開始だが、start完了後state loadをawait |
+| Transcribe `_finalize_user_turn()` 729-739 | `_process_interview_turn()` | audio runtimeをblockせず処理開始。ただし内部Bridgeをawait |
+| Transcribe `_process_interview_turn()` 801-837 | `_play_streaming_formal_reply()` | API streamを読みながらPollyへdeltaを流す。これはTranscribe経路のみ |
+| Nova `ToolTurnCoordinator` 114-166 | `process_interview_bridge_turn()`、forced tool task | transcript/tool条件後にBridgeをtask化。tool結果送信では必要に応じてawait |
+
+`asyncio.create_task()` の存在だけでOpenAIのRAG/QGが並列になっているわけではない。OpenAIはBridgeの非stream processをawaitし、API内でQuestion Generator全文完了までresultを返さず、完了後にRealtimeへ一回だけ送っている。
+
+## 11. Realtimeの責務とイベント
+
+### Browser WebRTC / DataChannel
+
+`openaiRealtimePeerConnection.ts:25-126` がBrowserのRTCPeerConnection、microphone track、remote audio element、DataChannel `oai-events`を管理する。DataChannelで受けたJSONはhookへ渡す。Browserは次を扱う。
+
+* `conversation.item.input_audio_transcription.delta` -> partial transcript UI（`useRealtimeVoiceInterview.ts:178-185`）
+* `conversation.item.input_audio_transcription.completed` -> final User UI messageのみ（同:187-216）
+* `response.output_audio_transcript.delta` -> assistant streaming UI message（同:231-248）
+* `response.output_audio_transcript.done` -> assistant final UI message（同:265-276）
+* `response.output_audio.delta` -> speaking状態 / Browser first-audio log（同:250-263）
+* `response.created`, `response.done`, cancel/error -> UI status（同:218-323）
+
+Browserはsidebandへ `response.create`を送らない。Backendのreply送信はsidebandのみである。
+
+### app/voice sideband
+
+`coordinator.py:116-285` はsideband WebSocketから同じRealtime Sessionのeventを監視する。
+
+* `session.created` -> `session.update`送信、初回reply task作成
+* `input_audio_buffer.speech_started` -> active response時に `response.cancel` と `output_audio_buffer.clear`
+* `speech_stopped` -> speech end metric
+* `conversation.item.input_audio_transcription.completed` -> dedupe、`_process_turn` task
+* `response.created` / `response.output_audio.delta` / done -> server-side timeline/usage
+* `_send_backend_reply()` -> `response.create`
+
+同じRealtime eventをBrowserとsidebandがそれぞれ受けるが、Browser側はUI、sideband側はBackend processという責務分離である。
+
+## 12. Disconnect / session寿命の現在実装
+
+今回の現行アルゴリズム監査では、次のcleanup経路も会話制御の境界として確認した。
+
+* Browser hookの `stop()` は `peerRef.current?.stop()` と `DELETE /voice/webrtc/{id}` を呼ぶ（`useRealtimeVoiceInterview.ts:115-130`、API client `realtimeVoiceClient.ts:128-139`）。
+* component cleanupは `stop("component_unmounted")`、beforeunloadは `deleteVoicePeerConnection(...,"browser_unload",...)`（`useRealtimeVoiceInterview.ts:707-721`）。
+* start失敗時もpeer停止後にDELETEする（同:677-701）。
+* DELETE endpointは `coordinator.close(reason)`、registry removal、peer closeを実行する（`app/voice/src/ai_interviewer_voice/routers/webrtc.py:192-204`）。
+* OpenAI session `close()` はturn/initial/run/expiry taskをcancelし、`_finish()` がhangup、usage persistence、registry callbackを行う（`coordinator.py:100-114, 481-540`）。
+* Interview APIエラー時、OpenAI `_process_turn()` は `close(reason="interview_api_failed")` または `interview_processing_failed` を呼ぶ（`coordinator.py:366-384`）。
+
+従って、マイクtrack停止、Browser cleanup、voice DELETE、sideband close、OpenAI hangupは同じではない。Browser hookのunmount/ページ離脱はSession終了まで連鎖するが、通常のRealtime transcript completedだけではcleanupしない。Backend processing中にSessionを維持する設計上の入口は存在する一方、Interview API例外、明示stop、component unmount、expiryでは終了する。
+
+## 13. 現在の設定値（コード既定値）
+
+Secretや実環境の値は記載しない。以下は設定コードのdefaultである。
+
+| 設定 | 現行値 / default | 根拠 |
+|---|---|---|
+| `STRUCTURED_INTERVIEW_FAST_PATH_ENABLED` | `false` | `app/api/.../core/config.py:72-75` |
+| Fast model | `global.openai.gpt-5.6-luna` | 同:76-79 |
+| Fast reasoning | `none` | 同:80-83 |
+| Fast max output | `160` | 同:84-86 |
+| Structured reasoning | `low` | 同:93-96 |
+| QG reasoning | `none` | 同:97-100 |
+| Structured medium retry | `medium` | 同:101-104 |
+| Structured max output | `6000` | 同:105-107 |
+| QG max output | `600` | 同:108-110 |
+| QG streaming | `true` | 同:111-114 |
+| OpenAI Realtime model | `gpt-realtime-2` | `app/voice/.../openai_realtime/config.py:39-50` |
+| OpenAI turn detection | `semantic_vad`, eagerness `low`, create_response `false`, interrupt_response `false` | `config.py:80-122` |
+| OpenAI output | `audio`、`parallel_tool_calls=false` | `config.py:80-122`, `coordinator.py:430-457` |
+| common voice default provider | Backend voice config `VOICE_RUNTIME_PROVIDER` は `transcribe_polly`、Frontend fallbackも同じ | `app/voice/src/ai_interviewer_voice/config.py:10-16`、`app/web/src/features/realtime-voice/api/realtimeVoiceClient.ts:4-6` |
+
+## 14. Characterization Testの使い方
+
+現在のprovider-independent testは、Text/音声transportを呼ばず、固定されたrecord/knowledge/fields/stateに対して既存Structured serviceを観測する。
+
+```bash
+cd app/api
+UV_CACHE_DIR=/tmp/ai-interviewer-test-cache uv run pytest \
+  tests/characterization/test_conversation_algorithm_characterization.py -q
+```
+
+追加したharnessで、同じStateに対して次のJSONを比較できる。
+
+* 正常回答: `structuredDialogueAct=ANSWER`、`nextTarget=field-work`
+* Confirmation: `stateBefore.fieldStates.field-profile.answerState=AWAITING_CONFIRMATION` -> `stateAfter...=CONFIRMED`
+* Clarification / rejection / hesitation / correction: `action`、current target、State projection
+* Duplicate identity: source item `realtime-item-001` -> `clientTurnId=openai-realtime-item-001` -> stored VoiceTurn 1件
+
+今後Fast ON/OFFを比較する場合は、production settingをテスト全体へ漏らさず、Fast providerを注入できるcharacterization caseを追加する必要がある。現行harnessはFull Structuredを観測するものであり、Fast ONのThreadPoolタイミングそのものを模擬してはいない。
+
+## 15. 提案するCanonical Algorithm（実装前仕様）
+
+現行コードとのGapを確認した上で、次の順序を単一の正本として採用するのが妥当である。ここは設計案であり、まだproduction codeへ追加していない。
+
+```text
+Provider raw input
+  ↓
+Canonical User Turn Creation
+  - provider source idを保存
+  - voice_session_id + source idからcanonical_turn_idを決める
+  ↓
+Durable Turn Deduplication
+  - duplicateなら既存Canonical Turn / resultを返す
+  ↓
+One Conversation Interpretation
+  - 既存 StructuredDialogueAct を正規のintent型として再利用
+  - ANSWER / QUESTION_TO_ASSISTANT / CLARIFICATION_REQUEST /
+    CONFIRMATION / REJECTION / CORRECTION / HESITATION等
+  ↓
+Backend Conversation Policy
+  - intentをCanonical Actionへ一度だけ変換
+  - PROCESS_ANSWER / EXPLAIN_CURRENT_QUESTION /
+    CONFIRM_PENDING_CANDIDATE / REJECT_PENDING_CANDIDATE /
+    APPLY_CORRECTION / WAIT_FOR_USER / REPEAT_CURRENT_QUESTION等
+  ↓
+Action-specific Processing
+  - ANSWERだけFast Answer Checkを許可
+  - 非ANSWERはFast Answer Checkへ入れない
+  ↓
+One State Transition
+  - coordinatorがStateを一度だけcommit
+  - Background検証は同じversion/turnのreconciliationとして扱う
+  ↓
+One Next Target Selection
+  - coordinatorがtarget definitionまで確定
+  ↓
+Question Rendering
+  - canonical question / description / required itemsを保持
+  - LLMは表現だけを担当
+  ↓
+Provider Output
+```
+
+### 15.1 Router型について
+
+既存 `StructuredDialogueAct` はすでに必要な分類値を持つ（`schemas.py:27-39`）。したがって、まず新しい似たenumを追加せず、既存型をCanonical User Intentとして再利用できるかを設計判断する。`VoiceTurnIntentOutput` の `ANSWER` / `CONTROL` は粗すぎるため、最終正本にする場合は既存dialogueActとの関係を先に決める必要がある。
+
+### 15.2 Fastの位置
+
+```text
+Canonical dialogueAct
+  ├─ ANSWER -> Fast Answer Check -> provisional advance
+  ├─ QUESTION_TO_ASSISTANT / CLARIFICATION_REQUEST -> explain current definition
+  ├─ CONFIRMATION -> confirm pending candidate
+  ├─ REJECTION -> reject pending candidate
+  ├─ CORRECTION -> apply/stage correction
+  └─ HESITATION / CONTROL / OTHER -> wait or current target
+```
+
+Fast schemaに会話制御値を無制限に追加して第二のStructured Interpreterを作らない。分類を一度行い、その分類に応じてFastが呼ばれる構造にする。
+
+### 15.3 Initial Question
+
+初回は特殊な独自Policyを持つのではなく、`READY_TO_START`相当のStateから `ASK_CURRENT_TARGET` Actionを生成し、通常のQuestion Rendererへ流す。Realtimeのsession.createdはtransport eventであり、初回質問の内容やState遷移の正本にはしない。
+
+## 16. Gap Analysis
+
+| Requirement | Current implementation | Problem | Severity | Affected providers | Proposed owner |
+|---|---|---|---|---|---|
+| 1 Turn -> 1 canonical identity | OpenAI item set + clientTurnId、API reuse、UI keyが別々 | durableなsource id unique contractがない | Critical | 全Voice、特にOpenAI | `app/api` Canonical Turn repository |
+| 1 intentの正本 | OpenAI固定ANSWER、Voice 2値分類、Full dialogueAct、Fast Boolean | intent/actionが複数箇所で別表現 | Critical | Voice全体 | app/api Conversation Policy |
+| Stateを1 writerへ集約 | Fast foreground provisional + Background reconciliation | 後から別State writerが動く | Critical | Voice Fast ON | app/api versioned reconciliation |
+| Confirmationの単一遷移 | Fullにはsynthetic confirmation -> `_confirm_target()`がある | current target / entry typeに依存し、Provider共通契約でない | Critical | Voice全体 | Canonical Action |
+| clarificationの単一経路 | Fullにはhelp分岐、FastはBoolean、OpenAIはANSWER固定 | 聞き返しが回答不足へ縮退し得る | Critical | Voice全体 | Canonical dialogueAct + Action |
+| Initial questionの共通Policy | session作成、OpenAI session.createdが別経路 | 初回未提示・Turn競合を追いにくい | High | Voice全体 | app/api Policy + renderer |
+| Provider非依存Turn contract | providerごとにendpoint/event/turn typeが異なる | Conversation Policyが入口の都合を受ける | High | 全Provider | adapter -> Canonical Turn |
+| QGがdefinitionを厳守 | 現行inputにはoriginalQuestion/description/itemsあり | 実prompt/responseの観測が不足。LLM逸脱の検出契約がない | High | Text/Voice | backend renderer/validator |
+| QG全文待ちを避ける | Internal streamはあるがOpenAIはnon-stream Bridge | OpenAI First Audioはreply全文後 | High | OpenAI | later streaming boundary |
+| Background resultのState整合 | callbackでturn/sessionを後更新 | foreground replyと後続Stateのversion/ownershipが曖昧 | High | Voice Fast ON | same turn/version reconciliation |
+| `CONTROL`のdialogueAct | API 2値分類後 `_commit_control_turn()` | clarification/rejection等と異なる制御語彙 | Medium | Text/Voice caller dependent | Canonical Action |
+| UIとBackendのID統合 | frontend merge keyとVoiceTurn client ID | UI duplicateとBackend duplicateを同一契約で追えない | Medium | 全Voice | Canonical IDs |
+| Text SSEの文分割 | newline + artificial delay | 音声ではないが出力境界がProviderごとに異なる | Low | Text | output adapter |
+
+## 17. 実装計画（まだ実装していない）
+
+依存関係順は次のとおり。
+
+1. characterization / State Traceを拡張し、全Caseの入力、State、output、IDsをfixture化する。
+2. Provider source IDからCanonical User Turn IDを生成し、API側でdurable dedupeする。
+3. 既存 `StructuredDialogueAct` を再利用できるか決め、Canonical Action mappingを定義する。
+4. Conversation Routerをapp/apiのPolicy境界へ追加する。Provider runtimeにRouterを複製しない。
+5. State transitionとnext target selectionをAction単位で一度だけ実行する。
+6. Initial Questionを同じQuestion Renderer/Policy契約へ接続する。
+7. Question definitionをimmutableなtarget contractとして分離し、canonical questionがある場合のrender規則を固定する。
+8. Fast Pathを `ANSWER` Actionの後だけへ再接続し、Fast foregroundとBackground reconciliationのversion契約を追加する。
+9. Provider adapterを通じてText/Transcribe/Nova/OpenAIの入力境界をCanonical Turnへ揃える。
+10. 最後にBrowser/sideband/Polly/NovaのE2Eで、同じCanonical Turn IDとActionを追跡する。
+
+この順番が終わるまで、`needs_question_explanation`等を個別に増やしてFastを第二のdialogue classifierにしない。
+
+## 18. 調査上の未確定事項
+
+次はコードだけでは実値を確定できず、実行traceが必要である。
+
+* 実際の1発話に対するOpenAI `completed` eventの受信回数。
+* Browser final callback回数、sideband `_process_turn` task回数、API保存行数、UI message追加回数の1:1対応。
+* Case Aで「大丈夫です。」が同じtargetへ戻る実行時の `stateBefore/stateAfter/stateVersion`。
+* Question Generatorへ実際に渡ったserialized promptと、LLMが返した質問の逸脱分類。
+* Fast ON時の各dialogueActに対する実際のFast provider outputとBackground outputの一致率。
+* `VoiceSession`の実環境provider default値。コードfactoryの対応とenv実値は別なので、secretを含まない設定ダンプが必要。
+
+これらは推測で埋めず、次のE2E/structured loggingで同一 `voice_session_id`、Canonical Turn ID、OpenAI item idを出力して確認する。
+
+## 19. 参照した主要コード
+
+* `app/api/src/ai_interviewer_api/services/voice_interview.py`
+* `app/api/src/ai_interviewer_api/agents/interview_knowledge/service.py`
+* `app/api/src/ai_interviewer_api/agents/interview_knowledge/coordinator.py`
+* `app/api/src/ai_interviewer_api/agents/interview_knowledge/schemas.py`
+* `app/api/src/ai_interviewer_api/agents/interview_knowledge/fast_interpreter/schemas.py`
+* `app/api/src/ai_interviewer_api/core/config.py`
+* `app/voice/src/ai_interviewer_voice/services/interview_bridge.py`
+* `app/voice/src/ai_interviewer_voice/clients/interview_api.py`
+* `app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/coordinator.py`
+* `app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/client.py`
+* `app/voice/src/ai_interviewer_voice/routers/webrtc.py`
+* `app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py`
+* `app/voice/src/ai_interviewer_voice/runtimes/nova_sonic/tool_turn_coordinator.py`
+* `app/voice/src/ai_interviewer_voice/services/runtime_factory.py`
+* `app/web/src/features/realtime-voice/hooks/useRealtimeVoiceInterview.ts`
+* `app/web/src/features/realtime-voice/webrtc/openaiRealtimePeerConnection.ts`
+* `app/web/src/features/realtime-voice/api/realtimeVoiceClient.ts`
+* `app/web/src/routes/useKnowledgeWorkspaceController.ts`
+* `app/api/tests/characterization/conversation_algorithm_harness.py`
+* `app/api/tests/characterization/test_conversation_algorithm_characterization.py`

@@ -181,7 +181,7 @@ class InterviewApiClient:
         *,
         transcript: str,
         answer_to_question_id: str | None,
-        turn_type: str = "ANSWER",
+        turn_type: str | None = None,
         client_turn_id: str | None = None,
         expected_state_version: int | None = None,
         started_at_ms: int | None = None,
@@ -189,21 +189,23 @@ class InterviewApiClient:
         stt_confidence: float | None = None,
         timeout_seconds: float = 5.0,
     ) -> VoiceTurnSaveResult:
+        payload = {
+            "transcript": transcript,
+            "answerToQuestionId": answer_to_question_id,
+            "clientTurnId": client_turn_id,
+            "expectedStateVersion": expected_state_version,
+            "startedAtMs": started_at_ms,
+            "endedAtMs": ended_at_ms,
+            "sttConfidence": stt_confidence,
+        }
+        if turn_type is not None:
+            payload["turnType"] = turn_type
         async with self._client() as client:
             response = await self._request(
                 client,
                 "POST",
                 f"/internal/voice-sessions/{voice_session_id}/turns",
-                json={
-                    "transcript": transcript,
-                    "turnType": turn_type,
-                    "answerToQuestionId": answer_to_question_id,
-                    "clientTurnId": client_turn_id,
-                    "expectedStateVersion": expected_state_version,
-                    "startedAtMs": started_at_ms,
-                    "endedAtMs": ended_at_ms,
-                    "sttConfidence": stt_confidence,
-                },
+                json=payload,
                 timeout_seconds=timeout_seconds,
                 failure_code="turn_save_failed",
             )

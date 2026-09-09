@@ -8,6 +8,8 @@ class FastAnswerAssessment(BaseModel):
 
     This contract intentionally contains no extracted answer, confirmation,
     state transition, process, contradiction, or target-selection fields.
+    ``needsQuestionExplanation`` is retained for compatibility with older
+    provider responses, but canonical intent routing no longer reads it.
     """
 
     model_config = ConfigDict(extra="forbid")

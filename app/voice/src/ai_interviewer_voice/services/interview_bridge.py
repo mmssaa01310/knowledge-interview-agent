@@ -119,22 +119,13 @@ class InterviewBridge:
         voice_session_id: str,
         transcript: str,
         answer_to_question_id: str | None,
-        turn_type: str | None = "ANSWER",
+        turn_type: str | None = None,
         expected_state_version: int | None = None,
         client_turn_id: str | None = None,
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
         stt_confidence: float | None = None,
     ) -> InterviewBridgeResult:
-        if turn_type is None:
-            intent = await self._client.classify_voice_turn_intent(
-                voice_session_id,
-                transcript=transcript,
-                answer_to_question_id=answer_to_question_id,
-                expected_state_version=expected_state_version,
-                timeout_seconds=self._turn_save_timeout_seconds,
-            )
-            turn_type = intent.turn_type
         save_result = await self.save_turn(
             voice_session_id,
             transcript=transcript,
@@ -157,7 +148,7 @@ class InterviewBridge:
         *,
         transcript: str,
         answer_to_question_id: str | None,
-        turn_type: str = "ANSWER",
+        turn_type: str | None = None,
         expected_state_version: int | None = None,
         client_turn_id: str | None = None,
         started_at_ms: int | None = None,
@@ -183,7 +174,7 @@ class InterviewBridge:
         voice_session_id: str,
         transcript: str,
         answer_to_question_id: str | None,
-        turn_type: str = "ANSWER",
+        turn_type: str | None = None,
         expected_state_version: int | None = None,
         client_turn_id: str | None = None,
         started_at_ms: int | None = None,

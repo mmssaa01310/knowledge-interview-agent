@@ -53,6 +53,7 @@ from ai_interviewer_api.schemas.voice import (
     VoiceTurnIntentCreate,
 )
 from ai_interviewer_api.services import voice_interview as voice_interview_service
+from ai_interviewer_api.services.conversation_policy import CanonicalIntentDecision
 
 
 class FakeStructuredProvider:
@@ -173,6 +174,31 @@ def stub_structured_provider(monkeypatch: pytest.MonkeyPatch) -> FakeStructuredP
     return provider
 
 
+@pytest.fixture(autouse=True)
+def stub_canonical_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    def resolve(*, utterance: str, pending_confirmation: bool, **_: object) -> CanonicalIntentDecision:
+        normalized = utterance.strip()
+        if pending_confirmation and normalized in {"はい", "大丈夫です。", "大丈夫です", "合っています"}:
+            dialogue_act = "CONFIRMATION"
+        elif pending_confirmation and normalized in {"違います。", "違います", "いいえ"}:
+            dialogue_act = "REJECTION"
+        elif any(token in normalized for token in ("どの範囲", "何を聞", "どういう意味")):
+            dialogue_act = "QUESTION_TO_ASSISTANT"
+        elif any(token in normalized for token in ("えーっと", "えっと", "ちょっと待")):
+            dialogue_act = "HESITATION"
+        elif normalized.startswith(("訂正", "違う", "間違")):
+            dialogue_act = "CORRECTION"
+        else:
+            dialogue_act = "ANSWER"
+        return CanonicalIntentDecision(
+            dialogueAct=dialogue_act,
+            latency_ms=0.1,
+            provider="test",
+        )
+
+    monkeypatch.setattr(voice_interview_service, "resolve_canonical_intent", resolve)
+
+
 def _create_record_with_fields(user: UserContext, fields: list[tuple[str, str]]) -> dict:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="voice db"), user)
     knowledge = create_knowledge(
@@ -239,6 +265,41 @@ def _create_record_with_field(user: UserContext, *, interview_locale: str | None
     )
 
 
+def _set_pending_voice_field_candidate(record_id: str, candidate: str) -> None:
+    state = store.get("interview_states", f"interview-state-{record_id}")
+    assert state is not None
+    question_id = state["currentQuestionId"]
+    question = next(
+        item for item in state["askedQuestions"] if item["questionId"] == question_id
+    )
+    field_id = question["fieldId"]
+    field_state = state["fieldStates"][field_id]
+    required_items = field_state["questionPlan"]["requiredItems"]
+    candidate_items = [
+        {
+            "itemId": item["itemId"],
+            "value": candidate,
+            "evidenceTranscriptIds": ["candidate-message"],
+        }
+        for item in required_items
+    ]
+    field_state.update(
+        {
+            "answerState": "AWAITING_CONFIRMATION",
+            "answerResolution": "CONFIRM_REQUIRED",
+            "status": "asking",
+            "candidateAnswer": candidate,
+            "candidateSource": "user_statement",
+            "candidateItems": candidate_items,
+            "capturedItems": candidate_items,
+            "capturedItemIds": [item["itemId"] for item in candidate_items],
+            "missingRequiredItemIds": [],
+        }
+    )
+    state["lastTentativeTarget"] = {"targetType": "field", "targetId": field_id}
+    store.upsert("interview_states", state)
+
+
 def test_create_get_stop_and_atomically_claim_initial_reply() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
@@ -302,11 +363,18 @@ def test_initial_question_is_not_saved_before_it_is_spoken() -> None:
     assert [row for row in store.list("messages", user.tenant_id) if row.get("recordId") == record["id"]] == []
 
 
-def test_voice_turn_uses_structured_interpreter_and_advances_once() -> None:
+def test_voice_turn_uses_structured_interpreter_and_advances_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_fields(user, [("氏名", "short_text"), ("担当", "short_text")])
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     mark_internal_initial_reply_sent(session["id"])
+    monkeypatch.setattr(
+        voice_interview_service,
+        "settings",
+        replace(voice_interview_service.settings, structured_interview_fast_path_enabled=False),
+    )
     turn = create_internal_voice_turn(
         session["id"],
         VoiceTurnCreate(transcript="山田です。", sttConfidence=0.96),
@@ -321,6 +389,9 @@ def test_voice_turn_uses_structured_interpreter_and_advances_once() -> None:
     assert state["fieldStates"][first_field_id]["answerState"] == "CONFIRMED"
     assert state["fieldStates"][first_field_id]["recordAnswer"] == "山田"
     assert store.get("voice_turns", turn["id"])["processingMode"] == "structured_interpretation"
+    assert result["voiceTurn"]["canonicalIntent"] == "ANSWER"
+    assert result["voiceTurn"]["canonicalAction"] == "PROCESS_ANSWER"
+    assert result["voiceTurn"]["fastCheckExecuted"] is False
 
 
 def test_voice_fast_path_commits_provisional_next_question_before_background_finishes(
@@ -358,6 +429,9 @@ def test_voice_fast_path_commits_provisional_next_question_before_background_fin
     assert result["questionId"] == "q-002"
     assert result["voiceTurn"]["fastCanProceed"] is True
     assert result["voiceTurn"]["fastAssessment"]["minimumInformationPresent"] is True
+    assert result["voiceTurn"]["canonicalIntent"] == "ANSWER"
+    assert result["voiceTurn"]["canonicalAction"] == "PROCESS_ANSWER"
+    assert result["voiceTurn"]["fastCheckExecuted"] is True
     persisted_session = voice_interview_service.get_internal_voice_session(session["id"])
     persisted_state = store.get("interview_states", f"interview-state-{record['id']}")
     assert persisted_state is not None
@@ -515,6 +589,13 @@ def test_corrected_transcript_is_confirmed_before_field_commit() -> None:
         confirmation_result = process_internal_voice_turn(session["id"], confirmation["id"])
         assert confirmation_result["action"] == "ask_structured"
         assert confirmation_result["voiceTurn"]["questionId"] is not None
+        assert confirmation_result["voiceTurn"]["canonicalIntent"] == "CONFIRMATION"
+        assert confirmation_result["voiceTurn"]["canonicalAction"] == "CONFIRM_PENDING_CANDIDATE"
+        assert confirmation_result["voiceTurn"]["fastCheckExecuted"] is False
+        confirmation_state = store.get("interview_states", f"interview-state-{record['id']}")
+        assert confirmation_state is not None
+        assert confirmation_state["fieldStates"][field_id]["answerState"] == "CONFIRMED"
+        assert confirmation_state["currentQuestionId"] != confirmation["answerToQuestionId"]
         closing = create_internal_voice_turn(
             session["id"],
             VoiceTurnCreate(
@@ -529,6 +610,69 @@ def test_corrected_transcript_is_confirmed_before_field_commit() -> None:
         assert state["fieldStates"][field_id]["recordAnswer"] == "実装から運用後の改善まで関わっています"
     finally:
         monkeypatch.undo()
+
+
+def test_canonical_rejection_rejects_candidate_without_running_fast_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    _set_pending_voice_field_candidate(record["id"], "候補の回答")
+    monkeypatch.setattr(
+        voice_interview_service,
+        "settings",
+        replace(voice_interview_service.settings, structured_interview_fast_path_enabled=True),
+    )
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="違います。"),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    stored_turn = store.get("voice_turns", turn["id"])
+
+    assert result["voiceTurn"]["canonicalIntent"] == "REJECTION"
+    assert result["voiceTurn"]["canonicalAction"] == "REJECT_PENDING_CANDIDATE"
+    assert result["voiceTurn"]["fastCheckExecuted"] is False
+    assert state["fieldStates"][turn["answerToFieldId"]]["answerState"] == "UNANSWERED"
+    assert state["fieldStates"][turn["answerToFieldId"]]["candidateAnswer"] is None
+    assert stored_turn["canonicalAction"] == "REJECT_PENDING_CANDIDATE"
+
+
+def test_canonical_clarification_keeps_target_and_skips_fast_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    monkeypatch.setattr(
+        voice_interview_service,
+        "settings",
+        replace(voice_interview_service.settings, structured_interview_fast_path_enabled=True),
+    )
+
+    class UnexpectedFastProvider:
+        def assess(self, **_: object) -> FastAnswerAssessment:
+            raise AssertionError("clarification must not enter Fast Answer Check")
+
+    monkeypatch.setattr(structured_service, "BedrockFastInterpreterProvider", UnexpectedFastProvider)
+    before = voice_interview_service.get_internal_voice_session(session["id"])
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="担当領域ってどの範囲のこと？"),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+
+    assert result["voiceTurn"]["canonicalIntent"] == "QUESTION_TO_ASSISTANT"
+    assert result["voiceTurn"]["canonicalAction"] == "EXPLAIN_CURRENT_QUESTION"
+    assert result["voiceTurn"]["fastCheckExecuted"] is False
+    assert result["questionId"] == before["currentQuestionId"]
+    assert "この質問では" in result["text"]
 
 
 def test_no_answer_gets_one_neutral_probe_then_advances() -> None:
@@ -665,16 +809,59 @@ def test_control_turn_keeps_current_question_without_answer_scope() -> None:
     assert stored_turn["answerToFieldId"] is None
 
 
-def test_voice_turn_intent_classification_uses_structured_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_canonical_control_intent_is_applied_before_message_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    monkeypatch.setattr(
+        voice_interview_service,
+        "resolve_canonical_intent",
+        lambda **_: CanonicalIntentDecision(
+            dialogueAct="CONVERSATION_REQUEST",
+            latency_ms=0.1,
+            provider="test",
+        ),
+    )
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="インタビューを一時停止してください"),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    stored_turn = store.get("voice_turns", turn["id"])
+    user_messages = [
+        row
+        for row in store.list("messages", user.tenant_id)
+        if row.get("voiceTurnId") == turn["id"] and row.get("role") == "user"
+    ]
+
+    assert result["voiceTurn"]["canonicalIntent"] == "CONVERSATION_REQUEST"
+    assert result["voiceTurn"]["canonicalAction"] == "HANDLE_CONTROL"
+    assert stored_turn["turnType"] == "CONTROL"
+    assert stored_turn["answerToQuestionId"] is None
+    assert len(user_messages) == 1
+    assert user_messages[0]["turnType"] == "CONTROL"
+
+
+def test_legacy_voice_turn_intent_response_uses_canonical_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
 
-    class IntentProvider:
-        def request_structured_output(self, **_: object) -> dict[str, str]:
-            return {"turnType": "CONTROL"}
-
-    monkeypatch.setattr(voice_interview_service, "BedrockResponsesStructuredProvider", IntentProvider)
+    monkeypatch.setattr(
+        voice_interview_service,
+        "resolve_canonical_intent",
+        lambda **_: CanonicalIntentDecision(
+            dialogueAct="CONVERSATION_REQUEST",
+            latency_ms=0.1,
+            provider="test",
+        ),
+    )
 
     result = classify_internal_voice_turn_intent(
         session["id"],

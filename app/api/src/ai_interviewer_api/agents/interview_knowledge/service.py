@@ -49,6 +49,8 @@ from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.service impo
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     InterviewProfile,
+    ProcessPatch,
+    StructuredDialogueAct,
     StructuredInterviewOutput,
 )
 from ai_interviewer_api.auth.deps import UserContext
@@ -80,6 +82,7 @@ from ai_interviewer_api.schemas.retrieval import (
 from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
 )
+from ai_interviewer_api.services.conversation_policy import CanonicalAction
 from ai_interviewer_api.services.interview_document_retrieval import (
     MAX_INTERVIEW_DOCUMENT_CONTEXT,
     SpeculativeInterviewRetrieval,
@@ -286,6 +289,8 @@ def generate_structured_interview_result(
     persist_assistant_messages: bool = True,
     provider: StructuredInterviewProvider | None = None,
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
+    canonical_intent: StructuredDialogueAct | None = None,
+    canonical_action: CanonicalAction | None = None,
     on_question_delta: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Run one record's Structured Interview turn serially.
@@ -305,6 +310,8 @@ def generate_structured_interview_result(
             persist_assistant_messages=persist_assistant_messages,
             provider=provider,
             speculative_retrieval=speculative_retrieval,
+            canonical_intent=canonical_intent,
+            canonical_action=canonical_action,
             on_question_delta=on_question_delta,
             defer_question_generation=False,
         )
@@ -323,6 +330,8 @@ def _generate_structured_interview_result_locked(
     persist_assistant_messages: bool,
     provider: StructuredInterviewProvider | None,
     speculative_retrieval: SpeculativeInterviewRetrieval | None,
+    canonical_intent: StructuredDialogueAct | None = None,
+    canonical_action: CanonicalAction | None = None,
     on_question_delta: Callable[[str], None] | None,
     defer_question_generation: bool,
 ) -> dict[str, Any]:
@@ -336,6 +345,8 @@ def _generate_structured_interview_result_locked(
         provider=provider,
         latency_metrics=latency_metrics,
         speculative_retrieval=speculative_retrieval,
+        canonical_intent=canonical_intent,
+        canonical_action=canonical_action,
         on_question_delta=on_question_delta,
         defer_question_generation=defer_question_generation,
     )
@@ -511,8 +522,11 @@ def start_fast_interview_turn(
         )
     fast_elapsed_ms = _elapsed_ms(fast_started_at)
     fast_finished_ms = int(time() * 1000)
-    needs_question_explanation = bool(assessment.needsQuestionExplanation)
-    fast_can_proceed = can_proceed(assessment) and not needs_question_explanation
+    # Intent classification is owned by the canonical Conversation Policy.
+    # Keep the legacy field on the Fast schema for wire compatibility, but do
+    # not let it route a turn or block the answer-only gate.
+    needs_question_explanation = False
+    fast_can_proceed = can_proceed(assessment)
     join.set_fast_result(fast_can_proceed)
     logger.info(
         "fast_interpreter_end record_id=%s source_turn_id=%s latency_ms=%s fast_can_proceed=%s needs_question_explanation=%s",
@@ -534,20 +548,7 @@ def start_fast_interview_turn(
     if not fast_can_proceed:
         join.set_provisional_question(None)
         locale = resolve_interview_locale(record, knowledge)
-        if needs_question_explanation:
-            reply = localized_interview_question_help(
-                locale,
-                str(
-                    current_question.get("targetLabel")
-                    or current_question.get("label")
-                    or question_definition.get("title")
-                    or "この項目"
-                ),
-                question_text=question_definition.get("originalQuestion"),
-                description=question_definition.get("description"),
-                required_items=question_definition.get("requiredItems") or [],
-            )
-        elif assessment.clearlyIncomplete:
+        if assessment.clearlyIncomplete:
             reply = localized_interview_incomplete_prompt(locale)
         else:
             reply = localized_interview_unanswerable_prompt(
@@ -1174,6 +1175,8 @@ def _generate_structured_interview_result(
     provider: StructuredInterviewProvider | None = None,
     latency_metrics: dict[str, float] | None = None,
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
+    canonical_intent: StructuredDialogueAct | None = None,
+    canonical_action: CanonicalAction | None = None,
     on_question_delta: Callable[[str], None] | None = None,
     defer_question_generation: bool = False,
 ) -> dict[str, Any]:
@@ -1393,6 +1396,81 @@ def _generate_structured_interview_result(
                     current_question=current_question,
                     reply=localized_interview_transcript_retry(interview_locale),
                 )
+            if canonical_intent is not None:
+                actual_dialogue_act = output.dialogueAct
+                state["lastCanonicalIntent"] = canonical_intent
+                state["lastCanonicalAction"] = canonical_action
+                state["lastStructuredValidationDialogueAct"] = actual_dialogue_act
+                if canonical_action in {
+                    "EXPLAIN_CURRENT_QUESTION",
+                    "KEEP_CURRENT_QUESTION",
+                }:
+                    current_target = _target_from_question(current_question)
+                    question_definition = _question_definition_context(
+                        current_target,
+                        _field_for_target(current_target or {}, fields),
+                    )
+                    if canonical_action == "EXPLAIN_CURRENT_QUESTION":
+                        reply = localized_interview_question_help(
+                            interview_locale,
+                            str(
+                                current_question.get("targetLabel")
+                                or current_question.get("label")
+                                or "この項目"
+                            ),
+                            question_text=question_definition.get("originalQuestion"),
+                            description=question_definition.get("description"),
+                            required_items=question_definition.get("requiredItems") or [],
+                        )
+                    elif canonical_intent == "CONFIRMATION":
+                        reply = localized_interview_confirmation_clarification_prompt(
+                            interview_locale,
+                        )
+                    else:
+                        reply = localized_interview_hesitation_prompt(interview_locale)
+                    return _keep_current_question(
+                        record=record,
+                        state=state,
+                        messages=messages,
+                        fields=fields,
+                        user=user,
+                        latest_user_message=latest_user_message,
+                        latest_message_id=latest_message_id,
+                        output=output,
+                        model_id=model_id,
+                        reasoning_effort=selected_reasoning_effort,
+                        raw_transcript=raw_transcript,
+                        current_question=current_question,
+                        reply=reply,
+                    )
+                # The structured interpreter remains useful for extraction and
+                # validation, but it must not replace the foreground intent.
+                output = output.model_copy(update={"dialogueAct": canonical_intent})
+                if canonical_action in {
+                    "CONFIRM_PENDING_CANDIDATE",
+                    "REJECT_PENDING_CANDIDATE",
+                }:
+                    # Confirmation/rejection is an action-specific state
+                    # transition.  A validation model's sufficiency or stray
+                    # field update must not turn it back into an answer.
+                    output = output.model_copy(
+                        update={
+                            "utteranceCompleteness": "COMPLETE",
+                            "answerAssessment": output.answerAssessment.model_copy(
+                                update={
+                                    "sufficiency": "SUFFICIENT",
+                                    "probeType": "NONE",
+                                }
+                            ),
+                            "fieldUpdates": [],
+                            "requirementUpdates": [],
+                            "processPatch": ProcessPatch(),
+                            "applicability": [],
+                            "contradictions": [],
+                            "resolvedContradictionIds": [],
+                            "openIssues": [],
+                        }
+                    )
             if output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"} and not _has_structured_updates(output):
                 current_target = _target_from_question(current_question)
                 question_definition = _question_definition_context(
@@ -3460,6 +3538,16 @@ def _build_result(
         "structuredDraft": _build_structured_draft(state, fields),
         "messages": [dict(message) for message in messages],
         "nextQuestionTarget": dict(state.get("nextQuestionTarget") or {}) or None,
+        "canonicalIntent": state.get("lastCanonicalIntent"),
+        "canonicalAction": state.get("lastCanonicalAction"),
+        "structuredDialogueAct": state.get("lastStructuredValidationDialogueAct")
+        or state.get("lastStructuredDialogueAct"),
+        "dialogueActMismatch": bool(
+            state.get("lastCanonicalIntent")
+            and state.get("lastStructuredValidationDialogueAct")
+            and state.get("lastCanonicalIntent")
+            != state.get("lastStructuredValidationDialogueAct")
+        ),
         "retrievalPolicy": str((question or {}).get("retrievalPolicy") or "auto"),
         "retrievalExecuted": bool((question or {}).get("retrievedSources")),
         "retrievedSources": [

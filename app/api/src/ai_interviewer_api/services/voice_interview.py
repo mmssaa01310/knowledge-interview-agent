@@ -21,11 +21,8 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import HTTPException
-from pydantic import BaseModel
-
-from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockResponsesStructuredProvider,
-    StructuredInterviewProviderError,
+from ai_interviewer_api.agents.interview_knowledge.coordinator import (
+    is_current_question_confirmation_target,
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
@@ -63,6 +60,12 @@ from ai_interviewer_api.services.ai_interview import (
     generate_interview_reply,
     get_interview_state_snapshot,
 )
+from ai_interviewer_api.services.conversation_policy import (
+    CanonicalAction,
+    CanonicalIntentDecision,
+    resolve_canonical_action,
+    resolve_canonical_intent,
+)
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 from ai_interviewer_api.services.voice_transcript_feedback import (
     build_transcribe_polly_transcript_feedback,
@@ -72,29 +75,6 @@ from ai_interviewer_api.services.voice_transcript_feedback import (
 logger = logging.getLogger(__name__)
 _VOICE_TURN_LOCKS: dict[str, Any] = {}
 _VOICE_TURN_LOCKS_GUARD = Lock()
-
-
-class VoiceTurnIntentOutput(BaseModel):
-    """Compatibility boundary for callers that omit an explicit turn type.
-
-    Transcribe + Polly always sends ``ANSWER``.  The endpoint remains a small
-    shared session-boundary helper for existing clients and Nova's bridge
-    contract; it is not used for answer evaluation.
-    """
-
-    turnType: Literal["ANSWER", "CONTROL"]
-
-
-_VOICE_TURN_INTENT_SYSTEM_PROMPT = """
-あなたは音声インタビューの発話意図分類器です。
-確定したユーザー発話を、現在の質問への回答と、インタビューの進行を制御する発話のどちらかに分類してください。
-
-ANSWERは、現在の質問への回答、確認への肯定・否定、訂正、追加情報、または質問内容に関する返答です。
-CONTROLは、現在の質問への回答をせず、インタビューの開始・終了・一時停止・再開・音声操作など、会話の進行自体を操作する主意図です。
-発話の単語や固定フレーズの一致ではなく、現在の質問と会話状態を踏まえた意味で判断してください。
-確認待ちの「はい」「違います」などは、確認に対する回答なのでANSWERです。
-結果は指定されたJSONオブジェクトだけで返してください。Markdownや説明文は不要です。
-""".strip()
 
 
 @dataclass(frozen=True)
@@ -185,7 +165,7 @@ def classify_voice_turn_intent(
     voice_session_id: str,
     payload: VoiceTurnIntentCreate,
 ) -> dict:
-    """Classify only an omitted turn type at the shared API boundary."""
+    """Compatibility response backed by the canonical Conversation Policy."""
 
     session = _get_voice_session_for_internal_use(voice_session_id)
     _ensure_session_accepts_turns(session)
@@ -200,48 +180,30 @@ def classify_voice_turn_intent(
     interview_state = store.get("interview_states", f"interview-state-{session['recordId']}") or {}
     question_id = payload.answerToQuestionId or session.get("currentQuestionId")
     current_question = _find_question_by_id(interview_state, question_id) if question_id else None
-    field_id = current_question.get("fieldId") if current_question else None
-    field_state = (
-        interview_state.get("fieldStates", {}).get(field_id, {})
-        if field_id
-        else {}
+    current_target = _voice_target_from_question(current_question)
+    pending_confirmation = is_current_question_confirmation_target(
+        interview_state,
+        current_question,
     )
-    prompt = "\n".join(
-        [
-            "current_question:",
-            f"- id: {question_id or 'none'}",
-            f"- text: {str((current_question or {}).get('text') or '').strip() or 'none'}",
-            "current_answer_state:",
-            f"- answer_state: {field_state.get('answerState') or 'UNANSWERED'}",
-            f"- candidate_answer: {str(field_state.get('candidateAnswer') or '').strip() or 'none'}",
-            "user_transcript:",
-            transcript,
-        ]
+    user = _build_user_context_from_session(session)
+    recent_conversation = [
+        message
+        for message in store.list("messages", user.tenant_id)
+        if message.get("recordId") == session.get("recordId")
+    ]
+    decision = resolve_canonical_intent(
+        utterance=transcript,
+        current_question=current_question,
+        current_target=current_target,
+        pending_confirmation=pending_confirmation,
+        recent_conversation=recent_conversation,
     )
-    try:
-        provider = BedrockResponsesStructuredProvider()
-        result = VoiceTurnIntentOutput.model_validate(
-            provider.request_structured_output(
-                schema_name="voice_turn_intent",
-                schema=VoiceTurnIntentOutput.model_json_schema(),
-                system_prompt=_VOICE_TURN_INTENT_SYSTEM_PROMPT,
-                user_payload={"prompt": prompt},
-                reasoning_effort=settings.structured_interview_reasoning_effort,
-                max_output_tokens=48,
-            )
-        )
-    except (StructuredInterviewProviderError, ValueError) as exc:
-        logger.exception(
-            "voice_turn_intent_classification_failed voice_session_id=%s question_id=%s error_type=%s",
-            voice_session_id,
-            question_id,
-            exc.__class__.__name__,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="voice_turn_intent_classification_failed",
-        ) from exc
-    return {"turnType": result.turnType}
+    action = resolve_canonical_action(
+        decision.dialogueAct,
+        pending_confirmation=pending_confirmation,
+        current_target=current_target,
+    )
+    return {"turnType": "CONTROL" if action == "HANDLE_CONTROL" else "ANSWER"}
 
 
 def stop_voice_session(voice_session_id: str, user: UserContext) -> dict:
@@ -581,14 +543,63 @@ def _process_voice_turn(
     voice_turn_repository.save(turn)
     user = _build_user_context_from_session(session)
     record = get_scoped_item("records", session["recordId"], user, "record_not_found")
-    user_message = _save_voice_user_message(record, turn, user)
     interview_state = store.get("interview_states", f"interview-state-{record['id']}")
     if interview_state is None:
         interview_state = get_interview_state_snapshot(record, user).get("interviewState", {})
     turn["baseInterviewState"] = deepcopy(interview_state)
-    voice_turn_repository.save(turn)
     try:
-        if turn.get("turnType") == "CONTROL":
+        current_question = _find_question_by_id(
+            interview_state,
+            turn.get("answerToQuestionId"),
+        )
+        if current_question is None:
+            provisional_question = _get_provisional_question(session)
+            if provisional_question and provisional_question.get("questionId") == turn.get(
+                "answerToQuestionId"
+            ):
+                current_question = provisional_question
+        canonical_intent, canonical_action = _resolve_voice_turn_policy(
+            turn=turn,
+            interview_state=interview_state,
+            current_question=current_question,
+            record=record,
+            user=user,
+        )
+        turn.update(
+            {
+                "canonicalIntent": canonical_intent.dialogueAct,
+                "canonicalAction": canonical_action,
+                "canonicalRouterLatencyMs": canonical_intent.latency_ms,
+                "fastCheckExecuted": False,
+            }
+        )
+        if canonical_action == "HANDLE_CONTROL" and turn.get("turnType") != "CONTROL":
+            # A provider may omit the legacy coarse turn type.  The canonical
+            # policy must still prevent this utterance from being persisted as
+            # an answer before the existing control action runs.
+            turn.update(
+                {
+                    "turnType": "CONTROL",
+                    "answerToQuestionId": None,
+                    "answerToFieldId": None,
+                    "processingMode": "control",
+                }
+            )
+        logger.info(
+            "conversation_policy_resolved canonical_turn_id=%s voice_session_id=%s "
+            "canonical_intent=%s canonical_action=%s current_question_id=%s "
+            "state_version_before=%s router_ms=%s",
+            turn.get("id"),
+            session.get("id"),
+            canonical_intent.dialogueAct,
+            canonical_action,
+            current_question.get("questionId") if current_question else None,
+            session.get("stateVersion"),
+            canonical_intent.latency_ms,
+        )
+        voice_turn_repository.save(turn)
+        user_message = _save_voice_user_message(record, turn, user)
+        if canonical_action == "HANDLE_CONTROL":
             return _commit_control_turn(
                 session=session,
                 turn=turn,
@@ -602,6 +613,8 @@ def _process_voice_turn(
             interview_state=interview_state,
             user_message=user_message,
             api_started_at=api_started_at,
+            canonical_intent=canonical_intent,
+            canonical_action=canonical_action,
             on_stream_started=on_stream_started,
             on_question_delta=on_question_delta,
         )
@@ -622,6 +635,64 @@ def _voice_turn_lock(turn_id: str) -> Any:
         return _VOICE_TURN_LOCKS.setdefault(turn_id, RLock())
 
 
+def _resolve_voice_turn_policy(
+    *,
+    turn: dict[str, Any],
+    interview_state: Mapping[str, Any],
+    current_question: Mapping[str, Any] | None,
+    record: Mapping[str, Any],
+    user: UserContext,
+) -> tuple[CanonicalIntentDecision, CanonicalAction]:
+    """Resolve the canonical intent before any action-specific processing."""
+
+    if turn.get("turnType") == "CONTROL":
+        decision = CanonicalIntentDecision(
+            dialogueAct="CONVERSATION_REQUEST",
+            latency_ms=0.0,
+            provider="explicit_turn_type",
+        )
+        return decision, resolve_canonical_action(
+            decision.dialogueAct,
+            pending_confirmation=False,
+            turn_type="CONTROL",
+        )
+
+    current_target = _voice_target_from_question(current_question)
+    pending_confirmation = is_current_question_confirmation_target(
+        interview_state,
+        current_question,
+    )
+    recent_conversation = [
+        message
+        for message in store.list("messages", user.tenant_id)
+        if message.get("recordId") == record.get("id")
+    ]
+    decision = resolve_canonical_intent(
+        utterance=str(turn.get("transcript") or ""),
+        current_question=current_question,
+        current_target=current_target,
+        pending_confirmation=pending_confirmation,
+        recent_conversation=recent_conversation,
+    )
+    return decision, resolve_canonical_action(
+        decision.dialogueAct,
+        pending_confirmation=pending_confirmation,
+        current_target=current_target,
+    )
+
+
+def _voice_target_from_question(
+    question: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not question:
+        return None
+    return {
+        "targetType": question.get("targetType"),
+        "targetId": question.get("targetId"),
+        "label": question.get("targetLabel") or question.get("label"),
+    }
+
+
 def _process_structured_voice_turn(
     *,
     session: dict[str, Any],
@@ -631,6 +702,8 @@ def _process_structured_voice_turn(
     interview_state: dict[str, Any],
     user_message: dict[str, Any],
     api_started_at: float,
+    canonical_intent: CanonicalIntentDecision,
+    canonical_action: CanonicalAction,
     on_stream_started: Callable[[str], None] | None = None,
     on_question_delta: Callable[[str], None] | None = None,
 ) -> dict:
@@ -658,7 +731,11 @@ def _process_structured_voice_turn(
             and str((current_question or {}).get("targetType") or "")
             not in {"closing", "transcript_confirmation", "contradiction"}
         )
-        if settings.structured_interview_fast_path_enabled and fast_eligible:
+        if (
+            settings.structured_interview_fast_path_enabled
+            and fast_eligible
+            and canonical_action == "PROCESS_ANSWER"
+        ):
             fast_state = deepcopy(interview_state)
             provisional_keys = session.get("provisionalAnsweredTargetKeys")
             if isinstance(provisional_keys, list):
@@ -694,6 +771,7 @@ def _process_structured_voice_turn(
             }
             turn["fastAssessment"] = fast_result.assessment.model_dump()
             turn["fastCanProceed"] = fast_result.can_proceed
+            turn["fastCheckExecuted"] = True
             turn["backgroundValidationStatus"] = "pending"
         else:
             speculative_retrieval = start_speculative_retrieval_for_interview_turn(
@@ -707,6 +785,8 @@ def _process_structured_voice_turn(
                 user,
                 persist_assistant_messages=False,
                 speculative_retrieval=speculative_retrieval,
+                canonical_intent=canonical_intent.dialogueAct,
+                canonical_action=canonical_action,
                 on_question_delta=on_question_delta,
             )
         latency_metrics = {
@@ -714,9 +794,16 @@ def _process_structured_voice_turn(
             for name, value in (result.get("latencyMetrics") or {}).items()
             if isinstance(value, (int, float))
         }
+        latency_metrics["conversation_router_ms"] = canonical_intent.latency_ms
         sync_record_status_after_interview(record, result.get("status"), user)
         reply_text = str(result.get("reply") or "").strip()
         action = str(result.get("action") or "ask_structured").strip() or "ask_structured"
+        structured_dialogue_act = result.get("structuredDialogueAct")
+        if isinstance(structured_dialogue_act, str) and structured_dialogue_act:
+            turn["structuredDialogueAct"] = structured_dialogue_act
+            turn["dialogueActMismatch"] = structured_dialogue_act != turn.get(
+                "canonicalIntent"
+            )
         transcript_assessment = result.get("interviewState", {}).get("lastTranscriptAssessment")
         if isinstance(transcript_assessment, dict):
             turn["rawTranscript"] = transcript_assessment.get("rawTranscript") or turn.get("transcript")
@@ -792,6 +879,21 @@ def _process_structured_voice_turn(
                 "latencyMetrics": latency_metrics,
                 "updatedAt": utc_now(),
             }
+        )
+        logger.info(
+            "conversation_turn_trace canonical_turn_id=%s voice_session_id=%s "
+            "user_utterance_chars=%s canonical_intent=%s canonical_action=%s "
+            "fast_check_executed=%s structured_dialogue_act=%s dialogue_act_mismatch=%s "
+            "next_question_id=%s",
+            turn.get("id"),
+            session.get("id"),
+            len(str(turn.get("transcript") or "")),
+            turn.get("canonicalIntent"),
+            turn.get("canonicalAction"),
+            turn.get("fastCheckExecuted"),
+            turn.get("structuredDialogueAct"),
+            turn.get("dialogueActMismatch"),
+            question_id,
         )
         voice_turn_repository.save(turn)
         logger.info(
@@ -928,6 +1030,13 @@ def _persist_fast_background_validation(
     turn = voice_turn_repository.get(turn_id)
     if turn is None:
         return
+    source_turn_id = str(payload.get("sourceTurnId") or turn_id)
+    session_before = voice_session_repository.get(voice_session_id) or {}
+    state_before = (
+        deepcopy(store.get("interview_states", f"interview-state-{session_before.get('recordId')}"))
+        if session_before.get("recordId")
+        else None
+    )
     background_status = str(payload.get("backgroundStatus") or "failed")
     turn["backgroundValidationStatus"] = background_status
     turn["backgroundCanProceed"] = bool(payload.get("backgroundCanProceed", False))
@@ -957,6 +1066,15 @@ def _persist_fast_background_validation(
     session = voice_session_repository.get(voice_session_id)
     result = payload.get("result")
     result_state = result.get("interviewState") if isinstance(result, Mapping) else None
+    validation_dialogue_act = (
+        result.get("structuredDialogueAct") if isinstance(result, Mapping) else None
+    )
+    if isinstance(validation_dialogue_act, str) and validation_dialogue_act:
+        turn["structuredDialogueAct"] = validation_dialogue_act
+        turn["dialogueActMismatch"] = validation_dialogue_act != turn.get(
+            "canonicalIntent"
+        )
+        voice_turn_repository.save(turn)
     source_target_key = str(payload.get("sourceTargetKey") or "")
     if (
         isinstance(session, dict)
@@ -992,6 +1110,34 @@ def _persist_fast_background_validation(
     elif isinstance(session, dict):
         session["updatedAt"] = utc_now()
         voice_session_repository.save(session)
+    state_after = (
+        store.get("interview_states", f"interview-state-{session.get('recordId')}" if isinstance(session, dict) else "")
+        if isinstance(session, dict)
+        else None
+    )
+    fields_before = state_before.get("fieldStates", {}) if isinstance(state_before, Mapping) else {}
+    fields_after = state_after.get("fieldStates", {}) if isinstance(state_after, Mapping) else {}
+    fields_changed = sorted(
+        str(field_id)
+        for field_id in set(fields_before) | set(fields_after)
+        if fields_before.get(field_id) != fields_after.get(field_id)
+    )
+    logger.info(
+        "background_structured_state_write source_turn_id=%s voice_session_id=%s "
+        "state_version_before=%s state_version_after=%s updated_at_before=%s "
+        "updated_at_after=%s current_target_before=%s current_target_after=%s "
+        "fields_changed=%s canonical_action=%s",
+        source_turn_id,
+        voice_session_id,
+        state_before.get("stateVersion") if isinstance(state_before, Mapping) else None,
+        state_after.get("stateVersion") if isinstance(state_after, Mapping) else None,
+        state_before.get("updatedAt") if isinstance(state_before, Mapping) else None,
+        state_after.get("updatedAt") if isinstance(state_after, Mapping) else None,
+        state_before.get("nextQuestionTarget") if isinstance(state_before, Mapping) else None,
+        state_after.get("nextQuestionTarget") if isinstance(state_after, Mapping) else None,
+        fields_changed,
+        turn.get("canonicalAction"),
+    )
     logger.info(
         "background_validation_persisted voice_session_id=%s turn_id=%s status=%s agrees=%s clarification_enqueued=%s",
         voice_session_id,
