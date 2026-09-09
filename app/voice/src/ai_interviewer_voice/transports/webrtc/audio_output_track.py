@@ -42,6 +42,8 @@ class AudioOutputTrack(MediaStreamTrack):
         self._playback_buffer = playback_buffer
         self._voice_session_id = voice_session_id
         self._preroll_ms = preroll_ms
+        self._primed = False
+        self._draining = False
         self._next_pts = 0
         self._short_underrun_ms = short_underrun_ms
         self._input_rate_hz = input_rate_hz
@@ -70,7 +72,12 @@ class AudioOutputTrack(MediaStreamTrack):
         depth_before_bytes = await self._playback_buffer.depth_bytes()
         depth_before_ms = await self._playback_buffer.depth_ms()
 
-        if self._preroll_ms > 0 and not await self._playback_buffer.has_preroll(self._preroll_ms):
+        if depth_before_bytes == 0:
+            self._primed = False
+            self._draining = False
+        if self._draining or depth_before_ms >= self._preroll_ms:
+            self._primed = True
+        if self._preroll_ms > 0 and not self._primed:
             pcm = self._silence_pcm()
             consumed_bytes = 0
             silence_frame_returned = True
@@ -118,7 +125,13 @@ class AudioOutputTrack(MediaStreamTrack):
         return frame
 
     async def prepare_interrupt(self) -> None:
-        return None
+        self._primed = False
+        self._draining = False
+
+    def finish_segment(self) -> None:
+        # No more PCM will be produced for this segment. Even a short final
+        # chunk must drain instead of waiting forever for another preroll.
+        self._draining = True
 
     def _silence_pcm(self) -> bytes:
         return bytes(self._input_bytes_per_frame)

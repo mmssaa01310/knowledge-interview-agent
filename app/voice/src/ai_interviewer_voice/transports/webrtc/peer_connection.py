@@ -671,6 +671,7 @@ class VoicePeerConnection:
                 "assistant_interrupted",
             )
         elif isinstance(event, AssistantSpeechEnded):
+            self._output_track.finish_segment()
             await self._refresh_session_state()
             if event.generation is not None:
                 metrics = self._generation_metrics.setdefault(
