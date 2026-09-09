@@ -113,6 +113,25 @@ Browser
 server-side sidebandが担当する。OpenAI Secret Keyは`app/voice`だけで読み込み、Browserへ渡さない。
 この経路ではTranscribe、Polly、`PollyTextChunker`、既存の600ms endpoint判定を使用しない。
 
+OpenAI Realtimeの接続状態と会話状態は分けて扱う。`sideband_connected`はTransport Readyを
+示すだけで、Conversation Readyを示さない。初回質問はVoice Session作成時に`app/api`が保存した
+`initialReplyText`を正本とし、Realtime側が初回質問を決定してはならない。起動状態は次の順序で
+管理する。
+
+```text
+INITIALIZING
+  ↓ session.created + initialReplyText確認
+INITIAL_QUESTION_READY
+  ↓ initial response.create送信
+INITIAL_QUESTION_DISPATCHED
+  ↓
+READY_FOR_USER_TURN
+```
+
+マイク入力は起動中も停止しない。初回`response.create`送信前に確定したUser transcriptは
+`app/voice`で保留し、`READY_FOR_USER_TURN`後に通常Turnとして一度だけ処理する。初回応答の
+送信後にユーザーが話し始めた場合は、通常のbarge-inとして扱う。
+
 `nova_sonic`と`transcribe_polly`は相互に依存してはいけない。
 
 Nova Sonic、Transcribe + Polly、OpenAI Realtimeを実動作Providerとして提供する。Voice Session作成時の
@@ -665,7 +684,21 @@ InterviewMessage:
 ```
 
 `currentQuestion`、`initialQuestion`、質問例、質問定義を、そのまま`InterviewMessage`へ変換してはいけない。
-初回質問は、Novaから`assistant_transcript_final`を受信し、実際に発話された内容が確定した時点で初めてAssistantメッセージとして保存・表示する。
+Nova Sonicでは初回質問は、Novaから`assistant_transcript_final`を受信し、実際に発話された内容が確定した時点で初めてAssistantメッセージとして保存・表示する。
+OpenAI Realtimeでは、`initialReplyText`をVoice Session作成直後にFrontendが初回Assistantメッセージとして表示し、Realtimeの`response.output_audio_transcript.delta`は同じ初回応答IDへmergeする。これによりRealtime transcript到着を初回質問の存在条件にしない。
+
+### 14.2 OpenAI Realtimeの初回質問同期
+
+`openai_realtime`では、FrontendはVoice Session作成レスポンスの`initialReplyText`を受け取った時点で初回質問を表示する。Backendの`OpenAIRealtimeSession`はsidebandの`session.created`後に初回応答を送信し、送信完了を`READY_FOR_USER_TURN`の条件とする。初回音声の再生完了はこの状態遷移の条件に含めない。
+
+Frontendの初回メッセージとRealtimeの音声Transcriptは、文字列ではなく次の固定IDで同一メッセージへmergeする。
+
+```text
+voiceResponseId = initial-response-{voice_session_id}
+voiceTurnId     = initial-{voice_session_id}
+```
+
+Canonicalな`initialReplyText`が存在する場合、初回質問のために追加のQuestion Generatorを呼び出さない。既存の質問定義・target・required itemsは初回発話のRenderingによって変更しない。
 
 roleの正本はイベント種別である。
 

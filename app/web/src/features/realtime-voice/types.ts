@@ -86,6 +86,7 @@ export type VoiceDataChannelEvent =
       voiceSessionId: string;
       text: string;
       turnId?: string;
+      clientTurnId?: string;
       turnType?: "ANSWER" | "CONTROL";
       questionId?: string | null;
       stateVersion?: number | null;

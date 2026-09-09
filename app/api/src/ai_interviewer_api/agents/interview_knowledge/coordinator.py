@@ -640,26 +640,41 @@ def apply_structured_output(
         }
         changed_topics.append(f"applicability:{update.topic}")
 
-    _upsert_contradictions(
-        state,
-        (
-            contradiction
-            for contradiction in output.contradictions
-            if _has_valid_evidence(contradiction.evidenceTranscriptIds, valid_evidence_ids)
-        ),
-        latest_message_id,
-        valid_evidence_ids=valid_evidence_ids,
+    valid_contradictions = [
+        contradiction
+        for contradiction in output.contradictions
+        if _has_valid_evidence(contradiction.evidenceTranscriptIds, valid_evidence_ids)
+    ]
+    changed_topics.extend(
+        f"contradiction:{contradiction_id}"
+        for contradiction_id in _upsert_contradictions(
+            state,
+            valid_contradictions,
+            latest_message_id,
+            valid_evidence_ids=valid_evidence_ids,
+        )
     )
-    _resolve_contradictions(state, output.resolvedContradictionIds, latest_message_id)
-    _upsert_open_issues(
-        state,
-        (
-            issue
-            for issue in output.openIssues
-            if _has_valid_evidence(issue.evidenceTranscriptIds, valid_evidence_ids)
-        ),
-        latest_message_id,
-        valid_evidence_ids=valid_evidence_ids,
+    changed_topics.extend(
+        f"resolved_contradiction:{contradiction_id}"
+        for contradiction_id in _resolve_contradictions(
+            state,
+            output.resolvedContradictionIds,
+            latest_message_id,
+        )
+    )
+    valid_open_issues = [
+        issue
+        for issue in output.openIssues
+        if _has_valid_evidence(issue.evidenceTranscriptIds, valid_evidence_ids)
+    ]
+    changed_topics.extend(
+        f"open_issue:{issue_id}"
+        for issue_id in _upsert_open_issues(
+            state,
+            valid_open_issues,
+            latest_message_id,
+            valid_evidence_ids=valid_evidence_ids,
+        )
     )
     state["lastStructuredDialogueAct"] = output.dialogueAct
     state["lastProcessedUserMessageId"] = latest_message_id
@@ -1814,6 +1829,11 @@ def _target_for_current_question(
         str(current_question.get("targetLabel") or current_question.get("label") or target_id),
         2,
     )
+    if isinstance(current_question.get("questionDefinition"), Mapping):
+        # A question snapshot carries the immutable Interview Plan contract.
+        # Keep that exact snapshot when rebuilding the target for an action;
+        # do not infer a new definition from mutable answer progress.
+        target["questionDefinition"] = deepcopy(current_question["questionDefinition"])
     if target_type == "field":
         for key in ("deepeningItemIds", "deepeningItems", "optionalDeepening"):
             if key in current_question:
@@ -2795,8 +2815,9 @@ def _upsert_contradictions(
     message_id: str,
     *,
     valid_evidence_ids: Set[str] | None = None,
-) -> None:
+) -> list[str]:
     items = state.setdefault("contradictions", [])
+    changed_ids: list[str] = []
     for contradiction in contradictions:
         record = contradiction.model_dump()
         record["status"] = "open"
@@ -2813,20 +2834,25 @@ def _upsert_contradictions(
             items.append(record)
         else:
             existing.update(record)
+        changed_ids.append(str(contradiction.contradictionId))
+    return list(dict.fromkeys(changed_ids))
 
 
 def _resolve_contradictions(
     state: dict[str, Any],
     contradiction_ids: Iterable[str],
     message_id: str,
-) -> None:
+) -> list[str]:
     identifiers = {str(item).strip() for item in contradiction_ids if str(item).strip()}
     if not identifiers:
-        return
+        return []
+    resolved_ids: list[str] = []
     for item in state.setdefault("contradictions", []):
         if item.get("contradictionId") in identifiers:
             item["status"] = "resolved"
             item["resolvedEvidenceTranscriptIds"] = [message_id]
+            resolved_ids.append(str(item["contradictionId"]))
+    return resolved_ids
 
 
 def _upsert_open_issues(
@@ -2835,8 +2861,9 @@ def _upsert_open_issues(
     message_id: str,
     *,
     valid_evidence_ids: Set[str] | None = None,
-) -> None:
+) -> list[str]:
     items = state.setdefault("openIssues", [])
+    changed_ids: list[str] = []
     for issue in issues:
         record = issue.model_dump()
         record["evidenceTranscriptIds"] = _ensure_latest_evidence(
@@ -2849,6 +2876,8 @@ def _upsert_open_issues(
             items.append(record)
         else:
             existing.update(record)
+        changed_ids.append(str(issue.issueId))
+    return list(dict.fromkeys(changed_ids))
 
 
 def _ensure_latest_evidence(

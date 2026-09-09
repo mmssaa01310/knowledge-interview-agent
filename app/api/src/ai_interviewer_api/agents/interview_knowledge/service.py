@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from hashlib import sha256
 from threading import Event, Lock
 from time import monotonic, time
 from typing import Any
@@ -142,6 +144,9 @@ _LATENCY_EVENT_METRIC_NAMES = (
     "background_interpreter_start_ms",
     "background_interpreter_end_ms",
 )
+_CANONICAL_QUESTION_DEFINITION_DYNAMIC_KEYS = frozenset(
+    {"missingItems", "missingItemIds", "capturedItemIds"}
+)
 
 
 @dataclass(frozen=True)
@@ -266,6 +271,13 @@ def _new_latency_metrics() -> dict[str, float]:
 
 def _elapsed_ms(started_at: float) -> float:
     return round((monotonic() - started_at) * 1000, 1)
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _serialize_latency_metrics(metrics: Mapping[str, float]) -> dict[str, float | int]:
@@ -469,6 +481,7 @@ def start_fast_interview_turn(
     selected_fast_provider = fast_provider or BedrockFastInterpreterProvider()
     source_turn_id = str(latest_user_message.get("voiceTurnId") or latest_user_message.get("turnId") or "")
     source_message_id = str(latest_user_message.get("id") or "")
+    source_turn_sequence = _optional_int(latest_user_message.get("voiceTurnSequence"))
     source_key = target_key(source_target)
     join = _FastValidationJoin(
         record_id=str(record.get("id") or ""),
@@ -489,6 +502,7 @@ def start_fast_interview_turn(
         source_question=dict(current_question),
         source_turn_id=source_turn_id,
         source_message_id=source_message_id,
+        source_turn_sequence=source_turn_sequence,
         provider=structured_provider,
     )
 
@@ -665,6 +679,7 @@ def start_fast_interview_turn(
             provisional_state,
             target,
             question_text,
+            question_definition=_question_definition_context(target, current_field),
             retrieval_policy=retrieval_policy,
             retrieved_sources=source_references(retrieved_context),
         )
@@ -726,6 +741,7 @@ def _submit_ordered_background_validation(
     source_question: Mapping[str, Any],
     source_turn_id: str,
     source_message_id: str,
+    source_turn_sequence: int | None,
     provider: StructuredInterviewProvider,
 ) -> Future[Any]:
     record_id = str(record.get("id") or "")
@@ -741,6 +757,7 @@ def _submit_ordered_background_validation(
             source_question=source_question,
             source_turn_id=source_turn_id,
             source_message_id=source_message_id,
+            source_turn_sequence=source_turn_sequence,
             provider=provider,
         )
         _FAST_BACKGROUND_TAILS[record_id] = (future, join)
@@ -764,6 +781,7 @@ def _run_ordered_background_validation(
     source_question: Mapping[str, Any],
     source_turn_id: str,
     source_message_id: str,
+    source_turn_sequence: int | None,
     provider: StructuredInterviewProvider,
 ) -> dict[str, Any]:
     if previous_join is not None:
@@ -775,6 +793,7 @@ def _run_ordered_background_validation(
         source_question=source_question,
         source_turn_id=source_turn_id,
         source_message_id=source_message_id,
+        source_turn_sequence=source_turn_sequence,
         provider=provider,
     )
 
@@ -787,6 +806,7 @@ def _run_fast_background_validation(
     source_question: Mapping[str, Any],
     source_turn_id: str,
     source_message_id: str,
+    source_turn_sequence: int | None,
     provider: StructuredInterviewProvider,
 ) -> dict[str, Any]:
     started_at = monotonic()
@@ -846,6 +866,7 @@ def _run_fast_background_validation(
     proposal = {
         "sourceTurnId": source_turn_id,
         "sourceMessageId": source_message_id,
+        "sourceTurnSequence": source_turn_sequence,
         "baseStateVersion": base_state_version,
         "sourceQuestion": deepcopy(dict(source_question)),
         "rawTranscript": str(
@@ -1469,22 +1490,12 @@ def _generate_structured_interview_result(
                     "EXPLAIN_CURRENT_QUESTION",
                     "KEEP_CURRENT_QUESTION",
                 }:
-                    current_target = _target_from_question(current_question)
-                    question_definition = _question_definition_context(
-                        current_target,
-                        _field_for_target(current_target or {}, fields),
-                    )
                     if canonical_action == "EXPLAIN_CURRENT_QUESTION":
-                        reply = localized_interview_question_help(
-                            interview_locale,
-                            str(
-                                current_question.get("targetLabel")
-                                or current_question.get("label")
-                                or "この項目"
-                            ),
-                            question_text=question_definition.get("originalQuestion"),
-                            description=question_definition.get("description"),
-                            required_items=question_definition.get("requiredItems") or [],
+                        reply = _render_question_explanation(
+                            record_id=str(record.get("id") or ""),
+                            current_question=current_question,
+                            fields=fields,
+                            locale=interview_locale,
                         )
                     elif canonical_intent == "CONFIRMATION":
                         reply = localized_interview_confirmation_clarification_prompt(
@@ -1537,11 +1548,6 @@ def _generate_structured_interview_result(
                         }
                     )
             if output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"} and not _has_structured_updates(output):
-                current_target = _target_from_question(current_question)
-                question_definition = _question_definition_context(
-                    current_target,
-                    _field_for_target(current_target or {}, fields),
-                )
                 return _keep_current_question(
                     record=record,
                     state=state,
@@ -1556,16 +1562,11 @@ def _generate_structured_interview_result(
                     raw_transcript=raw_transcript,
                     current_question=current_question,
                     persist_state=persist_state,
-                    reply=localized_interview_question_help(
-                        interview_locale,
-                        str(
-                            current_question.get("targetLabel")
-                            or current_question.get("label")
-                            or "この項目"
-                        ),
-                        question_text=question_definition.get("originalQuestion"),
-                        description=question_definition.get("description"),
-                        required_items=question_definition.get("requiredItems") or [],
+                    reply=_render_question_explanation(
+                        record_id=str(record.get("id") or ""),
+                        current_question=current_question,
+                        fields=fields,
+                        locale=interview_locale,
                     ),
                 )
             if output.dialogueAct in {"HESITATION", "BACKCHANNEL", "OTHER"}:
@@ -2017,6 +2018,10 @@ def _generate_structured_interview_result(
         state,
         target,
         question_text,
+        question_definition=_question_definition_context(
+            target,
+            _field_for_target(target, fields),
+        ),
         retrieval_policy=_retrieval_policy_for_target(target, _field_for_target(target, fields)),
         retrieved_sources=source_references(retrieved_context),
     )
@@ -2087,6 +2092,9 @@ def _keep_current_question(
     retrieval, and Question Generator.
     """
 
+    question_snapshot = _question_snapshot_with_definition(current_question, fields)
+    if isinstance(current_question, dict):
+        current_question.update(deepcopy(question_snapshot))
     record_interpretation_assessment(
         state,
         output,
@@ -2111,7 +2119,7 @@ def _keep_current_question(
         messages=updated_messages,
         fields=fields,
         reply=reply,
-        question=current_question,
+        question=question_snapshot,
         action="ask_follow_up",
         status="in_progress",
     )
@@ -2420,6 +2428,20 @@ def _question_definition_context(
 
     target = target or {}
     field = field or {}
+    provided_definition = target.get("questionDefinition")
+    if isinstance(provided_definition, Mapping):
+        # A rendered question carries the definition it was created from.
+        # Never rebuild it from a later explanation or mutable progress data.
+        definition = {
+            key: deepcopy(value)
+            for key, value in provided_definition.items()
+            if key not in _CANONICAL_QUESTION_DEFINITION_DYNAMIC_KEYS
+        }
+        if "originalQuestion" not in definition:
+            definition["originalQuestion"] = definition.get("canonicalQuestion")
+        if "canonicalQuestion" not in definition:
+            definition["canonicalQuestion"] = definition.get("originalQuestion")
+        return definition
     raw_plan = target.get("questionPlan")
     if not isinstance(raw_plan, Mapping):
         raw_plan = field.get("questionPlan")
@@ -2484,9 +2506,31 @@ def _question_definition_context(
     if optional is None and required is not None:
         optional = not bool(required)
 
+    target_type = target.get("targetType") or target.get("kind")
+    field_definition: dict[str, Any] = {}
+    if field:
+        for key in (
+            "id",
+            "name",
+            "description",
+            "inputType",
+            "required",
+            "askByAi",
+            "retrievalPolicy",
+            "questionText",
+            "aiQuestionExamples",
+            "questionPlan",
+            "options",
+            "displayOrder",
+        ):
+            if key in field:
+                field_definition[key] = deepcopy(field.get(key))
+
     return {
+        "targetType": target_type,
         "targetId": target.get("targetId") or field.get("id"),
         "title": target.get("label") or field.get("name"),
+        "canonicalQuestion": original_question,
         "originalQuestion": original_question,
         "description": description,
         "purpose": plan.get("purpose"),
@@ -2495,9 +2539,105 @@ def _question_definition_context(
         "requiredItems": required_items,
         "optionalItems": optional_items,
         "completionCriteria": deepcopy(plan.get("completionCriteria")),
+        "questionPlan": deepcopy(plan),
+        "fieldDefinition": field_definition,
+    }
+
+
+def _question_progress_context(target: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return mutable completion progress separately from the definition."""
+
+    target = target or {}
+    return {
+        "missingItemIds": list(target.get("missingItemIds") or []),
         "missingItems": deepcopy(target.get("missingItems") or []),
         "capturedItemIds": list(target.get("capturedItemIds") or []),
     }
+
+
+def _question_definition_hash(definition: Mapping[str, Any]) -> str:
+    serialized = json.dumps(
+        definition,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return sha256(serialized.encode("utf-8")).hexdigest()[:16]
+
+
+def _question_definition_for_question(
+    question: Mapping[str, Any],
+    fields: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    provided = question.get("questionDefinition")
+    if isinstance(provided, Mapping):
+        return _question_definition_context({"questionDefinition": provided})
+    target = _target_from_question(question) or {}
+    return _question_definition_context(target, _field_for_target(target, fields))
+
+
+def _question_snapshot_with_definition(
+    question: Mapping[str, Any],
+    fields: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return a question with its immutable definition/progress split.
+
+    Older persisted questions may predate the definition snapshot. Backfill
+    only the missing representation from the configured field; rendered text
+    remains ephemeral and is never used as the definition.
+    """
+
+    snapshot = deepcopy(dict(question))
+    definition = _question_definition_for_question(snapshot, fields)
+    snapshot["questionDefinition"] = definition
+    snapshot["questionDefinitionHash"] = _question_definition_hash(definition)
+    snapshot.setdefault("renderedQuestionText", snapshot.get("text"))
+    snapshot["questionProgress"] = _question_progress_context(
+        _target_from_question(snapshot)
+    )
+    return snapshot
+
+
+def _render_question_explanation(
+    *,
+    record_id: str,
+    current_question: Mapping[str, Any],
+    fields: Sequence[Mapping[str, Any]],
+    locale: InterviewLocale,
+) -> str:
+    """Render an explanation without a state/definition write path."""
+
+    definition_before = _question_definition_for_question(current_question, fields)
+    hash_before = _question_definition_hash(definition_before)
+    reply = localized_interview_question_help(
+        locale,
+        str(
+            current_question.get("targetLabel")
+            or current_question.get("label")
+            or definition_before.get("title")
+            or "この項目"
+        ),
+        question_text=definition_before.get("originalQuestion"),
+        description=definition_before.get("description"),
+        required_items=definition_before.get("requiredItems") or [],
+    )
+    definition_after = _question_definition_for_question(current_question, fields)
+    hash_after = _question_definition_hash(definition_after)
+    logger.info(
+        "question_explanation_rendered record_id=%s question_id=%s "
+        "question_definition_hash_before=%s question_definition_hash_after=%s "
+        "current_target=%s rendered_explanation=%s",
+        record_id,
+        current_question.get("questionId"),
+        hash_before,
+        hash_after,
+        current_question.get("targetId"),
+        reply,
+    )
+    if definition_before != definition_after:
+        raise RuntimeError("question_definition_mutated_during_explanation")
+    return reply
 
 
 def _select_reasoning_effort(state: Mapping[str, Any]) -> str:
@@ -2966,6 +3106,7 @@ def _generate_question_text(
         if current_field is not None
         else [],
         "questionDefinition": question_definition,
+        "questionProgress": _question_progress_context(target),
         "tentativeCandidates": question_state["tentativeCandidates"],
         "answerAssessment": question_state["answerAssessment"],
         "activeProbe": question_state["activeProbe"],
@@ -3179,6 +3320,8 @@ def _repair_current_confirmation_question(
         if str(current_question.get("text") or "") == question_text:
             return False
         current_question["text"] = question_text
+        if "renderedQuestionText" in current_question:
+            current_question["renderedQuestionText"] = question_text
         return True
     if target_type == "field":
         target_state = state.get("fieldStates", {}).get(target_id, {})
@@ -3211,6 +3354,8 @@ def _repair_current_confirmation_question(
     if str(current_question.get("text") or "") == question_text:
         return False
     current_question["text"] = question_text
+    if "renderedQuestionText" in current_question:
+        current_question["renderedQuestionText"] = question_text
     return True
 
 
@@ -3344,6 +3489,8 @@ def _target_from_question(question: Mapping[str, Any] | None) -> dict[str, Any] 
         "targetId": target_id,
         "label": str(question.get("targetLabel") or question.get("label") or target_id),
     }
+    if isinstance(question.get("questionDefinition"), Mapping):
+        target["questionDefinition"] = deepcopy(question["questionDefinition"])
     for key in (
         "missingItemIds",
         "missingItems",
@@ -3531,17 +3678,27 @@ def _build_question(
     target: Mapping[str, Any],
     text: str,
     *,
+    question_definition: Mapping[str, Any] | None = None,
     retrieval_policy: str = "auto",
     retrieved_sources: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     target_kind = str(target.get("targetType") or target.get("kind") or "issue")
     target_id = str(target.get("targetId") or "")
     field_id = target_id if target_kind == "field" else None
+    immutable_definition = (
+        deepcopy(dict(question_definition))
+        if isinstance(question_definition, Mapping)
+        else _question_definition_context(target)
+    )
     question = {
         "questionId": f"q-{len(state.get('askedQuestions', [])) + 1:03d}",
         "questionType": "structured",
         "fieldId": field_id,
         "text": text,
+        "renderedQuestionText": text,
+        "questionDefinition": immutable_definition,
+        "questionDefinitionHash": _question_definition_hash(immutable_definition),
+        "questionProgress": _question_progress_context(target),
         "retrievalPolicy": retrieval_policy,
         "targetType": target_kind,
         "targetId": target_id,

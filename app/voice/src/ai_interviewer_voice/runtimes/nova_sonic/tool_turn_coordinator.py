@@ -289,6 +289,8 @@ class ToolTurnCoordinator:
                 voice_session_id,
                 transcript=pending.user_transcript or "",
                 answer_to_question_id=self._session.current_question_id,
+                client_turn_id=pending.client_turn_id
+                or f"nova-{pending.tool_use_id or pending.completion_id}",
             )
             logger.info(
                 "voice_user_message_saved voice_session_id=%s turn_id=%s question_id=%s state_version=%s retrieval_policy=%s retrieval_executed=%s tool_use_id=%s",

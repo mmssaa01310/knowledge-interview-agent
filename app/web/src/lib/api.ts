@@ -191,6 +191,7 @@ export type InterviewStateResponse = {
     voiceSessionId?: string | null;
     voiceClientTurnId?: string | null;
     voiceTurnId?: string | null;
+    voiceTurnSequence?: number | null;
     voiceResponseId?: string | null;
     isActualUtterance?: boolean;
     targetType?: string | null;

@@ -371,6 +371,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         voiceSessionId: message.voiceSessionId,
         voiceClientTurnId: message.voiceClientTurnId,
         voiceTurnId: message.voiceTurnId,
+        voiceTurnSequence: message.voiceTurnSequence,
         voiceResponseId: message.voiceResponseId,
         candidateSource: message.candidateSource,
         retrievedSources: message.retrievedSources,
@@ -1274,6 +1275,16 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     };
     setInterviewMessages((messages) => {
       const index = messages.findIndex((item) => isSameInterviewMessage(item, scopedMessage));
+      console.info("realtime_voice_message_merge", {
+        action: index === -1 ? "insert" : "merge",
+        role: scopedMessage.role,
+        id: scopedMessage.id,
+        record_id: scopedMessage.recordId,
+        voice_session_id: scopedMessage.voiceSessionId,
+        voice_client_turn_id: scopedMessage.voiceClientTurnId,
+        voice_turn_id: scopedMessage.voiceTurnId,
+        voice_response_id: scopedMessage.voiceResponseId,
+      });
       if (index === -1) {
         return [...messages, scopedMessage];
       }
@@ -1540,11 +1551,28 @@ function isSameInterviewMessage(current: ChatMessage, incoming: ChatMessage) {
   if (
     normalizeInterviewMessageRole(current.role) === "assistant"
     && normalizeInterviewMessageRole(incoming.role) === "assistant"
-    && current.voiceResponseId
-    && incoming.voiceResponseId
   ) {
-    return current.voiceResponseId === incoming.voiceResponseId
-      && (current.voiceSessionId ?? incoming.voiceSessionId ?? null) === (incoming.voiceSessionId ?? current.voiceSessionId ?? null);
+    const sameVoiceSession =
+      (current.voiceSessionId ?? incoming.voiceSessionId ?? null) ===
+      (incoming.voiceSessionId ?? current.voiceSessionId ?? null);
+    if (current.voiceTurnId && incoming.voiceTurnId) {
+      return current.voiceTurnId === incoming.voiceTurnId && sameVoiceSession;
+    }
+    if (current.voiceResponseId && incoming.voiceResponseId) {
+      return current.voiceResponseId === incoming.voiceResponseId && sameVoiceSession;
+    }
+    if (
+      current.voiceSessionId
+      || incoming.voiceSessionId
+      || current.voiceTurnId
+      || incoming.voiceTurnId
+      || current.voiceResponseId
+      || incoming.voiceResponseId
+    ) {
+      // Voice responses must be merged by a canonical/source identity, never
+      // by matching text: two consecutive responses may legitimately repeat.
+      return false;
+    }
   }
   if (
     normalizeInterviewMessageRole(current.role) === "user"
@@ -1558,6 +1586,18 @@ function isSameInterviewMessage(current: ChatMessage, incoming: ChatMessage) {
     }
     if (current.voiceTurnId && incoming.voiceTurnId) {
       return current.voiceTurnId === incoming.voiceTurnId && sameVoiceSession;
+    }
+    if (
+      current.voiceSessionId
+      || incoming.voiceSessionId
+      || current.voiceClientTurnId
+      || incoming.voiceClientTurnId
+      || current.voiceTurnId
+      || incoming.voiceTurnId
+    ) {
+      // Voice messages must be merged by their canonical/provider identity.
+      // Text equality would incorrectly merge two real, identical utterances.
+      return false;
     }
     return Boolean(
       sameVoiceSession

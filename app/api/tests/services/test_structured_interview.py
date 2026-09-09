@@ -3212,6 +3212,7 @@ def test_question_generator_receives_the_configured_question_definition() -> Non
     definition = provider.context["questionDefinition"]
     assert isinstance(definition, Mapping)
     assert definition["title"] == "基本プロフィール"
+    assert definition["canonicalQuestion"] == question_text
     assert definition["originalQuestion"] == question_text
     assert definition["description"] == "氏名、所属部署、役職または担当領域を確認する。"
     assert [item["label"] for item in definition["requiredItems"]] == [
@@ -3219,6 +3220,17 @@ def test_question_generator_receives_the_configured_question_definition() -> Non
         "所属部署",
         "役職または担当領域",
     ]
+    assert definition["fieldDefinition"]["description"] == (
+        "氏名、所属部署、役職または担当領域を確認する。"
+    )
+    assert "missingItems" not in definition
+    assert result["question"]["questionDefinition"] == definition
+    assert result["question"]["questionDefinitionHash"]
+    assert set(result["question"]["questionProgress"]) == {
+        "missingItemIds",
+        "missingItems",
+        "capturedItemIds",
+    }
     assert result["question"]["sourceQuestion"] == question_text
     assert result["question"]["sourceDescription"] == "氏名、所属部署、役職または担当領域を確認する。"
 
@@ -3581,6 +3593,8 @@ def test_user_question_explains_the_current_target_without_answering_or_advancin
         [StructuredInterviewOutput(dialogueAct="QUESTION_TO_ASSISTANT")]
     )
     first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    definition_before = deepcopy(first["question"]["questionDefinition"])
+    definition_hash_before = first["question"]["questionDefinitionHash"]
     _add_structured_answer(
         record,
         user,
@@ -3596,6 +3610,63 @@ def test_user_question_explains_the_current_target_without_answering_or_advancin
     assert len(result["interviewState"]["askedQuestions"]) == 1
     assert result["interviewState"]["fieldStates"]["field-role"]["answerState"] == "UNANSWERED"
     assert "この質問では" in result["reply"]
+    assert result["question"]["questionDefinition"] == definition_before
+    assert result["question"]["questionDefinitionHash"] == definition_hash_before
+    assert result["question"]["text"] == first["question"]["text"]
+
+
+def test_repeated_question_explanations_keep_the_canonical_definition_unchanged() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-question-help-twice",
+        (("field-role", "現在の担当領域"), ("field-department", "部署")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(dialogueAct="QUESTION_TO_ASSISTANT"),
+            StructuredInterviewOutput(dialogueAct="QUESTION_TO_ASSISTANT"),
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    definition_before = deepcopy(first["question"]["questionDefinition"])
+    definition_hash_before = first["question"]["questionDefinitionHash"]
+    question_id = first["question"]["questionId"]
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="question-help-twice-first",
+        question=first["question"],
+        content="担当領域って何ですか？",
+    )
+    first_explanation = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=provider,
+    )
+    _add_structured_answer(
+        record,
+        user,
+        message_id="question-help-twice-second",
+        question=first_explanation["question"],
+        content="具体的には？",
+    )
+
+    second_explanation = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=provider,
+    )
+
+    assert first_explanation["question"]["questionId"] == question_id
+    assert second_explanation["question"]["questionId"] == question_id
+    assert second_explanation["question"]["questionDefinition"] == definition_before
+    assert second_explanation["question"]["questionDefinitionHash"] == definition_hash_before
+    assert second_explanation["question"]["questionDefinition"]["canonicalQuestion"] == (
+        definition_before["canonicalQuestion"]
+    )
+    assert second_explanation["interviewState"]["currentQuestionId"] == question_id
 
 
 def test_invalid_evidence_cannot_commit_a_hallucinated_field_value() -> None:

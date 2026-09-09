@@ -619,11 +619,11 @@ def _question_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> 
     return f"""あなたは{profile}用途のインタビュー質問文生成器です。
 Backendが選択したtargetについて、質問を1問だけ生成してください。
 {interview_language_instruction(locale)}
-questionDefinitionに含まれるtargetId、title、description、originalQuestion、requiredItems、optionalItems、現在のmissingItemsを、この質問の唯一の仕様として扱ってください。Backendが渡した質問定義を厳密に守り、項目の意味・取得対象を追加、削除、一般化、置換しないでください。originalQuestionがある場合は、その意味を維持した自然な言い換えだけを行ってください。
-questionDefinitionに存在しない「関わった相手」「行った作業」「経験」などの観点を、推測で追加してはいけません。titleだけから質問内容を推測せず、requiredItemsとdescriptionを優先してください。
+questionDefinitionに含まれるtargetId、title、description、canonicalQuestion、originalQuestion、requiredItems、optionalItems、completionCriteria、fieldDefinitionを不変の唯一の質問仕様として扱ってください。questionProgressに含まれるmissingItems、capturedItemIdsは現在の回答進捗であり、質問定義ではありません。Backendが渡した質問定義を厳密に守り、項目の意味・取得対象を追加、削除、一般化、置換しないでください。canonicalQuestionまたはoriginalQuestionがある場合は、その意味を維持した自然な言い換えだけを行ってください。
+questionDefinitionに存在しない「関わった相手」「行った作業」「経験」などの観点を、推測で追加してはいけません。titleだけから質問内容を推測せず、requiredItems、description、fieldDefinitionを優先してください。質問文の生成結果をquestionDefinitionへ書き戻してはいけません。
 返却は指定されたJSON Schemaに従ってください。questionTextに加えて、文書から対象項目の値を明示的に読み取れる場合だけdocumentCandidateValueとdocumentCandidateSourceIdsを返してください。根拠がない場合はdocumentCandidateValue=null、documentCandidateSourceIds=[]にしてください。
 - questionTextはuser-facingな実際の質問文だけにしてください。回答全文の引用、「なるほど」「そうなんですね」「〜なんですね」の定型リアクション、勝手な長いコメント、target名の説明と同義質問の組み合わせ、「では○○について」＋「○○を教えてください」の二重構造は禁止です。
-- 1回の生成で質問は必ず1問だけにしてください。同義の質問を2つ並べたり、targetに含まれない項目を尋ねたりしないでください。targetType=fieldでmissingItemsが指定されている場合は、その一覧にある不足観点だけを1問にまとめて尋ね、capturedItemIdsに含まれる観点や回答済みの内容を聞き直さないでください。
+- 1回の生成で質問は必ず1問だけにしてください。同義の質問を2つ並べたり、targetに含まれない項目を尋ねたりしないでください。targetType=fieldでquestionProgress.missingItemsが指定されている場合は、その一覧にある不足観点だけを1問にまとめて尋ね、questionProgress.capturedItemIdsに含まれる観点や回答済みの内容を聞き直さないでください。
 - 質問は原則として短い1文（日本語では60文字以内を目安）にし、独立した質問を接続詞で連結しないでください。意味を保つために必要な対象語や不足観点は省略しないでください。
 - currentState.answerAssessmentまたはactiveProbeがある場合は、回答済みの内容を繰り返さず、probeTypeが示す不足部分だけを一度に確認してください。activeProbe.missingItemsがあれば、その項目名・説明を使って具体的に質問し、「もう少し詳しく」「他に紹介したいこと」などの抽象的な深掘りに置き換えないでください。UNANSWERABLEやREFUSALへのprobeは中立的な別の聞き方にし、拒否が再度明示されたら質問を続ける前提にしないでください。
 - targetType=fieldでoptionalDeepening=trueの場合は、deepeningItemsにある観点を具体的に1問だけ確認してください。回答済みのrequiredItemsやcapturedItemIdsを聞き直さず、対象者が答えたくない・情報がないと示した場合は深掘りを繰り返さない前提で質問してください。
@@ -639,14 +639,22 @@ ProcessModelや図のコードは生成しないでください。
 
 
 def _question_stream_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> str:
-    return f"""あなたは{profile}用途のインタビュー質問文生成器です。
+    prompt = f"""あなたは{profile}用途のインタビュー質問文生成器です。
 Backendが選択したtargetについて、質問を1問だけ生成してください。
 {interview_language_instruction(locale)}
-questionDefinitionに含まれるtargetId、title、description、originalQuestion、requiredItems、optionalItems、現在のmissingItemsを唯一の質問仕様として厳密に守ってください。項目の意味・取得対象を追加、削除、一般化、置換せず、originalQuestionがある場合は意味を維持した自然な言い換えだけにしてください。定義にない「関わった相手」「行った作業」「経験」などを推測で追加しないでください。
+questionDefinitionに含まれるtargetId、title、description、canonicalQuestion、originalQuestion、requiredItems、optionalItems、completionCriteria、fieldDefinitionを不変の唯一の質問仕様として厳密に守ってください。questionProgressに含まれるmissingItems、capturedItemIdsは現在の回答進捗であり、質問定義ではありません。項目の意味・取得対象を追加、削除、一般化、置換せず、canonicalQuestionまたはoriginalQuestionがある場合は意味を維持した自然な言い換えだけにしてください。定義にない「関わった相手」「行った作業」「経験」などを推測で追加しないでください。
 回答はuser-facingな質問文だけにしてください。JSON、Markdown、箇条書き、前置き、説明、相づちは返さないでください。
-target以外の項目を同時に尋ねず、回答済みの内容を繰り返さず、不足している観点だけを一つの質問にまとめてください。
+target以外の項目を同時に尋ねず、questionProgress.missingItemsに示された不足観点だけを一つの質問にまとめ、回答済みの内容を繰り返さないでください。質問文や説明文をquestionDefinitionへ書き戻してはいけません。
 質問は原則として短い1文（日本語では60文字以内を目安）にしてください。
 """.strip()
+
+    return (
+        f"{prompt}\n"
+        "questionDefinitionはInterview Plan/Knowledgeで確定した不変の質問仕様です。"
+        "questionProgressは現在の回答進捗です。質問文の生成結果や説明文を"
+        "questionDefinitionへ書き戻さず、target、requiredItems、optionalItems、"
+        "completionCriteria、field definitionの意味を変更しないでください。"
+    ).strip()
 
 
 def _process_model_edit_system_prompt() -> str:

@@ -54,6 +54,7 @@ from ai_interviewer_api.schemas.voice import (
 )
 from ai_interviewer_api.services import voice_interview as voice_interview_service
 from ai_interviewer_api.services.conversation_policy import CanonicalIntentDecision
+from ai_interviewer_api.services.interview_state_transition import commit_interview_state
 
 
 class FakeStructuredProvider:
@@ -307,6 +308,9 @@ def test_create_get_stop_and_atomically_claim_initial_reply() -> None:
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     assert session["provider"] == "transcribe_polly"
     assert session["currentQuestionId"] == "q-001"
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    assert state is not None
+    assert session["stateVersion"] == state["stateVersion"]
     assert session["initialReplyStatus"] == "pending"
     assert "現象について教えてください。" in session["initialReplyText"]
 
@@ -323,6 +327,27 @@ def test_create_get_stop_and_atomically_claim_initial_reply() -> None:
     stopped = stop_record_voice_session(session["id"], user)
     assert stopped["status"] == "stopped"
     assert stopped["connectionStatus"] == "closed"
+
+
+def test_voice_session_reads_current_question_and_version_from_canonical_state() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(user, [("氏名", "short_text"), ("担当", "short_text")])
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    state_id = f"interview-state-{record['id']}"
+    state = store.get("interview_states", state_id)
+    assert state is not None
+    mirror_question_id = session["currentQuestionId"]
+    state["currentQuestionId"] = "q-canonical-after-reconnect"
+    state["stateVersion"] = int(state["stateVersion"]) + 1
+    commit_interview_state(state, user, source="test_canonical_state_read")
+
+    fetched = get_record_voice_session(session["id"], user)
+
+    assert fetched["currentQuestionId"] == "q-canonical-after-reconnect"
+    assert fetched["stateVersion"] == state["stateVersion"]
+    persisted_session = store.get("voice_sessions", session["id"])
+    assert persisted_session is not None
+    assert persisted_session["currentQuestionId"] == mirror_question_id
 
 
 def test_reconnect_race_has_only_one_initial_reply_claim_winner() -> None:
@@ -361,6 +386,31 @@ def test_initial_question_is_not_saved_before_it_is_spoken() -> None:
 
     assert session["initialReplyText"] == "これからインタビューを開始します。氏名について教えてください。"
     assert [row for row in store.list("messages", user.tenant_id) if row.get("recordId") == record["id"]] == []
+
+
+def test_initial_question_reuses_canonical_question_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(user, [("氏名", "short_text"), ("担当", "short_text")])
+    create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    assert state is not None
+    current_question = next(
+        item for item in state["askedQuestions"] if item["questionId"] == state["currentQuestionId"]
+    )
+    current_question["text"] = "お名前、所属部署、現在の役職または担当領域を教えてください。"
+    store.upsert("interview_states", state)
+
+    def fail_if_called(*_: object, **__: object) -> None:
+        raise AssertionError("canonical initial question must not call the LLM")
+
+    monkeypatch.setattr(voice_interview_service, "generate_interview_reply", fail_if_called)
+
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    assert session["initialReplyText"] == "これからインタビューを開始します。お名前、所属部署、現在の役職または担当領域を教えてください。"
+    assert session["initialQuestionId"] == session["currentQuestionId"]
 
 
 def test_voice_turn_uses_structured_interpreter_and_advances_once(
@@ -779,6 +829,38 @@ def test_process_voice_turn_is_idempotent() -> None:
     assert len(voice_user_messages) == 1
 
 
+def test_concurrent_process_voice_turn_is_idempotent() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="同じ処理を同時に受けた回答", clientTurnId="process-race-1"),
+    )
+
+    def process_duplicate(_: int) -> dict:
+        return process_internal_voice_turn(session["id"], turn["id"])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(process_duplicate, range(2)))
+
+    assistant_messages = [
+        message
+        for message in store.list("messages", user.tenant_id)
+        if message.get("recordId") == record["id"] and message.get("role") == "assistant"
+    ]
+    voice_user_messages = [
+        message
+        for message in store.list("messages", user.tenant_id)
+        if message.get("voiceTurnId") == turn["id"] and message.get("role") == "user"
+    ]
+
+    assert results[0]["responseId"] == results[1]["responseId"]
+    assert len(assistant_messages) == 1
+    assert len(voice_user_messages) == 1
+
+
 def test_voice_session_requires_owner_match() -> None:
     owner = DEV_TOKENS["dev-manager"]
     other = DEV_TOKENS["dev-interviewer"]
@@ -901,6 +983,45 @@ def test_finish_and_duplicate_assistant_events_do_not_create_duplicate_message()
     assert second_event["id"] == first_event["id"]
 
 
+def test_assistant_events_with_same_source_turn_are_idempotent_across_response_ids() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    first = create_internal_assistant_event(
+        session["id"],
+        AssistantEventCreate(
+            eventType="assistant_transcript_final",
+            responseId="response-source-1",
+            transcript="次の質問です。",
+            detail={"action": "ask_structured", "turnId": "turn-source-1", "questionId": "q-002"},
+        ),
+    )
+    second = create_internal_assistant_event(
+        session["id"],
+        AssistantEventCreate(
+            eventType="assistant_transcript_final",
+            responseId="response-source-2",
+            transcript="次の質問です。",
+            detail={"action": "ask_structured", "turnId": "turn-source-1", "questionId": "q-002"},
+        ),
+    )
+
+    messages = [
+        row
+        for row in store.list("messages", user.tenant_id)
+        if row.get("recordId") == record["id"] and row.get("voiceTurnId") == "turn-source-1"
+    ]
+    events = [
+        row
+        for row in store.list("voice_assistant_events", user.tenant_id)
+        if row.get("voiceSessionId") == session["id"]
+    ]
+
+    assert first["id"] == second["id"]
+    assert len(messages) == 1
+    assert len(events) == 1
+
+
 def test_stopped_voice_session_rejects_new_turn() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
@@ -930,18 +1051,75 @@ def test_client_turn_id_is_idempotent_and_rejects_different_payload() -> None:
     assert exc_info.value.status_code == 409
 
 
+def test_replayed_client_turn_reuses_identity_after_state_snapshot_changes() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    initial_state_version = session["stateVersion"]
+    first = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="同じ発話",
+            clientTurnId="reconnect-item-1",
+            expectedStateVersion=initial_state_version,
+        ),
+    )
+
+    replay = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="同じ発話",
+            clientTurnId="reconnect-item-1",
+            answerToQuestionId="q-after-reconnect",
+            expectedStateVersion=initial_state_version + 1,
+        ),
+    )
+
+    assert replay["id"] == first["id"]
+    assert replay["answerToQuestionId"] == first["answerToQuestionId"]
+
+
+def test_concurrent_client_turn_duplicate_is_durable_idempotent() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    payload = VoiceTurnCreate(transcript="同じ回答", clientTurnId="concurrent-client-1")
+
+    def create_duplicate(_: int) -> dict:
+        return create_internal_voice_turn(session["id"], payload)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(create_duplicate, range(2)))
+
+    assert results[0]["id"] == results[1]["id"]
+    turns = [
+        row
+        for row in store.list("voice_turns", user.tenant_id)
+        if row.get("voiceSessionId") == session["id"]
+    ]
+    assert len(turns) == 1
+
+
 def test_cancel_before_processing_prevents_late_commit() -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    initial_state_version = session["stateVersion"]
     turn = create_internal_voice_turn(
         session["id"],
-        VoiceTurnCreate(transcript="回答", clientTurnId="client-1", expectedStateVersion=1),
+        VoiceTurnCreate(
+            transcript="回答",
+            clientTurnId="client-1",
+            expectedStateVersion=initial_state_version,
+        ),
     )
 
     cancelled = cancel_internal_voice_turn(
         session["id"],
-        VoiceTurnCancel(clientTurnId="client-1", expectedStateVersion=1),
+        VoiceTurnCancel(
+            clientTurnId="client-1",
+            expectedStateVersion=initial_state_version,
+        ),
     )
 
     assert cancelled["cancelled"] is True

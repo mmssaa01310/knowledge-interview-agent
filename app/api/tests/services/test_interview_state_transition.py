@@ -82,10 +82,19 @@ def _seed_state() -> tuple[object, dict, list[dict]]:
     return user, state, fields
 
 
-def _proposal(*, output: StructuredInterviewOutput, base_version: int = 10) -> dict:
+def _proposal(
+    *,
+    output: StructuredInterviewOutput,
+    base_version: int = 10,
+    source_turn_id: str = "turn-transition-1",
+    source_message_id: str = "message-transition-1",
+    source_turn_sequence: int | None = None,
+    valid_evidence_ids: list[str] | None = None,
+) -> dict:
     return {
-        "sourceTurnId": "turn-transition-1",
-        "sourceMessageId": "message-transition-1",
+        "sourceTurnId": source_turn_id,
+        "sourceMessageId": source_message_id,
+        "sourceTurnSequence": source_turn_sequence,
         "baseStateVersion": base_version,
         "sourceQuestion": {
             "questionId": "q-001",
@@ -97,7 +106,7 @@ def _proposal(*, output: StructuredInterviewOutput, base_version: int = 10) -> d
         },
         "rawTranscript": "社内システムの開発です。",
         "structuredOutput": output.model_dump(),
-        "validEvidenceIds": ["message-transition-1"],
+        "validEvidenceIds": valid_evidence_ids or [source_message_id],
         "clarificationProposal": None,
         "proposalTopics": ["fieldUpdates", "clarificationProposal"],
     }
@@ -263,3 +272,79 @@ def test_late_background_result_preserves_newer_processed_message_and_is_idempot
     unchanged = store.get("interview_states", "interview-state-record-transition-1")
     assert unchanged is not None
     assert unchanged["stateVersion"] == stored["stateVersion"]
+
+
+def test_background_proposals_apply_per_topic_in_source_sequence_order() -> None:
+    user, _, fields = _seed_state()
+
+    newer_output = StructuredInterviewOutput(
+        transcriptAssessment=TranscriptAssessment(
+            rawTranscript="新しい回答",
+            normalizedTranscript="新しい回答",
+        ),
+        answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+        fieldUpdates=[
+            FieldUpdate(
+                fieldId="field-1",
+                itemId="field-1",
+                value="新しい回答",
+                evidenceTranscriptIds=["message-transition-new"],
+                answerResolution="AUTO_CONFIRM",
+            )
+        ],
+    )
+    older_output = newer_output.model_copy(
+        update={
+            "transcriptAssessment": TranscriptAssessment(
+                rawTranscript="古い回答",
+                normalizedTranscript="古い回答",
+            ),
+            "fieldUpdates": [
+                FieldUpdate(
+                    fieldId="field-1",
+                    itemId="field-1",
+                    value="古い回答",
+                    evidenceTranscriptIds=["message-transition-old"],
+                    answerResolution="AUTO_CONFIRM",
+                )
+            ],
+        }
+    )
+
+    newer = _proposal(
+        output=newer_output,
+        base_version=11,
+        source_turn_id="turn-transition-new",
+        source_message_id="message-transition-new",
+        source_turn_sequence=11,
+    )
+    older = _proposal(
+        output=older_output,
+        base_version=11,
+        source_turn_id="turn-transition-old",
+        source_message_id="message-transition-old",
+        source_turn_sequence=10,
+    )
+
+    apply_background_state_proposal(
+        record_id="record-transition-1",
+        user=user,
+        proposal=newer,
+        fields=fields,
+        profile="fixed_form",
+        source_question=newer["sourceQuestion"],
+    )
+    result = apply_background_state_proposal(
+        record_id="record-transition-1",
+        user=user,
+        proposal=older,
+        fields=fields,
+        profile="fixed_form",
+        source_question=older["sourceQuestion"],
+    )
+
+    stored = store.get("interview_states", "interview-state-record-transition-1")
+    assert stored is not None
+    assert stored["fieldStates"]["field-1"]["recordAnswer"] == "新しい回答"
+    assert stored["backgroundAppliedSourceSequences"]["field:field-1:item:field-1"] == 11
+    assert "field:field-1" in result.discarded_fields

@@ -21,6 +21,8 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import HTTPException
+from psycopg.errors import UniqueViolation
+
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     is_current_question_confirmation_target,
 )
@@ -129,6 +131,7 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
     current_question_id = interview_state.get("currentQuestionId")
     if current_question_id is None:
         raise HTTPException(status_code=409, detail="voice_session_missing_current_question")
+    canonical_state_version = _interview_state_version(interview_state)
     session = VoiceSession(
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
@@ -142,7 +145,10 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
         initialReplyText=initial_reply,
         initialQuestionId=current_question_id if initial_reply else None,
         initialReplyStatus="pending" if initial_reply else None,
-        stateVersion=1 if initial_reply else 0,
+        # VoiceSession keeps a transport-facing snapshot for the voice
+        # runtime.  Interview State owns the version; do not derive a second
+        # version from whether the initial reply was generated.
+        stateVersion=canonical_state_version,
         startedAt=utc_now(),
     ).model_dump()
     voice_session_repository.save(session)
@@ -170,16 +176,16 @@ def classify_voice_turn_intent(
 
     session = _get_voice_session_for_internal_use(voice_session_id)
     _ensure_session_accepts_turns(session)
+    interview_state = _canonical_interview_state(session)
     if (
         payload.expectedStateVersion is not None
-        and int(session.get("stateVersion") or 0) != payload.expectedStateVersion
+        and _interview_state_version(interview_state, session) != payload.expectedStateVersion
     ):
         raise HTTPException(status_code=409, detail="turn_state_conflict")
     transcript = payload.transcript.strip()
     if not transcript:
         raise HTTPException(status_code=422, detail="turn_transcript_required")
-    interview_state = store.get("interview_states", f"interview-state-{session['recordId']}") or {}
-    question_id = payload.answerToQuestionId or session.get("currentQuestionId")
+    question_id = payload.answerToQuestionId or interview_state.get("currentQuestionId")
     current_question = _find_question_by_id(interview_state, question_id) if question_id else None
     current_target = _voice_target_from_question(current_question)
     pending_confirmation = is_current_question_confirmation_target(
@@ -222,60 +228,54 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     # The Realtime sideband and a reconnect can submit the same completed
     # transcript at nearly the same time. Serialize the lookup-and-save pair
     # for a client id so both requests cannot create separate VoiceTurn rows.
-    if payload.clientTurnId:
-        with _voice_turn_lock(f"client-turn:{voice_session_id}:{payload.clientTurnId}"):
+    client_turn_id = str(payload.clientTurnId or "").strip()
+    if client_turn_id:
+        with _voice_turn_lock(f"client-turn:{voice_session_id}:{client_turn_id}"):
             return _create_voice_turn(voice_session_id, payload)
     return _create_voice_turn(voice_session_id, payload)
 
 
 def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
-    _ensure_session_accepts_turns(session)
-    if payload.clientTurnId and payload.clientTurnId in session.get("cancelledClientTurnIds", []):
-        raise HTTPException(status_code=409, detail="turn_cancelled")
-    if payload.clientTurnId:
-        existing = next(
-            (
-                item
-                for item in voice_turn_repository.list_for_session(
-                    session["tenantId"],
-                    voice_session_id,
-                )
-                if item.get("clientTurnId") == payload.clientTurnId
-            ),
-            None,
+    client_turn_id = str(payload.clientTurnId or "").strip() or None
+    if client_turn_id:
+        existing = voice_turn_repository.find_by_client_turn_id(
+            session["tenantId"],
+            voice_session_id,
+            client_turn_id,
         )
         if existing is not None:
-            if (
-                existing.get("transcript") == payload.transcript.strip()
-                and existing.get("expectedStateVersion") == payload.expectedStateVersion
-            ):
+            if _voice_turn_matches_payload(existing, payload):
                 logger.info(
                     "voice_turn_reused voice_session_id=%s turn_id=%s client_turn_id=%s sequence=%s",
                     voice_session_id,
                     existing.get("id"),
-                    payload.clientTurnId,
+                    client_turn_id,
                     existing.get("sequence"),
                 )
                 return existing
             raise HTTPException(status_code=409, detail="turn_duplicate_conflict")
+    _ensure_session_accepts_turns(session)
+    if client_turn_id and client_turn_id in session.get("cancelledClientTurnIds", []):
+        raise HTTPException(status_code=409, detail="turn_cancelled")
+    interview_state = _canonical_interview_state(session)
+    canonical_question_id = interview_state.get("currentQuestionId")
     if (
         payload.expectedStateVersion is not None
-        and int(session.get("stateVersion") or 0) != payload.expectedStateVersion
+        and _interview_state_version(interview_state, session) != payload.expectedStateVersion
     ):
         raise HTTPException(status_code=409, detail="turn_state_conflict")
 
-    interview_state = store.get("interview_states", f"interview-state-{session['recordId']}") or {}
     turn_type = payload.turnType
     question_id = payload.answerToQuestionId
     field_id = None
     processing_mode = "control"
     if turn_type == "ANSWER":
-        question_id = question_id or session.get("currentQuestionId")
-        if question_id != session.get("currentQuestionId"):
+        question_id = question_id or canonical_question_id
+        if question_id != canonical_question_id:
             raise HTTPException(status_code=409, detail="turn_question_conflict")
         question = _find_question_by_id(interview_state, question_id)
-        if question is None and question_id == session.get("currentQuestionId"):
+        if question is None and question_id == canonical_question_id:
             provisional_question = session.get("provisionalQuestion")
             if (
                 isinstance(provisional_question, dict)
@@ -300,7 +300,7 @@ def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         correctionStatus="NONE",
         sttConfidence=payload.sttConfidence,
         turnType=turn_type,
-        clientTurnId=payload.clientTurnId,
+        clientTurnId=client_turn_id,
         expectedStateVersion=payload.expectedStateVersion,
         answerToQuestionId=question_id,
         answerToFieldId=field_id,
@@ -308,7 +308,29 @@ def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         startedAtMs=payload.startedAtMs,
         endedAtMs=payload.endedAtMs,
     ).model_dump()
-    voice_turn_repository.save(turn)
+    try:
+        voice_turn_repository.save(turn)
+    except UniqueViolation:
+        # The PostgreSQL unique index is the final race-safe boundary for
+        # workers that do not share this process's client-turn lock.
+        existing = voice_turn_repository.find_by_client_turn_id(
+            session["tenantId"],
+            voice_session_id,
+            client_turn_id or "",
+        )
+        if existing is None:
+            raise
+        if _voice_turn_matches_payload(existing, payload):
+            logger.info(
+                "voice_turn_reused_after_unique_conflict voice_session_id=%s "
+                "turn_id=%s client_turn_id=%s sequence=%s",
+                voice_session_id,
+                existing.get("id"),
+                client_turn_id,
+                existing.get("sequence"),
+            )
+            return existing
+        raise HTTPException(status_code=409, detail="turn_duplicate_conflict") from None
     session["lastTurnSequence"] = turn["sequence"]
     session["updatedAt"] = utc_now()
     voice_session_repository.save(session)
@@ -316,7 +338,7 @@ def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         "voice_turn_created voice_session_id=%s turn_id=%s client_turn_id=%s sequence=%s",
         voice_session_id,
         turn["id"],
-        payload.clientTurnId,
+        client_turn_id,
         turn["sequence"],
     )
     return turn
@@ -324,25 +346,25 @@ def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
 
 def cancel_voice_turn(voice_session_id: str, payload: VoiceTurnCancel) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
-    turn = next(
-        (
-            item
-            for item in voice_turn_repository.list_for_session(
-                session["tenantId"],
-                voice_session_id,
-            )
-            if item.get("clientTurnId") == payload.clientTurnId
-        ),
-        None,
+    interview_state = _canonical_interview_state(session)
+    client_turn_id = str(payload.clientTurnId or "").strip()
+    turn = voice_turn_repository.find_by_client_turn_id(
+        session["tenantId"],
+        voice_session_id,
+        client_turn_id,
     )
     if turn is None:
-        current_version = int(session.get("stateVersion") or 0)
+        current_version = _interview_state_version(interview_state, session)
         if current_version != payload.expectedStateVersion:
             raise HTTPException(status_code=409, detail="turn_state_conflict")
         cancelled_ids = session.setdefault("cancelledClientTurnIds", [])
-        if payload.clientTurnId not in cancelled_ids:
-            cancelled_ids.append(payload.clientTurnId)
-        session["stateVersion"] = current_version + 1
+        if client_turn_id not in cancelled_ids:
+            cancelled_ids.append(client_turn_id)
+        # Cancellation of a turn that was never persisted changes only the
+        # VoiceSession transport metadata.  It must not manufacture a second
+        # Interview State version in the session mirror.
+        session["currentQuestionId"] = interview_state.get("currentQuestionId")
+        session["stateVersion"] = current_version
         session["updatedAt"] = utc_now()
         voice_session_repository.save(session)
         return {
@@ -358,7 +380,7 @@ def cancel_voice_turn(voice_session_id: str, payload: VoiceTurnCancel) -> dict:
             status_code=409,
             detail=f"turn_not_cancellable_{lifecycle_status.lower()}",
         )
-    current_version = int(session.get("stateVersion") or 0)
+    current_version = _interview_state_version(interview_state, session)
     if current_version != payload.expectedStateVersion:
         raise HTTPException(status_code=409, detail="turn_state_conflict")
     _restore_cancelled_turn_artifacts(turn, session)
@@ -366,17 +388,19 @@ def cancel_voice_turn(voice_session_id: str, payload: VoiceTurnCancel) -> dict:
     turn["lifecycleStatus"] = "CANCELLED"
     turn["updatedAt"] = utc_now()
     voice_turn_repository.save(turn)
-    restored_state = turn.get("baseInterviewState")
-    restored_state = restored_state if isinstance(restored_state, dict) else {}
+    restored_state = _canonical_interview_state(session)
+    if not restored_state:
+        restored_state = turn.get("baseInterviewState")
+        restored_state = restored_state if isinstance(restored_state, dict) else {}
     session["currentQuestionId"] = restored_state.get(
         "currentQuestionId",
         turn.get("answerToQuestionId"),
     )
     session["status"] = "active"
     cancelled_ids = session.setdefault("cancelledClientTurnIds", [])
-    if payload.clientTurnId not in cancelled_ids:
-        cancelled_ids.append(payload.clientTurnId)
-    session["stateVersion"] = current_version + 1
+    if client_turn_id not in cancelled_ids:
+        cancelled_ids.append(client_turn_id)
+    session["stateVersion"] = _interview_state_version(restored_state, session)
     session["updatedAt"] = utc_now()
     voice_session_repository.save(session)
     return {
@@ -531,22 +555,43 @@ def _process_voice_turn(
     if lifecycle_status == "COMMITTED":
         return _build_process_result(session, turn).model_dump()
     _ensure_session_accepts_turns(session)
+    user = _build_user_context_from_session(session)
+    record = get_scoped_item("records", session["recordId"], user, "record_not_found")
+    interview_state = _canonical_interview_state(session)
     expected_state_version = turn.get("expectedStateVersion")
     if (
         expected_state_version is not None
-        and int(session.get("stateVersion") or 0) != int(expected_state_version)
+        and _interview_state_version(interview_state, session) != int(expected_state_version)
     ):
         raise HTTPException(status_code=409, detail="turn_state_conflict")
 
-    turn["processingStatus"] = "processing"
-    turn["lifecycleStatus"] = "EVALUATING"
+    processing_id = f"voice-processing-{uuid4().hex[:12]}"
+    claimed_turn = voice_turn_repository.claim_processing(turn_id, processing_id)
+    if claimed_turn is None:
+        latest_turn = _get_voice_turn_for_session(turn_id, session)
+        latest_lifecycle = _voice_turn_lifecycle_status(latest_turn)
+        if latest_lifecycle == "COMMITTED":
+            return _build_process_result(session, latest_turn).model_dump()
+        if latest_lifecycle == "EVALUATING":
+            logger.info(
+                "voice_turn_processing_duplicate voice_session_id=%s turn_id=%s "
+                "processing_id=%s existing_processing_id=%s",
+                voice_session_id,
+                turn_id,
+                processing_id,
+                latest_turn.get("processingId"),
+            )
+            raise HTTPException(status_code=409, detail="turn_processing")
+        raise HTTPException(status_code=409, detail="turn_processing_claim_failed")
+    turn = claimed_turn
     turn["updatedAt"] = utc_now()
     voice_turn_repository.save(turn)
-    user = _build_user_context_from_session(session)
-    record = get_scoped_item("records", session["recordId"], user, "record_not_found")
-    interview_state = store.get("interview_states", f"interview-state-{record['id']}")
-    if interview_state is None:
-        interview_state = get_interview_state_snapshot(record, user).get("interviewState", {})
+    logger.info(
+        "voice_turn_processing_claimed voice_session_id=%s turn_id=%s processing_id=%s",
+        voice_session_id,
+        turn_id,
+        processing_id,
+    )
     turn["baseInterviewState"] = deepcopy(interview_state)
     try:
         current_question = _find_question_by_id(
@@ -595,7 +640,7 @@ def _process_voice_turn(
             canonical_intent.dialogueAct,
             canonical_action,
             current_question.get("questionId") if current_question else None,
-            session.get("stateVersion"),
+            _interview_state_version(interview_state, session),
             canonical_intent.latency_ms,
         )
         voice_turn_repository.save(turn)
@@ -828,16 +873,13 @@ def _process_structured_voice_turn(
         question_id = question.get("questionId") if question else None
         latest_session = _get_voice_session_for_internal_use(session["id"])
         latest_turn = _get_voice_turn_for_session(turn["id"], latest_session)
+        latest_interview_state = _canonical_interview_state(latest_session)
         if latest_turn.get("processingStatus") == "cancelled":
             raise HTTPException(status_code=409, detail="turn_cancelled")
-        expected_state_version = turn.get("expectedStateVersion")
-        if (
-            expected_state_version is not None
-            and int(latest_session.get("stateVersion") or 0) != int(expected_state_version)
-        ):
-            raise HTTPException(status_code=409, detail="turn_state_conflict")
-
-        next_state_version = int(session.get("stateVersion") or 0) + 1
+        # The Structured/foreground transition has already committed the
+        # canonical Interview State.  Use its resulting version rather than
+        # incrementing the VoiceSession mirror independently.
+        next_state_version = _interview_state_version(latest_interview_state, latest_session)
         latency_metrics["api_total_ms"] = round((monotonic() - api_started_at) * 1000, 1)
         latest_turn_fields: dict[str, Any] = {}
         if fast_result is not None:
@@ -932,7 +974,10 @@ def _process_structured_voice_turn(
             latency_metrics.get("retrieval_reused", 0),
             latency_metrics.get("retrieval_fallbacks", 0),
         )
-        session["currentQuestionId"] = question_id
+        session["currentQuestionId"] = latest_interview_state.get(
+            "currentQuestionId",
+            question_id,
+        )
         if fast_result is not None and fast_result.can_proceed and question is not None:
             background_completed = (
                 latest_turn_fields.get("backgroundValidationStatus") == "completed"
@@ -1009,6 +1054,32 @@ def _get_provisional_question(session: Mapping[str, Any]) -> dict[str, Any] | No
     return deepcopy(value) if isinstance(value, dict) else None
 
 
+def _canonical_interview_state(session: Mapping[str, Any]) -> dict[str, Any]:
+    """Load the domain Interview State used for all conversation decisions.
+
+    ``VoiceSession`` retains ``currentQuestionId`` and ``stateVersion`` as a
+    transport snapshot for voice runtimes.  It is not a second authority for
+    conversation state; API validation and transitions must read this record
+    from ``interview_states``.
+    """
+
+    value = store.get("interview_states", f"interview-state-{session['recordId']}")
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _interview_state_version(
+    interview_state: Mapping[str, Any],
+    session: Mapping[str, Any] | None = None,
+) -> int:
+    value = interview_state.get("stateVersion")
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+    return int((session or {}).get("stateVersion") or 0)
+
+
 def _handle_fast_background_validation(
     voice_session_id: str,
     turn_id: str,
@@ -1068,7 +1139,6 @@ def _persist_fast_background_validation(
     turn["latencyMetrics"] = metrics
     turn["updatedAt"] = utc_now()
     voice_turn_repository.save(turn)
-    session = voice_session_repository.get(voice_session_id)
     result = payload.get("result")
     validation_dialogue_act = (
         result.get("structuredDialogueAct") if isinstance(result, Mapping) else None
@@ -1079,27 +1149,6 @@ def _persist_fast_background_validation(
             "canonicalIntent"
         )
         voice_turn_repository.save(turn)
-    source_target_key = str(payload.get("sourceTargetKey") or "")
-    if (
-        isinstance(session, dict)
-        and source_target_key
-        and background_status == "completed"
-    ):
-        provisional_keys = session.get("provisionalAnsweredTargetKeys")
-        if isinstance(provisional_keys, list):
-            session["provisionalAnsweredTargetKeys"] = [
-                key for key in provisional_keys if str(key) != source_target_key
-            ]
-    if (
-        isinstance(session, dict)
-        and session.get("provisionalSourceTurnId") == payload.get("sourceTurnId")
-        and background_status == "completed"
-    ):
-        session.pop("provisionalQuestion", None)
-        session.pop("provisionalSourceTurnId", None)
-    if isinstance(session, dict):
-        session["updatedAt"] = utc_now()
-        voice_session_repository.save(session)
     logger.info(
         "background_structured_state_proposal source_turn_id=%s voice_session_id=%s "
         "merge_decision=%s base_state_version=%s current_state_version=%s "
@@ -1138,6 +1187,7 @@ def _commit_control_turn(
     interview_state: dict[str, Any],
 ) -> dict:
     current_question_id = interview_state.get("currentQuestionId")
+    current_state_version = _interview_state_version(interview_state, session)
     reply_text = localized_interview_fallbacks(
         resolve_interview_locale(session, {})
     )["control_ack"]
@@ -1147,14 +1197,13 @@ def _commit_control_turn(
     latest_turn = _get_voice_turn_for_session(turn["id"], latest_session)
     if latest_turn.get("processingStatus") == "cancelled":
         raise HTTPException(status_code=409, detail="turn_cancelled")
-    next_state_version = int(session.get("stateVersion") or 0) + 1
     turn.update(
         {
             "processingStatus": "completed",
             "lifecycleStatus": "COMMITTED",
             "responseText": reply_text,
             "action": action,
-            "stateVersion": next_state_version,
+            "stateVersion": current_state_version,
             "responseId": response_id,
             "questionId": current_question_id,
             "retrievalPolicy": None,
@@ -1163,7 +1212,10 @@ def _commit_control_turn(
         }
     )
     voice_turn_repository.save(turn)
-    session["stateVersion"] = next_state_version
+    # Control acknowledgements do not mutate the canonical Interview State.
+    # Keep the VoiceSession fields as a read-only mirror of that state.
+    session["currentQuestionId"] = current_question_id
+    session["stateVersion"] = current_state_version
     session["updatedAt"] = utc_now()
     voice_session_repository.save(session)
     _save_voice_assistant_message(
@@ -1318,7 +1370,16 @@ def _get_voice_session_for_internal_use(voice_session_id: str) -> dict:
     session = voice_session_repository.get(voice_session_id)
     if not session:
         raise HTTPException(status_code=404, detail="voice_session_not_found")
-    return session
+    # VoiceSession keeps transport metadata for the voice runtimes, but the
+    # Interview State record is the only authority for conversation progress.
+    # Read through that record here so callers cannot make a decision from a
+    # stale currentQuestionId/stateVersion mirror after a background merge.
+    resolved = dict(session)
+    interview_state = _canonical_interview_state(resolved)
+    if interview_state:
+        resolved["currentQuestionId"] = interview_state.get("currentQuestionId")
+        resolved["stateVersion"] = _interview_state_version(interview_state)
+    return resolved
 
 
 def _get_voice_turn_for_session(turn_id: str, session: dict) -> dict:
@@ -1376,6 +1437,23 @@ def _voice_turn_lifecycle_status(
     return "RECEIVED"
 
 
+def _voice_turn_matches_payload(existing: Mapping[str, Any], payload: VoiceTurnCreate) -> bool:
+    """Check whether a repeated client turn is the same source event.
+
+    ``clientTurnId`` is the durable identity. The transcript and coarse turn
+    type protect against reusing that identity for a different source event.
+    ``expectedStateVersion`` and ``answerToQuestionId`` are intentionally not
+    compared: both are transient/server-resolved values that may differ when
+    the same provider event is replayed after reconnect.
+    """
+
+    if str(existing.get("transcript") or "").strip() != payload.transcript.strip():
+        return False
+    if str(existing.get("turnType") or "ANSWER") != payload.turnType:
+        return False
+    return True
+
+
 def _build_user_context_from_session(session: dict) -> UserContext:
     user_id = session.get("ownerUserId") or session.get("createdByUserId")
     return UserContext(
@@ -1410,13 +1488,14 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
             "voiceSessionId": turn["voiceSessionId"],
             "voiceTurnId": turn["id"],
             "voiceClientTurnId": turn.get("clientTurnId"),
+            "voiceTurnSequence": turn.get("sequence"),
             "targetType": None,
             "targetId": None,
         }
         return store.upsert("messages", message)
     question = _find_question_by_id(interview_state, current_question_id)
     if question is None and current_question_id:
-        session = voice_session_repository.get(turn.get("voiceSessionId")) or {}
+        session = _get_voice_session_for_internal_use(turn.get("voiceSessionId"))
         if current_question_id == session.get("currentQuestionId"):
             provisional_question = session.get("provisionalQuestion")
             if (
@@ -1446,6 +1525,7 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
         "voiceSessionId": turn["voiceSessionId"],
         "voiceTurnId": turn["id"],
         "voiceClientTurnId": turn.get("clientTurnId"),
+        "voiceTurnSequence": turn.get("sequence"),
         # The structured service orders messages by timestamp.  Voice turns
         # already have a monotonic creation time; retain it so repeated
         # answers to the same question are interpreted in turn order rather
@@ -1459,7 +1539,13 @@ def _save_voice_user_message(record: dict, turn: dict, user: UserContext) -> dic
 def _save_voice_assistant_message(session: dict, payload: AssistantEventCreate) -> dict:
     detail = payload.detail or {}
     response_id = payload.responseId or f"voice-response-{uuid4().hex[:12]}"
-    message_id = f"voice-assistant-msg-{response_id}"
+    source_turn_id = _assistant_source_turn_id(payload)
+    message_identity = (
+        f"turn-{source_turn_id}"
+        if payload.eventType == "assistant_transcript_final" and source_turn_id
+        else f"response-{response_id}"
+    )
+    message_id = f"voice-assistant-msg-{message_identity}"
     existing = store.get("messages", message_id) or {}
     message = {
         "id": message_id,
@@ -1493,18 +1579,36 @@ def _assistant_event_id(voice_session_id: str, payload: AssistantEventCreate) ->
     API workers, where an in-process lock would not be sufficient.
     """
 
-    if not payload.responseId:
-        return f"voice-assistant-event-{uuid4().hex[:12]}"
-    identity = "\x1f".join(
-        (
-            voice_session_id,
-            payload.eventType,
-            payload.responseId,
-            str(payload.generation) if payload.generation is not None else "",
+    source_turn_id = _assistant_source_turn_id(payload)
+    if payload.eventType == "assistant_transcript_final" and source_turn_id:
+        identity = "\x1f".join(
+            (
+                voice_session_id,
+                payload.eventType,
+                "turn",
+                source_turn_id,
+            )
         )
-    )
+    elif not payload.responseId:
+        return f"voice-assistant-event-{uuid4().hex[:12]}"
+    else:
+        identity = "\x1f".join(
+            (
+                voice_session_id,
+                payload.eventType,
+                payload.responseId,
+                str(payload.generation) if payload.generation is not None else "",
+            )
+        )
     digest = sha256(identity.encode("utf-8")).hexdigest()[:24]
     return f"voice-assistant-event-{digest}"
+
+
+def _assistant_source_turn_id(payload: AssistantEventCreate) -> str | None:
+    detail = payload.detail or {}
+    value = detail.get("turnId") or detail.get("sourceTurnId")
+    normalized = str(value or "").strip()
+    return normalized or None
 
 
 def _should_persist_voice_assistant_message(payload: AssistantEventCreate) -> bool:

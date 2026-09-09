@@ -92,6 +92,17 @@ POSTGRES_SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS entity_store_record_lookup_idx
         ON kikiori.entity_store (entity_type, tenant_id, ((payload ->> 'recordId')))
     """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS voice_turn_session_client_id_unique_idx
+        ON kikiori.entity_store (
+            tenant_id,
+            ((payload ->> 'voiceSessionId')),
+            ((payload ->> 'clientTurnId'))
+        )
+        WHERE entity_type = 'voice_turns'
+          AND NULLIF(payload ->> 'voiceSessionId', '') IS NOT NULL
+          AND NULLIF(payload ->> 'clientTurnId', '') IS NOT NULL
+    """,
 )
 
 

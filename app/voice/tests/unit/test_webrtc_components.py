@@ -525,6 +525,16 @@ def test_runtime_event_serialization_emits_common_events_only() -> None:
         "questionId": "q-001",
         "stateVersion": 2,
     }
+    identified_payload = _serialize_runtime_event(
+        UserTranscriptFinal(text="hello", client_turn_id="transcribe-result-1"),
+        context=VoiceEventContext(
+            voice_session_id="vs-1",
+            question_id="q-001",
+            state_version=2,
+        ),
+    )
+    assert identified_payload is not None
+    assert identified_payload["clientTurnId"] == "transcribe-result-1"
     error_payload = _serialize_runtime_event(
         RuntimeError(message="boom"),
         context=VoiceEventContext(voice_session_id="vs-1"),

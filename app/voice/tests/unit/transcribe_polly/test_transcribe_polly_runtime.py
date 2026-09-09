@@ -441,6 +441,7 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
     assert bridge.process_calls[0]["transcript"] == "最終回答です"
     assert bridge.process_calls[0]["turn_type"] == "ANSWER"
     assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
+    assert bridge.process_calls[0]["client_turn_id"] == "transcribe-result-1"
     assert bridge.process_calls[0]["stt_confidence"] == 0.91
     assert bridge.intent_calls == []
     assert "voice_turn_api_completed" in caplog.text

@@ -6,6 +6,8 @@
 
 この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
 
+Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの順序保護、Provider source turnのDurable Dedup、Canonical Question Definitionの不変契約を実装した。Initial Questionの全面統合、Realtime音声経路の変更、RAG構造変更はこの文書の対象外である。
+
 ## 1. 監査結果の要約
 
 `app/api` のText/Voice処理には、既存 `StructuredDialogueAct` を型として再利用する `Canonical Intent -> Canonical Action` Policyが実装されている。Provider側の入力境界にはまだ粗いtransport `turnType` が残るが、Voiceの会話処理開始時にはBackendのCanonical Policyを再評価する。
@@ -14,23 +16,24 @@
 
 | 判断 | 現在の主な実装 | 監査結果 |
 |---|---|---|
-| User Turnの受領・一部重複排除 | OpenAI sideband、Voice API、Transcribe runtime、Nova tool coordinator | Providerごとにキーと寿命が違う。耐久性のある共通Canonical IDではない |
-| Turn Type | `InterviewBridge.process_turn()` の既定値、Voice intent API、OpenAI coordinator | OpenAIは `ANSWER` を固定してVoice intent APIを迂回する |
+| User Turnの受領・重複排除 | OpenAI sideband、Voice API、Transcribe runtime、Nova tool coordinator | OpenAIは`openai-{item_id}`、Novaは`nova-{tool_use_idまたはcompletion_id}`、Transcribeは受理したAWS Transcribeの`ResultId`（複数なら順序付きhash）を`clientTurnId`へ変換し、APIとDBのDurable契約で再利用する。ResultIdを提供しない旧/代替ストリームだけはruntime生成IDとなる |
+| Turn Type | `InterviewBridge.process_turn()` の既定値、Voice intent API、OpenAI coordinator | OpenAI transportには粗い `ANSWER` が残るが、Backend側でCanonical Intentを再評価するため、transport値は会話Policyの正本ではない |
 | dialogueAct / Canonical Intent | `services/conversation_policy.py:resolve_canonical_intent()` | 既存 `StructuredDialogueAct` を再利用。Routerは副作用なしで意図だけを返す |
 | Canonical Action | `services/conversation_policy.py:resolve_canonical_action()` | Intentとpending confirmation等から1つのActionへ変換 |
 | Fast判定 | `start_fast_interview_turn()` | `minimumInformationPresent`等のBooleanだけで、dialogueActを分類しない |
 | State更新 | `services/interview_state_transition.py:commit_interview_state()` | 永続化入口は1系統。Fast foregroundはprovisionalな質問進行、Backgroundはversion付きproposalをCoordinator経由で安全にmergeする |
 | 次target | `select_next_question_target()` | Backend coordinatorが決める。Question Generatorはtargetを決めない |
-| Question definition | Field / question / questionPlan | 現行Question Generator入力には定義が残っている。タイトルだけに縮退していることはコード上では確認できない |
+| Question definition | Field / question / questionPlanのsnapshot | `questionDefinition`とhashをQuestion snapshotへ保存し、`questionProgress`、`renderedQuestionText`、`lastExplanationText`相当の出力とは分離。説明・生成結果から定義へ書き戻さない |
 | Question rendering | `_generate_question_text()`、Question Generator provider | Backendが選んだtargetの表現を生成する。RealtimeはPhase 1では読み上げる役割 |
 | 初回質問 | `create_voice_session()` -> `_initialize_initial_question()`、OpenAIの `session.created` | 通常Turnとは別の初期化経路。OpenAIはsidebandで初期応答を送る |
 
-したがって、会話処理では次の2つを正本契約として扱う。
+したがって、会話処理では次の契約を正本として扱う。
 
-1. Provider固有IDを、永続的に追跡できるCanonical User Turnへ一度だけ変換すること。
+1. Provider固有IDを、`voice_session_id + clientTurnId`で永続的に追跡できるCanonical User Turnへ一度だけ変換すること。
 2. 1つのUser Turnから1つの会話分類、1つのCanonical Action、1つのState transitionだけを生成すること。
+3. Interview Plan / Knowledge由来のCanonical Question Definitionを不変とし、質問文・説明文は一時的なrendered outputとして扱うこと。
 
-Canonical Intent/Actionは `conversation_policy.py`、永続StateのcommitとBackground mergeは `interview_state_transition.py` が担当する。ただしDurable DBのTurn dedupとInitial Questionの全面統合は未実装である。
+Canonical Intent/Actionは `conversation_policy.py`、永続StateのcommitとBackground mergeは `interview_state_transition.py` が担当する。VoiceTurnのDurable Dedupと処理claimは`voice_turn_repository.py`および`voice_turn_session_client_id_unique_idx`が担当する。
 
 ## 2. 現在の全体フロー
 
@@ -164,7 +167,7 @@ OpenAIのBrowser側 `conversation.item.input_audio_transcription.completed` はU
 | OpenAI call作成 | `app/voice/.../openai_realtime/client.py:create_call()` 29-89 | SDP, session payload | call id, SDP answer, Location | OpenAI call | 前景 | OpenAI |
 | OpenAI sideband開始 | `app/voice/.../openai_realtime/coordinator.py:OpenAIRealtimeSession.start()` 78-99、`_run_sideband()` 116-167 | call id, key | WebSocket/event loop | in-memory session | 背景task | OpenAI |
 | User transcript final受領 | `coordinator.py:_handle_event()` 201-221 | item_id, transcript | turn task | `_processed_transcript_items` | 前景task起動 | OpenAI |
-| OpenAI User Turn type | `coordinator.py:_process_turn()` 350-365 | transcript, current q | Bridge呼出し | なし | 前景 | OpenAI固定 `ANSWER` |
+| OpenAI User Turn type | `coordinator.py:_process_turn()` 350-365 | transcript, current q | Bridge呼出し | なし | 前景 | transport値は粗い `ANSWER`。BackendのCanonical Policyで再評価 |
 | 任意VoiceのTurn type分類 | `app/voice/.../services/interview_bridge.py:process_turn()` 116-152、`interview_api.py:217-246` | transcript, current q | `ANSWER`/`CONTROL` | なし | 前景 | Bridge callerが`None`の時 |
 | Turn ID reuse | `app/api/.../services/voice_interview.py:create_voice_turn()` 258-359 | clientTurnId, transcript | VoiceTurn | VoiceTurn / sequence | 前景 | 全Voice API |
 | Turn lifecycle/idempotency | `voice_interview.py:_process_voice_turn()` 555-617 | voice_session_id, turn_id | process result | processing/EVALUATING/COMMITTED/failed | 前景 | 全Voice |
@@ -199,7 +202,7 @@ OpenAIのBrowser側 `conversation.item.input_audio_transcription.completed` はU
 * Background Structuredは `persist_state=False` の提案生成後、`interview_state_transition.py:apply_background_state_proposal()` を介して、最新Stateへ抽出結果だけをmergeする。
 * 永続Stateの実際の保存は `interview_state_transition.py:commit_interview_state()` に集約され、Backgroundはcurrent target、next target、canonical intent/actionを上書きしない。
 
-Provider側のUI表示・transport Turn type・Durable Turn dedupはまだ完全に統合されていないが、BackendのIntent/Action/State commitの責務はこの境界で固定されている。
+Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一方、source IDを持つVoice Turnについては、Backendの`voice_session_id + clientTurnId`をDB unique indexで保護し、重複要求を既存行へ再利用するDurable契約を実装している。Transcribeも受理した`ResultId`をruntimeイベントとAPIの両方へ引き継ぐため、ResultIdが存在する通常経路では再接続後も同じsource identityを復元できる。ResultIdを提供しないストリームではprovider側に安定IDがないため、runtime生成IDとなる。
 
 ## 4. 現行State Machineの復元
 
@@ -336,7 +339,7 @@ Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_R
 
 ### 5.4 Case C: 「すでに回答している」
 
-OpenAI coordinatorは全completed transcriptを `turn_type="ANSWER"` で送る（`coordinator.py:356-364`）。Textや、Bridge callerがtypeを省略する経路ではAPIの `ANSWER` / `CONTROL` 2値分類を使えるが、これは `QUESTION_TO_ASSISTANT`、`CORRECTION`等を返す分類ではない（`voice_interview.py:184-244`、`interview_api.py:217-246`）。
+OpenAI coordinatorは全completed transcriptをtransport上 `turn_type="ANSWER"` で送る（`coordinator.py:356-364`）。ただしVoice APIはその値だけで会話Actionを決めず、Canonical Intent Policyで再評価する。Textや、Bridge callerがtypeを省略する経路でも同じPolicyへ入る。旧来のAPI入口に残る `ANSWER` / `CONTROL` 2値分類は `QUESTION_TO_ASSISTANT`、`CORRECTION`等を表すCanonical Intentではない（`voice_interview.py:184-244`、`interview_api.py:217-246`）。
 
 Full Structuredに到達すれば、Structured `dialogueAct` と `transcriptAssessment` により correction / clarification / retry 分岐がある。しかしOpenAIでは入口のtype固定により、Voice intent APIは呼ばれない。実際に「すでに回答している」がどのdialogueActになったかは、同じ入力をFull providerへ渡した実行traceが必要である。
 
@@ -350,9 +353,9 @@ Full Structuredでは `HESITATION`、`BACKCHANNEL`、`OTHER` が `service.py:142
 
 ### 5.7 Case F: 初回質問
 
-Session作成時にAPIが `_initialize_initial_question()` を呼び、既存current questionがあれば再利用し、なければ `generate_interview_reply(..., persist=False)` で初回文を作る（`voice_interview.py:132-177, 1101-1132`）。OpenAI側はsidebandの `session.created` を受けた時に `_send_initial_reply()` をtask化する（`coordinator.py:172-185, 286-322`）。
+Session作成時にAPIが `_initialize_initial_question()` を呼び、既存current questionがあれば再利用し、なければ `generate_interview_reply(..., persist=False)` で初回文を作る（`voice_interview.py:115-164, 1282-1313`）。Canonicalなcurrent questionが存在する場合はその質問文を再利用し、初回質問のために追加LLMを呼ばない。OpenAI側はsidebandの `session.created` を受けた時に `_send_initial_reply()` をtask化する（`coordinator.py:197-224, 340-403`）。
 
-OpenAIのUser Turnが初期応答より先に届く場合、`_process_turn()` は `_initial_task` を `asyncio.shield()` で待つ（`coordinator.py:324-349`）。これにより初回質問と最初のUser Turnは同じ `_turn_lock` の直列区間へ入るが、初回質問自体は通常TurnのCanonical Actionを通っていない。
+OpenAIの起動状態はTransportとConversationで分離する。sideband接続後も、`session.created`、`initialReplyText`確認、初回 `response.create`送信を順に完了するまで `READY_FOR_USER_TURN` にはしない（`coordinator.py:62-70, 193-224, 589-610`）。その間に届いたUser Turnは `_pending_first_user_turns` に保持され、初回応答送信後に通常処理へ進む（`coordinator.py:407-452`）。FrontendはVoice Session作成レスポンスの`initialReplyText`を先に表示し、Realtimeの初回transcript deltaは固定の初回応答IDへmergeする（`useRealtimeVoiceInterview.ts:153-182, 639-661`）。
 
 ### 5.8 Case traceの比較可能な項目
 
@@ -366,7 +369,7 @@ OpenAIのUser Turnが初期応答より先に届く場合、`_process_turn()` �
 | C already answered | current question | Canonical Routerで分類し、FullのdialogueActは検証として採取 | correction/answer updateの有無 | 維持または更新 | correctionStatus / Stateの変化 | currentまたはnext target |
 | D rejection | confirmation target | Full `REJECTION`。Fast schemaには専用値なし | candidate rejection | candidate破棄 | `_reject_target()`で未確定側へ | 再回答用target |
 | E hesitation | current question | Canonical Routerは `HESITATION` / `BACKCHANNEL`。Fastは呼ばない | 通常updateなし | 維持 | current target維持 | retry / current question |
-| F initial | 未回答の初期target | Router/Actionなし。session.created -> initial task | initial question生成結果 | なし | initial session snapshot | initial question text |
+| F initial | 未回答の初期target | APIが作った`initialReplyText`を表示し、OpenAIはsession.created -> initial task -> response.create | initial question definition / initial reply | なし | initial session snapshot + startup lifecycle | initial question text |
 
 モデルが返す`dialogueAct`やfieldUpdatesは入力ごとに変わるため、上表の型は分岐契約であり、固定された実行結果ではない。Case A〜Eの具体的なJSONを得るには、実際のprovider responseをharnessの注入出力またはE2E traceへ記録する必要がある。
 
@@ -515,13 +518,14 @@ Frontend merge key = voiceResponseId 等
 OpenAI semantic VAD / input audio
   ↓ sideband event: input_audio_buffer.speech_started / speech_stopped
 conversation.item.input_audio_transcription.completed
-  ↓ coordinator._handle_event():201-221
+  ↓ coordinator._handle_event():225-272
 _process_turn task生成
-  ↓ coordinator._process_turn():324-349
-initial_taskが存在すれば shield(initial_task) をawait
-  ↓ coordinator.py:337-349
+  ↓ coordinator._process_turn():407-452
+startup lifecycleが未完了なら `_pending_first_user_turns` に保持し
+`_conversation_ready.wait()` をawait
+  ↓ coordinator.py:416-452
 _turn_lock取得
-  ↓ coordinator.py:350-365
+  ↓ coordinator.py:477-489
 InterviewBridge.process_turn()
   ↓ Bridge.process_turn():116-152
 POST /internal/.../turns で save_turn
@@ -554,13 +558,13 @@ Fast ON eligible:
 Turn / VoiceSession / assistant message commit
   ↓
 reply_ready
-  ↓ coordinator._process_turn():386-408
+  ↓ coordinator._process_turn():487-528
 sideband response.create
-  ↓ coordinator._send_backend_reply():410-458
+  ↓ coordinator._send_backend_reply():540-588
 response.created
   ↓
 response.output_audio.delta
-  ↓ coordinator.py:237-244 / Browser DataChannel
+  ↓ coordinator.py:287-289 / Browser DataChannel
 remote audio track -> HTMLAudioElement.play()
 ```
 
@@ -570,19 +574,19 @@ Realtimeには `reply_text` が完成するまで `response.create` を送らな
 
 Transcript FinalからOpenAI First Audioまでの主な直列awaitは次のとおり。
 
-1. `coordinator.py:341` — `await asyncio.shield(initial_task)`。初回reply taskが存在する場合だけ、初回reply送信完了を待つ。
-2. `coordinator.py:350` — `async with self._turn_lock`。前の初回/Turn処理がlockを保持していれば待つ。
+1. `coordinator.py:431` — 起動未完了時の `await asyncio.shield(self._conversation_ready.wait())`。初回`response.create`送信までに届いた最初のUser Turnだけが対象。
+2. `coordinator.py:477` — `async with self._turn_lock`。初回reply/前Turnがlockを保持していれば待つ。
 3. `interview_bridge.py:138` — `await self.save_turn(...)`。VoiceTurn保存の内部HTTP。
 4. `interview_bridge.py:149` — `await self.process_saved_turn(...)`。process endpointのHTTP。
 5. `voice_interview.py:578-589` — Turn lifecycle保存、record/user message/state snapshot読み込み。
-6. Fast ONの場合 `service.py:498` — `fast_future.result()`。Fast providerの完了を待つ（ThreadPool futureだが呼び出し元は同期関数）。
-7. Fast ONの場合 `service.py:605-629` -> `_generate_question_text():2723-2779` — speculative RAG futureの `resolve()`。final queryと一致しない場合は正式Retrievalもこの区間で行う。
-8. Full/Fast共通 `service.py:2856-2885` — Question Generator streamまたはnon-stream providerの完了。OpenAI coordinatorではon-delta callbackを渡さないため、最終文字列完了待ちになる。
+6. Fast ONの場合 `service.py:541` — `fast_future.result()`。Fast providerの完了を待つ（ThreadPool futureだが呼び出し元は同期関数）。
+7. Fast ONの場合 `service.py:608-629` -> `_generate_question_text()` — speculative RAG futureの `resolve()`。final queryと一致しない場合は正式Retrievalもこの区間で行う。
+8. Full/Fast共通 `service.py:3139`以降 — Question Generator streamまたはnon-stream providerの完了。OpenAI coordinatorではon-delta callbackを渡さないため、最終文字列完了待ちになる。
 9. `voice_interview.py:625-904` — State/Turn/assistant messageのcommitとprocess result構築。
-10. `coordinator.py:401-408` — `_send_backend_reply()`、さらに `coordinator.py:460-467` の `_send_lock`でsideband送信を待つ。
-11. OpenAI側の `response.output_audio.delta` 到着 — `coordinator.py:237-244` がfirst audioを記録し、Browser側remote audio trackが再生する。
+10. `coordinator.py:540-588` — `_send_backend_reply()`、さらに `_send_lock`でsideband送信を待つ。
+11. OpenAI側の `response.output_audio.delta` 到着 — `coordinator.py:287-289` がfirst audioを記録し、Browser側remote audio trackが再生する。
 
-`background_future`はこのawait chainに含まれない。Fast ONのforegroundはBackground Structured完了をawaitしないが、Background callbackが後でState/sessionを更新するため、処理の正本が時系列で一つではない。
+`background_future`はこのawait chainに含まれない。Fast ONのforegroundはBackground Structured完了をawaitしない。完了後のBackground結果は`apply_background_state_proposal()`へ渡され、保護された会話制御Stateを上書きせず、同じState Writer境界で抽出提案だけを安全にmergeする。
 
 ### 10.3 OpenAI create_task一覧
 
@@ -684,7 +688,7 @@ UV_CACHE_DIR=/tmp/ai-interviewer-test-cache uv run pytest \
 
 ## 15. Canonical Algorithm（Phase 1/2実装状況）
 
-現行コードとのGapを確認した上で定義した順序のうち、Canonical Intent/ActionとSingle State Writerを実装した。Durable Turn dedup、Initial Question全面統合、出力Streamingはまだ対象外である。
+現行コードとのGapを確認した上で定義した順序のうち、Canonical Intent/Action、Single State Writer、source ID付きVoice TurnのDurable Dedup、Canonical Question Definitionの不変契約を実装した。Initial Question全面統合と出力Streamingはまだ対象外である。
 
 ```text
 Provider raw input
@@ -693,8 +697,10 @@ Canonical User Turn Creation
   - provider source idを保存
   - voice_session_id + source idからcanonical_turn_idを決める
   ↓
-Turn Deduplication（現行Provider/APIの既存範囲）
-  - Durableな共通unique contractは未実装
+Turn Deduplication
+  - `voice_session_id + clientTurnId`をAPI repositoryとDB partial unique indexで保護
+  - 重複POSTは既存VoiceTurnを返し、processing claimも条件付き更新で一度だけ取得
+  - OpenAI/Nova/Transcribeはprovider source IDを`clientTurnId`へ接続。TranscribeはResultIdのないストリームだけ再接続時のsource identityを復元できない
   ↓
 One Conversation Interpretation
   - 既存 StructuredDialogueAct を正規のintent型として再利用
@@ -745,22 +751,22 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 
 ### 15.3 Initial Question
 
-初回はまだ特殊経路で、`create_voice_session()` とRealtime `session.created` が通常Turnと分かれている。これは次Phaseの対象であり、今回のCanonical Intent/Action変更では統合していない。
+初回のCanonical出力は`create_voice_session()`で作成・保存し、OpenAIのRealtime `session.created`後にだけ送信する。FrontendはVoice Session作成レスポンスから先に表示し、sidebandは初回`response.create`送信完了を`READY_FOR_USER_TURN`の条件とする。通常Turnと完全に同じState transitionへ統合することは次Phaseの対象だが、初回出力と最初のUser Turnのraceは起動ゲートで防ぐ。
 
 ## 16. Gap Analysis
 
 | Requirement | Current implementation | Problem | Severity | Affected providers | Proposed owner |
 |---|---|---|---|---|---|
-| 1 Turn -> 1 canonical identity | OpenAI item set + clientTurnId、API reuse、UI keyが別々 | durableなsource id unique contractがない | Critical | 全Voice、特にOpenAI | `app/api` Canonical Turn repository |
-| 1 intentの正本 | BackendのCanonical PolicyをPhase 1で追加。Provider側には粗いtransport値が残る | DurableなProvider非依存Turn contractは未実装 | High | Voice全体 | app/api Conversation Policy + Turn adapter |
-| Stateを1 writerへ集約 | `commit_interview_state()` とversion付きBackground mergeをPhase 2で追加 | DBを跨ぐ複数workerの原子的排他は未実装 | Medium | Voice Fast ON | app/api versioned reconciliation |
-| Confirmationの単一遷移 | Canonical Action -> existing `_confirm_target()` | Initial/全ProviderのDurable Turn contractは未統合 | Medium | Voice全体 | Canonical Action |
+| 1 Turn -> 1 canonical identity | OpenAI/Nova/Transcribeのsource ID、API repository、DB partial unique index、UI identity key | ResultIdを提供しないTranscribe streamと、client IDを生成しない外部/旧callerはDurable dedup対象外 | Medium | Voice全体、特に旧Transcribe stream | `app/api` Canonical Turn repository + provider adapter |
+| 1 intentの正本 | BackendのCanonical PolicyをPhase 1で追加。Provider側には粗いtransport値が残る | transport `turnType` はまだProvider境界に存在し、全ProviderのCanonical Turn adapter統合は未完了 | Medium | Voice全体 | app/api Conversation Policy + Turn adapter |
+| Stateを1 writerへ集約 | `commit_interview_state()` とversion付きBackground mergeをPhase 2で追加 | processを跨ぐState version compare/commitの原子性はDB側で追加検討が必要 | Medium | Voice Fast ON | app/api versioned reconciliation |
+| Confirmationの単一遷移 | Canonical Action -> existing `_confirm_target()` | Initial経路と全Providerのsource ID adapterはまだ別境界 | Medium | Voice全体 | Canonical Action |
 | clarificationの単一経路 | Canonical Action -> existing help / `_keep_current_question()` | 実LLM RouterのQTA/Clarification境界は観測継続 | Medium | Voice全体 | Canonical dialogueAct + Action |
-| Initial questionの共通Policy | session作成、OpenAI session.createdが別経路 | 初回未提示・Turn競合を追いにくい | High | Voice全体 | app/api Policy + renderer |
-| Provider非依存Turn contract | providerごとにendpoint/event/turn typeが異なる | Conversation Policyが入口の都合を受ける | High | 全Provider | adapter -> Canonical Turn |
-| QGがdefinitionを厳守 | 現行inputにはoriginalQuestion/description/itemsあり | 実prompt/responseの観測が不足。LLM逸脱の検出契約がない | High | Text/Voice | backend renderer/validator |
+| Initial questionの共通Policy | `create_voice_session()`が`initialReplyText`を作成し、OpenAIはstartup gate後に送信。FrontendはSession作成直後に表示 | 初回Actionは通常TurnのCanonical Actionとはまだ別経路 | Medium | Voice全体 | app/api Policy + renderer |
+| Provider非依存Turn contract | OpenAI/Nova/Transcribe runtimeはsource IDを`clientTurnId`へ接続。Textはvoice contract外 | Text/旧callerのsource ID adapterは別境界 | Medium | 全Provider | adapter -> Canonical Turn |
+| QGがdefinitionを厳守 | `questionDefinition`、hash、`questionProgress`を分離し、Promptにも定義を渡す | LLM出力が定義から逸脱した場合の自動validatorは未実装 | Medium | Text/Voice | backend renderer/validator |
 | QG全文待ちを避ける | Internal streamはあるがOpenAIはnon-stream Bridge | OpenAI First Audioはreply全文後 | High | OpenAI | later streaming boundary |
-| Background resultのState整合 | proposal + base/current version比較 + safe mergeをPhase 2で追加 | Cross-process atomic version checkは残課題 | Medium | Voice Fast ON | same turn/version reconciliation |
+| Background resultのState整合 | proposal + base/current version比較 + safe mergeを追加。control-state fieldsは復元保護 | Cross-processでのState commit/version compareは残課題 | Medium | Voice Fast ON | same turn/version reconciliation |
 | `CONTROL`のdialogueAct | API 2値分類後 `_commit_control_turn()` | clarification/rejection等と異なる制御語彙 | Medium | Text/Voice caller dependent | Canonical Action |
 | UIとBackendのID統合 | frontend merge keyとVoiceTurn client ID | UI duplicateとBackend duplicateを同一契約で追えない | Medium | 全Voice | Canonical IDs |
 | Text SSEの文分割 | newline + artificial delay | 音声ではないが出力境界がProviderごとに異なる | Low | Text | output adapter |
@@ -775,9 +781,9 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 4. State transitionとnext target selectionをAction単位で一度だけ実行する（Phase 1/2実施済み）。
 5. Background Structuredをproposal化し、base/current state version付きでCoordinatorから安全にmergeする（Phase 2実施済み）。
 6. Initial Questionを同じQuestion Renderer/Policy契約へ接続する（次Phase）。
-7. Provider source IDからCanonical User Turn IDを生成し、API側でdurable dedupeする（次Phase）。
-8. Question definitionをimmutableなtarget contractとして分離し、canonical questionがある場合のrender規則を固定する（次Phase）。
-9. Provider adapterを通じてText/Transcribe/Nova/OpenAIの入力境界をCanonical Turnへ揃える（次Phase）。
+7. Provider source IDからCanonical User Turn IDを生成し、API側でdurable dedupeする（実施済み。ResultIdを提供しない旧Transcribe streamは安定IDなし）。
+8. Question definitionをimmutableなtarget contractとして分離し、canonical questionがある場合のrender規則を固定する（実施済み）。
+9. Provider adapterを通じてText/Transcribe/Nova/OpenAIの入力境界をCanonical Turnへ揃える（Voiceのsource ID伝播を実施。Textは別境界）。
 10. 最後にBrowser/sideband/Polly/NovaのE2Eで、同じCanonical Turn IDとActionを追跡する（次Phase）。
 
 この順番が終わるまで、`needs_question_explanation`等を個別に増やしてFastを第二のdialogue classifierにしない。
@@ -786,8 +792,8 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 
 次は今回のPhaseの対象外で、実行traceまたは次Phaseが必要である。
 
-* 実際の1発話に対するOpenAI `completed` eventの受信回数。
-* Browser final callback回数、sideband `_process_turn` task回数、API保存行数、UI message追加回数の1:1対応。
+* 実Browserで取得した1発話のOpenAI `completed` event回数と、実DB上の行数の1:1対応（コード側のカウンタ・ログ・テストは追加済みだが、今回の検証ではlive E2Eを実行していない）。
+* 実BrowserでのBrowser final callback回数、sideband `_process_turn` task回数、API保存行数、UI message追加回数の1:1対応。
 * Case Aで「大丈夫です。」が同じtargetへ戻る実行時の `stateBefore/stateAfter/stateVersion`。
 * Question Generatorへ実際に渡ったserialized promptと、LLMが返した質問の逸脱分類。
 * Fast ON時の各dialogueActに対する実際のFast provider outputとBackground outputの一致率（Fastの回答十分性とRouter Intentは別契約のため、別評価が必要）。
@@ -809,7 +815,7 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 
 Structured比較実行のRouter分類は、`CONFIRMATION`、`REJECTION`、`CORRECTION`、`HESITATION`、`BACKCHANNEL`でrecall 100%。`CLARIFICATION_REQUEST`はprecision 83.3% / recall 100%、`QUESTION_TO_ASSISTANT`はprecision 100% / recall 70%だった。ただし両者は同じ `EXPLAIN_CURRENT_QUESTION` Actionへ入るため、Action上の非ANSWER誤分類は0件だった。
 
-この結果をAcceptanceとして、Phase 2のState Writer一本化へ進めた。実行結果JSONはリポジトリへ追加していない。
+この結果をPhase 1.5のAcceptanceとして、Phase 2のState Writer一本化へ進めた。実行結果JSONはリポジトリへ追加していない。
 * `VoiceSession`の実環境provider default値。コードfactoryの対応とenv実値は別なので、secretを含まない設定ダンプが必要。
 
 これらは推測で埋めず、次のE2E/structured loggingで同一 `voice_session_id`、Canonical Turn ID、OpenAI item idを出力して確認する。

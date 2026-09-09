@@ -28,6 +28,13 @@ export async function createOpenAIRealtimePeerConnection(
   const startedAt = performance.now();
   const peerConnection = new RTCPeerConnection();
   const dataChannel = peerConnection.createDataChannel("oai-events", { ordered: true });
+  console.info("openai_realtime_peer_connection_created", {
+    voice_session_id: options.voiceSessionId,
+  });
+  console.info("openai_realtime_data_channel_created", {
+    voice_session_id: options.voiceSessionId,
+    label: dataChannel.label,
+  });
   let remoteStream: MediaStream | null = null;
   let playbackInitialized = false;
 

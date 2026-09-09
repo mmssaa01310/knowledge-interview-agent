@@ -52,7 +52,11 @@ class FakeVoiceSessionService:
         return None
 
 
-def make_session(bridge: FakeBridge | None = None) -> OpenAIRealtimeSession:
+def make_session(
+    bridge: FakeBridge | None = None,
+    *,
+    initial_reply_text: str | None = None,
+) -> OpenAIRealtimeSession:
     voice_session = AuthorizedVoiceSession(
         voice_session_id="voice-session-1",
         record_id="record-1",
@@ -62,6 +66,9 @@ def make_session(bridge: FakeBridge | None = None) -> OpenAIRealtimeSession:
         current_question_id="q-1",
         state_version=1,
         interview_status="active",
+        initial_reply_text=initial_reply_text,
+        initial_question_id="q-1" if initial_reply_text else None,
+        initial_reply_status="pending" if initial_reply_text else None,
     )
     return OpenAIRealtimeSession(
         voice_session=voice_session,
@@ -164,6 +171,32 @@ def test_duplicate_final_transcript_event_is_processed_once() -> None:
     assert len([event for event in events if event["type"] == "response.create"]) == 1
 
 
+def test_duplicate_trace_counts_provider_event_and_unique_turn_once() -> None:
+    async def run() -> tuple[FakeBridge, OpenAIRealtimeSession]:
+        bridge = FakeBridge()
+        session = make_session(bridge)
+        websocket = FakeWebSocket()
+        session._websocket = websocket
+        event = {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-trace",
+            "transcript": "こんにちは。",
+        }
+        await session._handle_event(event)
+        await session._handle_event(event)
+        await asyncio.gather(*session._turn_tasks)
+        return bridge, session
+
+    bridge, session = asyncio.run(run())
+
+    assert len(bridge.processed) == 1
+    assert session._transcript_final_count == 2
+    assert session._unique_transcript_item_ids == {"item-trace"}
+    assert session._process_turn_task_count == 1
+    assert session._backend_process_count == 1
+    assert session._response_create_count == 1
+
+
 def test_answer_turn_waits_for_initial_reply_task() -> None:
     class InitialBridge(FakeBridge):
         async def claim_initial_reply(self, voice_session_id: str):
@@ -183,10 +216,64 @@ def test_answer_turn_waits_for_initial_reply_task() -> None:
 
     events = asyncio.run(run())
 
-    assert [event["response"]["metadata"]["kikiori_kind"] for event in events] == [
+    response_events = [event for event in events if event["type"] == "response.create"]
+    assert [event["response"]["metadata"]["kikiori_kind"] for event in response_events] == [
         "initial",
         "interview",
     ]
+
+
+def test_started_session_waits_for_initial_dispatch_before_processing_turn() -> None:
+    class InitialBridge(FakeBridge):
+        async def claim_initial_reply(self, voice_session_id: str):
+            return type(
+                "Claim",
+                (),
+                {
+                    "claimed": True,
+                    "initial_reply_text": "これから開始します。最初の質問です。",
+                    "initial_question_id": "q-1",
+                    "reason": None,
+                },
+            )()
+
+    async def run() -> tuple[InitialBridge, OpenAIRealtimeSession, list[dict]]:
+        bridge = InitialBridge()
+        session = make_session(bridge, initial_reply_text="これから開始します。最初の質問です。")
+        websocket = FakeWebSocket()
+        session._websocket = websocket
+        session._startup_enforced = True
+
+        turn_task = asyncio.create_task(
+            session._process_turn(item_id="item-before-initial", transcript="すぐ回答します。")
+        )
+        await asyncio.sleep(0)
+        assert bridge.processed == []
+        assert websocket.sent == []
+        assert session._pending_first_user_turns == {
+            "item-before-initial": "すぐ回答します。"
+        }
+
+        await session._handle_event({"type": "session.created"})
+        assert session._initial_task is not None
+        await session._initial_task
+        await turn_task
+        return bridge, session, websocket.sent
+
+    bridge, session, events = asyncio.run(run())
+
+    assert len(bridge.processed) == 1
+    assert session._pending_first_user_turns == {}
+    response_events = [event for event in events if event["type"] == "response.create"]
+    assert [event["response"]["metadata"]["kikiori_kind"] for event in response_events] == [
+        "initial",
+        "interview",
+    ]
+    assert session._startup_state == "READY_FOR_USER_TURN"
+    assert session._timeline["session_created_received"]
+    assert session._timeline["initial_question_ready"]
+    assert session._timeline["initial_response_create"]
+    assert session._timeline["ready_for_user_turn"]
 
 
 def test_dependency_error_is_explicit() -> None:

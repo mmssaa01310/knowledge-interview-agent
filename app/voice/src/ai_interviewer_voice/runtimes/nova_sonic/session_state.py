@@ -91,6 +91,7 @@ class PendingToolCall:
     completion_id: str
     kind: InterviewTurnKind = InterviewTurnKind.USER_ANSWER
     processing_mode: str = "unknown"
+    client_turn_id: str | None = None
     tool_content_id: str | None = None
     tool_use_id: str | None = None
     tool_name: str | None = None

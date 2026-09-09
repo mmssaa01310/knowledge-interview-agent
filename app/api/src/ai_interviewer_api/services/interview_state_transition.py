@@ -22,6 +22,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     InterviewProfile,
+    ProcessPatch,
     StructuredInterviewOutput,
 )
 from ai_interviewer_api.auth.deps import UserContext
@@ -41,8 +42,19 @@ BACKGROUND_PROTECTED_STATE_FIELDS: tuple[str, ...] = (
     "lastCanonicalIntent",
     "lastCanonicalAction",
     "status",
+    "lastTentativeTarget",
+    "activeProbeTarget",
+    "activeClarificationRequest",
+    "pendingTranscriptConfirmation",
+    "deferredProposalTarget",
+    "questionGenerationPending",
+    "closingState",
+    "closingAnswer",
+    "applicabilityOverviewAsked",
+    "provisionalAnsweredTargetKeys",
 )
 _BACKGROUND_APPLIED_SOURCE_IDS = "backgroundAppliedSourceMessageIds"
+_BACKGROUND_SOURCE_SEQUENCES = "backgroundAppliedSourceSequences"
 _BACKGROUND_SOURCE_HISTORY_LIMIT = 256
 _BACKGROUND_LATEST_FIELDS: tuple[str, ...] = (
     "lastProcessedUserMessageId",
@@ -52,6 +64,7 @@ _BACKGROUND_LATEST_FIELDS: tuple[str, ...] = (
     "lastStructuredModelId",
     "lastStructuredReasoningEffort",
     "lastTranscriptAssessment",
+    "lastUtteranceCompleteness",
     "lastAnswerAssessment",
     "lastConfirmationApplied",
 )
@@ -105,16 +118,19 @@ def commit_interview_state(
         current_version = int(state.get("stateVersion", 0) or 0)
         if expected_state_version is not None and current_version != expected_state_version:
             raise ValueError("interview_state_version_conflict")
+        state_version_before = current_version
         if increment_version:
             state["stateVersion"] = current_version + 1
             state["updatedByUserId"] = user.user_id
             state["updatedAt"] = utc_now()
         store.upsert("interview_states", state)
         logger.info(
-            "interview_state_committed state_id=%s record_id=%s source=%s state_version=%s",
+            "interview_state_committed state_id=%s record_id=%s source=%s writer=state_transition "
+            "state_version_before=%s state_version_after=%s",
             state_id,
             state.get("recordId"),
             source,
+            state_version_before,
             state.get("stateVersion"),
         )
         return state
@@ -248,6 +264,19 @@ def apply_background_state_proposal(
             for key in _BACKGROUND_LATEST_FIELDS
             if key in latest
         }
+        protected_state_fields = {
+            key: deepcopy(latest.get(key))
+            for key in BACKGROUND_PROTECTED_STATE_FIELDS
+            if key in latest
+        }
+        source_sequences = _int_mapping(latest.get(_BACKGROUND_SOURCE_SEQUENCES))
+        output, sequence_discarded_fields, sequence_keys = (
+            _filter_background_output_by_source_sequence(
+                output,
+                source_sequence=_optional_int(proposal.get("sourceTurnSequence")),
+                source_sequences=source_sequences,
+            )
+        )
         changed_topics = apply_background_structured_output(
             working,
             output,
@@ -258,6 +287,16 @@ def apply_background_state_proposal(
             current_question=source_question,
             raw_transcript=_optional_string(proposal.get("rawTranscript")),
         )
+        # ``apply_background_structured_output`` deliberately reuses the
+        # normal coordinator, which can mutate control fields while it
+        # evaluates a proposal.  Those mutations are never background-owned:
+        # restore the latest foreground values, including removing fields that
+        # did not exist in the latest snapshot.
+        for key in BACKGROUND_PROTECTED_STATE_FIELDS:
+            if key in protected_state_fields:
+                working[key] = deepcopy(protected_state_fields[key])
+            else:
+                working.pop(key, None)
         # These fields describe the latest foreground turn.  A delayed
         # background proposal is not allowed to replace them with an older
         # snapshot.  The proposal itself remains available in the voice-turn
@@ -269,9 +308,25 @@ def apply_background_state_proposal(
             applied_source_ids.append(source_key)
             working[_BACKGROUND_APPLIED_SOURCE_IDS] = applied_source_ids[-_BACKGROUND_SOURCE_HISTORY_LIMIT:]
 
+        applied_topics = set(changed_topics)
+        for sequence_key in sequence_keys:
+            if _background_sequence_key_applied(sequence_key, applied_topics):
+                source_sequence = _optional_int(proposal.get("sourceTurnSequence"))
+                if source_sequence is not None:
+                    source_sequences[sequence_key] = source_sequence
+
         clarification_enqueued = False
         clarification = proposal.get("clarificationProposal")
-        if isinstance(clarification, Mapping):
+        clarification_key = _clarification_sequence_key(clarification)
+        clarification_is_stale = (
+            clarification_key is not None
+            and _source_sequence_is_older(
+                _optional_int(proposal.get("sourceTurnSequence")),
+                source_sequences,
+                clarification_key,
+            )
+        )
+        if isinstance(clarification, Mapping) and not clarification_is_stale:
             request = enqueue_clarification_request(
                 working,
                 source_turn_id=_optional_string(clarification.get("sourceTurnId"))
@@ -287,6 +342,15 @@ def apply_background_state_proposal(
                 priority=int(clarification.get("priority") or 2),
             )
             clarification_enqueued = request is not None
+            if clarification_enqueued:
+                source_sequence = _optional_int(proposal.get("sourceTurnSequence"))
+                if source_sequence is not None and clarification_key:
+                    source_sequences[clarification_key] = source_sequence
+
+        if source_sequences:
+            working[_BACKGROUND_SOURCE_SEQUENCES] = dict(
+                list(source_sequences.items())[-_BACKGROUND_SOURCE_HISTORY_LIMIT:]
+            )
 
         stale = base_version is not None and current_version != base_version
         decision = "stale_safe_merge" if stale else "applied"
@@ -306,7 +370,11 @@ def apply_background_state_proposal(
             current_state_version=current_version,
             resulting_state_version=_optional_int(committed.get("stateVersion")),
             applied_fields=tuple(applied_fields),
-            discarded_fields=BACKGROUND_PROTECTED_STATE_FIELDS,
+            discarded_fields=tuple(
+                dict.fromkeys(
+                    (*BACKGROUND_PROTECTED_STATE_FIELDS, *sequence_discarded_fields)
+                )
+            ),
             clarification_enqueued=clarification_enqueued,
         )
         logger.info(
@@ -368,6 +436,138 @@ def _proposal_topics(proposal: Mapping[str, Any]) -> tuple[str, ...]:
         "openIssues",
         "clarificationProposal",
     )
+
+
+def _filter_background_output_by_source_sequence(
+    output: StructuredInterviewOutput,
+    *,
+    source_sequence: int | None,
+    source_sequences: Mapping[str, int],
+) -> tuple[StructuredInterviewOutput, list[str], tuple[str, ...]]:
+    """Drop only older per-topic proposals while retaining safe newer data."""
+
+    if source_sequence is None:
+        return output, [], ()
+
+    discarded: list[str] = []
+    accepted_keys: list[str] = []
+
+    def accept(key: str, label: str) -> bool:
+        previous = source_sequences.get(key)
+        if previous is not None and source_sequence < previous:
+            discarded.append(label)
+            return False
+        accepted_keys.append(key)
+        return True
+
+    field_updates = [
+        update
+        for update in output.fieldUpdates
+        if accept(
+            _field_sequence_key(update.fieldId, update.itemId),
+            f"field:{update.fieldId}",
+        )
+    ]
+    requirement_updates = [
+        update
+        for update in output.requirementUpdates
+        if accept(
+            f"requirement:{update.requirementId}",
+            f"requirement:{update.requirementId}",
+        )
+    ]
+    process_patch = (
+        output.processPatch
+        if accept("process_model", "process_model")
+        else ProcessPatch()
+    )
+    applicability = [
+        update
+        for update in output.applicability
+        if accept(
+            f"applicability:{update.topic}",
+            f"applicability:{update.topic}",
+        )
+    ]
+    contradictions = [
+        item
+        for item in output.contradictions
+        if accept(
+            f"contradiction:{item.contradictionId}",
+            f"contradiction:{item.contradictionId}",
+        )
+    ]
+    resolved_contradictions = [
+        contradiction_id
+        for contradiction_id in output.resolvedContradictionIds
+        if accept(
+            f"resolved_contradiction:{contradiction_id}",
+            f"resolved_contradiction:{contradiction_id}",
+        )
+    ]
+    open_issues = [
+        item
+        for item in output.openIssues
+        if accept(f"open_issue:{item.issueId}", f"open_issue:{item.issueId}")
+    ]
+    return (
+        output.model_copy(
+            update={
+                "fieldUpdates": field_updates,
+                "requirementUpdates": requirement_updates,
+                "processPatch": process_patch,
+                "applicability": applicability,
+                "contradictions": contradictions,
+                "resolvedContradictionIds": resolved_contradictions,
+                "openIssues": open_issues,
+            }
+        ),
+        list(dict.fromkeys(discarded)),
+        tuple(dict.fromkeys(accepted_keys)),
+    )
+
+
+def _field_sequence_key(field_id: str, item_id: str | None) -> str:
+    normalized_item_id = str(item_id or "").strip()
+    return f"field:{field_id}:item:{normalized_item_id}" if normalized_item_id else f"field:{field_id}"
+
+
+def _clarification_sequence_key(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    request_id = _optional_string(value.get("requestId"))
+    return f"clarification:{request_id}" if request_id else None
+
+
+def _source_sequence_is_older(
+    source_sequence: int | None,
+    source_sequences: Mapping[str, int],
+    key: str,
+) -> bool:
+    if source_sequence is None:
+        return False
+    previous = source_sequences.get(key)
+    return previous is not None and source_sequence < previous
+
+
+def _background_sequence_key_applied(key: str, applied_topics: set[str]) -> bool:
+    if key.startswith("field:"):
+        field_id = key.split(":", 2)[1]
+        return f"field:{field_id}" in applied_topics
+    if key.startswith("requirement:"):
+        return key.removeprefix("requirement:") in applied_topics
+    return key in applied_topics
+
+
+def _int_mapping(value: Any) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, int] = {}
+    for key, item in value.items():
+        parsed = _optional_int(item)
+        if parsed is not None:
+            result[str(key)] = parsed
+    return result
 
 
 def _optional_string(value: Any) -> str | None:

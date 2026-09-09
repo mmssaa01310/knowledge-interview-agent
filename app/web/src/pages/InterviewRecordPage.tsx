@@ -658,7 +658,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   <p>{props.streamingInterviewReply}</p>
                 </div>
               ) : null}
-              {isKikoThinking && !props.streamingInterviewReply ? (
+              {isKikoThinking && !props.streamingInterviewReply && !realtimeVoice.initialReplyActive ? (
                 <div className="kiko-chat-status thinking" role="status">
                   <KikoAvatar state="thinking" label={t("interview.kikoName")} />
                   <span>{t("interview.receiving")}</span>

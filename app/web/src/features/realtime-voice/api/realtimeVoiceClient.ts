@@ -73,6 +73,10 @@ export async function sendOpenAIRealtimeOffer(
   signal?: AbortSignal,
 ) {
   let response: Response;
+  console.info("openai_realtime_call_request", {
+    voice_session_id: voiceSessionId,
+    offer_type: offer.type,
+  });
   try {
     response = await fetch(`${VOICE_API_BASE_URL}/voice/webrtc/${voiceSessionId}/openai-offer`, {
       method: "POST",

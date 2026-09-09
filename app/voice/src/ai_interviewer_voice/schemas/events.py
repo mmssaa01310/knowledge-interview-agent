@@ -40,6 +40,7 @@ class UserTranscriptFinal:
     text: str
     turn_type: Literal["ANSWER", "CONTROL"] = "ANSWER"
     question_id: str | None = None
+    client_turn_id: str | None = None
     event_type: Literal["user_transcript_final"] = "user_transcript_final"
 
 

@@ -144,7 +144,7 @@ def _serialize_runtime_event(event: VoiceRuntimeEvent, *, context: VoiceEventCon
     if isinstance(event, UserTranscriptPartial):
         return {"type": "user_transcript_partial", "voiceSessionId": context.voice_session_id, "text": event.text}
     if isinstance(event, UserTranscriptFinal):
-        return {
+        payload = {
             "type": "user_transcript_final",
             "voiceSessionId": context.voice_session_id,
             "text": event.text,
@@ -156,6 +156,9 @@ def _serialize_runtime_event(event: VoiceRuntimeEvent, *, context: VoiceEventCon
             ),
             "stateVersion": context.state_version,
         }
+        if event.client_turn_id:
+            payload["clientTurnId"] = event.client_turn_id
+        return payload
     if isinstance(event, InputStateChanged):
         return {
             "type": "input_state_changed",

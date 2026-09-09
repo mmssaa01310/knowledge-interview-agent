@@ -149,7 +149,14 @@ def test_forced_tool_interview_flow_uses_bridge_and_records_assistant_events() -
     bridge, payloads, observed = asyncio.run(run())
     assert bridge.calls[:3] == [
         ("load_voice_session", "voice-session-1"),
-        ("save_turn", {"transcript": "朝に発生します", "answer_to_question_id": "q-001"}),
+        (
+            "save_turn",
+            {
+                "transcript": "朝に発生します",
+                "answer_to_question_id": "q-001",
+                "client_turn_id": "nova-tool-use-1",
+            },
+        ),
         ("process_saved_turn", {"voice_session_id": "voice-session-1", "turn_id": "turn-1"}),
     ]
     tool_result_payload = next(payload for payload in payloads if "toolResult" in payload["event"])

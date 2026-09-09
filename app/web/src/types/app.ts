@@ -23,6 +23,10 @@ export type InterviewQuestion = {
   questionType: InterviewQuestionType;
   fieldId: string | null;
   text: string;
+  renderedQuestionText?: string | null;
+  questionDefinition?: Record<string, unknown>;
+  questionDefinitionHash?: string | null;
+  questionProgress?: Record<string, unknown>;
   retrievalPolicy?: "never" | "auto" | "required";
   targetType?: string | null;
   targetId?: string | null;
@@ -120,6 +124,7 @@ export type ChatMessage = {
   voiceSessionId?: string | null;
   voiceClientTurnId?: string | null;
   voiceTurnId?: string | null;
+  voiceTurnSequence?: number | null;
   voiceResponseId?: string | null;
   isActualUtterance?: boolean;
   isLegacy?: boolean;

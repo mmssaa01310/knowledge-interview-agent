@@ -55,6 +55,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
   const [partialTranscript, setPartialTranscript] = useState("");
   const [connectionState, setConnectionState] = useState("");
   const [requiresManualPlayback, setRequiresManualPlayback] = useState(false);
+  const [initialReplyActive, setInitialReplyActive] = useState(false);
   const [stats, setStats] = useState<VoiceConnectionStats>({
     microphoneTrackLive: false,
     remoteAudioTrackReceived: false,
@@ -71,6 +72,11 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
   const openAIUserTranscriptRef = useRef(new Map<string, string>());
   const openAIAssistantTranscriptRef = useRef(new Map<string, string>());
   const openAIResponseMetadataRef = useRef(new Map<string, Record<string, string>>());
+  const openAITranscriptFinalCountRef = useRef(0);
+  const openAITranscriptItemIdsRef = useRef(new Set<string>());
+  const openAIUserMessageInsertCountRef = useRef(0);
+  const openAIAssistantResponseIdsRef = useRef(new Set<string>());
+  const openAIAssistantFirstAudioResponseIdsRef = useRef(new Set<string>());
   const openAIActiveResponseRef = useRef<string | null>(null);
   const frontendTraceRef = useRef<{
     userSpeechEndedAt?: number;
@@ -83,6 +89,14 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
 
   const cleanupVoiceTransport = useCallback(async (reason: string) => {
     const voiceSessionId = voiceSessionRef.current?.id;
+    console.info("openai_realtime_duplicate_trace", {
+      voice_session_id: voiceSessionId,
+      transcript_final_count: openAITranscriptFinalCountRef.current,
+      unique_item_ids: openAITranscriptItemIdsRef.current.size,
+      user_message_insert_count: openAIUserMessageInsertCountRef.current,
+      assistant_response_ids: [...openAIAssistantResponseIdsRef.current],
+      cleanup_reason: reason,
+    });
     microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
     microphoneStreamRef.current = null;
     const peer = peerRef.current;
@@ -93,9 +107,16 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     }
     setStats({ microphoneTrackLive: false, remoteAudioTrackReceived: false });
     setPartialTranscript("");
+    setInitialReplyActive(false);
+    finalizedMessageKeysRef.current.clear();
     openAIUserTranscriptRef.current.clear();
     openAIAssistantTranscriptRef.current.clear();
     openAIResponseMetadataRef.current.clear();
+    openAITranscriptFinalCountRef.current = 0;
+    openAITranscriptItemIdsRef.current.clear();
+    openAIUserMessageInsertCountRef.current = 0;
+    openAIAssistantResponseIdsRef.current.clear();
+    openAIAssistantFirstAudioResponseIdsRef.current.clear();
     openAIActiveResponseRef.current = null;
     voiceSessionRef.current = null;
     if (voiceSessionId) {
@@ -142,13 +163,20 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       voiceSessionId?: string;
       metadata?: Record<string, string>;
     }) => {
-      const backendResponseId = metadata?.kikiori_response_id || responseId;
+      const isInitialResponse = metadata?.kikiori_kind === "initial" && Boolean(voiceSessionId);
+      const backendResponseId = isInitialResponse
+        ? `initial-response-${voiceSessionId}`
+        : metadata?.kikiori_response_id || responseId;
+      const voiceTurnId = isInitialResponse
+        ? `initial-${voiceSessionId}`
+        : metadata?.kikiori_turn_id || undefined;
       onMessageRef.current({
         id: backendResponseId,
         role: "assistant",
         text,
         questionId: metadata?.kikiori_question_id || undefined,
         voiceSessionId,
+        voiceTurnId,
         voiceResponseId: backendResponseId,
       });
     };
@@ -188,28 +216,41 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         const itemId = stringValue(event.item_id);
         const transcript = stringValue(event.transcript).trim();
         if (!transcript) return;
+        openAITranscriptFinalCountRef.current += 1;
+        if (itemId) {
+          openAITranscriptItemIdsRef.current.add(itemId);
+        }
         openAIUserTranscriptRef.current.delete(itemId);
         setPartialTranscript("");
-        const key = `openai-user-${itemId || transcript}`;
+        if (!itemId) {
+          console.warn("openai_realtime_transcript_final_missing_item_id", {
+            voice_session_id: voiceSessionId,
+            transcript_chars: transcript.length,
+          });
+          return;
+        }
+        const key = `openai-user-${itemId}`;
+        const duplicate = finalizedMessageKeysRef.current.has(key);
         console.info("openai_realtime_transcript_final", {
           voice_session_id: voiceSessionId,
-          item_id: itemId || undefined,
-          voice_client_turn_id: itemId ? `openai-${itemId}` : undefined,
+          item_id: itemId,
+          voice_client_turn_id: `openai-${itemId}`,
           message_key: key,
+          action: duplicate ? "duplicate_ignored" : "insert",
         });
-        if (!finalizedMessageKeysRef.current.has(key)) {
-          finalizedMessageKeysRef.current.add(key);
-          onMessageRef.current({
-            id: key,
-            role: "user",
-            text: transcript,
-            turnType: "ANSWER",
-            answerToQuestionId: voiceSessionRef.current?.currentQuestionId ?? undefined,
-            voiceSessionId,
-            voiceClientTurnId: itemId ? `openai-${itemId}` : undefined,
-            voiceTurnId: itemId || undefined,
-          });
+        if (duplicate) {
+          return;
         }
+        finalizedMessageKeysRef.current.add(key);
+        openAIUserMessageInsertCountRef.current += 1;
+        onMessageRef.current({
+          id: key,
+          role: "user",
+          text: transcript,
+          answerToQuestionId: voiceSessionRef.current?.currentQuestionId ?? undefined,
+          voiceSessionId,
+          voiceClientTurnId: `openai-${itemId}`,
+        });
         frontendTraceRef.current.userTranscriptFinalAt = performance.now();
         frontendTraceRef.current.processingStartedAt = performance.now();
         setStatus("processing_interview");
@@ -218,14 +259,42 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       case "response.created": {
         const response = objectValue(event.response);
         const responseId = stringValue(response?.id) || stringValue(event.response_id);
+        const metadata = objectValue(response?.metadata);
+        const isInitialResponse = metadata?.kikiori_kind === "initial"
+          || (
+            Boolean(responseId)
+            && hasPendingInitialReply(voiceSessionRef.current)
+            && openAIAssistantResponseIdsRef.current.size === 0
+          );
         if (responseId) {
+          openAIAssistantResponseIdsRef.current.add(responseId);
           openAIActiveResponseRef.current = responseId;
-          const metadata = objectValue(response?.metadata);
-          if (metadata) {
-            openAIResponseMetadataRef.current.set(responseId, stringRecord(metadata));
+          const responseMetadata = metadata ? stringRecord(metadata) : {};
+          if (isInitialResponse) {
+            openAIResponseMetadataRef.current.set(responseId, {
+              ...responseMetadata,
+              kikiori_kind: "initial",
+              kikiori_response_id: `initial-response-${voiceSessionId ?? ""}`,
+              kikiori_turn_id: `initial-${voiceSessionId ?? ""}`,
+              ...(voiceSessionRef.current?.initialQuestionId || voiceSessionRef.current?.currentQuestionId
+                ? {
+                    kikiori_question_id:
+                      voiceSessionRef.current.initialQuestionId
+                      || voiceSessionRef.current.currentQuestionId
+                      || "",
+                  }
+                : {}),
+            });
+          } else if (metadata) {
+            openAIResponseMetadataRef.current.set(responseId, responseMetadata);
           }
         }
-        setStatus("preparing_audio");
+        if (isInitialResponse) {
+          setInitialReplyActive(true);
+          setStatus("preparing_initial_reply");
+        } else {
+          setStatus("preparing_audio");
+        }
         return;
       }
       case "response.output_audio_transcript.delta": {
@@ -248,11 +317,19 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         return;
       }
       case "response.output_audio.delta": {
+        const responseId = stringValue(event.response_id);
+        const firstAudioKey = responseId || "unknown-response";
+        const isFirstAudio = !openAIAssistantFirstAudioResponseIdsRef.current.has(firstAudioKey);
+        if (!isFirstAudio) {
+          setStatus("speaking");
+          return;
+        }
+        openAIAssistantFirstAudioResponseIdsRef.current.add(firstAudioKey);
         const firstAudioAt = performance.now();
         frontendTraceRef.current.audioPlayEventAt = firstAudioAt;
         console.info("openai_realtime_latency", {
           event: "assistant_first_audio",
-          response_id: stringValue(event.response_id) || undefined,
+          response_id: responseId || undefined,
           timestamp_ms: Math.round(firstAudioAt),
           speech_end_to_first_audio_ms:
             frontendTraceRef.current.userSpeechEndedAt === undefined
@@ -279,6 +356,15 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         return;
       case "response.cancelled":
       case "response.canceled":
+        {
+          const responseId = stringValue(event.response_id);
+          const metadata = responseId
+            ? openAIResponseMetadataRef.current.get(responseId)
+            : undefined;
+          if (metadata?.kikiori_kind === "initial") {
+            setInitialReplyActive(false);
+          }
+        }
         console.info("openai_realtime_latency", {
           event: "response_cancelled",
           response_id: stringValue(event.response_id) || undefined,
@@ -294,6 +380,12 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         const metadata = responseId
           ? openAIResponseMetadataRef.current.get(responseId)
           : undefined;
+        if (metadata?.kikiori_kind === "initial") {
+          setInitialReplyActive(false);
+        }
+        if (responseId) {
+          openAIAssistantResponseIdsRef.current.add(responseId);
+        }
         if (responseStatus === "cancelled" || responseStatus === "canceled" || responseStatus === "incomplete") {
           console.info("openai_realtime_latency", {
             event: "response_cancelled",
@@ -386,7 +478,8 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         return;
       case "user_transcript_final": {
         setPartialTranscript("");
-        const key = event.turnId ?? `voice-user-${event.questionId ?? "unknown"}-${event.stateVersion ?? "unknown"}-${event.text}`;
+        const clientTurnId = event.clientTurnId;
+        const key = event.turnId ?? clientTurnId ?? `voice-user-${event.questionId ?? "unknown"}-${event.stateVersion ?? "unknown"}-${event.text}`;
         if (!finalizedMessageKeysRef.current.has(key)) {
           finalizedMessageKeysRef.current.add(key);
           onMessageRef.current({
@@ -397,6 +490,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
             answerToQuestionId: event.questionId ?? undefined,
             voiceSessionId: event.voiceSessionId,
             voiceTurnId: event.turnId ?? undefined,
+            voiceClientTurnId: clientTurnId,
           });
         }
         frontendTraceRef.current.userTranscriptFinalAt = performance.now();
@@ -501,6 +595,17 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     }
 
     startingRef.current = true;
+    finalizedMessageKeysRef.current.clear();
+    openAIUserTranscriptRef.current.clear();
+    openAIAssistantTranscriptRef.current.clear();
+    openAIResponseMetadataRef.current.clear();
+    openAITranscriptFinalCountRef.current = 0;
+    openAITranscriptItemIdsRef.current.clear();
+    openAIUserMessageInsertCountRef.current = 0;
+    openAIAssistantResponseIdsRef.current.clear();
+    openAIAssistantFirstAudioResponseIdsRef.current.clear();
+    openAIActiveResponseRef.current = null;
+    setInitialReplyActive(false);
     setRequiresManualPlayback(false);
     setMessage("");
     setStatus("checking");
@@ -547,10 +652,40 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       );
       trace.voice_session_ms = Math.round(performance.now() - stageStartedAt);
       voiceSessionRef.current = voiceSession;
+      console.info("openai_realtime_latency", {
+        event: "voice_session_created",
+        voice_session_id: voiceSession.id,
+        timestamp_ms: Math.round(performance.now()),
+      });
+
+      if (voiceSession.provider === "openai_realtime" && voiceSession.initialReplyText?.trim()) {
+        const initialResponseId = `initial-response-${voiceSession.id}`;
+        const initialTurnId = `initial-${voiceSession.id}`;
+        onMessageRef.current({
+          id: initialResponseId,
+          role: "assistant",
+          text: voiceSession.initialReplyText,
+          questionId: voiceSession.initialQuestionId || voiceSession.currentQuestionId || undefined,
+          voiceSessionId: voiceSession.id,
+          voiceTurnId: initialTurnId,
+          voiceResponseId: initialResponseId,
+        });
+        setInitialReplyActive(true);
+        console.info("openai_realtime_latency", {
+          event: "initial_question_ready",
+          voice_session_id: voiceSession.id,
+          timestamp_ms: Math.round(performance.now()),
+        });
+        console.info("openai_realtime_latency", {
+          event: "frontend_initial_question_visible",
+          voice_session_id: voiceSession.id,
+          timestamp_ms: Math.round(performance.now()),
+        });
+      }
 
       if (voiceSession.provider === "openai_realtime") {
         failedStage = "microphone";
-        setStatus("connecting");
+        setStatus(hasPendingInitialReply(voiceSession) ? "preparing_initial_reply" : "connecting");
         const microphoneStream = await microphonePromise;
         microphoneStreamForStart = microphoneStream;
         microphoneStreamRef.current = microphoneStream;
@@ -729,6 +864,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     connectionState,
     stats,
     requiresManualPlayback,
+    initialReplyActive,
     isActive,
     start,
     stop: () => stop("user_requested"),

@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import StrEnum
+from hashlib import sha256
 from time import monotonic, time
 from typing import Any, Literal
 from uuid import uuid4
@@ -179,6 +180,7 @@ class TranscribePollyRuntime:
         self._latest_partial_text = ""
         self._latest_stt_confidence: float | None = None
         self._final_segments: dict[str, str] = {}
+        self._final_result_ids: list[str] = []
         self._final_segment_fingerprints: set[str] = set()
         self._anonymous_final_index = 0
         self._listen_ack_played = False
@@ -595,6 +597,7 @@ class TranscribePollyRuntime:
         self._latest_partial_text = ""
         self._latest_stt_confidence = None
         self._final_segments.clear()
+        self._final_result_ids.clear()
         self._final_segment_fingerprints.clear()
         self._listen_ack_played = False
         self._processing_ack_played = False
@@ -627,6 +630,8 @@ class TranscribePollyRuntime:
                 logger.debug("transcribe_final_duplicate_ignored result_id=%s", result.result_id)
                 return
             self._final_segments[key] = result.text
+            if result.result_id:
+                self._final_result_ids.append(result.result_id)
             self._final_segment_fingerprints.add(fingerprint)
             self._stable_text = self._combined_final_text()
             self._latest_partial_text = ""
@@ -718,6 +723,7 @@ class TranscribePollyRuntime:
         # answer or while Polly plays the next question.
         self._close_input_gate(reason="final_transcript")
         turn_finalize_at_ms = int(time() * 1000)
+        client_turn_id = self._final_client_turn_id()
         logger.info(
             "voice_turn_timing_event event=turn_finalize user_speech_end=%s transcribe_final=%s turn_finalize=%s",
             self._last_user_speech_end_at_ms,
@@ -731,7 +737,7 @@ class TranscribePollyRuntime:
                 transcript=normalized,
                 generation=self._generation,
                 expected_state_version=self._state_version,
-                client_turn_id=uuid4().hex,
+                client_turn_id=client_turn_id,
                 transcript_final_at_ms=self._last_transcribe_final_at_ms,
                 turn_finalize_at_ms=turn_finalize_at_ms,
                 stt_confidence=self._latest_stt_confidence,
@@ -784,6 +790,7 @@ class TranscribePollyRuntime:
                 text=transcript,
                 turn_type="ANSWER",
                 question_id=self._current_question_id,
+                client_turn_id=client_turn_id,
             )
         )
         try:
@@ -1894,6 +1901,20 @@ class TranscribePollyRuntime:
 
     def _combined_final_text(self) -> str:
         return "".join(self._final_segments.values()).strip()
+
+    def _final_client_turn_id(self) -> str:
+        """Derive a reconnect-stable identity from accepted Transcribe finals."""
+
+        if self._final_result_ids and len(self._final_result_ids) == len(self._final_segments):
+            if len(self._final_result_ids) == 1:
+                return f"transcribe-{self._final_result_ids[0]}"
+            digest = sha256("\x1f".join(self._final_result_ids).encode("utf-8")).hexdigest()[:24]
+            return f"transcribe-{digest}"
+        # Older/alternate Transcribe streams may omit ResultId.  Do not derive
+        # a durable identity from transcript text because identical answers in
+        # different turns are valid; the API still provides its idempotency
+        # boundary for callers that can supply a source id.
+        return f"transcribe-{uuid4().hex}"
 
     def _combined_stable_text(self) -> str:
         final = self._combined_final_text()

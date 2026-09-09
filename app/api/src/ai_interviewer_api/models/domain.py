@@ -126,6 +126,7 @@ class VoiceTurn(BaseEntity):
         "SUPERSEDED",
     ] = "RECEIVED"
     clientTurnId: str | None = None
+    processingId: str | None = None
     expectedStateVersion: int | None = None
     responseText: str | None = None
     action: str | None = None

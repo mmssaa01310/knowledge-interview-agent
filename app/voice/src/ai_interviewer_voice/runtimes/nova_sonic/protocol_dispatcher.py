@@ -359,14 +359,48 @@ class ProtocolEventDispatcher:
                     playback_generation_id=self._response_controller.generation,
                     reason="user_transcript_final_accepted",
                 )
-                await self._event_sink.emit(UserTranscriptFinal(text=event.text))
+                pending_key = (
+                    completion_state.completion_id
+                    if completion_state is not None
+                    else event.completion_id
+                )
+                pending_turn = (
+                    self._pending_turn_store.get(pending_key)
+                    if pending_key
+                    else None
+                )
+                source_id = (
+                    pending_turn.tool_use_id
+                    if pending_turn is not None and pending_turn.tool_use_id
+                    else pending_key
+                )
+                client_turn_id = (
+                    pending_turn.client_turn_id
+                    if pending_turn is not None and pending_turn.client_turn_id
+                    else None
+                )
+                if client_turn_id is None and source_id:
+                    client_turn_id = f"nova-{source_id}"
+                if pending_turn is not None and pending_turn.client_turn_id is None:
+                    pending_turn.client_turn_id = client_turn_id
+                await self._event_sink.emit(
+                    UserTranscriptFinal(
+                        text=event.text,
+                        client_turn_id=client_turn_id,
+                    )
+                )
                 self._response_controller.on_user_transcript_final()
                 self._observability.output.response_authorization_state = self._response_controller.authorization_state.value
                 if completion_state is not None:
-                    pending_key = completion_state.completion_id or "unknown"
-                    pending_turn = self._pending_turn_store.get(pending_key)
+                    pending_key = pending_key or "unknown"
                     if pending_turn is None or pending_turn.result_sent:
+                        previous_client_turn_id = (
+                            pending_turn.client_turn_id
+                            if pending_turn is not None
+                            else client_turn_id
+                        )
                         pending_turn = PendingToolCall(completion_id=pending_key)
+                        pending_turn.client_turn_id = previous_client_turn_id
                         self._pending_turn_store.put(pending_turn)
                     trace = self._observability.ensure_trace(pending_turn, turn_index=self._session.turn_index)
                     trace.turn_index = self._session.turn_index
@@ -676,13 +710,19 @@ class ProtocolEventDispatcher:
             ):
                 previous_user_transcript = pending_turn.user_transcript if pending_turn is not None else None
                 previous_trace = pending_turn.trace if pending_turn is not None and not pending_turn.result_sent else None
+                previous_client_turn_id = (
+                    pending_turn.client_turn_id if pending_turn is not None else None
+                )
                 pending_turn = PendingToolCall(completion_id=pending_key)
                 pending_turn.user_transcript = previous_user_transcript
                 pending_turn.trace = previous_trace
+                pending_turn.client_turn_id = previous_client_turn_id
                 self._pending_turn_store.put(pending_turn)
             pending_turn.tool_use_received = True
             pending_turn.tool_content_id = event.content_id
             pending_turn.tool_use_id = event.tool_use_id
+            if pending_turn.client_turn_id is None and event.tool_use_id:
+                pending_turn.client_turn_id = f"nova-{event.tool_use_id}"
             pending_turn.tool_name = event.tool_name
             if self._session.pending_initial_reply_text is not None and self._session.initial_tool_completion_id is None:
                 pending_turn.kind = InterviewTurnKind.INITIAL
