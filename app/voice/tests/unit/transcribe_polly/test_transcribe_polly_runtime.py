@@ -513,7 +513,8 @@ async def test_final_transcript_is_emitted_before_api_control_evaluation() -> No
 
 
 @pytest.mark.anyio
-async def test_formal_reply_ignores_audio_until_playback_drained() -> None:
+@pytest.mark.parametrize("speech_delay", [0, 0.1, 0.3, 0.5])
+async def test_formal_reply_ignores_audio_until_playback_drained(speech_delay: float) -> None:
     transcribe = FakeTranscribe()
     polly = FakePolly()
     polly.release = asyncio.Event()
@@ -570,6 +571,13 @@ async def test_formal_reply_ignores_audio_until_playback_drained() -> None:
         generation=runtime._generation,
     )
     assert runtime._input_available is True
+    await asyncio.sleep(speech_delay)
+    before = len(transcribe.audio)
+    for _ in range(5):
+        await runtime.push_audio(_frame(1200))
+    assert len(transcribe.audio) == before + 1
+    assert transcribe.audio[-1] == _pcm(1200) * 5
+    assert not transcribe.closed
     await runtime.close()
 
 

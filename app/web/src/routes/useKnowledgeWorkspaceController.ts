@@ -344,7 +344,23 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   }
 
   async function loadInterviewSnapshot(recordId: string) {
-    const snapshot = await fetchInterviewState(recordId);
+    const startedAt = performance.now();
+    const snapshot = await fetchInterviewState(recordId).catch((error: unknown) => {
+      // Do not log response bodies: they may contain private interview data.
+      console.warn("interview_snapshot_failed", {
+        record_id: recordId,
+        elapsed_ms: Math.round(performance.now() - startedAt),
+        status: error instanceof ApiError ? error.status : undefined,
+        error_name: error instanceof Error ? error.name : "unknown",
+        timestamp_ms: Date.now(),
+      });
+      throw error;
+    });
+    console.info("interview_snapshot_ready", {
+      record_id: recordId,
+      elapsed_ms: Math.round(performance.now() - startedAt),
+      timestamp_ms: Date.now(),
+    });
     setInterviewState(snapshot.interviewState);
     if (snapshot.interviewState.status === "completed") {
       markRecordAsSubmitted(recordId);

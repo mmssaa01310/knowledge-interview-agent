@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { ApiError } from "../../../lib/api";
+import { realtimeAssistantMessage } from "../realtimeAssistantMessage";
 import { useI18n, type Translate } from "../../../i18n";
 import type { ChatMessage } from "../../../types/app";
 import {
@@ -163,22 +164,8 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       voiceSessionId?: string;
       metadata?: Record<string, string>;
     }) => {
-      const isInitialResponse = metadata?.kikiori_kind === "initial" && Boolean(voiceSessionId);
-      const backendResponseId = isInitialResponse
-        ? `initial-response-${voiceSessionId}`
-        : metadata?.kikiori_response_id || responseId;
-      const voiceTurnId = isInitialResponse
-        ? `initial-${voiceSessionId}`
-        : metadata?.kikiori_turn_id || undefined;
-      onMessageRef.current({
-        id: backendResponseId,
-        role: "assistant",
-        text,
-        questionId: metadata?.kikiori_question_id || undefined,
-        voiceSessionId,
-        voiceTurnId,
-        voiceResponseId: backendResponseId,
-      });
+      const message = realtimeAssistantMessage(voiceSessionRef.current, metadata, text);
+      if (message) onMessageRef.current(message);
     };
     switch (eventType) {
       case "kikiori.data_channel.open":
@@ -260,12 +247,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         const response = objectValue(event.response);
         const responseId = stringValue(response?.id) || stringValue(event.response_id);
         const metadata = objectValue(response?.metadata);
-        const isInitialResponse = metadata?.kikiori_kind === "initial"
-          || (
-            Boolean(responseId)
-            && hasPendingInitialReply(voiceSessionRef.current)
-            && openAIAssistantResponseIdsRef.current.size === 0
-          );
+        const isInitialResponse = metadata?.kikiori_kind === "initial";
         if (responseId) {
           openAIAssistantResponseIdsRef.current.add(responseId);
           openAIActiveResponseRef.current = responseId;
@@ -377,11 +359,18 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         const response = objectValue(event.response);
         const responseId = stringValue(response?.id) || stringValue(event.response_id);
         const responseStatus = stringValue(response?.status);
-        const metadata = responseId
-          ? openAIResponseMetadataRef.current.get(responseId)
-          : undefined;
+        const completedMetadata = objectValue(response?.metadata);
+        const metadata = completedMetadata
+          ? stringRecord(completedMetadata)
+          : openAIResponseMetadataRef.current.get(responseId);
+        if (metadata) openAIResponseMetadataRef.current.set(responseId, metadata);
+        const transcript = openAIAssistantTranscriptRef.current.get(responseId);
+        if (transcript) emitOpenAIAssistantMessage({ responseId, text: transcript, voiceSessionId, metadata });
         if (metadata?.kikiori_kind === "initial") {
           setInitialReplyActive(false);
+          if (voiceSessionRef.current && responseStatus === "completed") {
+            voiceSessionRef.current.initialReplyStatus = "sent";
+          }
         }
         if (responseId) {
           openAIAssistantResponseIdsRef.current.add(responseId);
@@ -394,7 +383,6 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
           });
         }
         openAIActiveResponseRef.current = null;
-        openAIResponseMetadataRef.current.delete(responseId);
         if (responseStatus === "completed" && metadata?.kikiori_interview_status === "completed") {
           setStatus("completed");
           onCompletedRef.current();
@@ -611,6 +599,12 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
     setStatus("checking");
     let failedStage = "voice_session";
     const startStartedAt = performance.now();
+    const markStartup = (event: string) => console.info("voice_startup_latency", {
+      event, provider, voice_session_id: voiceSessionRef.current?.id,
+      monotonic_ms: performance.now(), timestamp_ms: Date.now(),
+      start_elapsed_ms: Math.round(performance.now() - startStartedAt),
+    });
+    markStartup("start_clicked");
     const trace = {
       voice_session_ms: 0,
       microphone_ms: 0,
@@ -628,6 +622,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       // Start the browser microphone handshake at the same time so this latency
       // is not added to the server-side question-generation latency.
       const microphoneStartedAt = performance.now();
+      markStartup("get_user_media_started");
       microphonePromise = navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -638,6 +633,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         video: false,
       }).then((stream) => {
         microphoneStreamForStart = stream;
+        markStartup("get_user_media_ready");
         trace.microphone_ms = Math.round(performance.now() - microphoneStartedAt);
         if (stopMicrophoneWhenReady) {
           stream.getTracks().forEach((track) => track.stop());
@@ -646,12 +642,16 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       });
 
       let stageStartedAt = performance.now();
+      // Attach a rejection handler immediately while the API is pending.
+      void microphonePromise.catch(() => undefined);
+      markStartup("voice_session_request_started");
       const voiceSession = await withTimeout(
         (signal) => createVoiceSession(recordId, provider, signal),
         VOICE_SIGNALING_TIMEOUT_MS,
       );
       trace.voice_session_ms = Math.round(performance.now() - stageStartedAt);
       voiceSessionRef.current = voiceSession;
+      markStartup("voice_session_ready");
       console.info("openai_realtime_latency", {
         event: "voice_session_created",
         voice_session_id: voiceSession.id,
@@ -671,6 +671,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
           voiceResponseId: initialResponseId,
         });
         setInitialReplyActive(true);
+        markStartup("frontend_initial_question_visible");
         console.info("openai_realtime_latency", {
           event: "initial_question_ready",
           voice_session_id: voiceSession.id,
@@ -704,6 +705,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
           onConnectionStateChange: (state) => {
             setConnectionState(state);
             if (state === "connected" || state === "completed") {
+              markStartup("provider_connected");
               if (state === "connected") {
                 console.info("openai_realtime_latency", {
                   event: "webrtc_connected",
@@ -724,6 +726,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         peerRef.current = peerHandle;
 
         failedStage = "offer";
+        markStartup("provider_connect_started");
         stageStartedAt = performance.now();
         const answer = await withTimeout(
           (signal) => sendOpenAIRealtimeOffer(voiceSession.id, peerHandle.offer, signal),
@@ -783,6 +786,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
         onConnectionStateChange: (state) => {
           setConnectionState(state);
           if (state === "connected" || state === "completed") {
+            markStartup("provider_connected");
             setStatus((current) => current === "connecting" ? "listening" : current);
           }
           if (state === "failed" || state === "closed") {
@@ -795,6 +799,7 @@ export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
       trace.peer_connection_ms = Math.round(performance.now() - stageStartedAt);
       peerRef.current = peerHandle;
       failedStage = "offer";
+      markStartup("provider_connect_started");
       stageStartedAt = performance.now();
       const answer = await withTimeout(
         (signal) => sendVoiceOffer(voiceSession.id, peerHandle.offer, signal),

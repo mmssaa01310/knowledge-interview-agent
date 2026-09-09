@@ -159,6 +159,8 @@ class TranscribePollyRuntime:
         self._started = False
         self._closed = False
         self._input_available = True
+        self._listening_ready_at: float | None = None
+        self._first_input_after_resume = False
         self._transcribe_unavailable = False
         self._generation = 0
         self._audio_sequence = 0
@@ -359,6 +361,16 @@ class TranscribePollyRuntime:
             chunk = bytes(self._audio_batch[:target_bytes])
             del self._audio_batch[:target_bytes]
             await self._transcribe.send_audio(chunk)
+            if self._first_input_after_resume:
+                self._first_input_after_resume = False
+                logger.info(
+                    "voice_handoff event=first_user_audio_chunk voice_session_id=%s generation=%s "
+                    "monotonic_ms=%.3f listening_ready_to_chunk_ms=%.3f chunk_ms=%s",
+                    self._context.voice_session_id if self._context else None,
+                    self._generation, monotonic() * 1000,
+                    (monotonic() - (self._listening_ready_at or monotonic())) * 1000,
+                    self._config.transcribe_chunk_ms,
+                )
 
     async def send_reply(self, reply: AssistantReply) -> None:
         if not self._started or self._closed:
@@ -1430,6 +1442,12 @@ class TranscribePollyRuntime:
         """
         if self._closed or self._transcribe_unavailable:
             return
+        resume_started_at = monotonic()
+        logger.info(
+            "voice_handoff event=listening_resume_requested voice_session_id=%s generation=%s monotonic_ms=%.3f reason=%s",
+            self._context.voice_session_id if self._context else None,
+            self._generation, resume_started_at * 1000, reason,
+        )
         if (
             next_state == "INTERVIEW_COMPLETED"
             or self._interview_status in {"completed", "stopped"}
@@ -1437,6 +1455,8 @@ class TranscribePollyRuntime:
             self._input_available = False
         else:
             self._input_available = True
+            self._listening_ready_at = monotonic()
+            self._first_input_after_resume = True
             self._turn_active = False
             self._speech_active = False
             self._silence_started_at = None
@@ -1451,6 +1471,13 @@ class TranscribePollyRuntime:
             reason,
         )
         await self._emit_input_state(next_state)
+        logger.info(
+            "voice_handoff event=listening_ready voice_session_id=%s generation=%s monotonic_ms=%.3f "
+            "resume_ms=%.3f input_available=%s",
+            self._context.voice_session_id if self._context else None,
+            self._generation, monotonic() * 1000,
+            (monotonic() - resume_started_at) * 1000, self._input_available,
+        )
 
     async def _synthesize_chunks(
         self,
