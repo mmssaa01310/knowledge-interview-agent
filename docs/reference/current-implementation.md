@@ -364,7 +364,7 @@ ProcessModel、フローチャート、シーケンス図はProcessStateから�
 ### 7.1 Compose
 
 ```bash
-docker compose -f infra/docker-compose.yml up --build
+docker compose --env-file .env -f infra/docker-compose.yml up --build
 ```
 
 既定ポートは次のとおりである。

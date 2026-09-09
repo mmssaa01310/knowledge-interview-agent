@@ -104,15 +104,15 @@ services:
       # OpenAI Realtime credentials/configuration stay in the voice server.
       # Do not expose OPENAI_SECRET_KEY through any VITE_* variable.
       OPENAI_SECRET_KEY: ${OPENAI_SECRET_KEY:-}
-      OpenAI_Realtime_Enabled: ${OpenAI_Realtime_Enabled:-false}
+      OPENAI_REALTIME_ENABLED: ${OPENAI_REALTIME_ENABLED:-false}
       OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2}
-      OpenAI_Realtime_Voice: ${OpenAI_Realtime_Voice:-}
-      OpenAI_Realtime_Reasoning_Effort: ${OpenAI_Realtime_Reasoning_Effort:-}
-      OpenAI_Realtime_Max_Session_Minutes: ${OpenAI_Realtime_Max_Session_Minutes:-30}
-      OpenAI_Realtime_Turn_Detection: ${OpenAI_Realtime_Turn_Detection:-semantic_vad}
-      OpenAI_Realtime_Semantic_Eagerness: ${OpenAI_Realtime_Semantic_Eagerness:-low}
-      OpenAI_Realtime_Transcription_Model: ${OpenAI_Realtime_Transcription_Model:-gpt-4o-transcribe}
-      OpenAI_Realtime_Sideband_Connect_Timeout_Seconds: ${OpenAI_Realtime_Sideband_Connect_Timeout_Seconds:-10}
+      OPENAI_REALTIME_VOICE: ${OPENAI_REALTIME_VOICE:-}
+      OPENAI_REALTIME_REASONING_EFFORT: ${OPENAI_REALTIME_REASONING_EFFORT:-}
+      OPENAI_REALTIME_MAX_SESSION_MINUTES: ${OPENAI_REALTIME_MAX_SESSION_MINUTES:-30}
+      OPENAI_REALTIME_TURN_DETECTION: ${OPENAI_REALTIME_TURN_DETECTION:-semantic_vad}
+      OPENAI_REALTIME_SEMANTIC_EAGERNESS: ${OPENAI_REALTIME_SEMANTIC_EAGERNESS:-low}
+      OPENAI_REALTIME_TRANSCRIPTION_MODEL: ${OPENAI_REALTIME_TRANSCRIPTION_MODEL:-gpt-4o-transcribe}
+      OPENAI_REALTIME_SIDEBAND_CONNECT_TIMEOUT_SECONDS: ${OPENAI_REALTIME_SIDEBAND_CONNECT_TIMEOUT_SECONDS:-10}
     volumes:
       - ..:/workspace
       - ${HOME}/.aws:/root/.aws:ro

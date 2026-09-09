@@ -88,8 +88,8 @@ Docker build 中に `pnpm install --frozen-lockfile` が失敗した場合は、
 確認用の代表コマンド:
 
 ```bash
-docker compose -f infra/docker-compose.yml build --no-cache web
-docker compose -f infra/docker-compose.yml up --build
+docker compose --env-file .env -f infra/docker-compose.yml build --no-cache web
+docker compose --env-file .env -f infra/docker-compose.yml up --build
 ```
 
 ## 8. 禁止事項

@@ -39,7 +39,7 @@ Bedrock 呼び出しに必要な IAM 権限は次を含める。
 
 1. ホスト側で AWS CLI profile を準備する。
 2. `.env` かシェル環境で `AWS_PROFILE` とリージョンを設定する。
-3. `docker compose -f infra/docker-compose.yml up --build` を実行する。
+3. `docker compose --env-file .env -f infra/docker-compose.yml up --build` を実行する。
 4. API から Bedrock を使う画面やエンドポイントを確認する。
 
 ### Bedrock 環境変数の例

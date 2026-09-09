@@ -14,9 +14,9 @@
 フロントエンドを含む全体動作はDocker Composeで確認する。Web単体の型検査・翻訳検査・本番Buildは、必要に応じて個別にも実行する。
 
 ```bash
-docker compose -f infra/docker-compose.yml config
-docker compose -f infra/docker-compose.yml build web
-docker compose -f infra/docker-compose.yml up --build
+docker compose --env-file .env -f infra/docker-compose.yml config
+docker compose --env-file .env -f infra/docker-compose.yml build web
+docker compose --env-file .env -f infra/docker-compose.yml up --build
 ```
 
 必要に応じて、プロジェクトに定義されていれば以下も実行する。
@@ -46,8 +46,8 @@ uv run pytest
 ## 5. 全体
 
 ```bash
-docker compose -f infra/docker-compose.yml config
-docker compose -f infra/docker-compose.yml build
+docker compose --env-file .env -f infra/docker-compose.yml config
+docker compose --env-file .env -f infra/docker-compose.yml build
 ```
 
 ## 6. PostgreSQL
@@ -62,7 +62,7 @@ TEST_DATABASE_URL=postgresql://... uv run pytest tests/repositories/test_postgre
 ローカルComposeの設定とスキーマは次でも確認する。
 
 ```bash
-docker compose -f infra/docker-compose.yml config
+docker compose --env-file .env -f infra/docker-compose.yml config
 ```
 
 ## 7. プロンプト分離の確認

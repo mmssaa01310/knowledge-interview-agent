@@ -35,9 +35,9 @@ APIの保存先はComposeで起動するPostgreSQLです。データベース接
 
 ## Docker Compose (Development)
 
-- 初回ビルド込み起動: `docker compose -f infra/docker-compose.yml up --build`
-- バックグラウンド起動: `docker compose -f infra/docker-compose.yml up -d --build`
-- 停止: `docker compose -f infra/docker-compose.yml down`
+- 初回ビルド込み起動: `docker compose --env-file .env -f infra/docker-compose.yml up --build`
+- バックグラウンド起動: `docker compose --env-file .env -f infra/docker-compose.yml up -d --build`
+- 停止: `docker compose --env-file .env -f infra/docker-compose.yml down`
 
 開発用 compose は以下をまとめて起動します。
 
