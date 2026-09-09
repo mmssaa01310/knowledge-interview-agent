@@ -7,6 +7,13 @@ export type ChatMessageEvidence = {
   status?: string;
 };
 
+export type RetrievedSourceReference = {
+  sourceType: "document" | "document_chunk";
+  sourceId: string;
+  title: string;
+  score: number;
+};
+
 export type DocumentReadState = {
   readStatus: "unread" | "opened" | "reading" | "read" | "acknowledged";
   readProgress: number;
@@ -115,6 +122,7 @@ export type ChatMessage = {
   role: "user" | "assistant" | "ai";
   text: string;
   evidences?: ChatMessageEvidence[];
+  retrievedSources?: RetrievedSourceReference[];
   questionId?: string;
   questionType?: InterviewQuestionType;
   fieldId?: string | null;

@@ -39,12 +39,44 @@ export async function createOpenAIRealtimePeerConnection(
   let playbackInitialized = false;
 
   dataChannel.onopen = () => {
+    console.info("openai_realtime_data_channel_open", {
+      voice_session_id: options.voiceSessionId,
+      label: dataChannel.label,
+      ready_state: dataChannel.readyState,
+      connection_state: peerConnection.connectionState,
+      ice_connection_state: peerConnection.iceConnectionState,
+      signaling_state: peerConnection.signalingState,
+    });
     options.onEvent({ type: "kikiori.data_channel.open" });
   };
   dataChannel.onclose = () => {
+    console.info("openai_realtime_data_channel_close", {
+      voice_session_id: options.voiceSessionId,
+      label: dataChannel.label,
+      ready_state: dataChannel.readyState,
+      connection_state: peerConnection.connectionState,
+      ice_connection_state: peerConnection.iceConnectionState,
+      signaling_state: peerConnection.signalingState,
+    });
     options.onEvent({ type: "kikiori.data_channel.close" });
   };
-  dataChannel.onerror = () => {
+  dataChannel.onerror = (event) => {
+    const rtcErrorEvent = event as RTCErrorEvent;
+    const nativeError = rtcErrorEvent.error;
+    const errorDetail = (
+      rtcErrorEvent as RTCErrorEvent & { errorDetail?: string }
+    ).errorDetail;
+    console.warn("openai_realtime_data_channel_error", {
+      voice_session_id: options.voiceSessionId,
+      label: dataChannel.label,
+      ready_state: dataChannel.readyState,
+      error_name: nativeError?.name,
+      error_message: nativeError?.message,
+      error_detail: errorDetail,
+      connection_state: peerConnection.connectionState,
+      ice_connection_state: peerConnection.iceConnectionState,
+      signaling_state: peerConnection.signalingState,
+    });
     options.onEvent({ type: "error", error: { code: "data_channel_failed" } });
   };
   dataChannel.onmessage = (messageEvent) => {

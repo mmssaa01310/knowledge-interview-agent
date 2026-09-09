@@ -71,7 +71,11 @@ class OpenAIRealtimeSession:
         self._startup_error: OpenAIRealtimeProviderError | None = None
         self._closed = False
         self._finished = False
+        self._initialization_lock = asyncio.Lock()
+        self._initialization_state = "NOT_STARTED"
         self._session_update_sent = False
+        self._session_created_received = False
+        self._session_updated_received = False
         self._active_response_pending = False
         self._active_response_id: str | None = None
         self._processed_transcript_items: set[str] = set()
@@ -131,7 +135,24 @@ class OpenAIRealtimeSession:
                 timeout=self._config.sideband_connect_timeout_seconds,
             )
         except TimeoutError:
-            self._fail_startup(OpenAIRealtimeProviderError("openai_realtime_initial_dispatch_timeout"))
+            logger.warning(
+                "openai_realtime_initialization_timeout call_id=%s voice_session_id=%s "
+                "failure_reason=INITIALIZATION_TIMEOUT sideband_connected=%s "
+                "session_created_received=%s session_update_sent=%s "
+                "session_updated_received=%s initial_response_sent=%s "
+                "conversation_ready=%s pending_user_turn_count=%s elapsed_ms=%s",
+                self.call_id,
+                self.voice_session.voice_session_id,
+                self._transport_ready.is_set(),
+                self._session_created_received,
+                self._session_update_sent,
+                self._session_updated_received,
+                self._initial_question_dispatched,
+                self._conversation_ready.is_set(),
+                len(self._pending_first_user_turns),
+                round((monotonic() - self._session_started_at) * 1000),
+            )
+            self._fail_startup(OpenAIRealtimeProviderError("openai_realtime_initialization_timeout"))
         if self._startup_error is not None and not self._closed:
             await self.close(reason="initial_dispatch_failed")
 
@@ -168,6 +189,7 @@ class OpenAIRealtimeSession:
                 self._websocket = websocket
                 self._mark("sideband_connected")
                 self._transport_ready.set()
+                await self._initialize_once()
                 async for raw_event in websocket:
                     if not isinstance(raw_event, str):
                         continue
@@ -215,32 +237,20 @@ class OpenAIRealtimeSession:
         self._event_counts[event_type] = self._event_counts.get(event_type, 0) + 1
         self._record_usage(event)
         if event_type == "session.created":
+            self._session_created_received = True
             self._mark_once("session_created_received")
-            if not self._session_update_sent:
-                sent = await self._send_event(
-                    {
-                        "type": "session.update",
-                        "session": self._config.sideband_update_payload(),
-                    }
-                )
-                if not sent:
-                    self._fail_startup(
-                        OpenAIRealtimeProviderError("openai_realtime_session_update_failed")
-                    )
-                    return
-                self._session_update_sent = True
-            if not self.voice_session.initial_reply_text or not self.voice_session.initial_reply_text.strip():
-                self._fail_startup(
-                    OpenAIRealtimeProviderError("openai_realtime_initial_reply_missing")
-                )
-                return
-            self._set_startup_state("INITIAL_QUESTION_READY")
-            self._mark_once("initial_question_ready")
-            if self._initial_task is None:
-                self._initial_task = asyncio.create_task(
-                    self._send_initial_reply(),
-                    name=f"openai-realtime-initial-{self.voice_session.voice_session_id}",
-                )
+            # session.created is useful for observing/synchronizing the
+            # session, but sideband initialization is started from WebSocket
+            # OPEN and must not depend on this event being replayed.
+            await self._initialize_once()
+            await self._maybe_dispatch_initial_reply()
+            return
+        if event_type == "session.updated":
+            self._session_updated_received = True
+            self._mark_once("session_updated_received")
+            if self._session_update_sent:
+                self._set_initialization_state("SESSION_UPDATED")
+            await self._maybe_dispatch_initial_reply()
             return
         if event_type == "input_audio_buffer.speech_started":
             self._speech_started_at_ms = self._wall_ms()
@@ -372,6 +382,7 @@ class OpenAIRealtimeSession:
                         # This is only expected after a reconnect.  The
                         # canonical initial output was dispatched by the
                         # previous connection, so do not send it twice.
+                        self._set_initialization_state("INITIAL_RESPONSE_SENT")
                         self._initial_question_dispatched = True
                         self._set_startup_state("INITIAL_QUESTION_DISPATCHED")
                         self._mark_once("initial_response_already_sent")
@@ -397,6 +408,7 @@ class OpenAIRealtimeSession:
                     question_id=claim.initial_question_id,
                     kind="initial",
                 )
+                self._set_initialization_state("INITIAL_RESPONSE_SENT")
                 self._initial_question_dispatched = True
                 self._set_startup_state("INITIAL_QUESTION_DISPATCHED")
                 self._mark_once("initial_response_create")
@@ -423,6 +435,52 @@ class OpenAIRealtimeSession:
                     self.voice_session.voice_session_id,
                     mark_exc.__class__.__name__,
                 )
+
+    async def _initialize_once(self) -> None:
+        """Start sideband initialization without relying on session.created."""
+        async with self._initialization_lock:
+            if self._closed or self._session_update_sent:
+                return
+            if not self.voice_session.initial_reply_text or not self.voice_session.initial_reply_text.strip():
+                self._fail_startup(
+                    OpenAIRealtimeProviderError("openai_realtime_initial_reply_missing")
+                )
+                return
+            sent = await self._send_event(
+                {
+                    "type": "session.update",
+                    "session": self._config.sideband_update_payload(),
+                }
+            )
+            if not sent:
+                self._fail_startup(
+                    OpenAIRealtimeProviderError("openai_realtime_session_update_failed")
+                )
+                return
+            self._session_update_sent = True
+            self._set_initialization_state("SESSION_UPDATE_SENT")
+            self._mark_once("session_update_sent")
+
+        # A session.updated event may have arrived before this method was
+        # scheduled (for example while websocket.send yielded).  Re-check the
+        # idempotent dispatch condition after releasing the initialization lock.
+        await self._maybe_dispatch_initial_reply()
+
+    async def _maybe_dispatch_initial_reply(self) -> None:
+        """Schedule exactly one initial response after the update is ACKed."""
+        async with self._initialization_lock:
+            if self._closed or self._startup_error is not None:
+                return
+            if not self._session_update_sent or not self._session_updated_received:
+                return
+            if self._initial_question_dispatched or self._initial_task is not None:
+                return
+            self._set_startup_state("INITIAL_QUESTION_READY")
+            self._mark_once("initial_question_ready")
+            self._initial_task = asyncio.create_task(
+                self._send_initial_reply(),
+                name=f"openai-realtime-initial-{self.voice_session.voice_session_id}",
+            )
 
     async def _process_turn(self, *, item_id: str, transcript: str) -> None:
         task = asyncio.current_task()
@@ -617,6 +675,20 @@ class OpenAIRealtimeSession:
             state,
         )
 
+    def _set_initialization_state(self, state: str) -> None:
+        previous_state = self._initialization_state
+        if previous_state == state:
+            return
+        self._initialization_state = state
+        logger.info(
+            "openai_realtime_initialization_state voice_session_id=%s call_id=%s "
+            "previous_state=%s state=%s",
+            self.voice_session.voice_session_id,
+            self.call_id,
+            previous_state,
+            state,
+        )
+
     def _mark_conversation_ready(self) -> None:
         if not self._initial_question_dispatched:
             return
@@ -627,6 +699,7 @@ class OpenAIRealtimeSession:
     def _fail_startup(self, error: OpenAIRealtimeProviderError) -> None:
         if self._startup_error is None:
             self._startup_error = error
+        self._set_initialization_state("INITIALIZATION_FAILED")
         self._transport_ready.set()
         self._conversation_ready.set()
 
