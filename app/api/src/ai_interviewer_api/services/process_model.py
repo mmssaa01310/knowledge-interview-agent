@@ -30,6 +30,7 @@ from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.schemas.requests import ProcessModelCommand, ProcessModelUpdate
 from ai_interviewer_api.services.audit import write_audit_log
 from ai_interviewer_api.services.ai_interview import get_interview_state_snapshot
+from ai_interviewer_api.services.interview_state_transition import commit_interview_state
 
 
 _PROCESS_PROFILES = {"business_process", "system_requirement"}
@@ -606,10 +607,7 @@ def _editable_values(
 
 
 def _persist_state(state: dict[str, Any], user: UserContext) -> None:
-    state["stateVersion"] = int(state.get("stateVersion", 0) or 0) + 1
-    state["updatedByUserId"] = user.user_id
-    state["updatedAt"] = utc_now()
-    store.upsert("interview_states", state)
+    commit_interview_state(state, user, source="process_model")
 
 
 def _store_process_command(

@@ -91,6 +91,11 @@ from ai_interviewer_api.services.interview_document_retrieval import (
     start_speculative_interview_document_retrieval,
     validate_document_question_candidate,
 )
+from ai_interviewer_api.services.interview_state_transition import (
+    apply_background_state_proposal,
+    commit_foreground_provisional_state,
+    commit_interview_state,
+)
 
 
 STRUCTURED_PROFILES: frozenset[str] = frozenset({"fixed_form", "business_process", "system_requirement"})
@@ -154,6 +159,7 @@ class FastInterviewTurnResult:
     latency_metrics: dict[str, Any]
     source_target_key: str
     needs_question_explanation: bool = False
+    provisional_state: dict[str, Any] | None = None
 
 
 class _FastValidationJoin:
@@ -167,6 +173,7 @@ class _FastValidationJoin:
         source_turn_id: str,
         source_message_id: str,
         source_target: Mapping[str, Any] | None,
+        knowledge: Mapping[str, Any],
         fast_can_proceed: bool,
         on_complete: Callable[[dict[str, Any]], None] | None,
     ) -> None:
@@ -175,6 +182,7 @@ class _FastValidationJoin:
         self.source_turn_id = source_turn_id
         self.source_message_id = source_message_id
         self.source_target = deepcopy(dict(source_target or {}))
+        self.knowledge = deepcopy(dict(knowledge))
         self.fast_can_proceed = fast_can_proceed
         self.on_complete = on_complete
         self._lock = Lock()
@@ -214,6 +222,7 @@ class _FastValidationJoin:
                 source_turn_id=self.source_turn_id,
                 source_message_id=self.source_message_id,
                 source_target=self.source_target,
+                knowledge=self.knowledge,
                 fast_can_proceed=fast_can_proceed,
                 provisional_question=provisional,
                 background=background,
@@ -292,6 +301,8 @@ def generate_structured_interview_result(
     canonical_intent: StructuredDialogueAct | None = None,
     canonical_action: CanonicalAction | None = None,
     on_question_delta: Callable[[str], None] | None = None,
+    persist_state: bool = True,
+    state_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one record's Structured Interview turn serially.
 
@@ -314,6 +325,8 @@ def generate_structured_interview_result(
             canonical_action=canonical_action,
             on_question_delta=on_question_delta,
             defer_question_generation=False,
+            persist_state=persist_state,
+            state_override=state_override,
         )
 
 
@@ -334,6 +347,8 @@ def _generate_structured_interview_result_locked(
     canonical_action: CanonicalAction | None = None,
     on_question_delta: Callable[[str], None] | None,
     defer_question_generation: bool,
+    persist_state: bool = True,
+    state_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     started_at = monotonic()
     latency_metrics = _new_latency_metrics()
@@ -349,6 +364,8 @@ def _generate_structured_interview_result_locked(
         canonical_action=canonical_action,
         on_question_delta=on_question_delta,
         defer_question_generation=defer_question_generation,
+        persist_state=persist_state,
+        state_override=state_override,
     )
     structured_total_ms = _elapsed_ms(started_at)
     # The coordinator portion includes state reads/writes, validation,
@@ -459,6 +476,7 @@ def start_fast_interview_turn(
         source_turn_id=source_turn_id,
         source_message_id=source_message_id,
         source_target=source_target,
+        knowledge=knowledge,
         fast_can_proceed=False,
         on_complete=on_background_validation,
     )
@@ -654,6 +672,11 @@ def start_fast_interview_turn(
         provisional_state["currentFieldId"] = question.get("fieldId")
         provisional_state["currentQuestionId"] = question["questionId"]
         provisional_state["nextQuestionTarget"] = target
+        provisional_state = commit_foreground_provisional_state(
+            provisional_state,
+            user,
+            source="fast_foreground_provisional",
+        )
         join.set_provisional_question(question)
         return FastInterviewTurnResult(
             assessment=assessment,
@@ -667,6 +690,7 @@ def start_fast_interview_turn(
             latency_metrics=latency_metrics,
             source_target_key=source_key,
             needs_question_explanation=needs_question_explanation,
+            provisional_state=deepcopy(provisional_state),
         )
     except Exception:
         logger.exception(
@@ -775,42 +799,77 @@ def _run_fast_background_validation(
         getattr(provider, "model_id", settings.structured_interview_model_id),
         settings.structured_interview_reasoning_effort,
     )
+    # Capture an immutable base snapshot only.  The background evaluator is a
+    # proposal producer and must not hold the record's state-writer lock while
+    # waiting on the model.
     lock = _structured_interview_lock(record_id)
     with lock:
         fields = _list_interview_fields(knowledge, user)
-        state = load_structured_interview_state(record, knowledge, user, fields=fields)
-        changed = _install_background_question_overlay(state, source_question)
-        pending = state.setdefault("pendingBackgroundValidations", [])
-        if not isinstance(pending, list):
-            pending = []
-            state["pendingBackgroundValidations"] = pending
-            changed = True
-        if not any(
-            isinstance(item, Mapping)
-            and str(item.get("turnId") or "") == source_turn_id
-            for item in pending
-        ):
-            pending.append(
-                {
-                    "turnId": source_turn_id,
-                    "messageId": source_message_id,
-                    "questionId": source_question.get("questionId"),
-                    "status": "pending",
-                }
-            )
-            changed = True
-        if changed:
-            _persist_state(state, user)
-        result = _generate_structured_interview_result_locked(
+        base_state = load_structured_interview_state(
             record,
             knowledge,
             user,
-            persist_assistant_messages=False,
-            provider=provider,
-            speculative_retrieval=None,
-            on_question_delta=None,
-            defer_question_generation=True,
+            fields=fields,
+            persist=False,
         )
+        base_state_version = int(base_state.get("stateVersion", 0) or 0)
+        state = deepcopy(base_state)
+        _install_background_question_overlay(state, source_question)
+    result = _generate_structured_interview_result_locked(
+        record,
+        knowledge,
+        user,
+        persist_assistant_messages=False,
+        provider=provider,
+        speculative_retrieval=None,
+        on_question_delta=None,
+        defer_question_generation=True,
+        persist_state=False,
+        state_override=state,
+    )
+    result_state = result.get("interviewState")
+    if not isinstance(result_state, Mapping):
+        result_state = state
+    proposal_state = deepcopy(dict(result_state))
+    clarification_request = _background_clarification_request(
+        proposal_state,
+        source_target=_target_from_question(source_question),
+        source_turn_id=source_turn_id,
+        source_message_id=source_message_id,
+    )
+    valid_evidence_ids = [
+        str(message.get("id"))
+        for message in (result.get("messages") or [])
+        if isinstance(message, Mapping) and message.get("id")
+    ]
+    output_payload = proposal_state.get("lastStructuredOutput")
+    proposal = {
+        "sourceTurnId": source_turn_id,
+        "sourceMessageId": source_message_id,
+        "baseStateVersion": base_state_version,
+        "sourceQuestion": deepcopy(dict(source_question)),
+        "rawTranscript": str(
+            (proposal_state.get("lastTranscriptAssessment") or {}).get("rawTranscript")
+            if isinstance(proposal_state.get("lastTranscriptAssessment"), Mapping)
+            else ""
+        ),
+        "structuredOutput": deepcopy(output_payload)
+        if isinstance(output_payload, Mapping)
+        else None,
+        "validEvidenceIds": valid_evidence_ids,
+        "clarificationProposal": deepcopy(clarification_request)
+        if isinstance(clarification_request, Mapping)
+        else None,
+        "proposalTopics": [
+            "fieldUpdates",
+            "requirementUpdates",
+            "processPatch",
+            "applicability",
+            "contradictions",
+            "openIssues",
+            "clarificationProposal",
+        ],
+    }
     elapsed_ms = _elapsed_ms(started_at)
     background_metrics = {
         "background_interpreter_start_ms": started_ms,
@@ -835,6 +894,7 @@ def _run_fast_background_validation(
     return {
         "result": result,
         "backgroundLatencyMetrics": background_metrics,
+        "backgroundProposal": proposal,
     }
 
 
@@ -947,29 +1007,15 @@ def _reconcile_fast_background_validation(
     source_turn_id: str,
     source_message_id: str,
     source_target: Mapping[str, Any] | None,
+    knowledge: Mapping[str, Any],
     fast_can_proceed: bool,
     provisional_question: Mapping[str, Any] | None,
     background: Mapping[str, Any],
 ) -> dict[str, Any]:
     result = background.get("result")
     background_metrics = dict(background.get("backgroundLatencyMetrics") or {})
-    if not isinstance(result, Mapping):
-        lock = _structured_interview_lock(record_id)
-        with lock:
-            state = store.get("interview_states", f"interview-state-{record_id}") or {}
-            pending = state.get("pendingBackgroundValidations")
-            if isinstance(pending, list):
-                remaining = [
-                    item
-                    for item in pending
-                    if not (
-                        isinstance(item, Mapping)
-                        and str(item.get("turnId") or "") == source_turn_id
-                    )
-                ]
-                if len(remaining) != len(pending):
-                    state["pendingBackgroundValidations"] = remaining
-                    _persist_state(state, user)
+    proposal = background.get("backgroundProposal")
+    if not isinstance(result, Mapping) or not isinstance(proposal, Mapping):
         payload = {
             "sourceTurnId": source_turn_id,
             "sourceMessageId": source_message_id,
@@ -978,6 +1024,13 @@ def _reconcile_fast_background_validation(
             "backgroundAgreesWithFast": False,
             "backgroundCanProceed": False,
             "clarificationEnqueued": False,
+            "backgroundMerge": {
+                "mergeDecision": "failed_without_proposal",
+                "sourceTurnId": source_turn_id,
+                "appliedFields": [],
+                "discardedFields": [],
+                "clarificationEnqueued": False,
+            },
             "latencyMetrics": background_metrics,
         }
         logger.info(
@@ -986,45 +1039,39 @@ def _reconcile_fast_background_validation(
         )
         return payload
 
-    lock = _structured_interview_lock(record_id)
-    clarification_request: dict[str, Any] | None = None
-    with lock:
-        state = store.get("interview_states", f"interview-state-{record_id}") or {}
-        pending = state.get("pendingBackgroundValidations")
-        if isinstance(pending, list):
-            state["pendingBackgroundValidations"] = [
-                item
-                for item in pending
-                if not (
-                    isinstance(item, Mapping)
-                    and str(item.get("turnId") or "") == source_turn_id
-                )
-            ]
-        if provisional_question and state.get("status") != "completed":
-            changed = _install_background_question_overlay(state, provisional_question)
-            if changed or isinstance(pending, list):
-                _persist_state(state, user)
-        elif isinstance(pending, list):
-            _persist_state(state, user)
-
-        current_state = store.get("interview_states", f"interview-state-{record_id}") or state
-        if fast_can_proceed:
-            clarification_request = _background_clarification_request(
-                current_state,
-                source_target=source_target,
-                source_turn_id=source_turn_id,
-                source_message_id=source_message_id,
-            )
-            if clarification_request is not None:
-                _persist_state(current_state, user)
-
     output_state = result.get("interviewState")
     if not isinstance(output_state, Mapping):
-        output_state = current_state if "current_state" in locals() else {}
+        output_state = {}
+    clarification_request = (
+        proposal.get("clarificationProposal")
+        if isinstance(proposal.get("clarificationProposal"), Mapping)
+        else None
+    )
     background_can_proceed = _background_can_proceed(
         output_state,
         clarification_request=clarification_request,
     )
+    lock = _structured_interview_lock(record_id)
+    with lock:
+        merge_result = apply_background_state_proposal(
+            record_id=record_id,
+            user=user,
+            proposal=proposal,
+            fields=_list_interview_fields(knowledge, user),
+            profile=resolve_profile(knowledge),
+            source_question=(
+                proposal.get("sourceQuestion")
+                if isinstance(proposal.get("sourceQuestion"), Mapping)
+                else None
+            )
+            or (
+                dict(provisional_question)
+                if isinstance(provisional_question, Mapping)
+                else None
+            ),
+        )
+    merge_payload = merge_result.as_dict()
+    clarification_applied = merge_result.clarification_enqueued
     agrees = bool(fast_can_proceed and background_can_proceed)
     payload = {
         "sourceTurnId": source_turn_id,
@@ -1033,11 +1080,13 @@ def _reconcile_fast_background_validation(
         "backgroundStatus": "completed",
         "backgroundAgreesWithFast": agrees,
         "backgroundCanProceed": background_can_proceed,
-        "clarificationEnqueued": clarification_request is not None,
+        "clarificationEnqueued": clarification_applied,
         "clarificationRequest": clarification_request,
+        "backgroundMerge": merge_payload,
+        "backgroundProposal": dict(proposal),
         "latencyMetrics": background_metrics,
-        "transcriptAssessment": current_state.get("lastTranscriptAssessment"),
-        "answerAssessment": current_state.get("lastAnswerAssessment"),
+        "transcriptAssessment": output_state.get("lastTranscriptAssessment"),
+        "answerAssessment": output_state.get("lastAnswerAssessment"),
         "result": dict(result),
     }
     logger.info(
@@ -1179,11 +1228,25 @@ def _generate_structured_interview_result(
     canonical_action: CanonicalAction | None = None,
     on_question_delta: Callable[[str], None] | None = None,
     defer_question_generation: bool = False,
+    persist_state: bool = True,
+    state_override: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     latency_metrics = latency_metrics if latency_metrics is not None else _new_latency_metrics()
     fields = _list_interview_fields(knowledge, user)
-    state = load_structured_interview_state(record, knowledge, user, fields=fields)
+    state = (
+        deepcopy(dict(state_override))
+        if state_override is not None
+        else load_structured_interview_state(
+            record,
+            knowledge,
+            user,
+            fields=fields,
+            persist=persist_state,
+        )
+    )
     messages = _list_record_messages(record, user)
+    if not persist_state:
+        messages = deepcopy(messages)
     profile = _effective_profile(state, resolve_profile(knowledge))
     model_id = resolve_structured_model_id(knowledge)
     interview_locale = resolve_interview_locale(record, knowledge)
@@ -1215,11 +1278,11 @@ def _generate_structured_interview_result(
         state["currentFieldId"] = None
         state["currentQuestionId"] = None
         state["nextQuestionTarget"] = None
-        _persist_state(state, user)
+        _persist_state(state, user, persist=persist_state)
 
     current_question = _get_current_question(state)
     if _repair_current_confirmation_question(state, locale=interview_locale):
-        _persist_state(state, user)
+        _persist_state(state, user, persist=persist_state)
         current_question = _get_current_question(state)
     latest_user_message = _latest_answer_message(messages, current_question)
     last_processed_id = state.get("lastProcessedUserMessageId")
@@ -1242,7 +1305,7 @@ def _generate_structured_interview_result(
     if current_question and latest_user_message and latest_user_message.get("id") != last_processed_id:
         if latest_user_message.get("turnType") == "CONTROL":
             state["lastProcessedUserMessageId"] = latest_user_message.get("id")
-            _persist_state(state, user)
+            _persist_state(state, user, persist=persist_state)
             return _build_result(
                 record=record,
                 state=state,
@@ -1394,6 +1457,7 @@ def _generate_structured_interview_result(
                     reasoning_effort=selected_reasoning_effort,
                     raw_transcript=raw_transcript,
                     current_question=current_question,
+                    persist_state=persist_state,
                     reply=localized_interview_transcript_retry(interview_locale),
                 )
             if canonical_intent is not None:
@@ -1441,6 +1505,7 @@ def _generate_structured_interview_result(
                         reasoning_effort=selected_reasoning_effort,
                         raw_transcript=raw_transcript,
                         current_question=current_question,
+                        persist_state=persist_state,
                         reply=reply,
                     )
                 # The structured interpreter remains useful for extraction and
@@ -1490,6 +1555,7 @@ def _generate_structured_interview_result(
                     reasoning_effort=selected_reasoning_effort,
                     raw_transcript=raw_transcript,
                     current_question=current_question,
+                    persist_state=persist_state,
                     reply=localized_interview_question_help(
                         interview_locale,
                         str(
@@ -1519,6 +1585,7 @@ def _generate_structured_interview_result(
                     reasoning_effort=selected_reasoning_effort,
                     raw_transcript=raw_transcript,
                     current_question=current_question,
+                    persist_state=persist_state,
                     reply=localized_interview_hesitation_prompt(interview_locale),
                 )
             if (
@@ -1542,6 +1609,7 @@ def _generate_structured_interview_result(
                     reasoning_effort=selected_reasoning_effort,
                     raw_transcript=raw_transcript,
                     current_question=current_question,
+                    persist_state=persist_state,
                     reply=localized_interview_confirmation_clarification_prompt(interview_locale),
                 )
             if effective_completeness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
@@ -1558,11 +1626,12 @@ def _generate_structured_interview_result(
                 _persist_transcript_assessment(
                     latest_user_message,
                     state.get("lastTranscriptAssessment"),
+                    persist=persist_state,
                 )
                 state["lastStructuredOutput"] = output.model_dump()
                 state["lastStructuredModelId"] = model_id
                 state["lastStructuredReasoningEffort"] = selected_reasoning_effort
-                _persist_state(state, user)
+                _persist_state(state, user, persist=persist_state)
                 messages = _replace_message(
                     messages,
                     latest_message_id,
@@ -1604,11 +1673,12 @@ def _generate_structured_interview_result(
                     _persist_transcript_assessment(
                         latest_user_message,
                         state.get("lastTranscriptAssessment"),
+                        persist=persist_state,
                     )
                     state["lastStructuredOutput"] = output.model_dump()
                     state["lastStructuredModelId"] = model_id
                     state["lastStructuredReasoningEffort"] = selected_reasoning_effort
-                    _persist_state(state, user)
+                    _persist_state(state, user, persist=persist_state)
                     messages = _replace_message(
                         messages,
                         latest_message_id,
@@ -1728,21 +1798,24 @@ def _generate_structured_interview_result(
                         clear_probe(state, current_target)
                         if current_question.get("optionalDeepening"):
                             confirm_tentative_target(state, current_target)
-                    _save_newly_confirmed_field_messages(
-                        record=record,
-                        state=state,
-                        previous_confirmed_field_ids=confirmed_field_ids_before,
-                        question=current_question,
-                        user=user,
-                    )
+                    if persist_state:
+                        _save_newly_confirmed_field_messages(
+                            record=record,
+                            state=state,
+                            previous_confirmed_field_ids=confirmed_field_ids_before,
+                            question=current_question,
+                            user=user,
+                        )
                     _persist_transcript_assessment(
                         latest_user_message,
                         state.get("lastTranscriptAssessment"),
+                        persist=persist_state,
                     )
                 else:
                     _persist_transcript_assessment(
                         latest_user_message,
                         state.get("lastTranscriptAssessment"),
+                        persist=persist_state,
                     )
             else:
                 apply_structured_output(
@@ -1785,7 +1858,7 @@ def _generate_structured_interview_result(
                 state["lastStructuredOutput"] = output.model_dump()
                 state["lastStructuredModelId"] = model_id
                 state["lastStructuredReasoningEffort"] = selected_reasoning_effort
-                _persist_state(state, user)
+                _persist_state(state, user, persist=persist_state)
                 messages = _replace_message(
                     messages,
                     latest_message_id,
@@ -1811,7 +1884,7 @@ def _generate_structured_interview_result(
             state["lastStructuredModelId"] = model_id
             state["lastStructuredReasoningEffort"] = selected_reasoning_effort
             if keep_current_question_for_unanswerable and current_question.get("targetType") != "closing":
-                _persist_state(state, user)
+                _persist_state(state, user, persist=persist_state)
                 return _build_result(
                     record=record,
                     state=state,
@@ -1845,7 +1918,7 @@ def _generate_structured_interview_result(
                 state["currentFieldId"] = None
                 state["currentQuestionId"] = None
                 state["nextQuestionTarget"] = None
-                _persist_state(state, user)
+                _persist_state(state, user, persist=persist_state)
                 return _build_result(
                     record=record,
                     state=state,
@@ -1856,7 +1929,7 @@ def _generate_structured_interview_result(
                     action="finish",
                     status="completed",
                 )
-            _persist_state(state, user)
+            _persist_state(state, user, persist=persist_state)
 
     if defer_question_generation:
         # Background validation has already applied the detailed output above.
@@ -1890,7 +1963,7 @@ def _generate_structured_interview_result(
             state["currentFieldId"] = None
             state["currentQuestionId"] = None
             state["nextQuestionTarget"] = None
-            _persist_state(state, user)
+            _persist_state(state, user, persist=persist_state)
             return _build_result(
                 record=record,
                 state=state,
@@ -1904,7 +1977,7 @@ def _generate_structured_interview_result(
 
     structured_provider = _get_structured_provider(provider, model_id=model_id)
     state["questionGenerationPending"] = True
-    _persist_state(state, user)
+    _persist_state(state, user, persist=persist_state)
     question_text, retrieved_context, document_candidate = _generate_question_text(
         structured_provider,
         profile=profile,
@@ -1969,7 +2042,7 @@ def _generate_structured_interview_result(
             question["fieldId"],
             {"fieldId": question["fieldId"], "status": "pending", "answerState": "UNANSWERED"},
         )["status"] = "asking"
-    _persist_state(state, user)
+    _persist_state(state, user, persist=persist_state)
     all_messages = [*messages, assistant_message] if assistant_message else messages
     completion = evaluate_completion(state, profile, fields)
     return _build_result(
@@ -2004,6 +2077,7 @@ def _keep_current_question(
     raw_transcript: str,
     current_question: Mapping[str, Any],
     reply: str,
+    persist_state: bool = True,
 ) -> dict[str, Any]:
     """Persist a non-answer without replacing the active question.
 
@@ -2019,15 +2093,17 @@ def _keep_current_question(
         latest_message_id=latest_message_id,
         raw_transcript=raw_transcript,
     )
-    _persist_transcript_assessment(
-        latest_user_message,
-        state.get("lastTranscriptAssessment"),
-    )
+    if persist_state:
+        _persist_transcript_assessment(
+            latest_user_message,
+            state.get("lastTranscriptAssessment"),
+            persist=persist_state,
+        )
     state["lastStructuredOutput"] = output.model_dump()
     state["lastStructuredDialogueAct"] = output.dialogueAct
     state["lastStructuredModelId"] = model_id
     state["lastStructuredReasoningEffort"] = reasoning_effort
-    _persist_state(state, user)
+    _persist_state(state, user, persist=persist_state)
     updated_messages = _replace_message(messages, latest_message_id, latest_user_message)
     return _build_result(
         record=record,
@@ -2103,7 +2179,7 @@ def load_structured_interview_state(
         }
     )
     if persist:
-        store.upsert("interview_states", state)
+        commit_interview_state(state, user, source="state_initialization")
     return state
 
 
@@ -3403,8 +3479,10 @@ def _looks_like_incomplete_utterance(transcript: str) -> bool:
 def _persist_transcript_assessment(
     message: Mapping[str, Any],
     assessment: Mapping[str, Any] | None,
+    *,
+    persist: bool = True,
 ) -> None:
-    if not assessment:
+    if not persist or not assessment:
         return
     message_id = str(message.get("id") or "")
     if not message_id:
@@ -3661,11 +3739,15 @@ def _latest_field_question_id(state: Mapping[str, Any], field_id: str) -> str | 
     return None
 
 
-def _persist_state(state: dict[str, Any], user: UserContext) -> None:
-    state["stateVersion"] = int(state.get("stateVersion", 0) or 0) + 1
-    state["updatedByUserId"] = user.user_id
-    state["updatedAt"] = utc_now()
-    store.upsert("interview_states", state)
+def _persist_state(
+    state: dict[str, Any],
+    user: UserContext,
+    *,
+    persist: bool = True,
+) -> None:
+    if not persist:
+        return
+    commit_interview_state(state, user, source="structured_interview")
 
 
 def _attach_proposal_message_id(

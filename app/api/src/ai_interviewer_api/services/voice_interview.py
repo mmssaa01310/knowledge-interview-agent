@@ -66,6 +66,7 @@ from ai_interviewer_api.services.conversation_policy import (
     resolve_canonical_action,
     resolve_canonical_intent,
 )
+from ai_interviewer_api.services.interview_state_transition import commit_interview_state
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 from ai_interviewer_api.services.voice_transcript_feedback import (
     build_transcribe_polly_transcript_feedback,
@@ -763,7 +764,7 @@ def _process_structured_voice_turn(
                 "action": fast_result.action,
                 "reply": fast_result.reply,
                 "question": fast_result.question,
-                "interviewState": interview_state,
+                "interviewState": fast_result.provisional_state or interview_state,
                 "retrievalPolicy": fast_result.retrieval_policy,
                 "retrievalExecuted": fast_result.retrieval_executed,
                 "retrievedSources": fast_result.retrieved_sources,
@@ -1031,12 +1032,6 @@ def _persist_fast_background_validation(
     if turn is None:
         return
     source_turn_id = str(payload.get("sourceTurnId") or turn_id)
-    session_before = voice_session_repository.get(voice_session_id) or {}
-    state_before = (
-        deepcopy(store.get("interview_states", f"interview-state-{session_before.get('recordId')}"))
-        if session_before.get("recordId")
-        else None
-    )
     background_status = str(payload.get("backgroundStatus") or "failed")
     turn["backgroundValidationStatus"] = background_status
     turn["backgroundCanProceed"] = bool(payload.get("backgroundCanProceed", False))
@@ -1044,6 +1039,16 @@ def _persist_fast_background_validation(
         payload.get("backgroundAgreesWithFast", False)
     )
     turn["clarificationEnqueued"] = bool(payload.get("clarificationEnqueued", False))
+    background_merge = payload.get("backgroundMerge")
+    if isinstance(background_merge, Mapping):
+        turn["backgroundMergeDecision"] = background_merge.get("mergeDecision")
+        turn["backgroundBaseStateVersion"] = background_merge.get("baseStateVersion")
+        turn["backgroundCurrentStateVersion"] = background_merge.get("currentStateVersion")
+        turn["backgroundResultingStateVersion"] = background_merge.get("resultingStateVersion")
+        turn["backgroundAppliedFields"] = list(background_merge.get("appliedFields") or [])
+        turn["backgroundDiscardedFields"] = list(
+            background_merge.get("discardedFields") or []
+        )
     transcript_assessment = payload.get("transcriptAssessment")
     if isinstance(transcript_assessment, Mapping):
         turn["rawTranscript"] = transcript_assessment.get("rawTranscript") or turn.get(
@@ -1065,7 +1070,6 @@ def _persist_fast_background_validation(
     voice_turn_repository.save(turn)
     session = voice_session_repository.get(voice_session_id)
     result = payload.get("result")
-    result_state = result.get("interviewState") if isinstance(result, Mapping) else None
     validation_dialogue_act = (
         result.get("structuredDialogueAct") if isinstance(result, Mapping) else None
     )
@@ -1089,53 +1093,32 @@ def _persist_fast_background_validation(
     if (
         isinstance(session, dict)
         and session.get("provisionalSourceTurnId") == payload.get("sourceTurnId")
-        and isinstance(result_state, Mapping)
-        and result_state.get("status") != "completed"
         and background_status == "completed"
     ):
         session.pop("provisionalQuestion", None)
         session.pop("provisionalSourceTurnId", None)
-    if (
-        isinstance(session, dict)
-        and isinstance(result_state, Mapping)
-        and result_state.get("status") == "completed"
-    ):
-        session["currentQuestionId"] = None
-        session["status"] = "completed"
-        session.pop("provisionalQuestion", None)
-        session.pop("provisionalSourceTurnId", None)
-        session.pop("provisionalAnsweredTargetKeys", None)
+    if isinstance(session, dict):
         session["updatedAt"] = utc_now()
         voice_session_repository.save(session)
-    elif isinstance(session, dict):
-        session["updatedAt"] = utc_now()
-        voice_session_repository.save(session)
-    state_after = (
-        store.get("interview_states", f"interview-state-{session.get('recordId')}" if isinstance(session, dict) else "")
-        if isinstance(session, dict)
-        else None
-    )
-    fields_before = state_before.get("fieldStates", {}) if isinstance(state_before, Mapping) else {}
-    fields_after = state_after.get("fieldStates", {}) if isinstance(state_after, Mapping) else {}
-    fields_changed = sorted(
-        str(field_id)
-        for field_id in set(fields_before) | set(fields_after)
-        if fields_before.get(field_id) != fields_after.get(field_id)
-    )
     logger.info(
-        "background_structured_state_write source_turn_id=%s voice_session_id=%s "
-        "state_version_before=%s state_version_after=%s updated_at_before=%s "
-        "updated_at_after=%s current_target_before=%s current_target_after=%s "
-        "fields_changed=%s canonical_action=%s",
+        "background_structured_state_proposal source_turn_id=%s voice_session_id=%s "
+        "merge_decision=%s base_state_version=%s current_state_version=%s "
+        "resulting_state_version=%s applied_fields=%s discarded_fields=%s "
+        "canonical_action=%s direct_state_write=false",
         source_turn_id,
         voice_session_id,
-        state_before.get("stateVersion") if isinstance(state_before, Mapping) else None,
-        state_after.get("stateVersion") if isinstance(state_after, Mapping) else None,
-        state_before.get("updatedAt") if isinstance(state_before, Mapping) else None,
-        state_after.get("updatedAt") if isinstance(state_after, Mapping) else None,
-        state_before.get("nextQuestionTarget") if isinstance(state_before, Mapping) else None,
-        state_after.get("nextQuestionTarget") if isinstance(state_after, Mapping) else None,
-        fields_changed,
+        background_merge.get("mergeDecision") if isinstance(background_merge, Mapping) else None,
+        background_merge.get("baseStateVersion") if isinstance(background_merge, Mapping) else None,
+        background_merge.get("currentStateVersion")
+        if isinstance(background_merge, Mapping)
+        else None,
+        background_merge.get("resultingStateVersion")
+        if isinstance(background_merge, Mapping)
+        else None,
+        background_merge.get("appliedFields") if isinstance(background_merge, Mapping) else [],
+        background_merge.get("discardedFields")
+        if isinstance(background_merge, Mapping)
+        else [],
         turn.get("canonicalAction"),
     )
     logger.info(
@@ -1362,7 +1345,12 @@ def _delete_voice_turn_messages(turn_id: str, tenant_id: str) -> None:
 def _restore_cancelled_turn_artifacts(turn: dict, session: dict) -> None:
     base_state = turn.get("baseInterviewState")
     if isinstance(base_state, dict):
-        store.upsert("interview_states", deepcopy(base_state))
+        commit_interview_state(
+            deepcopy(base_state),
+            _build_user_context_from_session(session),
+            source="cancel_restore",
+            increment_version=False,
+        )
     _delete_voice_turn_messages(turn["id"], session["tenantId"])
 
 

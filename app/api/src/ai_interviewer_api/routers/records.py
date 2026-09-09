@@ -44,6 +44,7 @@ from ai_interviewer_api.services.process_model import (
     edit_process_model,
     save_process_model,
 )
+from ai_interviewer_api.services.interview_state_transition import commit_interview_state
 from ai_interviewer_api.services.record_lifecycle import (
     sync_record_status_after_interview,
 )
@@ -400,10 +401,7 @@ def update_record_interview_answer(
 
     field_state["recordAnswer"] = record_answer
     field_state["answerSummary"] = None
-    interview_state["stateVersion"] = int(interview_state.get("stateVersion", 0) or 0) + 1
-    interview_state["updatedByUserId"] = user.user_id
-    interview_state["updatedAt"] = utc_now()
-    store.upsert("interview_states", interview_state)
+    commit_interview_state(interview_state, user, source="record_answer_update")
 
     confirmed_messages = [
         message

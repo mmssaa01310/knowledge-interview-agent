@@ -2,13 +2,13 @@
 
 更新日: 2026-09-09
 対象: `text` / `transcribe_polly` / `nova_sonic` / `openai_realtime`
-状態: 現行コードの監査、characterization、再設計案。Conversation Router本体はまだ実装していない。
+状態: 現行コードの監査、characterization、Canonical Intent Policy Phase 1、実LLM評価、Single State Writer Phase 2を反映。
 
 この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
 
 ## 1. 監査結果の要約
 
-現在の実装には、全Providerに共通する単一の `Canonical User Turn -> Intent -> Action` パイプラインはない。
+`app/api` のText/Voice処理には、既存 `StructuredDialogueAct` を型として再利用する `Canonical Intent -> Canonical Action` Policyが実装されている。Provider側の入力境界にはまだ粗いtransport `turnType` が残るが、Voiceの会話処理開始時にはBackendのCanonical Policyを再評価する。
 
 最も近い「Stateの正本」は `app/api` の `interview_state` と `VoiceTurn` である。しかし、会話制御の判断は次の実装に分散している。
 
@@ -16,20 +16,21 @@
 |---|---|---|
 | User Turnの受領・一部重複排除 | OpenAI sideband、Voice API、Transcribe runtime、Nova tool coordinator | Providerごとにキーと寿命が違う。耐久性のある共通Canonical IDではない |
 | Turn Type | `InterviewBridge.process_turn()` の既定値、Voice intent API、OpenAI coordinator | OpenAIは `ANSWER` を固定してVoice intent APIを迂回する |
-| dialogueAct | Structured Interpreterの出力 | `ANSWER`、`QUESTION_TO_ASSISTANT`、`CONFIRMATION`等を持つが、Fast foregroundの正本ではない |
+| dialogueAct / Canonical Intent | `services/conversation_policy.py:resolve_canonical_intent()` | 既存 `StructuredDialogueAct` を再利用。Routerは副作用なしで意図だけを返す |
+| Canonical Action | `services/conversation_policy.py:resolve_canonical_action()` | Intentとpending confirmation等から1つのActionへ変換 |
 | Fast判定 | `start_fast_interview_turn()` | `minimumInformationPresent`等のBooleanだけで、dialogueActを分類しない |
-| State更新 | `coordinator.apply_structured_output()`、`voice_interview`のcommit | Backendが行うが、Fast provisionalとBackground validationの2経路がある |
+| State更新 | `services/interview_state_transition.py:commit_interview_state()` | 永続化入口は1系統。Fast foregroundはprovisionalな質問進行、Backgroundはversion付きproposalをCoordinator経由で安全にmergeする |
 | 次target | `select_next_question_target()` | Backend coordinatorが決める。Question Generatorはtargetを決めない |
 | Question definition | Field / question / questionPlan | 現行Question Generator入力には定義が残っている。タイトルだけに縮退していることはコード上では確認できない |
 | Question rendering | `_generate_question_text()`、Question Generator provider | Backendが選んだtargetの表現を生成する。RealtimeはPhase 1では読み上げる役割 |
 | 初回質問 | `create_voice_session()` -> `_initialize_initial_question()`、OpenAIの `session.created` | 通常Turnとは別の初期化経路。OpenAIはsidebandで初期応答を送る |
 
-したがって、以下の症状をそれぞれ別の `if` で直す前に、次の2つを正本契約として固定する必要がある。
+したがって、会話処理では次の2つを正本契約として扱う。
 
 1. Provider固有IDを、永続的に追跡できるCanonical User Turnへ一度だけ変換すること。
 2. 1つのUser Turnから1つの会話分類、1つのCanonical Action、1つのState transitionだけを生成すること。
 
-この文書ではその契約を提案として定義するが、本番のRouterやState遷移コードは追加していない。
+Canonical Intent/Actionは `conversation_policy.py`、永続StateのcommitとBackground mergeは `interview_state_transition.py` が担当する。ただしDurable DBのTurn dedupとInitial Questionの全面統合は未実装である。
 
 ## 2. 現在の全体フロー
 
@@ -187,17 +188,18 @@ OpenAIのBrowser側 `conversation.item.input_audio_transcription.completed` はU
 
 ### 3.1 正本の評価
 
-「Stateの保存先」という意味では `app/api` が正本である。しかし、会話Policyの最終決定権は1つではない。
+「Stateの保存先」と「会話Policy」の正本は `app/api` に置かれている。Phase 1以降の通常のText/Voice turnでは、次の順に一度だけ決定する。
 
-* OpenAI coordinatorが `turn_type="ANSWER"` を固定し、APIのVoice intent分類を迂回する。
-* `InterviewBridge.process_turn()` は `turn_type is None` の場合だけ `classify_voice_turn_intent` を呼ぶ（`interview_bridge.py:129-137`）。
-* Full Structured Interpreterだけが豊富な `dialogueAct` を持つ。
-* Fast Pathは `dialogueAct` ではなく回答十分性のBooleanで先にforeground replyを決める。
-* Background Structuredは後から別のState/clarification情報を書き込む（`voice_interview.py:909-1055`）。
-* Question Generatorはtargetを選ばないが、生成文はLLM出力である。
-* BrowserはUser finalをUIへ登録し、sidebandはBackend Turnを登録するという役割分担だが、同一Canonical Turnの永続契約ではない。
+* `services/conversation_policy.py:resolve_canonical_intent()` が既存 `StructuredDialogueAct` をCanonical Intentとして返す。
+* `services/conversation_policy.py:resolve_canonical_action()` がIntentと現在StateからCanonical Actionへ変換する。
+* `voice_interview.py:_process_voice_turn()` はVoice providerから渡された粗いtransport情報をそのまま意味分類には使わず、Canonical Policyを呼ぶ（明示的なCONTROL turnを除く）。
+* `ai_interview.py:_resolve_text_turn_policy()` も同じPolicyを呼ぶ。
+* Full Structured Interpreterの `dialogueAct` は検証・Telemetryであり、Background結果でCanonical Actionを後から変更しない。
+* Fast Pathは `canonicalAction == PROCESS_ANSWER` の場合だけ回答十分性を判定する。
+* Background Structuredは `persist_state=False` の提案生成後、`interview_state_transition.py:apply_background_state_proposal()` を介して、最新Stateへ抽出結果だけをmergeする。
+* 永続Stateの実際の保存は `interview_state_transition.py:commit_interview_state()` に集約され、Backgroundはcurrent target、next target、canonical intent/actionを上書きしない。
 
-このため、`Structured Interpreter` は詳細抽出のOwner、`coordinator` はState/targetのOwner、`Fast` はprovisional foreground decisionのOwnerという三層になっている。IntentとActionの共通Ownerは存在しない。
+Provider側のUI表示・transport Turn type・Durable Turn dedupはまだ完全に統合されていないが、BackendのIntent/Action/State commitの責務はこの境界で固定されている。
 
 ## 4. 現行State Machineの復元
 
@@ -359,11 +361,11 @@ OpenAIのUser Turnが初期応答より先に届く場合、`_process_turn()` �
 | Case | currentTarget | dialogueAct / fast | fieldUpdates / answerResolution | pendingCandidate | state before -> after | next target / question |
 |---|---|---|---|---|---|---|
 | A normal answer | current profile target | Fullは `ANSWER`。FastはBooleanのみ | profile required items、candidate/auto-confirmの実値 | profile candidateの有無 | field stateの適用、必要ならawaiting/confirmed | `select_next_question_target()`の結果とQG文 |
-| A confirmation | confirmation target | Fullは `CONFIRMATION`。OpenAI固定ANSWERでもFull serviceのconfirmation特別分岐は条件付き | 通常のfield updateではなく `_confirm_target()` | candidate -> confirmed | `AWAITING_CONFIRMATION` -> `CONFIRMED` | 次field/target |
-| B clarification | current question | Full `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`。Fastは `needsQuestionExplanation` | 通常updateなし | 維持 | `_keep_current_question()` | current targetのdefinitionに基づく説明 |
-| C already answered | current question | OpenAI入口は `ANSWER`固定。Fullの実dialogueActは実行結果を採取する必要 | correction/answer updateの有無 | 維持または更新 | correctionStatus / Stateの変化 | currentまたはnext target |
+| A confirmation | confirmation target | Canonical Routerは `CONFIRMATION`。Full validationは別に観測 | 通常のfield updateではなく `_confirm_target()` | candidate -> confirmed | `AWAITING_CONFIRMATION` -> `CONFIRMED` | 次field/target |
+| B clarification | current question | Canonical Routerは `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`。Fastは呼ばない | 通常updateなし | 維持 | `_keep_current_question()` | current targetのdefinitionに基づく説明 |
+| C already answered | current question | Canonical Routerで分類し、FullのdialogueActは検証として採取 | correction/answer updateの有無 | 維持または更新 | correctionStatus / Stateの変化 | currentまたはnext target |
 | D rejection | confirmation target | Full `REJECTION`。Fast schemaには専用値なし | candidate rejection | candidate破棄 | `_reject_target()`で未確定側へ | 再回答用target |
-| E hesitation | current question | Full `HESITATION` / `BACKCHANNEL`。FastはBooleanへ縮退 | 通常updateなし | 維持 | current target維持 | retry / current question |
+| E hesitation | current question | Canonical Routerは `HESITATION` / `BACKCHANNEL`。Fastは呼ばない | 通常updateなし | 維持 | current target維持 | retry / current question |
 | F initial | 未回答の初期target | Router/Actionなし。session.created -> initial task | initial question生成結果 | なし | initial session snapshot | initial question text |
 
 モデルが返す`dialogueAct`やfieldUpdatesは入力ごとに変わるため、上表の型は分岐契約であり、固定された実行結果ではない。Case A〜Eの具体的なJSONを得るには、実際のprovider responseをharnessの注入出力またはE2E traceへ記録する必要がある。
@@ -375,7 +377,7 @@ OpenAIのUser Turnが初期応答より先に届く場合、`_process_turn()` �
 | `text` | Browser HTTP | `POST /records/{id}/messages` | targetの有無から `ANSWER`/`CONTROL` | `generate_interview_reply()` -> Full Structured | HTTP/SSE |
 | `transcribe_polly` | WebRTC audio -> Transcribe | endpoint + final settle -> `_finalize_user_turn()` | Bridge既定 `ANSWER`（別途stream API） | Voice API。Fast flag ONならFast foreground + Background | API stream -> Polly chunker -> PCM |
 | `nova_sonic` | WebRTC audio -> Bedrock | transcript + forced tool conditions | `InterviewBridge.save_turn()`はanswer target | ToolTurnCoordinator -> Voice API | Nova tool result -> audio |
-| `openai_realtime` | WebRTC audio -> OpenAI | sideband `input_audio_transcription.completed` | coordinatorが `ANSWER`固定 | `process_turn()` -> Voice API。OpenAI intent classifierは未使用 | reply_textをsideband `response.create`へinput_textとして渡しRealtime audio |
+| `openai_realtime` | WebRTC audio -> OpenAI | sideband `input_audio_transcription.completed` | sidebandの粗いtransport値は `ANSWER`。意味分類はAPIのCanonical Policy | `process_turn()` -> Voice API -> `resolve_canonical_intent()`。Realtime側の会話Policyは未使用 | reply_textをsideband `response.create`へinput_textとして渡しRealtime audio |
 
 `openai_realtime`は、Browserのcompleted eventでもUser UI messageを追加するが、Backend Turnはsidebandだけで作る（`useRealtimeVoiceInterview.ts:187-216`、`coordinator.py:201-221`）。従ってコード上の意図は二重Backend処理ではないが、UIのmergeとsidebandのAPI処理は別ID層である。
 
@@ -416,21 +418,21 @@ Fastの設定は `global.openai.gpt-5.6-luna`、reasoning `none`、max output 16
 
 * `Background Structured` は `background_future` としてFast futureと重なる。Fast future直後にbackgroundをawaitしていない（`service.py:482-524`）。
 * しかしQuestion GeneratorはFast PASS後にforegroundで実行され、speculative retrieval futureを `resolve()` するため、RAG結果が必要ならそこで待つ（`service.py:601-629`, `_generate_question_text():2723-2779`）。
-* Backgroundの結果はreplyを作らないが、turn telemetryとState/sessionの一部を後から更新する（`voice_interview.py:909-1055`）。したがって、foreground provisional StateとBackground reconciliationが同じ会話を別時点で書く構造である。
-* Fast schemaは `minimumInformationPresent`、`understandable`、`clearlyIncomplete`、`needsQuestionExplanation`、`reason`だけで、dialogueAct、fieldUpdates、confirmation、correction、contradiction、next targetを持たない（`fast_interpreter/schemas.py:6-19`）。
+* Backgroundの結果はreplyを作らず、提案として `apply_background_state_proposal()` に渡される（`service.py:782-894`、`interview_state_transition.py:154-299`）。永続化はSingle Writer境界だけが行い、current target等の会話Policyフィールドは最新値を保持する。
+* Fast schemaは `minimumInformationPresent`、`understandable`、`clearlyIncomplete`、`needsQuestionExplanation`、`reason`だけで、dialogueAct、fieldUpdates、confirmation、correction、contradiction、next targetを持たない（`fast_interpreter/schemas.py:6-19`）。Intent分類はFastではなくCanonical Routerが担当する。
 
 ### Dialogue Act別の比較
 
 | 発話意図 | Fast OFF | Fast ON foreground | Background |
 |---|---|---|---|
 | `ANSWER` | Full dialogueAct + updates + sufficiency | BooleanでPASS/FAIL、PASSならprovisional advance | Full act/updateを後処理 |
-| `CONFIRMATION` | awaiting targetならsynthetic confirmationまたはFull | Fast schemaには専用型なし。current target条件でeligible外になるとは限らない | Fullで確認・State適用 |
-| `REJECTION` | Fullでreject target | Fast schemaには専用型なし | Fullでreject可能 |
-| `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST` | help + current target維持 | `needsQuestionExplanation`がtrueならhelp、falseならPASSの可能性 | Fullでclarificationを検出・queue可能 |
-| `CORRECTION` | transcript correction / field update | Fast schemaには専用型なし | Fullでcorrectionを検出 |
-| `HESITATION` | current target維持 | `clearlyIncomplete`等へ縮退する可能性 | FullでHESITATIONを記録 |
+| `CONFIRMATION` | awaiting targetならsynthetic confirmationまたはFull | Canonical ActionでFastを呼ばない | Fullで確認・State適用 |
+| `REJECTION` | Fullでreject target | Canonical ActionでFastを呼ばない | Fullでreject可能 |
+| `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST` | help + current target維持 | Canonical ActionでFastを呼ばない | Fullでclarificationを検出・queue可能 |
+| `CORRECTION` | transcript correction / field update | Canonical ActionでFastを呼ばない | Fullでcorrectionを検出 |
+| `HESITATION` | current target維持 | Canonical ActionでFastを呼ばない | FullでHESITATIONを記録 |
 
-これは、Fast ONでStructuredの会話制御が完全に置換されたという意味ではなく、foregroundから詳細なdialogueActが外れ、Backgroundへ後置されたという意味である。
+Fast ONでも会話Intent/ActionはCanonical Policyが先に決める。Fastは `PROCESS_ANSWER` の回答十分性だけを担当し、詳細StructuredはBackground proposalとして後置される。
 
 ## 8. RAGとQuestion Generator
 
@@ -680,9 +682,9 @@ UV_CACHE_DIR=/tmp/ai-interviewer-test-cache uv run pytest \
 
 今後Fast ON/OFFを比較する場合は、production settingをテスト全体へ漏らさず、Fast providerを注入できるcharacterization caseを追加する必要がある。現行harnessはFull Structuredを観測するものであり、Fast ONのThreadPoolタイミングそのものを模擬してはいない。
 
-## 15. 提案するCanonical Algorithm（実装前仕様）
+## 15. Canonical Algorithm（Phase 1/2実装状況）
 
-現行コードとのGapを確認した上で、次の順序を単一の正本として採用するのが妥当である。ここは設計案であり、まだproduction codeへ追加していない。
+現行コードとのGapを確認した上で定義した順序のうち、Canonical Intent/ActionとSingle State Writerを実装した。Durable Turn dedup、Initial Question全面統合、出力Streamingはまだ対象外である。
 
 ```text
 Provider raw input
@@ -691,8 +693,8 @@ Canonical User Turn Creation
   - provider source idを保存
   - voice_session_id + source idからcanonical_turn_idを決める
   ↓
-Durable Turn Deduplication
-  - duplicateなら既存Canonical Turn / resultを返す
+Turn Deduplication（現行Provider/APIの既存範囲）
+  - Durableな共通unique contractは未実装
   ↓
 One Conversation Interpretation
   - 既存 StructuredDialogueAct を正規のintent型として再利用
@@ -700,7 +702,7 @@ One Conversation Interpretation
     CONFIRMATION / REJECTION / CORRECTION / HESITATION等
   ↓
 Backend Conversation Policy
-  - intentをCanonical Actionへ一度だけ変換
+  - `services/conversation_policy.py` がintentをCanonical Actionへ一度だけ変換
   - PROCESS_ANSWER / EXPLAIN_CURRENT_QUESTION /
     CONFIRM_PENDING_CANDIDATE / REJECT_PENDING_CANDIDATE /
     APPLY_CORRECTION / WAIT_FOR_USER / REPEAT_CURRENT_QUESTION等
@@ -710,8 +712,8 @@ Action-specific Processing
   - 非ANSWERはFast Answer Checkへ入れない
   ↓
 One State Transition
-  - coordinatorがStateを一度だけcommit
-  - Background検証は同じversion/turnのreconciliationとして扱う
+  - `services/interview_state_transition.py:commit_interview_state()`だけが永続Stateをcommit
+  - Background検証はsource turn/state version付きproposalとしてreconciliation
   ↓
 One Next Target Selection
   - coordinatorがtarget definitionまで確定
@@ -725,7 +727,7 @@ Provider Output
 
 ### 15.1 Router型について
 
-既存 `StructuredDialogueAct` はすでに必要な分類値を持つ（`schemas.py:27-39`）。したがって、まず新しい似たenumを追加せず、既存型をCanonical User Intentとして再利用できるかを設計判断する。`VoiceTurnIntentOutput` の `ANSWER` / `CONTROL` は粗すぎるため、最終正本にする場合は既存dialogueActとの関係を先に決める必要がある。
+既存 `StructuredDialogueAct` を新しいenumなしでCanonical User Intentとして再利用している（`schemas.py:27-39`、`services/conversation_policy.py:21-188`）。`VoiceTurnIntentOutput` の粗い `ANSWER` / `CONTROL` はtransport境界に残るが、BackendのCanonical Action決定には使わない。
 
 ### 15.2 Fastの位置
 
@@ -743,52 +745,71 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 
 ### 15.3 Initial Question
 
-初回は特殊な独自Policyを持つのではなく、`READY_TO_START`相当のStateから `ASK_CURRENT_TARGET` Actionを生成し、通常のQuestion Rendererへ流す。Realtimeのsession.createdはtransport eventであり、初回質問の内容やState遷移の正本にはしない。
+初回はまだ特殊経路で、`create_voice_session()` とRealtime `session.created` が通常Turnと分かれている。これは次Phaseの対象であり、今回のCanonical Intent/Action変更では統合していない。
 
 ## 16. Gap Analysis
 
 | Requirement | Current implementation | Problem | Severity | Affected providers | Proposed owner |
 |---|---|---|---|---|---|
 | 1 Turn -> 1 canonical identity | OpenAI item set + clientTurnId、API reuse、UI keyが別々 | durableなsource id unique contractがない | Critical | 全Voice、特にOpenAI | `app/api` Canonical Turn repository |
-| 1 intentの正本 | OpenAI固定ANSWER、Voice 2値分類、Full dialogueAct、Fast Boolean | intent/actionが複数箇所で別表現 | Critical | Voice全体 | app/api Conversation Policy |
-| Stateを1 writerへ集約 | Fast foreground provisional + Background reconciliation | 後から別State writerが動く | Critical | Voice Fast ON | app/api versioned reconciliation |
-| Confirmationの単一遷移 | Fullにはsynthetic confirmation -> `_confirm_target()`がある | current target / entry typeに依存し、Provider共通契約でない | Critical | Voice全体 | Canonical Action |
-| clarificationの単一経路 | Fullにはhelp分岐、FastはBoolean、OpenAIはANSWER固定 | 聞き返しが回答不足へ縮退し得る | Critical | Voice全体 | Canonical dialogueAct + Action |
+| 1 intentの正本 | BackendのCanonical PolicyをPhase 1で追加。Provider側には粗いtransport値が残る | DurableなProvider非依存Turn contractは未実装 | High | Voice全体 | app/api Conversation Policy + Turn adapter |
+| Stateを1 writerへ集約 | `commit_interview_state()` とversion付きBackground mergeをPhase 2で追加 | DBを跨ぐ複数workerの原子的排他は未実装 | Medium | Voice Fast ON | app/api versioned reconciliation |
+| Confirmationの単一遷移 | Canonical Action -> existing `_confirm_target()` | Initial/全ProviderのDurable Turn contractは未統合 | Medium | Voice全体 | Canonical Action |
+| clarificationの単一経路 | Canonical Action -> existing help / `_keep_current_question()` | 実LLM RouterのQTA/Clarification境界は観測継続 | Medium | Voice全体 | Canonical dialogueAct + Action |
 | Initial questionの共通Policy | session作成、OpenAI session.createdが別経路 | 初回未提示・Turn競合を追いにくい | High | Voice全体 | app/api Policy + renderer |
 | Provider非依存Turn contract | providerごとにendpoint/event/turn typeが異なる | Conversation Policyが入口の都合を受ける | High | 全Provider | adapter -> Canonical Turn |
 | QGがdefinitionを厳守 | 現行inputにはoriginalQuestion/description/itemsあり | 実prompt/responseの観測が不足。LLM逸脱の検出契約がない | High | Text/Voice | backend renderer/validator |
 | QG全文待ちを避ける | Internal streamはあるがOpenAIはnon-stream Bridge | OpenAI First Audioはreply全文後 | High | OpenAI | later streaming boundary |
-| Background resultのState整合 | callbackでturn/sessionを後更新 | foreground replyと後続Stateのversion/ownershipが曖昧 | High | Voice Fast ON | same turn/version reconciliation |
+| Background resultのState整合 | proposal + base/current version比較 + safe mergeをPhase 2で追加 | Cross-process atomic version checkは残課題 | Medium | Voice Fast ON | same turn/version reconciliation |
 | `CONTROL`のdialogueAct | API 2値分類後 `_commit_control_turn()` | clarification/rejection等と異なる制御語彙 | Medium | Text/Voice caller dependent | Canonical Action |
 | UIとBackendのID統合 | frontend merge keyとVoiceTurn client ID | UI duplicateとBackend duplicateを同一契約で追えない | Medium | 全Voice | Canonical IDs |
 | Text SSEの文分割 | newline + artificial delay | 音声ではないが出力境界がProviderごとに異なる | Low | Text | output adapter |
 
-## 17. 実装計画（まだ実装していない）
+## 17. 実装計画
 
 依存関係順は次のとおり。
 
-1. characterization / State Traceを拡張し、全Caseの入力、State、output、IDsをfixture化する。
-2. Provider source IDからCanonical User Turn IDを生成し、API側でdurable dedupeする。
-3. 既存 `StructuredDialogueAct` を再利用できるか決め、Canonical Action mappingを定義する。
-4. Conversation Routerをapp/apiのPolicy境界へ追加する。Provider runtimeにRouterを複製しない。
-5. State transitionとnext target selectionをAction単位で一度だけ実行する。
-6. Initial Questionを同じQuestion Renderer/Policy契約へ接続する。
-7. Question definitionをimmutableなtarget contractとして分離し、canonical questionがある場合のrender規則を固定する。
-8. Fast Pathを `ANSWER` Actionの後だけへ再接続し、Fast foregroundとBackground reconciliationのversion契約を追加する。
-9. Provider adapterを通じてText/Transcribe/Nova/OpenAIの入力境界をCanonical Turnへ揃える。
-10. 最後にBrowser/sideband/Polly/NovaのE2Eで、同じCanonical Turn IDとActionを追跡する。
+1. characterization / State Traceを拡張し、全Caseの入力、State、output、IDsをfixture化する（実施済み）。
+2. 実LLM Routerを100ケースで評価し、Expected / Router / Full Structuredを比較する（Phase 1.5実施済み）。
+3. 既存 `StructuredDialogueAct` をCanonical Intentとして再利用し、Canonical Action mappingを追加する（Phase 1実施済み）。
+4. State transitionとnext target selectionをAction単位で一度だけ実行する（Phase 1/2実施済み）。
+5. Background Structuredをproposal化し、base/current state version付きでCoordinatorから安全にmergeする（Phase 2実施済み）。
+6. Initial Questionを同じQuestion Renderer/Policy契約へ接続する（次Phase）。
+7. Provider source IDからCanonical User Turn IDを生成し、API側でdurable dedupeする（次Phase）。
+8. Question definitionをimmutableなtarget contractとして分離し、canonical questionがある場合のrender規則を固定する（次Phase）。
+9. Provider adapterを通じてText/Transcribe/Nova/OpenAIの入力境界をCanonical Turnへ揃える（次Phase）。
+10. 最後にBrowser/sideband/Polly/NovaのE2Eで、同じCanonical Turn IDとActionを追跡する（次Phase）。
 
 この順番が終わるまで、`needs_question_explanation`等を個別に増やしてFastを第二のdialogue classifierにしない。
 
 ## 18. 調査上の未確定事項
 
-次はコードだけでは実値を確定できず、実行traceが必要である。
+次は今回のPhaseの対象外で、実行traceまたは次Phaseが必要である。
 
 * 実際の1発話に対するOpenAI `completed` eventの受信回数。
 * Browser final callback回数、sideband `_process_turn` task回数、API保存行数、UI message追加回数の1:1対応。
 * Case Aで「大丈夫です。」が同じtargetへ戻る実行時の `stateBefore/stateAfter/stateVersion`。
 * Question Generatorへ実際に渡ったserialized promptと、LLMが返した質問の逸脱分類。
-* Fast ON時の各dialogueActに対する実際のFast provider outputとBackground outputの一致率。
+* Fast ON時の各dialogueActに対する実際のFast provider outputとBackground outputの一致率（Fastの回答十分性とRouter Intentは別契約のため、別評価が必要）。
+
+### 18.1 Phase 1.5 実LLM Router評価
+
+`app/api/tests/evaluation/evaluate_canonical_intent_router.py` を使い、100件の日本語ケースを本番相当のRouter modelへ送り、結果を `/tmp` のJSONへ保存した。入力・出力全文や認証情報は保存・表示していない。
+
+同じデータセットで観測した値は次のとおり（LLMの実行ごとの揺らぎがあるため、Router単独実行とStructured比較実行を併記する）。
+
+| 指標 | Router単独 | Structured比較実行 |
+|---|---:|---:|
+| ケース数 | 100 | 100 |
+| 正解率 | 97% | 96% |
+| 非ANSWER -> ANSWER | 0/90 (0%) | 0/90 (0%) |
+| Router latency median / p90 / max | 801.2 / 1476.1 / 5030.7 ms | 818.9 / 2201.7 / 18391.4 ms |
+| Router input / output tokens median | 1058 / 21 | 1058 / 21 |
+| Full Structured正解率 | — | 88% |
+
+Structured比較実行のRouter分類は、`CONFIRMATION`、`REJECTION`、`CORRECTION`、`HESITATION`、`BACKCHANNEL`でrecall 100%。`CLARIFICATION_REQUEST`はprecision 83.3% / recall 100%、`QUESTION_TO_ASSISTANT`はprecision 100% / recall 70%だった。ただし両者は同じ `EXPLAIN_CURRENT_QUESTION` Actionへ入るため、Action上の非ANSWER誤分類は0件だった。
+
+この結果をAcceptanceとして、Phase 2のState Writer一本化へ進めた。実行結果JSONはリポジトリへ追加していない。
 * `VoiceSession`の実環境provider default値。コードfactoryの対応とenv実値は別なので、secretを含まない設定ダンプが必要。
 
 これらは推測で埋めず、次のE2E/structured loggingで同一 `voice_session_id`、Canonical Turn ID、OpenAI item idを出力して確認する。
@@ -796,6 +817,8 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 ## 19. 参照した主要コード
 
 * `app/api/src/ai_interviewer_api/services/voice_interview.py`
+* `app/api/src/ai_interviewer_api/services/conversation_policy.py`
+* `app/api/src/ai_interviewer_api/services/interview_state_transition.py`
 * `app/api/src/ai_interviewer_api/agents/interview_knowledge/service.py`
 * `app/api/src/ai_interviewer_api/agents/interview_knowledge/coordinator.py`
 * `app/api/src/ai_interviewer_api/agents/interview_knowledge/schemas.py`
@@ -808,6 +831,9 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 * `app/voice/src/ai_interviewer_voice/routers/webrtc.py`
 * `app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py`
 * `app/voice/src/ai_interviewer_voice/runtimes/nova_sonic/tool_turn_coordinator.py`
+* `app/api/tests/evaluation/canonical_intent_cases.py`
+* `app/api/tests/evaluation/evaluate_canonical_intent_router.py`
+* `app/api/tests/services/test_interview_state_transition.py`
 * `app/voice/src/ai_interviewer_voice/services/runtime_factory.py`
 * `app/web/src/features/realtime-voice/hooks/useRealtimeVoiceInterview.ts`
 * `app/web/src/features/realtime-voice/webrtc/openaiRealtimePeerConnection.ts`

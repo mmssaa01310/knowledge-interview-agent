@@ -666,6 +666,40 @@ def apply_structured_output(
     return changed_topics
 
 
+def apply_background_structured_output(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    *,
+    latest_message_id: str,
+    fields: Sequence[Mapping[str, Any]],
+    profile: InterviewProfile | None = None,
+    valid_evidence_ids: Set[str] | None = None,
+    current_question: Mapping[str, Any] | None = None,
+    raw_transcript: str | None = None,
+) -> list[str]:
+    """Apply a background proposal without allowing conversation control.
+
+    Background Structured Interpreter output is useful for extraction and
+    validation, but it is not the owner of the foreground conversation
+    policy.  Reusing the normal coordinator keeps evidence validation and
+    field/process merge rules identical while forcing the dialogue act to a
+    neutral value so confirmation, rejection, and target progression cannot
+    be replayed from a stale background snapshot.
+    """
+
+    safe_output = output.model_copy(update={"dialogueAct": "OTHER"})
+    return apply_structured_output(
+        state,
+        safe_output,
+        latest_message_id=latest_message_id,
+        fields=fields,
+        profile=profile,
+        valid_evidence_ids=valid_evidence_ids,
+        current_question=current_question,
+        raw_transcript=raw_transcript,
+    )
+
+
 def evaluate_completion(
     state: Mapping[str, Any],
     profile: InterviewProfile,
