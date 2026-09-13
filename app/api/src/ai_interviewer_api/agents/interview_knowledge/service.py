@@ -833,6 +833,7 @@ def _run_fast_background_validation(
             persist=False,
         )
         base_state_version = int(base_state.get("stateVersion", 0) or 0)
+        base_analysis_version = int(base_state.get("analysisVersion", 0) or 0)
         state = deepcopy(base_state)
         _install_background_question_overlay(state, source_question)
     result = _generate_structured_interview_result_locked(
@@ -868,6 +869,7 @@ def _run_fast_background_validation(
         "sourceMessageId": source_message_id,
         "sourceTurnSequence": source_turn_sequence,
         "baseStateVersion": base_state_version,
+        "baseAnalysisVersion": base_analysis_version,
         "sourceQuestion": deepcopy(dict(source_question)),
         "rawTranscript": str(
             (proposal_state.get("lastTranscriptAssessment") or {}).get("rawTranscript")
@@ -1307,6 +1309,14 @@ def _generate_structured_interview_result(
         current_question = _get_current_question(state)
     latest_user_message = _latest_answer_message(messages, current_question)
     last_processed_id = state.get("lastProcessedUserMessageId")
+    answer_state_before = (
+        _structured_answer_state_snapshot(state)
+        if current_question
+        and latest_user_message
+        and latest_user_message.get("id") != last_processed_id
+        else None
+    )
+    answer_state_version_before = int(state.get("stateVersion", 0) or 0)
 
     if current_question and (
         latest_user_message is None
@@ -1697,6 +1707,7 @@ def _generate_structured_interview_result(
                     )
 
             keep_current_question_for_unanswerable = False
+            applied_topics: list[str] = []
             if output.dialogueAct in {
                 "ANSWER",
                 "CORRECTION",
@@ -1719,7 +1730,7 @@ def _generate_structured_interview_result(
                         )
                     else:
                         output_to_apply = output
-                    apply_structured_output(
+                    applied_topics = apply_structured_output(
                         state,
                         output_to_apply,
                         latest_message_id=latest_message_id,
@@ -1819,7 +1830,7 @@ def _generate_structured_interview_result(
                         persist=persist_state,
                     )
             else:
-                apply_structured_output(
+                applied_topics = apply_structured_output(
                     state,
                     output,
                     latest_message_id=latest_message_id,
@@ -1913,13 +1924,61 @@ def _generate_structured_interview_result(
                     record.get("id"),
                     current_question.get("questionId"),
                 )
+            answer_state_after = _structured_answer_state_snapshot(state)
+            if answer_state_before is not None and answer_state_after == answer_state_before:
+                # A sufficient-looking model result is not permission to
+                # complete the question. Require a persisted semantic effect
+                # (field/requirement/process/applicability/candidate/etc.)
+                # before selecting another target.
+                _persist_state(
+                    state,
+                    user,
+                    persist=persist_state,
+                    source="structured_answer_no_effect",
+                )
+                logger.warning(
+                    "structured_answer_not_applied record_id=%s source_turn_id=%s "
+                    "source_message_id=%s transcript_chars=%s current_question_id=%s "
+                    "state_version_before=%s state_version_after=%s proposed_field_ids=%s "
+                    "applied_topics=%s decision=keep_current_question",
+                    record.get("id"),
+                    latest_user_message.get("voiceTurnId") or latest_user_message.get("id"),
+                    latest_message_id,
+                    len(raw_transcript),
+                    current_question.get("questionId"),
+                    answer_state_version_before,
+                    state.get("stateVersion"),
+                    sorted(
+                        {
+                            str(update.fieldId)
+                            for update in output.fieldUpdates
+                            if str(update.fieldId).strip()
+                        }
+                    ),
+                    applied_topics,
+                )
+                return _build_result(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    reply=str(current_question.get("text") or ""),
+                    question=current_question,
+                    action="ask_follow_up",
+                    status="in_progress",
+                )
             completion = evaluate_completion(state, profile, fields)
             if completion["complete"]:
                 state["status"] = "completed"
                 state["currentFieldId"] = None
                 state["currentQuestionId"] = None
                 state["nextQuestionTarget"] = None
-                _persist_state(state, user, persist=persist_state)
+                _persist_state(
+                    state,
+                    user,
+                    persist=persist_state,
+                    source="structured_interview_completed",
+                )
                 return _build_result(
                     record=record,
                     state=state,
@@ -1930,7 +1989,33 @@ def _generate_structured_interview_result(
                     action="finish",
                     status="completed",
                 )
-            _persist_state(state, user, persist=persist_state)
+            version_before_answer_commit = int(state.get("stateVersion", 0) or 0)
+            _persist_state(
+                state,
+                user,
+                persist=persist_state,
+                source="structured_answer_applied",
+            )
+            changed_field_ids = _changed_structured_field_ids(
+                answer_state_before,
+                answer_state_after,
+            )
+            logger.info(
+                "interview_answer_state_committed record_id=%s source_turn_id=%s "
+                "source_message_id=%s transcript_chars=%s field_ids=%s applied_topics=%s "
+                "state_version_before=%s state_version_after=%s current_question_id=%s "
+                "persisted=%s",
+                record.get("id"),
+                latest_user_message.get("voiceTurnId") or latest_user_message.get("id"),
+                latest_message_id,
+                len(raw_transcript),
+                changed_field_ids,
+                applied_topics,
+                version_before_answer_commit,
+                state.get("stateVersion"),
+                current_question.get("questionId"),
+                persist_state,
+            )
 
     if defer_question_generation:
         # Background validation has already applied the detailed output above.
@@ -1964,7 +2049,12 @@ def _generate_structured_interview_result(
             state["currentFieldId"] = None
             state["currentQuestionId"] = None
             state["nextQuestionTarget"] = None
-            _persist_state(state, user, persist=persist_state)
+            _persist_state(
+                state,
+                user,
+                persist=persist_state,
+                source="structured_interview_completed",
+            )
             return _build_result(
                 record=record,
                 state=state,
@@ -1978,7 +2068,12 @@ def _generate_structured_interview_result(
 
     structured_provider = _get_structured_provider(provider, model_id=model_id)
     state["questionGenerationPending"] = True
-    _persist_state(state, user, persist=persist_state)
+    _persist_state(
+        state,
+        user,
+        persist=persist_state,
+        source="structured_question_generation_pending",
+    )
     question_text, retrieved_context, document_candidate = _generate_question_text(
         structured_provider,
         profile=profile,
@@ -2047,7 +2142,28 @@ def _generate_structured_interview_result(
             question["fieldId"],
             {"fieldId": question["fieldId"], "status": "pending", "answerState": "UNANSWERED"},
         )["status"] = "asking"
-    _persist_state(state, user, persist=persist_state)
+    question_state_version_before = int(state.get("stateVersion", 0) or 0)
+    _persist_state(
+        state,
+        user,
+        persist=persist_state,
+        source="structured_question_advanced",
+    )
+    logger.info(
+        "interview_question_progress_committed record_id=%s source_turn_id=%s "
+        "answer_question_id=%s next_question_id=%s next_target=%s "
+        "state_version_before=%s state_version_after=%s persisted=%s",
+        record.get("id"),
+        latest_user_message.get("voiceTurnId") or latest_user_message.get("id")
+        if latest_user_message
+        else None,
+        current_question.get("questionId") if current_question else None,
+        question.get("questionId"),
+        target_key(target),
+        question_state_version_before,
+        state.get("stateVersion"),
+        persist_state,
+    )
     all_messages = [*messages, assistant_message] if assistant_message else messages
     completion = evaluate_completion(state, profile, fields)
     return _build_result(
@@ -2205,7 +2321,11 @@ def _backfill_state(
                 if key == "closingState" and state.get("status") == "completed"
                 else value
             )
-            changed = True
+            # Adding the analysis-only clock to a legacy state is metadata
+            # migration, not a conversation transition. Do not stale a live
+            # voice turn merely because the new field was backfilled.
+            if key != "analysisVersion":
+                changed = True
     requirement_states = state.setdefault("requirementStates", {})
     for requirement_id, requirement_state in initial.get("requirementStates", {}).items():
         if requirement_id not in requirement_states:
@@ -3901,10 +4021,55 @@ def _persist_state(
     user: UserContext,
     *,
     persist: bool = True,
+    source: str = "structured_interview",
 ) -> None:
     if not persist:
         return
-    commit_interview_state(state, user, source="structured_interview")
+    commit_interview_state(state, user, source=source)
+
+
+_STRUCTURED_ANSWER_STATE_KEYS = (
+    "fieldStates",
+    "requirementStates",
+    "processState",
+    "applicabilityState",
+    "contradictions",
+    "openIssues",
+    "activeProbeTarget",
+    "pendingTranscriptConfirmation",
+    "clarificationQueue",
+    "activeClarificationRequest",
+    "clarificationHistory",
+    "deferredProposalTarget",
+    "closingState",
+    "closingAnswer",
+)
+
+
+def _structured_answer_state_snapshot(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Return durable semantic answer effects, excluding telemetry/cursors."""
+
+    return {
+        key: deepcopy(state.get(key))
+        for key in _STRUCTURED_ANSWER_STATE_KEYS
+    }
+
+
+def _changed_structured_field_ids(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any],
+) -> list[str]:
+    if before is None:
+        return []
+    before_fields = before.get("fieldStates")
+    after_fields = after.get("fieldStates")
+    before_fields = before_fields if isinstance(before_fields, Mapping) else {}
+    after_fields = after_fields if isinstance(after_fields, Mapping) else {}
+    return sorted(
+        str(field_id)
+        for field_id in set(before_fields) | set(after_fields)
+        if before_fields.get(field_id) != after_fields.get(field_id)
+    )
 
 
 def _attach_proposal_message_id(

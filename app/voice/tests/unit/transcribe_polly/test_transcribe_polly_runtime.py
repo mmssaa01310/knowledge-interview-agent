@@ -172,12 +172,16 @@ class FakeBridge:
         self.assistant_events: list[dict] = []
         self.intent_calls: list[dict] = []
         self.state_version = 1
+        self.current_question_id = "q-1"
+        self.interview_status = "active"
+        self.load_calls = 0
 
     async def load_voice_session(self, voice_session_id: str):
+        self.load_calls += 1
         return SimpleNamespace(
-            current_question_id="q-1",
+            current_question_id=self.current_question_id,
             state_version=self.state_version,
-            interview_status="active",
+            interview_status=self.interview_status,
         )
 
     async def process_turn(self, **kwargs) -> InterviewBridgeResult:
@@ -248,6 +252,77 @@ class TimeoutBridge(FakeBridge):
             "turn_process_failed_timeout",
             "process timed out",
             category="PROCESS_TIMEOUT",
+        )
+
+
+class ConflictThenSuccessBridge(FakeBridge):
+    def __init__(self, *, conflict_question_id: str = "q-1") -> None:
+        super().__init__()
+        self.state_version = 10
+        self.conflict_question_id = conflict_question_id
+
+    async def process_turn(self, **kwargs) -> InterviewBridgeResult:
+        self.process_calls.append(kwargs)
+        if len(self.process_calls) == 1:
+            self.state_version = 11
+            self.current_question_id = self.conflict_question_id
+            raise InterviewApiError(
+                "turn_state_conflict",
+                "stale interview state",
+                status_code=409,
+            )
+        return InterviewBridgeResult(
+            turn_id="turn-after-resync",
+            response_id="response-after-resync",
+            reply_text="次の質問です。",
+            action="NEXT_QUESTION",
+            question_id="q-2",
+            state_version=12,
+            interview_status="active",
+        )
+
+
+class AlwaysConflictBridge(FakeBridge):
+    def __init__(self) -> None:
+        super().__init__()
+        self.state_version = 10
+
+    async def process_turn(self, **kwargs) -> InterviewBridgeResult:
+        self.process_calls.append(kwargs)
+        self.state_version += 1
+        raise InterviewApiError(
+            "turn_state_conflict",
+            "stale interview state",
+            status_code=409,
+        )
+
+
+class ConflictRefreshFailureBridge(FakeBridge):
+    def __init__(self) -> None:
+        super().__init__()
+        self.state_version = 10
+
+    async def load_voice_session(self, voice_session_id: str):
+        self.load_calls += 1
+        if self.load_calls > 1:
+            raise InterviewApiError(
+                "voice_session_lookup_failed",
+                "snapshot unavailable",
+                status_code=503,
+            )
+        return SimpleNamespace(
+            current_question_id=self.current_question_id,
+            state_version=self.state_version,
+            interview_status=self.interview_status,
+        )
+
+    async def process_turn(self, **kwargs) -> InterviewBridgeResult:
+        self.process_calls.append(kwargs)
+        self.state_version = 11
+        raise InterviewApiError(
+            "turn_state_conflict",
+            "stale interview state",
+            status_code=409,
         )
 
 
@@ -1025,6 +1100,202 @@ async def test_process_timeout_keeps_turn_pending_until_a_replacement_turn_cance
             "expected_state_version": 1,
         }
     ]
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_turn_state_conflict_retries_once_after_resync_when_question_is_unchanged(
+    monkeypatch,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO)
+    bridge = ConflictThenSuccessBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    assert runtime._state_version == 10
+    assert bridge.load_calls == 1
+
+    sent_replies = []
+
+    async def capture_reply(reply) -> None:
+        sent_replies.append(reply)
+
+    monkeypatch.setattr(runtime, "send_reply", capture_reply)
+    await runtime._process_interview_turn(
+        transcript="競合した回答",
+        generation=runtime._generation,
+        expected_state_version=10,
+        client_turn_id="transcribe-old-turn",
+    )
+
+    assert len(bridge.process_calls) == 2
+    assert bridge.process_calls[0]["expected_state_version"] == 10
+    assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
+    assert bridge.process_calls[0]["client_turn_id"] == "transcribe-old-turn"
+    assert bridge.process_calls[1]["expected_state_version"] == 11
+    assert bridge.process_calls[1]["answer_to_question_id"] == "q-1"
+    assert bridge.process_calls[1]["client_turn_id"] == "transcribe-old-turn"
+    assert bridge.load_calls == 2
+    assert runtime._state_version == 12
+    assert runtime._current_question_id == "q-2"
+    assert runtime._interview_status == "active"
+    assert runtime._has_final_transcript is False
+    assert runtime._final_segments == {}
+    assert [reply.turn_id for reply in sent_replies] == ["turn-after-resync"]
+    assert sum(isinstance(event, UserTranscriptFinal) for event in runtime._events._queue) == 1
+
+    logs = caplog.text
+    assert logs.index("turn_state_conflict") < logs.index("voice_state_resync ")
+    retry_request_at = logs.index(
+        "voice_turn_api_request voice_session_id=vs-1 client_turn_id=transcribe-old-turn "
+        "answer_to_question_id=q-1 expected_state_version=11"
+    )
+    completion_at = logs.index("voice_turn_api_completed")
+    assert logs.index("voice_state_resync ") < retry_request_at < completion_at
+    assert "voice_turn_api_completed" in logs
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_conflicted_turn_is_not_reapplied_when_resync_changes_question() -> None:
+    bridge = ConflictThenSuccessBridge(conflict_question_id="q-2")
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    await runtime._process_interview_turn(
+        transcript="前の質問への回答",
+        generation=runtime._generation,
+        expected_state_version=10,
+        client_turn_id="transcribe-old-question-turn",
+    )
+
+    assert len(bridge.process_calls) == 1
+    assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
+    assert bridge.process_calls[0]["expected_state_version"] == 10
+    assert runtime._current_question_id == "q-2"
+    assert runtime._state_version == 11
+    assert runtime._input_available is True
+    assert runtime._formal_response_id is None
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_repeated_turn_conflicts_allow_only_one_retry_per_user_turn() -> None:
+    bridge = AlwaysConflictBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    await runtime._process_interview_turn(
+        transcript="最初の競合回答",
+        generation=runtime._generation,
+        expected_state_version=10,
+        client_turn_id="transcribe-conflict-1",
+    )
+    assert len(bridge.process_calls) == 2
+    assert [call["expected_state_version"] for call in bridge.process_calls] == [10, 11]
+    assert runtime._state_version == 12
+    assert runtime._input_available is True
+
+    await runtime._process_interview_turn(
+        transcript="次のユーザー発話",
+        generation=runtime._generation,
+        expected_state_version=runtime._state_version,
+        client_turn_id="transcribe-conflict-2",
+    )
+
+    assert len(bridge.process_calls) == 4
+    assert [call["client_turn_id"] for call in bridge.process_calls] == [
+        "transcribe-conflict-1",
+        "transcribe-conflict-1",
+        "transcribe-conflict-2",
+        "transcribe-conflict-2",
+    ]
+    assert [call["expected_state_version"] for call in bridge.process_calls] == [10, 11, 12, 13]
+    assert bridge.load_calls == 5
+    assert runtime._state_version == 14
+    assert runtime._input_available is True
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_state_resync_failure_does_not_reopen_input_with_stale_version() -> None:
+    bridge = ConflictRefreshFailureBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    while not runtime._events.empty():
+        runtime._events.get_nowait()
+
+    await runtime._process_interview_turn(
+        transcript="競合後に状態取得できない回答",
+        generation=runtime._generation,
+        expected_state_version=10,
+        client_turn_id="transcribe-resync-failure",
+    )
+
+    assert len(bridge.process_calls) == 1
+    assert runtime._state_version == 10
+    assert runtime._input_available is False
+    events = list(runtime._events._queue)
+    assert any(
+        isinstance(event, InputStateChanged)
+        and event.input_state == "INPUT_UNAVAILABLE"
+        for event in events
+    )
+    assert any(
+        isinstance(event, RuntimeError)
+        and event.message == "interview_state_resync_failed"
+        and event.fatal
+        for event in events
+    )
+    assert not any(
+        isinstance(event, InputStateChanged)
+        and event.input_state == "ANSWER_LISTENING"
+        for event in events
+    )
     await runtime.close()
 
 

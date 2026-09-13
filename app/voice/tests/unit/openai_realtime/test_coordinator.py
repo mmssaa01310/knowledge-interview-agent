@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import ai_interviewer_voice.runtimes.openai_realtime.coordinator as coordinator_module
+from ai_interviewer_voice.clients.interview_api import InterviewApiError, VoiceSessionSnapshot
 from ai_interviewer_voice.runtimes.openai_realtime.client import OpenAIRealtimeProviderError
 from ai_interviewer_voice.runtimes.openai_realtime.config import OpenAIRealtimeConfig
 from ai_interviewer_voice.runtimes.openai_realtime.coordinator import OpenAIRealtimeSession
@@ -34,6 +35,9 @@ class FakeBridge:
 
     async def mark_initial_reply_failed(self, voice_session_id: str) -> None:
         return None
+
+    async def load_voice_session(self, voice_session_id: str):
+        raise AssertionError("unexpected state resync")
 
     async def process_turn(self, **kwargs):
         self.processed.append(kwargs)
@@ -169,6 +173,72 @@ def test_final_transcript_is_forwarded_to_interview_bridge_then_replied() -> Non
     assert bridge.processed[0]["client_turn_id"] == "openai-item-1"
     assert events[0]["type"] == "response.create"
     assert events[0]["response"]["metadata"]["kikiori_interview_status"] == "active"
+
+
+def test_three_sequential_transcript_turns_advance_state_once_each() -> None:
+    class ThreeTurnBridge(FakeBridge):
+        async def process_turn(self, **kwargs):
+            self.processed.append(kwargs)
+            sequence = len(self.processed)
+            return InterviewBridgeResult(
+                turn_id=f"turn-{sequence}",
+                response_id=f"response-{sequence}",
+                reply_text=f"次の質問{sequence}です。",
+                action="ask_followup",
+                question_id=f"q-{sequence + 1}",
+                state_version=sequence + 1,
+                interview_status="active",
+            )
+
+    async def run() -> tuple[ThreeTurnBridge, OpenAIRealtimeSession, list[dict]]:
+        bridge = ThreeTurnBridge()
+        session = make_session(bridge)
+        websocket = FakeWebSocket()
+        session._websocket = websocket
+        transcripts = ["最初の回答です。", "2つ目の回答です。", "3つ目の回答です。"]
+
+        for sequence, transcript in enumerate(transcripts, start=1):
+            await session._handle_event({"type": "input_audio_buffer.speech_started"})
+            await session._handle_event({"type": "input_audio_buffer.speech_stopped"})
+            await session._handle_event(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": f"item-{sequence}",
+                    "transcript": transcript,
+                }
+            )
+            await asyncio.gather(*tuple(session._turn_tasks))
+            await session._handle_event(
+                {
+                    "type": "response.done",
+                    "response": {"id": f"openai-response-{sequence}", "status": "completed"},
+                }
+            )
+
+        return bridge, session, websocket.sent
+
+    bridge, session, events = asyncio.run(run())
+    response_events = [event for event in events if event["type"] == "response.create"]
+
+    assert [item["transcript"] for item in bridge.processed] == [
+        "最初の回答です。",
+        "2つ目の回答です。",
+        "3つ目の回答です。",
+    ]
+    assert [item["answer_to_question_id"] for item in bridge.processed] == [
+        "q-1",
+        "q-2",
+        "q-3",
+    ]
+    assert [item["expected_state_version"] for item in bridge.processed] == [1, 2, 3]
+    assert [item["client_turn_id"] for item in bridge.processed] == [
+        "openai-item-1",
+        "openai-item-2",
+        "openai-item-3",
+    ]
+    assert len(response_events) == 3
+    assert session._backend_process_count == 3
+    assert session._response_create_count == 3
 
 
 def test_duplicate_final_transcript_event_is_processed_once() -> None:
@@ -516,3 +586,123 @@ def test_dependency_error_is_explicit() -> None:
     error = OpenAIRealtimeProviderError("openai_realtime_dependency_missing")
 
     assert error.code == "openai_realtime_dependency_missing"
+
+
+def _voice_session_snapshot(*, question_id: str, state_version: int) -> VoiceSessionSnapshot:
+    return VoiceSessionSnapshot(
+        voice_session_id="voice-session-1",
+        record_id="record-1",
+        owner_user_id="user-1",
+        current_question_id=question_id,
+        state_version=state_version,
+        interview_status="active",
+    )
+
+
+class ConflictBridge(FakeBridge):
+    def __init__(self, snapshots: list[VoiceSessionSnapshot], *, conflict_count: int) -> None:
+        super().__init__()
+        self.snapshots = list(snapshots)
+        self.conflict_count = conflict_count
+        self.resync_count = 0
+
+    async def load_voice_session(self, voice_session_id: str) -> VoiceSessionSnapshot:
+        self.resync_count += 1
+        return self.snapshots.pop(0)
+
+    async def process_turn(self, **kwargs):
+        self.processed.append(kwargs)
+        if len(self.processed) <= self.conflict_count:
+            raise InterviewApiError(
+                "turn_state_conflict",
+                "turn state changed",
+                status_code=409,
+            )
+        return InterviewBridgeResult(
+            turn_id="turn-retried",
+            response_id="response-retried",
+            reply_text="回答を受け付けました。次の質問です。",
+            action="ask_followup",
+            question_id="q-2",
+            state_version=12,
+            interview_status="active",
+        )
+
+
+def _send_final_transcript(session: OpenAIRealtimeSession, item_id: str) -> None:
+    async def run() -> None:
+        await session._handle_event(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": "開発部で担当しています。",
+            }
+        )
+        await asyncio.gather(*tuple(session._turn_tasks))
+
+    asyncio.run(run())
+
+
+def test_state_conflict_resync_retries_once_for_same_question_and_turn_id() -> None:
+    bridge = ConflictBridge(
+        [_voice_session_snapshot(question_id="q-1", state_version=11)],
+        conflict_count=1,
+    )
+    session = make_session(bridge)
+    websocket = FakeWebSocket()
+    session._websocket = websocket
+
+    _send_final_transcript(session, "item-conflict-same-question")
+
+    assert [item["expected_state_version"] for item in bridge.processed] == [1, 11]
+    assert [item["answer_to_question_id"] for item in bridge.processed] == ["q-1", "q-1"]
+    assert [item["client_turn_id"] for item in bridge.processed] == [
+        "openai-item-conflict-same-question",
+        "openai-item-conflict-same-question",
+    ]
+    assert bridge.resync_count == 1
+    assert len([event for event in websocket.sent if event["type"] == "response.create"]) == 1
+    assert session._state_version == 12
+    assert session._current_question_id == "q-2"
+
+
+def test_state_conflict_does_not_apply_old_answer_to_changed_question() -> None:
+    bridge = ConflictBridge(
+        [_voice_session_snapshot(question_id="q-2", state_version=11)],
+        conflict_count=1,
+    )
+    session = make_session(bridge)
+    websocket = FakeWebSocket()
+    session._websocket = websocket
+
+    _send_final_transcript(session, "item-conflict-question-changed")
+
+    assert len(bridge.processed) == 1
+    assert bridge.processed[0]["answer_to_question_id"] == "q-1"
+    assert bridge.resync_count == 1
+    assert not [event for event in websocket.sent if event["type"] == "response.create"]
+    assert session._state_version == 11
+    assert session._current_question_id == "q-2"
+    assert session._closed is False
+
+
+def test_state_conflict_retry_is_bounded_to_one_attempt() -> None:
+    bridge = ConflictBridge(
+        [
+            _voice_session_snapshot(question_id="q-1", state_version=11),
+            _voice_session_snapshot(question_id="q-1", state_version=12),
+        ],
+        conflict_count=2,
+    )
+    session = make_session(bridge)
+    websocket = FakeWebSocket()
+    session._websocket = websocket
+
+    _send_final_transcript(session, "item-conflict-repeat")
+
+    assert [item["expected_state_version"] for item in bridge.processed] == [1, 11]
+    assert bridge.resync_count == 2
+    assert not [event for event in websocket.sent if event["type"] == "response.create"]
+    assert session._state_version == 12
+    assert session._current_question_id == "q-1"
+    assert session._closed is False

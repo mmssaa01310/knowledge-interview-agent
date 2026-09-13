@@ -153,6 +153,9 @@ def build_initial_structured_state(
         "status": "in_progress",
         "interviewProfile": profile,
         "stateVersion": 0,
+        # Conversation concurrency and delayed analysis commits have separate
+        # clocks. Background analysis must not invalidate the next user turn.
+        "analysisVersion": 0,
         "currentFieldId": None,
         "currentQuestionId": None,
         "completedFieldIds": [],

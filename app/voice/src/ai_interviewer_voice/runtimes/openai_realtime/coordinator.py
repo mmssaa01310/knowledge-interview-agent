@@ -91,6 +91,7 @@ class OpenAIRealtimeSession:
         self._speech_started_at_ms: int | None = None
         self._state_version = voice_session.state_version
         self._current_question_id = voice_session.current_question_id
+        self._interview_status = voice_session.interview_status
         self._session_started_at = monotonic()
         self._timeline_started_at = monotonic()
         self._timeline: dict[str, int] = {}
@@ -553,39 +554,129 @@ class OpenAIRealtimeSession:
                 return
             process_started_at = monotonic()
             self._mark("interview_process_start")
-            try:
-                self._backend_process_count += 1
-                result = await self._interview_bridge.process_turn(
-                    voice_session_id=self.voice_session.voice_session_id,
-                    transcript=transcript,
-                    answer_to_question_id=self._current_question_id,
-                    expected_state_version=self._state_version,
-                    client_turn_id=f"openai-{item_id}",
-                    started_at_ms=self._speech_started_at_ms,
-                    ended_at_ms=self._wall_ms(),
-                )
-            except InterviewApiError as exc:
-                logger.warning(
-                    "openai_realtime_interview_failed voice_session_id=%s error_code=%s category=%s",
+            answer_question_id = self._current_question_id
+            client_turn_id = f"openai-{item_id}"
+            started_at_ms = self._speech_started_at_ms
+            result = None
+            for attempt in range(2):
+                attempted_state_version = self._state_version
+                try:
+                    self._backend_process_count += 1
+                    result = await self._interview_bridge.process_turn(
+                        voice_session_id=self.voice_session.voice_session_id,
+                        transcript=transcript,
+                        answer_to_question_id=answer_question_id,
+                        expected_state_version=attempted_state_version,
+                        client_turn_id=client_turn_id,
+                        started_at_ms=started_at_ms,
+                        ended_at_ms=self._wall_ms(),
+                    )
+                    break
+                except InterviewApiError as exc:
+                    if exc.code != "turn_state_conflict":
+                        logger.warning(
+                            "openai_realtime_interview_failed voice_session_id=%s item_id=%s error_code=%s category=%s",
+                            self.voice_session.voice_session_id,
+                            item_id,
+                            exc.code,
+                            exc.category,
+                        )
+                        await self.close(reason="interview_api_failed")
+                        return
+
+                    try:
+                        snapshot = await self._interview_bridge.load_voice_session(
+                            self.voice_session.voice_session_id
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as resync_error:  # noqa: BLE001 - keep stale turns from being replayed
+                        logger.error(
+                            "openai_realtime_state_resync_failed call_id=%s voice_session_id=%s item_id=%s "
+                            "client_turn_id=%s error_type=%s",
+                            self.call_id,
+                            self.voice_session.voice_session_id,
+                            item_id,
+                            client_turn_id,
+                            resync_error.__class__.__name__,
+                        )
+                        await self.close(reason="turn_state_resync_failed")
+                        return
+
+                    self._state_version = snapshot.state_version
+                    self._current_question_id = snapshot.current_question_id
+                    self._interview_status = snapshot.interview_status
+                    question_unchanged = (
+                        answer_question_id is not None
+                        and snapshot.current_question_id == answer_question_id
+                    )
+                    session_active = snapshot.interview_status not in {"completed", "stopped"}
+                    may_retry = (
+                        attempt == 0
+                        and question_unchanged
+                        and session_active
+                        and client_turn_id == f"openai-{item_id}"
+                    )
+                    logger.warning(
+                        "openai_realtime_state_resync call_id=%s voice_session_id=%s item_id=%s "
+                        "client_turn_id=%s expected_state_version=%s state_version_before=%s "
+                        "state_version_after=%s current_question_id_before=%s "
+                        "current_question_id_after=%s retry=%s attempt=%s",
+                        self.call_id,
+                        self.voice_session.voice_session_id,
+                        item_id,
+                        client_turn_id,
+                        attempted_state_version,
+                        attempted_state_version,
+                        snapshot.state_version,
+                        answer_question_id,
+                        snapshot.current_question_id,
+                        may_retry,
+                        attempt + 1,
+                    )
+                    if may_retry:
+                        continue
+                    if attempt > 0:
+                        logger.error(
+                            "openai_realtime_state_conflict_retry_exhausted call_id=%s "
+                            "voice_session_id=%s item_id=%s client_turn_id=%s state_version=%s "
+                            "current_question_id=%s",
+                            self.call_id,
+                            self.voice_session.voice_session_id,
+                            item_id,
+                            client_turn_id,
+                            self._state_version,
+                            self._current_question_id,
+                        )
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - interview boundary
+                    logger.exception(
+                        "openai_realtime_interview_failed voice_session_id=%s error_type=%s",
+                        self.voice_session.voice_session_id,
+                        exc.__class__.__name__,
+                    )
+                    await self.close(reason="interview_processing_failed")
+                    return
+
+            if result is None:
+                # A second conflict is synchronized above but never retried.
+                logger.error(
+                    "openai_realtime_state_conflict_retry_exhausted call_id=%s voice_session_id=%s "
+                    "item_id=%s client_turn_id=%s state_version=%s current_question_id=%s",
+                    self.call_id,
                     self.voice_session.voice_session_id,
-                    exc.code,
-                    exc.category,
+                    item_id,
+                    client_turn_id,
+                    self._state_version,
+                    self._current_question_id,
                 )
-                await self.close(reason="interview_api_failed")
-                return
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - interview boundary
-                logger.exception(
-                    "openai_realtime_interview_failed voice_session_id=%s error_type=%s",
-                    self.voice_session.voice_session_id,
-                    exc.__class__.__name__,
-                )
-                await self.close(reason="interview_processing_failed")
                 return
 
             self._state_version = result.state_version
             self._current_question_id = result.question_id
+            self._interview_status = result.interview_status
             self._backend_response_ids.add(result.response_id)
             self._log_interview_latency(result.latency_metrics or {})
             self._mark("reply_ready")

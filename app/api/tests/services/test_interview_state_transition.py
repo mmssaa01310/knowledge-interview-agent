@@ -146,7 +146,10 @@ def test_stale_background_result_merges_extraction_without_rolling_back_question
     assert stored["nextQuestionTarget"]["targetId"] == "field-2"
     assert stored["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
     assert stored["lastProcessedUserMessageId"] == "message-transition-1"
-    assert stored["stateVersion"] == 12
+    assert stored["stateVersion"] == 11
+    assert stored["analysisVersion"] == 1
+    assert result.resulting_state_version == 11
+    assert result.resulting_analysis_version == 1
     assert "currentQuestionId" in result.discarded_fields
     assert "field:field-1" in result.applied_fields
 
@@ -180,6 +183,8 @@ def test_background_confirmation_proposal_cannot_apply_confirmation_or_target_ch
     stored = store.get("interview_states", "interview-state-record-transition-1")
     assert stored is not None
     assert stored["currentQuestionId"] == "q-002"
+    assert stored["stateVersion"] == 11
+    assert stored["analysisVersion"] == 1
     assert stored["nextQuestionTarget"]["targetId"] == "field-2"
     assert stored["lastCanonicalIntent"] == "ANSWER"
     assert stored["lastCanonicalAction"] == "PROCESS_ANSWER"
@@ -218,6 +223,8 @@ def test_stale_background_clarification_is_queued_without_changing_current_quest
     stored = store.get("interview_states", "interview-state-record-transition-1")
     assert stored is not None
     assert stored["currentQuestionId"] == "q-002"
+    assert stored["stateVersion"] == 11
+    assert stored["analysisVersion"] == 1
     assert stored["clarificationQueue"][0]["requestId"] == (
         "clarification-turn-transition-1-field-field-1"
     )
@@ -272,6 +279,7 @@ def test_late_background_result_preserves_newer_processed_message_and_is_idempot
     unchanged = store.get("interview_states", "interview-state-record-transition-1")
     assert unchanged is not None
     assert unchanged["stateVersion"] == stored["stateVersion"]
+    assert unchanged["analysisVersion"] == stored["analysisVersion"]
 
 
 def test_background_proposals_apply_per_topic_in_source_sequence_order() -> None:

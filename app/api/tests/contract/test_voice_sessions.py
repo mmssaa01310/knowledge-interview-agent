@@ -54,7 +54,10 @@ from ai_interviewer_api.schemas.voice import (
 )
 from ai_interviewer_api.services import voice_interview as voice_interview_service
 from ai_interviewer_api.services.conversation_policy import CanonicalIntentDecision
-from ai_interviewer_api.services.interview_state_transition import commit_interview_state
+from ai_interviewer_api.services.interview_state_transition import (
+    apply_background_state_proposal,
+    commit_interview_state,
+)
 
 
 class FakeStructuredProvider:
@@ -444,51 +447,351 @@ def test_voice_turn_uses_structured_interpreter_and_advances_once(
     assert result["voiceTurn"]["fastCheckExecuted"] is False
 
 
-def test_voice_fast_path_commits_provisional_next_question_before_background_finishes(
+@pytest.mark.parametrize("fast_path_requested", [False, True], ids=["off", "requested-fail-closed"])
+def test_answer_is_saved_before_question_progression_even_if_fast_is_requested(
     monkeypatch: pytest.MonkeyPatch,
+    stub_structured_provider: FakeStructuredProvider,
+    fast_path_requested: bool,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level("WARNING")
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_fields(user, [("氏名", "short_text"), ("担当", "short_text")])
     session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
     mark_internal_initial_reply_sent(session["id"])
-
     monkeypatch.setattr(
         voice_interview_service,
         "settings",
-        replace(voice_interview_service.settings, structured_interview_fast_path_enabled=True),
+        replace(
+            voice_interview_service.settings,
+            structured_interview_fast_path_enabled=fast_path_requested,
+        ),
     )
-
-    class PassFastProvider:
-        def assess(self, *, context: Mapping[str, object]) -> FastAnswerAssessment:
-            assert set(context) == {"currentQuestion", "latestUserAnswer", "previousTurns"}
-            return FastAnswerAssessment(
-                minimumInformationPresent=True,
-                understandable=True,
-                clearlyIncomplete=False,
-                reason="回答として通る",
-            )
-
-    monkeypatch.setattr(structured_service, "BedrockFastInterpreterProvider", PassFastProvider)
     turn = create_internal_voice_turn(
         session["id"],
         VoiceTurnCreate(transcript="山田です。", sttConfidence=0.96),
     )
+    field_id = turn["answerToFieldId"]
+    generate_question = stub_structured_provider.generate_question
+
+    def assert_answer_is_durable_before_render(
+        *, target: Mapping[str, object], context: Mapping[str, object], **kwargs: object
+    ) -> QuestionGenerationOutput:
+        state = store.get("interview_states", f"interview-state-{record['id']}")
+        assert state is not None
+        assert state["fieldStates"][field_id]["recordAnswer"] == "山田"
+        assert state["fieldStates"][field_id]["answerState"] == "CONFIRMED"
+        return generate_question(target=target, context=context, **kwargs)
+
+    monkeypatch.setattr(
+        stub_structured_provider,
+        "generate_question",
+        assert_answer_is_durable_before_render,
+    )
 
     result = process_internal_voice_turn(session["id"], turn["id"])
-
-    assert result["questionId"] == "q-002"
-    assert result["voiceTurn"]["fastCanProceed"] is True
-    assert result["voiceTurn"]["fastAssessment"]["minimumInformationPresent"] is True
-    assert result["voiceTurn"]["canonicalIntent"] == "ANSWER"
-    assert result["voiceTurn"]["canonicalAction"] == "PROCESS_ANSWER"
-    assert result["voiceTurn"]["fastCheckExecuted"] is True
-    persisted_session = voice_interview_service.get_internal_voice_session(session["id"])
     persisted_state = store.get("interview_states", f"interview-state-{record['id']}")
     assert persisted_state is not None
-    assert (
-        persisted_session.get("provisionalQuestion", {}).get("questionId") == "q-002"
-        or persisted_state.get("currentQuestionId") == "q-002"
+    assert result["questionId"] == "q-002"
+    assert persisted_state["fieldStates"][field_id]["recordAnswer"] == "山田"
+    assert result["voiceTurn"]["canonicalIntent"] == "ANSWER"
+    assert result["voiceTurn"]["canonicalAction"] == "PROCESS_ANSWER"
+    assert result["voiceTurn"]["fastCheckExecuted"] is False
+    if fast_path_requested:
+        assert "structured_fast_path_deferred" in caplog.text
+
+
+def test_sufficient_interpretation_without_applied_update_keeps_current_question(
+    monkeypatch: pytest.MonkeyPatch,
+    stub_structured_provider: FakeStructuredProvider,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    before = store.get("interview_states", f"interview-state-{record['id']}")
+    assert before is not None
+
+    def no_extraction(*, context: Mapping[str, object], **_: object) -> StructuredInterviewOutput:
+        latest = context["latestUtterance"]
+        assert isinstance(latest, Mapping)
+        transcript = str(latest.get("rawTranscript") or "")
+        return StructuredInterviewOutput(
+            transcriptAssessment=TranscriptAssessment(
+                rawTranscript=transcript,
+                normalizedTranscript=transcript,
+            ),
+            answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+        )
+
+    monkeypatch.setattr(stub_structured_provider, "interpret", no_extraction)
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="具体的な回答ですが抽出結果は空です。"),
     )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    after = store.get("interview_states", f"interview-state-{record['id']}")
+
+    assert after is not None
+    assert result["questionId"] == before["currentQuestionId"]
+    assert after["currentQuestionId"] == before["currentQuestionId"]
+    assert after["fieldStates"][turn["answerToFieldId"]]["answerState"] == "UNANSWERED"
+    assert result["text"] == before["askedQuestions"][0]["text"]
+
+
+def test_short_ack_after_project_lead_does_not_erase_confirmed_role() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(
+        user,
+        [("役割", "short_text"), ("担当領域", "long_text")],
+    )
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    role_field_id = store.get("interview_states", f"interview-state-{record['id']}")[
+        "currentFieldId"
+    ]
+
+    first = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="プロジェクトリードです。"),
+    )
+    first_result = process_internal_voice_turn(session["id"], first["id"])
+    state_after_role = store.get("interview_states", f"interview-state-{record['id']}")
+    assert state_after_role is not None
+    assert state_after_role["fieldStates"][role_field_id]["answerState"] == "CONFIRMED"
+    assert state_after_role["fieldStates"][role_field_id]["recordAnswer"] == "プロジェクトリード"
+
+    second = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="はい、そうそう。",
+            answerToQuestionId=first_result["voiceTurn"]["questionId"],
+        ),
+    )
+    process_internal_voice_turn(session["id"], second["id"])
+    final_state = store.get("interview_states", f"interview-state-{record['id']}")
+
+    assert final_state is not None
+    assert final_state["fieldStates"][role_field_id]["answerState"] == "CONFIRMED"
+    assert final_state["fieldStates"][role_field_id]["recordAnswer"] == "プロジェクトリード"
+
+
+def test_multi_field_answer_keeps_extracted_items_and_asks_only_missing_field(
+    monkeypatch: pytest.MonkeyPatch,
+    stub_structured_provider: FakeStructuredProvider,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(
+        user,
+        [("氏名", "short_text"), ("部署", "short_text"), ("役職", "short_text")],
+    )
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+
+    def extract_only_name_and_department(
+        *, context: Mapping[str, object], **_: object
+    ) -> StructuredInterviewOutput:
+        latest = context["latestUtterance"]
+        fields = context["fields"]
+        assert isinstance(latest, Mapping)
+        assert isinstance(fields, list)
+        evidence_id = str(latest.get("messageId") or "")
+        field_ids = {
+            str(field.get("name")): str(field.get("id"))
+            for field in fields
+            if isinstance(field, Mapping)
+        }
+        return StructuredInterviewOutput(
+            transcriptAssessment=TranscriptAssessment(
+                rawTranscript="宮崎です。開発部です。",
+                normalizedTranscript="宮崎です。開発部です。",
+            ),
+            answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+            fieldUpdates=[
+                FieldUpdate(
+                    fieldId=field_ids[label],
+                    value=value,
+                    evidenceTranscriptIds=[evidence_id],
+                    answerResolution="AUTO_CONFIRM",
+                )
+                for label, value in (("氏名", "宮崎"), ("部署", "開発部"))
+            ],
+        )
+
+    monkeypatch.setattr(stub_structured_provider, "interpret", extract_only_name_and_department)
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="宮崎です。開発部です。"),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    assert state is not None
+    fields = state["fieldStates"]
+    field_ids_by_name = {
+        str(field["name"]): str(field["id"])
+        for field in structured_service._list_interview_fields(
+            store.get("knowledges", record["knowledgeId"]),
+            user,
+        )
+    }
+
+    assert fields[field_ids_by_name["氏名"]]["recordAnswer"] == "宮崎"
+    assert fields[field_ids_by_name["部署"]]["recordAnswer"] == "開発部"
+    assert fields[field_ids_by_name["氏名"]]["answerState"] == "CONFIRMED"
+    assert fields[field_ids_by_name["部署"]]["answerState"] == "CONFIRMED"
+    assert fields[field_ids_by_name["役職"]]["answerState"] == "UNANSWERED"
+    assert result["questionId"] is not None
+    assert state["currentQuestionId"] == result["questionId"]
+    assert state["askedQuestions"][-1]["fieldId"] == field_ids_by_name["役職"]
+
+
+def test_background_clarification_does_not_stale_the_next_voice_turn() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    state_id = f"interview-state-{record['id']}"
+    state = store.get("interview_states", state_id)
+    assert state is not None
+    question = next(
+        item for item in state["askedQuestions"]
+        if item["questionId"] == state["currentQuestionId"]
+    )
+    conversation_version = int(state["stateVersion"])
+    analysis_version = int(state.get("analysisVersion", 0))
+    background_message_id = "background-message-voice-test"
+    output = StructuredInterviewOutput(
+        transcriptAssessment=TranscriptAssessment(
+            rawTranscript="回答です。",
+            normalizedTranscript="回答です。",
+        ),
+        answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
+    )
+    apply_background_state_proposal(
+        record_id=record["id"],
+        user=user,
+        proposal={
+            "sourceTurnId": "background-turn-voice-test",
+            "sourceMessageId": background_message_id,
+            "sourceTurnSequence": 1,
+            "baseStateVersion": conversation_version,
+            "baseAnalysisVersion": analysis_version,
+            "sourceQuestion": question,
+            "rawTranscript": "回答です。",
+            "structuredOutput": output.model_dump(),
+            "validEvidenceIds": [background_message_id],
+            "clarificationProposal": {
+                "requestId": "clarification-background-voice-test",
+                "sourceTurnId": "background-turn-voice-test",
+                "sourceMessageId": background_message_id,
+                "sourceTarget": question,
+                "reason": "補足確認が必要",
+                "priority": 2,
+            },
+        },
+        fields=structured_service._list_interview_fields(
+            store.get("knowledges", record["knowledgeId"]),
+            user,
+        ),
+        profile="fixed_form",
+        source_question=question,
+    )
+    after_background = store.get("interview_states", state_id)
+    assert after_background is not None
+    assert after_background["stateVersion"] == conversation_version
+    assert after_background["analysisVersion"] == analysis_version + 1
+    assert after_background["clarificationQueue"]
+
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(
+            transcript="次のユーザー回答です。",
+            turnType="ANSWER",
+            answerToQuestionId=question["questionId"],
+            expectedStateVersion=conversation_version,
+            clientTurnId="after-background-clarification",
+        ),
+    )
+
+    assert turn["expectedStateVersion"] == conversation_version
+    assert turn["answerToQuestionId"] == question["questionId"]
+
+
+def test_received_voice_turn_rebases_once_only_when_question_is_unchanged() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    state_id = f"interview-state-{record['id']}"
+    state = store.get("interview_states", state_id)
+    assert state is not None
+    original_question_id = state["currentQuestionId"]
+    original_version = int(state["stateVersion"])
+    payload = VoiceTurnCreate(
+        transcript="同一の回答です。",
+        turnType="ANSWER",
+        answerToQuestionId=original_question_id,
+        expectedStateVersion=original_version,
+        clientTurnId="rebase-same-source-turn",
+    )
+
+    first = create_internal_voice_turn(session["id"], payload)
+    state["lastStructuredDialogueAct"] = "ANSWER"
+    commit_interview_state(state, user, source="test_foreground_version_bump")
+    latest = store.get("interview_states", state_id)
+    assert latest is not None
+
+    retried = create_internal_voice_turn(
+        session["id"],
+        payload.model_copy(update={"expectedStateVersion": latest["stateVersion"]}),
+    )
+
+    assert retried["id"] == first["id"]
+    assert retried["expectedStateVersion"] == latest["stateVersion"]
+    assert len(
+        [
+            turn
+            for turn in store.list("voice_turns", user.tenant_id)
+            if turn.get("clientTurnId") == "rebase-same-source-turn"
+        ]
+    ) == 1
+
+
+def test_received_voice_turn_is_not_rebased_to_a_new_question() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_field(user)
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    state_id = f"interview-state-{record['id']}"
+    state = store.get("interview_states", state_id)
+    assert state is not None
+    old_question_id = state["currentQuestionId"]
+    old_version = int(state["stateVersion"])
+    payload = VoiceTurnCreate(
+        transcript="古い質問への回答です。",
+        turnType="ANSWER",
+        answerToQuestionId=old_question_id,
+        expectedStateVersion=old_version,
+        clientTurnId="rebase-question-changed",
+    )
+    first = create_internal_voice_turn(session["id"], payload)
+
+    state["currentQuestionId"] = "question-after-concurrent-advance"
+    commit_interview_state(state, user, source="test_question_advance")
+    latest = store.get("interview_states", state_id)
+    assert latest is not None
+    with pytest.raises(HTTPException) as exc_info:
+        create_internal_voice_turn(
+            session["id"],
+            payload.model_copy(update={"expectedStateVersion": latest["stateVersion"]}),
+        )
+
+    assert exc_info.value.detail == "turn_question_conflict"
+    unchanged = store.get("voice_turns", first["id"])
+    assert unchanged is not None
+    assert unchanged["expectedStateVersion"] == old_version
 
 
 def test_incomplete_final_transcript_stays_on_current_question() -> None:
@@ -1064,19 +1367,28 @@ def test_replayed_client_turn_reuses_identity_after_state_snapshot_changes() -> 
             expectedStateVersion=initial_state_version,
         ),
     )
+    state_id = f"interview-state-{record['id']}"
+    state = store.get("interview_states", state_id)
+    assert state is not None
+    original_question_id = state["currentQuestionId"]
+    state["lastStructuredDialogueAct"] = "ANSWER"
+    commit_interview_state(state, user, source="test_background_snapshot_update")
+    latest_state = store.get("interview_states", state_id)
+    assert latest_state is not None
 
     replay = create_internal_voice_turn(
         session["id"],
         VoiceTurnCreate(
             transcript="同じ発話",
             clientTurnId="reconnect-item-1",
-            answerToQuestionId="q-after-reconnect",
-            expectedStateVersion=initial_state_version + 1,
+            answerToQuestionId=original_question_id,
+            expectedStateVersion=latest_state["stateVersion"],
         ),
     )
 
     assert replay["id"] == first["id"]
     assert replay["answerToQuestionId"] == first["answerToQuestionId"]
+    assert replay["expectedStateVersion"] == latest_state["stateVersion"]
 
 
 def test_concurrent_client_turn_duplicate_is_durable_idempotent() -> None:

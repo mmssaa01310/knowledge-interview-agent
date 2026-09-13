@@ -28,7 +28,6 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
-    start_fast_interview_turn,
     start_speculative_retrieval_for_interview_turn,
 )
 from ai_interviewer_api.auth.deps import UserContext
@@ -246,6 +245,75 @@ def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         )
         if existing is not None:
             if _voice_turn_matches_payload(existing, payload):
+                if _voice_turn_lifecycle_status(existing) == "RECEIVED":
+                    interview_state = _canonical_interview_state(session)
+                    current_version = _interview_state_version(interview_state, session)
+                    current_question_id = str(
+                        interview_state.get("currentQuestionId") or ""
+                    )
+                    existing_question_id = str(
+                        existing.get("answerToQuestionId") or ""
+                    )
+                    requested_question_id = str(payload.answerToQuestionId or "")
+                    if (
+                        existing.get("turnType") == "ANSWER"
+                        and (
+                            not existing_question_id
+                            or existing_question_id != current_question_id
+                            or (
+                                requested_question_id
+                                and requested_question_id != existing_question_id
+                            )
+                        )
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="turn_question_conflict",
+                        )
+                    if (
+                        payload.expectedStateVersion is not None
+                        and current_version != payload.expectedStateVersion
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="turn_state_conflict",
+                        )
+                    existing_expected_version = existing.get("expectedStateVersion")
+                    if (
+                        payload.expectedStateVersion is not None
+                        and (
+                            existing_expected_version is None
+                            or int(existing_expected_version)
+                            != payload.expectedStateVersion
+                        )
+                    ):
+                        rebased = voice_turn_repository.rebase_received_turn_state_version(
+                            str(existing["id"]),
+                            payload.expectedStateVersion,
+                            utc_now(),
+                        )
+                        if rebased is None:
+                            # A processor claimed the turn between lookup and
+                            # rebase. Never reset its lifecycle or run it twice.
+                            latest = voice_turn_repository.get(str(existing["id"]))
+                            if latest is not None:
+                                existing = latest
+                            else:
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail="turn_processing",
+                                )
+                        else:
+                            existing = rebased
+                            logger.info(
+                                "voice_turn_retry_rebased voice_session_id=%s turn_id=%s "
+                                "client_turn_id=%s answer_to_question_id=%s state_version=%s",
+                                voice_session_id,
+                                existing.get("id"),
+                                client_turn_id,
+                                existing_question_id,
+                                payload.expectedStateVersion,
+                            )
                 logger.info(
                     "voice_turn_reused voice_session_id=%s turn_id=%s client_turn_id=%s sequence=%s",
                     voice_session_id,
@@ -757,7 +825,6 @@ def _process_structured_voice_turn(
 
     speculative_retrieval = None
     response_id = f"voice-response-{uuid4().hex[:12]}"
-    fast_result = None
     try:
         knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
         if on_stream_started is not None:
@@ -782,59 +849,32 @@ def _process_structured_voice_turn(
             and fast_eligible
             and canonical_action == "PROCESS_ANSWER"
         ):
-            fast_state = deepcopy(interview_state)
-            provisional_keys = session.get("provisionalAnsweredTargetKeys")
-            if isinstance(provisional_keys, list):
-                fast_state["provisionalAnsweredTargetKeys"] = [
-                    str(key)
-                    for key in provisional_keys
-                    if str(key).strip()
-                ]
-            fast_result = start_fast_interview_turn(
-                record,
-                knowledge,
-                user,
-                state=fast_state,
-                current_question=current_question or {},
-                latest_user_message=user_message,
-                on_background_validation=lambda payload: _handle_fast_background_validation(
-                    session["id"],
-                    turn["id"],
-                    payload,
-                ),
-                on_question_delta=on_question_delta,
+            # The current Fast implementation can commit a provisional next
+            # question before Background Structured has durably applied the
+            # answer fields. Keep the feature fail-closed until it can use the
+            # same answer-commit boundary as this canonical path.
+            logger.warning(
+                "structured_fast_path_deferred voice_session_id=%s turn_id=%s "
+                "current_question_id=%s reason=answer_state_commit_required",
+                session.get("id"),
+                turn.get("id"),
+                (current_question or {}).get("questionId"),
             )
-            result = {
-                "status": "in_progress",
-                "action": fast_result.action,
-                "reply": fast_result.reply,
-                "question": fast_result.question,
-                "interviewState": fast_result.provisional_state or interview_state,
-                "retrievalPolicy": fast_result.retrieval_policy,
-                "retrievalExecuted": fast_result.retrieval_executed,
-                "retrievedSources": fast_result.retrieved_sources,
-                "latencyMetrics": fast_result.latency_metrics,
-            }
-            turn["fastAssessment"] = fast_result.assessment.model_dump()
-            turn["fastCanProceed"] = fast_result.can_proceed
-            turn["fastCheckExecuted"] = True
-            turn["backgroundValidationStatus"] = "pending"
-        else:
-            speculative_retrieval = start_speculative_retrieval_for_interview_turn(
-                record,
-                knowledge,
-                user,
-            )
-            result = generate_structured_interview_result(
-                record,
-                knowledge,
-                user,
-                persist_assistant_messages=False,
-                speculative_retrieval=speculative_retrieval,
-                canonical_intent=canonical_intent.dialogueAct,
-                canonical_action=canonical_action,
-                on_question_delta=on_question_delta,
-            )
+        speculative_retrieval = start_speculative_retrieval_for_interview_turn(
+            record,
+            knowledge,
+            user,
+        )
+        result = generate_structured_interview_result(
+            record,
+            knowledge,
+            user,
+            persist_assistant_messages=False,
+            speculative_retrieval=speculative_retrieval,
+            canonical_intent=canonical_intent.dialogueAct,
+            canonical_action=canonical_action,
+            on_question_delta=on_question_delta,
+        )
         latency_metrics = {
             str(name): value
             for name, value in (result.get("latencyMetrics") or {}).items()
@@ -881,24 +921,6 @@ def _process_structured_voice_turn(
         # incrementing the VoiceSession mirror independently.
         next_state_version = _interview_state_version(latest_interview_state, latest_session)
         latency_metrics["api_total_ms"] = round((monotonic() - api_started_at) * 1000, 1)
-        latest_turn_fields: dict[str, Any] = {}
-        if fast_result is not None:
-            latest_turn_fields = voice_turn_repository.get(turn["id"]) or {}
-            latency_metrics.update(
-                {
-                    str(name): value
-                    for name, value in (latest_turn_fields.get("latencyMetrics") or {}).items()
-                    if isinstance(value, (int, float))
-                }
-            )
-            for key in (
-                "backgroundValidationStatus",
-                "backgroundCanProceed",
-                "backgroundAgreesWithFast",
-                "clarificationEnqueued",
-            ):
-                if key in latest_turn_fields:
-                    turn[key] = latest_turn_fields[key]
         turn.update(
             {
                 "processingStatus": "completed",
@@ -978,32 +1000,6 @@ def _process_structured_voice_turn(
             "currentQuestionId",
             question_id,
         )
-        if fast_result is not None and fast_result.can_proceed and question is not None:
-            background_completed = (
-                latest_turn_fields.get("backgroundValidationStatus") == "completed"
-            )
-            if background_completed:
-                session.pop("provisionalQuestion", None)
-                session.pop("provisionalSourceTurnId", None)
-            else:
-                session["provisionalQuestion"] = deepcopy(question)
-                session["provisionalSourceTurnId"] = turn["id"]
-            latest_overlay_session = voice_session_repository.get(session["id"]) or {}
-            existing_provisional_keys = latest_overlay_session.get(
-                "provisionalAnsweredTargetKeys"
-            )
-            provisional_keys = (
-                list(existing_provisional_keys)
-                if isinstance(existing_provisional_keys, list)
-                else []
-            )
-            if (
-                latest_turn_fields.get("backgroundValidationStatus") != "completed"
-                and fast_result.source_target_key
-                and fast_result.source_target_key not in provisional_keys
-            ):
-                provisional_keys.append(fast_result.source_target_key)
-            session["provisionalAnsweredTargetKeys"] = provisional_keys
         session["stateVersion"] = next_state_version
         session["status"] = "completed" if action == "finish" else session.get("status", "active")
         session["updatedAt"] = utc_now()
@@ -1023,7 +1019,7 @@ def _process_structured_voice_turn(
                     "targetType": question.get("targetType") if question else None,
                     "targetId": question.get("targetId") if question else None,
                     "source": "structured_interview_turn_commit",
-                    "fastPath": fast_result is not None,
+                    "fastPath": False,
                     "retrievedSources": turn["retrievedSources"],
                 },
             ),

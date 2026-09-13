@@ -20,6 +20,7 @@ from time import monotonic, time
 from typing import Any, Literal
 from uuid import uuid4
 
+from ai_interviewer_voice.clients.interview_api import VoiceSessionSnapshot
 from ai_interviewer_voice.runtimes.transcribe_polly.config import (
     TranscribePollyRuntimeConfig,
 )
@@ -254,9 +255,7 @@ class TranscribePollyRuntime:
             await transcribe_start_task
             if state_load_task is not None:
                 snapshot = await state_load_task
-                self._current_question_id = snapshot.current_question_id
-                self._state_version = snapshot.state_version
-                self._interview_status = snapshot.interview_status
+                self._apply_voice_session_snapshot(snapshot)
         except BaseException:
             if not transcribe_start_task.done():
                 transcribe_start_task.cancel()
@@ -600,11 +599,16 @@ class TranscribePollyRuntime:
         await self._cancel_notice_tasks()
         self._turn_active = True
         self._speech_active = True
+        self._reset_transcription_turn_state()
+        self._voiced_duration_ms = initial_voiced_ms
+        await self._emit(UserSpeechStarted())
+
+    def _reset_transcription_turn_state(self) -> None:
+        """Discard transcript/timing data so it cannot leak into another turn."""
         self._last_transcribe_result_at = None
         self._last_transcribe_final_at_ms = None
         self._last_user_speech_end_at_ms = None
         self._has_final_transcript = False
-        self._voiced_duration_ms = initial_voiced_ms
         self._stable_text = ""
         self._latest_partial_text = ""
         self._latest_stt_confidence = None
@@ -614,7 +618,6 @@ class TranscribePollyRuntime:
         self._listen_ack_played = False
         self._processing_ack_played = False
         self._long_notice_played = False
-        await self._emit(UserSpeechStarted())
 
     async def _on_transcribe_result(self, result: TranscribeResult) -> None:
         if self._closed or not self._turn_active or not self._input_available:
@@ -766,6 +769,9 @@ class TranscribePollyRuntime:
         transcript_final_at_ms: int | None = None,
         turn_finalize_at_ms: int | None = None,
         stt_confidence: float | None = None,
+        _conflict_retry_attempt: int = 0,
+        _emit_final_transcript: bool = True,
+        _schedule_processing_notices: bool = True,
     ) -> None:
         if self._interview_bridge is None or self._context is None:
             await self._emit(RuntimeError(message="interview_bridge_unavailable", fatal=True))
@@ -773,9 +779,18 @@ class TranscribePollyRuntime:
         if self._state_sync_task is not None:
             await asyncio.gather(self._state_sync_task, return_exceptions=True)
             expected_state_version = self._state_version
+        answer_question_id = self._current_question_id
         self._active_client_turn_id = client_turn_id
         self._active_expected_state_version = expected_state_version
-        if self._config.backchannel_enabled:
+        logger.info(
+            "voice_turn_api_request voice_session_id=%s client_turn_id=%s "
+            "answer_to_question_id=%s expected_state_version=%s",
+            self._context.voice_session_id,
+            client_turn_id,
+            answer_question_id,
+            expected_state_version,
+        )
+        if self._config.backchannel_enabled and _schedule_processing_notices:
             self._schedule_notice(
                 delay_ms=self._config.processing_ack_delay_ms,
                 kind=OutputKind.PROCESSING_ACK,
@@ -797,21 +812,22 @@ class TranscribePollyRuntime:
         # Show the final STT text immediately.  Its content and target are
         # already known at this point; waiting for answer evaluation made the
         # UI appear frozen for the entire API/LLM pipeline.
-        await self._emit(
-            UserTranscriptFinal(
-                text=transcript,
-                turn_type="ANSWER",
-                question_id=self._current_question_id,
-                client_turn_id=client_turn_id,
+        if _emit_final_transcript:
+            await self._emit(
+                UserTranscriptFinal(
+                    text=transcript,
+                    turn_type="ANSWER",
+                    question_id=answer_question_id,
+                    client_turn_id=client_turn_id,
+                )
             )
-        )
         try:
             process_stream = getattr(self._interview_bridge, "process_turn_stream", None)
             if callable(process_stream):
                 async for stream_event in process_stream(
                     voice_session_id=self._context.voice_session_id,
                     transcript=transcript,
-                    answer_to_question_id=self._current_question_id,
+                    answer_to_question_id=answer_question_id,
                     turn_type="ANSWER",
                     expected_state_version=expected_state_version,
                     client_turn_id=client_turn_id,
@@ -858,7 +874,7 @@ class TranscribePollyRuntime:
                 result = await self._interview_bridge.process_turn(
                     voice_session_id=self._context.voice_session_id,
                     transcript=transcript,
-                    answer_to_question_id=self._current_question_id,
+                    answer_to_question_id=answer_question_id,
                     turn_type="ANSWER",
                     expected_state_version=expected_state_version,
                     client_turn_id=client_turn_id,
@@ -868,12 +884,38 @@ class TranscribePollyRuntime:
         except asyncio.CancelledError:
             raise
         except InterviewApiError as exc:
-            if exc.code in {"turn_state_conflict", "turn_duplicate_conflict"}:
-                logger.info("discarded_stale_turn client_turn_id=%s code=%s", client_turn_id, exc.code)
-                if not self._closed and self._formal_response_id is None:
-                    await self._resume_input_after_formal_reply(
-                        "ANSWER_LISTENING",
-                        reason="stale_turn_discarded",
+            if exc.code in {
+                "turn_state_conflict",
+                "turn_duplicate_conflict",
+                "turn_question_conflict",
+            }:
+                retry_allowed = (
+                    exc.code == "turn_state_conflict"
+                    and _conflict_retry_attempt == 0
+                    and stream_queue is None
+                )
+                retry = await self._resync_after_turn_conflict(
+                    client_turn_id=client_turn_id,
+                    conflict_code=exc.code,
+                    expected_state_version=expected_state_version,
+                    answer_question_id=answer_question_id,
+                    retry_allowed=retry_allowed,
+                )
+                if retry and not self._closed:
+                    # Reuse the durable source identity and transcript. The
+                    # backend only rebases a still-RECEIVED turn whose original
+                    # question remains current; committed turns stay idempotent.
+                    await self._process_interview_turn(
+                        transcript=transcript,
+                        generation=generation,
+                        expected_state_version=self._state_version,
+                        client_turn_id=client_turn_id,
+                        transcript_final_at_ms=transcript_final_at_ms,
+                        turn_finalize_at_ms=turn_finalize_at_ms,
+                        stt_confidence=stt_confidence,
+                        _conflict_retry_attempt=_conflict_retry_attempt + 1,
+                        _emit_final_transcript=False,
+                        _schedule_processing_notices=False,
                     )
                 return
             processing_may_continue = await self._handle_interview_failure(exc)
@@ -1881,9 +1923,7 @@ class TranscribePollyRuntime:
                 snapshot = await self._interview_bridge.load_voice_session(
                     self._context.voice_session_id
                 )
-                self._state_version = snapshot.state_version
-                self._current_question_id = snapshot.current_question_id
-                self._interview_status = snapshot.interview_status
+                self._apply_voice_session_snapshot(snapshot)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - refresh failure is retried next turn
@@ -1893,6 +1933,158 @@ class TranscribePollyRuntime:
                     exc,
                 )
             self._clear_active_client_turn(client_turn_id)
+
+    async def _resync_after_turn_conflict(
+        self,
+        *,
+        client_turn_id: str,
+        conflict_code: str,
+        expected_state_version: int,
+        answer_question_id: str | None,
+        retry_allowed: bool,
+    ) -> bool:
+        """Reload canonical state and retry once only for the unchanged question."""
+        if self._interview_bridge is None or self._context is None:
+            return False
+
+        voice_session_id = self._context.voice_session_id
+        state_version_before = self._state_version
+        question_id_before = self._current_question_id
+        interview_status_before = self._interview_status
+        logger.info(
+            "turn_state_conflict voice_session_id=%s client_turn_id=%s code=%s "
+            "expected_state_version=%s runtime_state_version=%s answer_question_id=%s",
+            voice_session_id,
+            client_turn_id,
+            conflict_code,
+            expected_state_version,
+            state_version_before,
+            answer_question_id,
+        )
+        if self._closed:
+            self._clear_active_client_turn(client_turn_id)
+            return False
+
+        logger.info(
+            "voice_state_resync_started voice_session_id=%s client_turn_id=%s "
+            "state_version=%s current_question_id=%s",
+            voice_session_id,
+            client_turn_id,
+            state_version_before,
+            question_id_before,
+        )
+        try:
+            snapshot = await self._interview_bridge.load_voice_session(voice_session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - do not resume against stale state
+            self._close_input_gate(reason="state_resync_failed")
+            self._reset_transcription_turn_state()
+            self._clear_active_client_turn(client_turn_id)
+            error_code = exc.code if isinstance(exc, InterviewApiError) else None
+            status_code = exc.status_code if isinstance(exc, InterviewApiError) else None
+            logger.error(
+                "voice_state_resync_failed voice_session_id=%s client_turn_id=%s "
+                "conflict_code=%s error_code=%s status_code=%s error_type=%s",
+                voice_session_id,
+                client_turn_id,
+                conflict_code,
+                error_code,
+                status_code,
+                exc.__class__.__name__,
+            )
+            await self._emit_input_state("INPUT_UNAVAILABLE")
+            await self._emit(
+                RuntimeError(
+                    message="interview_state_resync_failed",
+                    detail={
+                        "code": conflict_code,
+                        "errorCode": error_code,
+                        "errorType": exc.__class__.__name__,
+                    },
+                    fatal=True,
+                )
+            )
+            return False
+
+        self._apply_voice_session_snapshot(snapshot)
+        self._reset_transcription_turn_state()
+        self._clear_active_client_turn(client_turn_id)
+        question_unchanged = (
+            answer_question_id is not None
+            and snapshot.current_question_id == answer_question_id
+        )
+        can_retry = (
+            retry_allowed
+            and conflict_code == "turn_state_conflict"
+            and bool(client_turn_id)
+            and question_unchanged
+            and snapshot.interview_status not in {"completed", "stopped"}
+        )
+        decision = (
+            "retry_same_question_once"
+            if can_retry
+            else "discard_question_changed"
+            if not question_unchanged
+            else "discard_retry_limit"
+            if conflict_code == "turn_state_conflict" and not retry_allowed
+            else "discard_non_retryable_conflict"
+        )
+        logger.info(
+            "voice_state_resync voice_session_id=%s client_turn_id=%s "
+            "state_version_before=%s state_version_after=%s "
+            "current_question_id_before=%s current_question_id_after=%s "
+            "answer_question_id=%s question_id_changed=%s "
+            "interview_status_before=%s interview_status_after=%s decision=%s retry_attempt=%s",
+            voice_session_id,
+            client_turn_id,
+            state_version_before,
+            snapshot.state_version,
+            question_id_before,
+            snapshot.current_question_id,
+            answer_question_id,
+            answer_question_id != snapshot.current_question_id,
+            interview_status_before,
+            snapshot.interview_status,
+            decision,
+            1 if can_retry else 0,
+        )
+        if self._closed or self._formal_response_id is not None:
+            return False
+
+        if can_retry:
+            logger.info(
+                "voice_turn_conflict_retry voice_session_id=%s client_turn_id=%s "
+                "answer_question_id=%s expected_state_version=%s retry_attempt=1",
+                voice_session_id,
+                client_turn_id,
+                answer_question_id,
+                snapshot.state_version,
+            )
+            return True
+
+        logger.info(
+            "discarded_stale_turn voice_session_id=%s client_turn_id=%s code=%s decision=%s",
+            voice_session_id,
+            client_turn_id,
+            conflict_code,
+            decision,
+        )
+
+        next_state: Literal[
+            "ANSWER_LISTENING",
+            "CONFIRMATION_LISTENING",
+            "INTERVIEW_COMPLETED",
+        ] = (
+            "INTERVIEW_COMPLETED"
+            if snapshot.interview_status in {"completed", "stopped"}
+            else "ANSWER_LISTENING"
+        )
+        await self._resume_input_after_formal_reply(
+            next_state,
+            reason="state_resynced_after_turn_conflict",
+        )
+        return False
 
     def _spawn_background(self, awaitable: object) -> asyncio.Task[object]:
         task = asyncio.create_task(awaitable)  # type: ignore[arg-type]
@@ -1920,6 +2112,11 @@ class TranscribePollyRuntime:
         self._current_question_id = result.question_id
         self._state_version = result.state_version
         self._interview_status = result.interview_status
+
+    def _apply_voice_session_snapshot(self, snapshot: VoiceSessionSnapshot) -> None:
+        self._current_question_id = snapshot.current_question_id
+        self._state_version = snapshot.state_version
+        self._interview_status = snapshot.interview_status
 
     def _clear_active_client_turn(self, client_turn_id: str) -> None:
         if self._active_client_turn_id == client_turn_id:

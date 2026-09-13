@@ -1,12 +1,12 @@
 # Conversation Algorithm 現行監査・仕様化
 
-更新日: 2026-09-09
+更新日: 2026-09-14
 対象: `text` / `transcribe_polly` / `nova_sonic` / `openai_realtime`
 状態: 現行コードの監査、characterization、Canonical Intent Policy Phase 1、実LLM評価、Single State Writer Phase 2を反映。
 
 この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
 
-Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの順序保護、Provider source turnのDurable Dedup、Canonical Question Definitionの不変契約を実装した。Initial Questionの全面統合、Realtime音声経路の変更、RAG構造変更はこの文書の対象外である。
+Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの順序保護、Provider source turnのDurable Dedup、Canonical Question Definitionの不変契約を実装した。2026-09-14時点で、Structured回答の永続化前に質問進行しない契約とBackground専用の`analysisVersion`を追加した。旧Fast Pathはこの契約を満たさないためVoice API経路ではfail-closedとなり、設定が有効でも通常経路へフォールバックする。Initial Questionの全面統合、Realtime音声経路の変更、RAG構造変更はこの文書の対象外である。
 
 ## 1. 監査結果の要約
 
@@ -21,7 +21,7 @@ Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの�
 | dialogueAct / Canonical Intent | `services/conversation_policy.py:resolve_canonical_intent()` | 既存 `StructuredDialogueAct` を再利用。Routerは副作用なしで意図だけを返す |
 | Canonical Action | `services/conversation_policy.py:resolve_canonical_action()` | Intentとpending confirmation等から1つのActionへ変換 |
 | Fast判定 | `start_fast_interview_turn()` | `minimumInformationPresent`等のBooleanだけで、dialogueActを分類しない |
-| State更新 | `services/interview_state_transition.py:commit_interview_state()` | 永続化入口は1系統。Fast foregroundはprovisionalな質問進行、Backgroundはversion付きproposalをCoordinator経由で安全にmergeする |
+| State更新 | `services/interview_state_transition.py:commit_interview_state()` | 永続化入口は1系統。回答Stateの保存後にのみ通常質問を進行する。Background proposalは`analysisVersion`だけを進め、ユーザーTurn用`stateVersion`を変えない。旧Fast PathはVoice APIでfail-closed |
 | 次target | `select_next_question_target()` | Backend coordinatorが決める。Question Generatorはtargetを決めない |
 | Question definition | Field / question / questionPlanのsnapshot | `questionDefinition`とhashをQuestion snapshotへ保存し、`questionProgress`、`renderedQuestionText`、`lastExplanationText`相当の出力とは分離。説明・生成結果から定義へ書き戻さない |
 | Question rendering | `_generate_question_text()`、Question Generator provider | Backendが選んだtargetの表現を生成する。RealtimeはPhase 1では読み上げる役割 |
@@ -210,6 +210,8 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 
 初期Stateは `build_initial_structured_state()` が作り、`status`、`stateVersion`、`currentFieldId`、`currentQuestionId`、`askedQuestions`、`fieldStates`、`requirementStates`、`activeProbeTarget`、`pendingTranscriptConfirmation`、`clarificationQueue`、`activeClarificationRequest`、`tentativeCandidates`、`contradictions`、`openIssues`、`closingState`等を持つ（`coordinator.py:119-185`）。
 
+`stateVersion`は会話Turnと質問状態の楽観的整合性に用いる。通常回答では、解釈済みfield/requirement等を`structured_answer_applied`として先に保存し、その後、次質問を選択できる場合に`structured_question_advanced`として別commitする。意味的なState差分がなければ`structured_answer_not_applied`を記録して現質問を維持する。遅延Background解析の補助情報は`analysisVersion`で追跡し、その更新だけでは次のUser Turnをstaleにしない。
+
 主要な値は次のとおりである。
 
 | State領域 | 現行値・構造 | 根拠 |
@@ -345,11 +347,11 @@ Full Structuredに到達すれば、Structured `dialogueAct` と `transcriptAsse
 
 ### 5.5 Case D: Confirmation拒否
 
-`REJECTION` がFull Structured出力として返り、対象がpending confirmationなら、`_reject_target()` が候補を破棄し、対象を未確定側へ戻す（`coordinator.py:2056-2123`）。この後のtargetは `select_next_question_target()` の優先順に従う（`coordinator.py:700-879`）。Fast foregroundだけでは `REJECTION`を表すschemaがないため、Fast ON時の最終的な拒否処理はBackground StructuredまたはFast FAIL側の挙動に依存する。
+`REJECTION` がFull Structured出力として返り、対象がpending confirmationなら、`_reject_target()` が候補を破棄し、対象を未確定側へ戻す（`coordinator.py:2056-2123`）。この後のtargetは `select_next_question_target()` の優先順に従う（`coordinator.py:700-879`）。旧Fast foregroundには`REJECTION` schemaがなかったが、現在その経路はVoice APIから切り離されており、通常Structured経路で処理する。
 
 ### 5.6 Case E: Hesitation
 
-Full Structuredでは `HESITATION`、`BACKCHANNEL`、`OTHER` が `service.py:1427-1445` で `_keep_current_question()` に送られるため、target維持の応答になる。Fast schemaにはHESITATIONという型がなく、`clearlyIncomplete`等のBooleanに落ちる可能性がある。これがFast ON時の会話制御上のGapである。
+Full Structuredでは `HESITATION`、`BACKCHANNEL`、`OTHER` が `service.py:1427-1445` で `_keep_current_question()` に送られるため、target維持の応答になる。旧Fast schemaにはHESITATIONという型がなかった。Fastがfail-closedとなった現在はこの経路を使わず、通常Structuredで処理する。
 
 ### 5.7 Case F: 初回質問
 
@@ -378,64 +380,53 @@ OpenAIの起動状態はTransportとConversationで分離する。sideband接続
 | Provider | 入力境界 | Turn生成契機 | Turn type | 会話処理 | 出力 |
 |---|---|---|---|---|---|
 | `text` | Browser HTTP | `POST /records/{id}/messages` | targetの有無から `ANSWER`/`CONTROL` | `generate_interview_reply()` -> Full Structured | HTTP/SSE |
-| `transcribe_polly` | WebRTC audio -> Transcribe | endpoint + final settle -> `_finalize_user_turn()` | Bridge既定 `ANSWER`（別途stream API） | Voice API。Fast flag ONならFast foreground + Background | API stream -> Polly chunker -> PCM |
+| `transcribe_polly` | WebRTC audio -> Transcribe | endpoint + final settle -> `_finalize_user_turn()` | Bridge既定 `ANSWER`（別途stream API） | Voice API。Fast flagがONでも現状は通常Structuredへfail-closed | API stream -> Polly chunker -> PCM |
 | `nova_sonic` | WebRTC audio -> Bedrock | transcript + forced tool conditions | `InterviewBridge.save_turn()`はanswer target | ToolTurnCoordinator -> Voice API | Nova tool result -> audio |
 | `openai_realtime` | WebRTC audio -> OpenAI | sideband `input_audio_transcription.completed` | sidebandの粗いtransport値は `ANSWER`。意味分類はAPIのCanonical Policy | `process_turn()` -> Voice API -> `resolve_canonical_intent()`。Realtime側の会話Policyは未使用 | reply_textをsideband `response.create`へinput_textとして渡しRealtime audio |
 
 `openai_realtime`は、Browserのcompleted eventでもUser UI messageを追加するが、Backend Turnはsidebandだけで作る（`useRealtimeVoiceInterview.ts:187-216`、`coordinator.py:201-221`）。従ってコード上の意図は二重Backend処理ではないが、UIのmergeとsidebandのAPI処理は別ID層である。
 
-## 7. Fast Path ON / OFF差分
+## 7. Fast Path設定 OFF / ON要求時の実効経路
 
-### OFF
+### OFF（通常経路）
 
 `settings.structured_interview_fast_path_enabled` の既定値は `false`（`app/api/src/ai_interviewer_api/core/config.py:72-75`）。Voiceのeligible targetでは、`_process_structured_voice_turn()` が speculative retrievalを開始し、`generate_structured_interview_result()` をforegroundで呼ぶ（`voice_interview.py:656-705`）。Full interpreter、State apply、target選択、RAG resolve、Question Generator、commitまでがforegroundである。
 
-### ON
+### ONを要求した場合（fail-closed）
 
-同じflagがONで、closing / transcript confirmation / contradiction以外のcurrent questionなら、`start_fast_interview_turn()` を呼ぶ（`voice_interview.py:656-683`）。この関数は次の順で処理する。
+同じflagがONで、eligibleな回答Turnの場合、現行Fast実装が回答Fieldの保存前にprovisional questionをcommitできるため、Voice APIは`structured_fast_path_deferred`を記録して通常経路へフォールバックする（`voice_interview.py:_process_structured_voice_turn()`）。従って現状、設定値がONでもFast Interpreterは呼び出されず、`fastCheckExecuted=false`となる。Fast Pathの安全な再導入は別途、回答State commitを先行させる実装とGolden Testが必要である。
 
 ```text
-fields / profile / current target / question definitionを構築
-  ↓ service.py:423-464
-Background validationをThreadPool Futureへsubmit
-  ↓ service.py:423-482, 695-837
-Fast providerをThreadPoolへsubmit
-  ↓ service.py:484-516
-fast_future.result()だけをforegroundで待つ
-  ↓ service.py:497-524
-Fast PASSならprovisional state上でnext targetを選択
-  ↓ service.py:575-598
-final target用のspeculative retrievalを開始
-  ↓ service.py:601-615
-そのfutureをresolveしながらQuestion Generator全文を待つ
-  ↓ service.py:616-669, _generate_question_text():2669-2905
-foreground replyをcommit
-  ↓ voice_interview.py:684-904
-Backgroundは後でcallback経由でpersist/reconcile
-  ↓ voice_interview.py:909-1055
+Fast Path設定を検出
+  ↓
+structured_fast_path_deferredを記録
+  ↓
+Full Structuredの通常経路
+  ↓ field / requirement等をStateへcommit
+  ↓ 次質問の充足条件を評価
+  ↓ 必要な場合だけ次target・質問をcommit
 ```
 
 Fastの設定は `global.openai.gpt-5.6-luna`、reasoning `none`、max output 160（`core/config.py:76-86`）。Full Structuredはmodel `global.openai.gpt-5.6-luna`、reasoning `low`、max output 6000。Question Generatorは同じmodel default、reasoning `none`、max output 600、streaming enabled default true（`core/config.py:93-114`）。
 
-### Fast ON時の重要な差
+### Fast Path実装の残課題
 
-* `Background Structured` は `background_future` としてFast futureと重なる。Fast future直後にbackgroundをawaitしていない（`service.py:482-524`）。
-* しかしQuestion GeneratorはFast PASS後にforegroundで実行され、speculative retrieval futureを `resolve()` するため、RAG結果が必要ならそこで待つ（`service.py:601-629`, `_generate_question_text():2723-2779`）。
-* Backgroundの結果はreplyを作らず、提案として `apply_background_state_proposal()` に渡される（`service.py:782-894`、`interview_state_transition.py:154-299`）。永続化はSingle Writer境界だけが行い、current target等の会話Policyフィールドは最新値を保持する。
-* Fast schemaは `minimumInformationPresent`、`understandable`、`clearlyIncomplete`、`needsQuestionExplanation`、`reason`だけで、dialogueAct、fieldUpdates、confirmation、correction、contradiction、next targetを持たない（`fast_interpreter/schemas.py:6-19`）。Intent分類はFastではなくCanonical Routerが担当する。
+* `start_fast_interview_turn()`の旧実装はFast PASS後に、抽出fieldのBackground適用を待たずprovisional questionをcommitしていた。これは「回答がStateへ保存される前に質問を完了扱いにしない」Invariantに反するため、Voice APIの現行経路から切り離した。
+* 旧Fast schemaは`minimumInformationPresent`、`understandable`等の判定だけを持ち、永続field updateを作らない。したがってFast判定だけで質問進行することはできない。
+* 将来Fastを再導入する場合は、Backgroundまたは別の抽出結果を先に検証・commitし、その確定済みStateから次targetを再評価する必要がある。旧provisional stateをそのままcommitしてはならない。
 
 ### Dialogue Act別の比較
 
-| 発話意図 | Fast OFF | Fast ON foreground | Background |
+| 発話意図 | Fast OFF | Fast ON要求時 | Background |
 |---|---|---|---|
-| `ANSWER` | Full dialogueAct + updates + sufficiency | BooleanでPASS/FAIL、PASSならprovisional advance | Full act/updateを後処理 |
+| `ANSWER` | Full dialogueAct + updates + sufficiency。適用State差分をcommitしてから進行 | flag ONでも通常経路へフォールバック。Fast未実行 | Backgroundは補助提案のみ。会話State versionを変えない |
 | `CONFIRMATION` | awaiting targetならsynthetic confirmationまたはFull | Canonical ActionでFastを呼ばない | Fullで確認・State適用 |
 | `REJECTION` | Fullでreject target | Canonical ActionでFastを呼ばない | Fullでreject可能 |
 | `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST` | help + current target維持 | Canonical ActionでFastを呼ばない | Fullでclarificationを検出・queue可能 |
 | `CORRECTION` | transcript correction / field update | Canonical ActionでFastを呼ばない | Fullでcorrectionを検出 |
 | `HESITATION` | current target維持 | Canonical ActionでFastを呼ばない | FullでHESITATIONを記録 |
 
-Fast ONでも会話Intent/ActionはCanonical Policyが先に決める。Fastは `PROCESS_ANSWER` の回答十分性だけを担当し、詳細StructuredはBackground proposalとして後置される。
+Intent/ActionはCanonical Policyが先に決める。現状Fast ON要求時もeligibleな回答はfail-closedされるため、Fast判定は実行されずFull Structuredが回答適用と質問進行を担当する。
 
 ## 8. RAGとQuestion Generator
 
@@ -443,7 +434,7 @@ Fast ONでも会話Intent/ActionはCanonical Policyが先に決める。Fastは 
 
 Full Structured OFFでは、`start_speculative_retrieval_for_interview_turn()` がcurrent questionを手掛かりにRetrieval futureを開始する（`service.py:360-399`）。その後 `_generate_question_text()` が最終target由来のqueryを作り、futureのquery/knowledge/tenant/limitが一致した場合だけ再利用する（`service.py:2669-2779`）。不一致なら正式検索へfallbackする。
 
-Fast ONでは、Fast PASSでprovisional targetが決まった後、そのfinal target向けのRetrieval futureを開始し、同じ関数の `resolve()` をQuestion Generator呼出しの前段で実行する（`service.py:601-629`）。従って現在のFast経路は「FastとRAGを最初から常時並列」ではなく、Fast PASS後のtarget決定に続いてRAGを先行し、Question Generatorが結果を待つ構造である。
+Fast ONが要求された場合も現在は通常経路へフォールバックするため、`start_speculative_retrieval_for_interview_turn()`から始まるFull Structured経路のRAGが使われる。旧Fast専用Retrieval pathはVoice APIの実行経路ではない。
 
 `retrievalPolicy=never` のtargetでは `_generate_question_text()` がRetrieval pathへ入らない（`service.py:2700-2706`）。
 
@@ -539,21 +530,14 @@ TurnをEVALUATINGへ保存、user message保存
 CONTROLなら `_commit_control_turn()`、それ以外は `_process_structured_voice_turn()`
   ↓ voice_interview.py:591-607
 
-Fast OFF:
+Voice API (Fast OFF / ON要求のfail-closed):
   speculative retrieval開始
   ↓ full Structured Interpreter
-  ↓ transcript correction / dialogueAct / updates
-  ↓ State apply / completion / next target
-  ↓ RAG future resolve または正式RAG
-  ↓ Question Generator全文完了
-
-Fast ON eligible:
-  Background Structured Future submit
-  ↓ Fast future.result()をawait
-  ↓ provisional next target
-  ↓ target用RAG future resolve
-  ↓ Question Generator全文完了
-  ↓ Backgroundは別Futureで継続
+  ↓ transcript correction / dialogueAct / field updates
+  ↓ 回答State commit
+  ↓ State差分確認
+  ├─ 差分なし -> 現質問を維持
+  └─ 差分あり -> completion / next target / RAG / Question Generator
 
 Turn / VoiceSession / assistant message commit
   ↓
@@ -579,14 +563,14 @@ Transcript FinalからOpenAI First Audioまでの主な直列awaitは次のと�
 3. `interview_bridge.py:138` — `await self.save_turn(...)`。VoiceTurn保存の内部HTTP。
 4. `interview_bridge.py:149` — `await self.process_saved_turn(...)`。process endpointのHTTP。
 5. `voice_interview.py:578-589` — Turn lifecycle保存、record/user message/state snapshot読み込み。
-6. Fast ONの場合 `service.py:541` — `fast_future.result()`。Fast providerの完了を待つ（ThreadPool futureだが呼び出し元は同期関数）。
-7. Fast ONの場合 `service.py:608-629` -> `_generate_question_text()` — speculative RAG futureの `resolve()`。final queryと一致しない場合は正式Retrievalもこの区間で行う。
-8. Full/Fast共通 `service.py:3139`以降 — Question Generator streamまたはnon-stream providerの完了。OpenAI coordinatorではon-delta callbackを渡さないため、最終文字列完了待ちになる。
-9. `voice_interview.py:625-904` — State/Turn/assistant messageのcommitとprocess result構築。
-10. `coordinator.py:540-588` — `_send_backend_reply()`、さらに `_send_lock`でsideband送信を待つ。
-11. OpenAI側の `response.output_audio.delta` 到着 — `coordinator.py:287-289` がfirst audioを記録し、Browser側remote audio trackが再生する。
+6. Full Structured Interpreter / action-specific State apply — `service.py:_generate_structured_interview_result()`。
+7. `service.py` — answer state-effect guard。State差分がない場合は現質問を維持し、質問選択へ進まない。
+8. 適用Stateがある場合のみ、RAG解決とQuestion Generatorを実行。OpenAI coordinatorではon-delta callbackを渡さないため、reply全文完成を待つ。
+9. `voice_interview.py:_process_structured_voice_turn()` — Turn/assistant messageのcommitとprocess result構築。
+10. `coordinator.py:_send_backend_reply()` — sideband送信を待つ。
+11. OpenAI側の`response.output_audio.delta` — first audioを記録し、Browser側remote audio trackが再生する。
 
-`background_future`はこのawait chainに含まれない。Fast ONのforegroundはBackground Structured完了をawaitしない。完了後のBackground結果は`apply_background_state_proposal()`へ渡され、保護された会話制御Stateを上書きせず、同じState Writer境界で抽出提案だけを安全にmergeする。
+Fast Pathは現行Voice APIでは開始されないため、そのlegacy futureは現在のawait chainに含まれない。Background proposalが別経路から届いた場合は`apply_background_state_proposal()`が補助データをmergeし、conversation `stateVersion`を変更せず`analysisVersion`を進める。
 
 ### 10.3 OpenAI create_task一覧
 
@@ -595,9 +579,7 @@ Transcript FinalからOpenAI First Audioまでの主な直列awaitは次のと�
 | `OpenAIRealtimeSession.start()` 78-94 | `_run_sideband()`、`_expire_after_limit()` | sidebandとexpiryは並行 |
 | `_handle_event()` 172-185 | `_send_initial_reply()` | sideband event loopと初回reply処理が別task。ただしTurn側がinitial taskをawaitする |
 | `_handle_event()` 201-221 | `_process_turn()` | event loopとTurn処理が並行。Turn内部はlockで直列化 |
-| `start_fast_interview_turn()` 423-482 | Background validation Future | Fast providerとBackground providerを重ねる。Backgroundは直後awaitされない |
-| `start_fast_interview_turn()` 493-516 | Fast provider Future | `.result()`でFastだけforeground待ち |
-| `start_fast_interview_turn()` 601-615 | speculative Retrieval Future | target確定後に作られ、QGがresolveで待つ |
+| 旧`start_fast_interview_turn()` | Background / Fast / retrieval Future | legacy helper内には残るが、現行Voice APIからは呼ばれない。将来の再導入前に安全なcommit契約とGolden Testが必要 |
 | Transcribe `start()` 237-267 | Transcribe start、state load、endpoint loop | Transcribe startとstate loadは同時開始だが、start完了後state loadをawait |
 | Transcribe `_finalize_user_turn()` 729-739 | `_process_interview_turn()` | audio runtimeをblockせず処理開始。ただし内部Bridgeをawait |
 | Transcribe `_process_interview_turn()` 801-837 | `_play_streaming_formal_reply()` | API streamを読みながらPollyへdeltaを流す。これはTranscribe経路のみ |
@@ -684,7 +666,7 @@ UV_CACHE_DIR=/tmp/ai-interviewer-test-cache uv run pytest \
 * Clarification / rejection / hesitation / correction: `action`、current target、State projection
 * Duplicate identity: source item `realtime-item-001` -> `clientTurnId=openai-realtime-item-001` -> stored VoiceTurn 1件
 
-今後Fast ON/OFFを比較する場合は、production settingをテスト全体へ漏らさず、Fast providerを注入できるcharacterization caseを追加する必要がある。現行harnessはFull Structuredを観測するものであり、Fast ONのThreadPoolタイミングそのものを模擬してはいない。
+Fastの安全な再導入時は、production settingをテスト全体へ漏らさず、回答fieldのcommitを確認するGolden Testを追加する必要がある。現行Voice APIはFast ON要求を通常経路へfail-closedする。
 
 ## 15. Canonical Algorithm（Phase 1/2実装状況）
 
@@ -739,7 +721,7 @@ Provider Output
 
 ```text
 Canonical dialogueAct
-  ├─ ANSWER -> Fast Answer Check -> provisional advance
+  ├─ ANSWER -> Structured answer interpretation -> persist field updates -> sufficiency -> progress if safe
   ├─ QUESTION_TO_ASSISTANT / CLARIFICATION_REQUEST -> explain current definition
   ├─ CONFIRMATION -> confirm pending candidate
   ├─ REJECTION -> reject pending candidate
@@ -759,14 +741,14 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 |---|---|---|---|---|---|
 | 1 Turn -> 1 canonical identity | OpenAI/Nova/Transcribeのsource ID、API repository、DB partial unique index、UI identity key | ResultIdを提供しないTranscribe streamと、client IDを生成しない外部/旧callerはDurable dedup対象外 | Medium | Voice全体、特に旧Transcribe stream | `app/api` Canonical Turn repository + provider adapter |
 | 1 intentの正本 | BackendのCanonical PolicyをPhase 1で追加。Provider側には粗いtransport値が残る | transport `turnType` はまだProvider境界に存在し、全ProviderのCanonical Turn adapter統合は未完了 | Medium | Voice全体 | app/api Conversation Policy + Turn adapter |
-| Stateを1 writerへ集約 | `commit_interview_state()` とversion付きBackground mergeをPhase 2で追加 | processを跨ぐState version compare/commitの原子性はDB側で追加検討が必要 | Medium | Voice Fast ON | app/api versioned reconciliation |
+| Stateを1 writerへ集約 | `commit_interview_state()` とversion付きBackground mergeをPhase 2で追加 | processを跨ぐState version compare/commitの原子性はDB側で追加検討が必要 | Medium | API全体 | app/api versioned reconciliation |
 | Confirmationの単一遷移 | Canonical Action -> existing `_confirm_target()` | Initial経路と全Providerのsource ID adapterはまだ別境界 | Medium | Voice全体 | Canonical Action |
 | clarificationの単一経路 | Canonical Action -> existing help / `_keep_current_question()` | 実LLM RouterのQTA/Clarification境界は観測継続 | Medium | Voice全体 | Canonical dialogueAct + Action |
 | Initial questionの共通Policy | `create_voice_session()`が`initialReplyText`を作成し、OpenAIはstartup gate後に送信。FrontendはSession作成直後に表示 | 初回Actionは通常TurnのCanonical Actionとはまだ別経路 | Medium | Voice全体 | app/api Policy + renderer |
 | Provider非依存Turn contract | OpenAI/Nova/Transcribe runtimeはsource IDを`clientTurnId`へ接続。Textはvoice contract外 | Text/旧callerのsource ID adapterは別境界 | Medium | 全Provider | adapter -> Canonical Turn |
 | QGがdefinitionを厳守 | `questionDefinition`、hash、`questionProgress`を分離し、Promptにも定義を渡す | LLM出力が定義から逸脱した場合の自動validatorは未実装 | Medium | Text/Voice | backend renderer/validator |
 | QG全文待ちを避ける | Internal streamはあるがOpenAIはnon-stream Bridge | OpenAI First Audioはreply全文後 | High | OpenAI | later streaming boundary |
-| Background resultのState整合 | proposal + base/current version比較 + safe mergeを追加。control-state fieldsは復元保護 | Cross-processでのState commit/version compareは残課題 | Medium | Voice Fast ON | same turn/version reconciliation |
+| Background resultのState整合 | proposal + base/current version比較 + safe merge、analysisVersion分離を追加。control-state fieldsは復元保護 | Cross-processでのState commit/version compareは残課題 | Medium | Voice全体 | same turn/version reconciliation |
 | `CONTROL`のdialogueAct | API 2値分類後 `_commit_control_turn()` | clarification/rejection等と異なる制御語彙 | Medium | Text/Voice caller dependent | Canonical Action |
 | UIとBackendのID統合 | frontend merge keyとVoiceTurn client ID | UI duplicateとBackend duplicateを同一契約で追えない | Medium | 全Voice | Canonical IDs |
 | Text SSEの文分割 | newline + artificial delay | 音声ではないが出力境界がProviderごとに異なる | Low | Text | output adapter |
@@ -796,7 +778,7 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 * 実BrowserでのBrowser final callback回数、sideband `_process_turn` task回数、API保存行数、UI message追加回数の1:1対応。
 * Case Aで「大丈夫です。」が同じtargetへ戻る実行時の `stateBefore/stateAfter/stateVersion`。
 * Question Generatorへ実際に渡ったserialized promptと、LLMが返した質問の逸脱分類。
-* Fast ON時の各dialogueActに対する実際のFast provider outputとBackground outputの一致率（Fastの回答十分性とRouter Intentは別契約のため、別評価が必要）。
+* Fast Path再導入時のFast/Background判定一致率と、field update durable commit後のみ質問進行することのGolden/E2E検証。
 
 ### 18.1 Phase 1.5 実LLM Router評価
 

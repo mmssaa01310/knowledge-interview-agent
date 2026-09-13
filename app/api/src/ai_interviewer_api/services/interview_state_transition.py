@@ -84,6 +84,9 @@ class BackgroundMergeResult:
     base_state_version: int | None
     current_state_version: int | None
     resulting_state_version: int | None
+    base_analysis_version: int | None = None
+    current_analysis_version: int | None = None
+    resulting_analysis_version: int | None = None
     applied_fields: tuple[str, ...] = ()
     discarded_fields: tuple[str, ...] = ()
     clarification_enqueued: bool = False
@@ -95,6 +98,9 @@ class BackgroundMergeResult:
             "baseStateVersion": self.base_state_version,
             "currentStateVersion": self.current_state_version,
             "resultingStateVersion": self.resulting_state_version,
+            "baseAnalysisVersion": self.base_analysis_version,
+            "currentAnalysisVersion": self.current_analysis_version,
+            "resultingAnalysisVersion": self.resulting_analysis_version,
             "appliedFields": list(self.applied_fields),
             "discardedFields": list(self.discarded_fields),
             "clarificationEnqueued": self.clarification_enqueued,
@@ -121,17 +127,18 @@ def commit_interview_state(
         state_version_before = current_version
         if increment_version:
             state["stateVersion"] = current_version + 1
-            state["updatedByUserId"] = user.user_id
-            state["updatedAt"] = utc_now()
+        state["updatedByUserId"] = user.user_id
+        state["updatedAt"] = utc_now()
         store.upsert("interview_states", state)
         logger.info(
             "interview_state_committed state_id=%s record_id=%s source=%s writer=state_transition "
-            "state_version_before=%s state_version_after=%s",
+            "state_version_before=%s state_version_after=%s analysis_version=%s",
             state_id,
             state.get("recordId"),
             source,
             state_version_before,
             state.get("stateVersion"),
+            state.get("analysisVersion", 0),
         )
         return state
 
@@ -200,6 +207,7 @@ def apply_background_state_proposal(
     source_turn_id = _optional_string(proposal.get("sourceTurnId"))
     source_message_id = _optional_string(proposal.get("sourceMessageId"))
     base_version = _optional_int(proposal.get("baseStateVersion"))
+    base_analysis_version = _optional_int(proposal.get("baseAnalysisVersion"))
     state_id = f"interview-state-{record_id}"
 
     with _state_writer_lock(state_id):
@@ -211,9 +219,11 @@ def apply_background_state_proposal(
                 base_version,
                 None,
                 discarded_fields=_proposal_topics(proposal),
+                base_analysis_version=base_analysis_version,
             )
 
         current_version = _optional_int(latest.get("stateVersion")) or 0
+        current_analysis_version = _optional_int(latest.get("analysisVersion")) or 0
         source_key = source_message_id or source_turn_id
         applied_source_ids = _string_list(latest.get(_BACKGROUND_APPLIED_SOURCE_IDS))
         if source_key and source_key in applied_source_ids:
@@ -223,6 +233,8 @@ def apply_background_state_proposal(
                 base_version,
                 current_version,
                 discarded_fields=_proposal_topics(proposal),
+                base_analysis_version=base_analysis_version,
+                current_analysis_version=current_analysis_version,
             )
         if base_version is not None and current_version < base_version:
             return _background_discard(
@@ -231,6 +243,8 @@ def apply_background_state_proposal(
                 base_version,
                 current_version,
                 discarded_fields=_proposal_topics(proposal),
+                base_analysis_version=base_analysis_version,
+                current_analysis_version=current_analysis_version,
             )
 
         output_payload = proposal.get("structuredOutput")
@@ -241,6 +255,8 @@ def apply_background_state_proposal(
                 base_version,
                 current_version,
                 discarded_fields=_proposal_topics(proposal),
+                base_analysis_version=base_analysis_version,
+                current_analysis_version=current_analysis_version,
             )
         try:
             output = StructuredInterviewOutput.model_validate(output_payload)
@@ -251,6 +267,8 @@ def apply_background_state_proposal(
                 base_version,
                 current_version,
                 discarded_fields=_proposal_topics(proposal),
+                base_analysis_version=base_analysis_version,
+                current_analysis_version=current_analysis_version,
             )
 
         working = deepcopy(dict(latest))
@@ -357,10 +375,14 @@ def apply_background_state_proposal(
         applied_fields = list(dict.fromkeys(changed_topics))
         if clarification_enqueued:
             applied_fields.append("clarificationQueue")
+        # Background extraction and clarification are analysis metadata. Keep
+        # their own version so they cannot invalidate an in-flight user turn.
+        working["analysisVersion"] = current_analysis_version + 1
         committed = commit_interview_state(
             working,
             user,
             source="background_structured_proposal",
+            increment_version=False,
             expected_state_version=current_version,
         )
         result = BackgroundMergeResult(
@@ -369,6 +391,9 @@ def apply_background_state_proposal(
             base_state_version=base_version,
             current_state_version=current_version,
             resulting_state_version=_optional_int(committed.get("stateVersion")),
+            base_analysis_version=base_analysis_version,
+            current_analysis_version=current_analysis_version,
+            resulting_analysis_version=_optional_int(committed.get("analysisVersion")),
             applied_fields=tuple(applied_fields),
             discarded_fields=tuple(
                 dict.fromkeys(
@@ -379,12 +404,18 @@ def apply_background_state_proposal(
         )
         logger.info(
             "background_result_received record_id=%s source_turn_id=%s base_state_version=%s "
-            "current_state_version=%s merge_decision=%s applied_fields=%s discarded_fields=%s "
+            "current_state_version=%s resulting_state_version=%s base_analysis_version=%s "
+            "current_analysis_version=%s resulting_analysis_version=%s merge_decision=%s "
+            "applied_fields=%s discarded_fields=%s "
             "clarification_enqueued=%s",
             record_id,
             source_turn_id,
             base_version,
             current_version,
+            result.resulting_state_version,
+            base_analysis_version,
+            current_analysis_version,
+            result.resulting_analysis_version,
             result.decision,
             list(result.applied_fields),
             list(result.discarded_fields),
@@ -400,6 +431,8 @@ def _background_discard(
     current_version: int | None,
     *,
     discarded_fields: Sequence[str],
+    base_analysis_version: int | None = None,
+    current_analysis_version: int | None = None,
 ) -> BackgroundMergeResult:
     result = BackgroundMergeResult(
         decision=decision,
@@ -407,15 +440,21 @@ def _background_discard(
         base_state_version=base_version,
         current_state_version=current_version,
         resulting_state_version=current_version,
+        base_analysis_version=base_analysis_version,
+        current_analysis_version=current_analysis_version,
+        resulting_analysis_version=current_analysis_version,
         discarded_fields=tuple(discarded_fields),
     )
     logger.info(
         "background_result_received source_turn_id=%s base_state_version=%s "
-        "current_state_version=%s merge_decision=%s applied_fields=%s discarded_fields=%s "
+        "current_state_version=%s base_analysis_version=%s current_analysis_version=%s "
+        "merge_decision=%s applied_fields=%s discarded_fields=%s "
         "clarification_enqueued=false",
         source_turn_id,
         base_version,
         current_version,
+        base_analysis_version,
+        current_analysis_version,
         result.decision,
         [],
         list(result.discarded_fields),

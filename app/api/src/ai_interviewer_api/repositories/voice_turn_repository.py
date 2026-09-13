@@ -63,6 +63,56 @@ def find_by_client_turn_id(
     )
 
 
+def rebase_received_turn_state_version(
+    turn_id: str,
+    state_version: int,
+    updated_at: str,
+) -> dict | None:
+    """Update a received turn's optimistic version without reclaiming it.
+
+    This is used only after the caller has verified that the same durable
+    client turn still targets the current question. PostgreSQL applies the
+    lifecycle predicate atomically so a concurrent processor cannot be
+    overwritten back to RECEIVED.
+    """
+
+    if isinstance(store, PostgresStore):
+        with store._connection() as connection:
+            row = connection.execute(
+                """
+                UPDATE kikiori.entity_store
+                SET payload = jsonb_set(
+                    jsonb_set(
+                        payload,
+                        '{expectedStateVersion}',
+                        to_jsonb(CAST(%s AS integer)),
+                        true
+                    ),
+                    '{updatedAt}',
+                    to_jsonb(CAST(%s AS text)),
+                    true
+                ), updated_at = CURRENT_TIMESTAMP
+                WHERE entity_type = %s
+                  AND entity_id = %s
+                  AND COALESCE(payload ->> 'lifecycleStatus', 'RECEIVED') = 'RECEIVED'
+                RETURNING payload
+                """,
+                (state_version, updated_at, TABLE, turn_id),
+            ).fetchone()
+        return dict(row["payload"]) if row else None
+
+    turn = store.get(TABLE, turn_id)
+    if turn is None:
+        return None
+    if turn.get("lifecycleStatus") not in (None, "RECEIVED"):
+        return None
+    if turn.get("processingStatus") == "processing":
+        return None
+    turn["expectedStateVersion"] = state_version
+    turn["updatedAt"] = updated_at
+    return store.upsert(TABLE, turn)
+
+
 def claim_processing(turn_id: str, processing_id: str) -> dict | None:
     """Atomically claim a received turn for processing.
 
