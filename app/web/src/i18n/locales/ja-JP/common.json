@@ -1,7 +1,8 @@
 {
-  "appName": "KIKIORI",
-  "tagline": "AI Knowledge Interviewing",
-  "productDescription": "会話から知識を引き出し、知識として織り上げます。",
+  "appName": "MUSUBI",
+  "tagline": "現場の声を、チームの知恵に。",
+  "productDescription": "会話をAIで整理し、確認した知識をチームで使える形にします。",
+  "loginTitle": "いつもの作業を続ける",
   "developmentAuthNotice": "開発環境ではデモユーザーでログインします。本番ではCognitoログインに差し替えます。",
   "language": "表示言語",
   "selectLanguage": "表示言語を選択",

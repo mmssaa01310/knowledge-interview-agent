@@ -12,7 +12,6 @@ export function VoiceConversationButton(props: VoiceConversationButtonProps) {
   const { t } = useI18n();
   const isActive = !["idle", "completed", "error", "disconnected"].includes(props.status);
   const label = buttonLabel(props.status, t);
-  const iconSource = buttonIconSource(props.status);
 
   return (
     <button
@@ -22,7 +21,10 @@ export function VoiceConversationButton(props: VoiceConversationButtonProps) {
       onClick={isActive ? props.onStop : props.onStart}
     >
       <span className="voice-button-icon" aria-hidden="true">
-        <img src={iconSource} alt="" />
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="9" y="3" width="6" height="12" rx="3" />
+          <path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" />
+        </svg>
       </span>
       {label}
     </button>
@@ -57,30 +59,5 @@ function buttonLabel(status: VoiceConversationStatus, t: Translate): string {
     case "idle":
     default:
       return t("interview.voice.startConversation");
-  }
-}
-
-function buttonIconSource(status: VoiceConversationStatus): string {
-  switch (status) {
-    case "checking":
-    case "requesting_microphone":
-    case "connecting":
-    case "preparing_initial_reply":
-    case "listening":
-    case "processing":
-    case "finalizing_transcript":
-    case "processing_interview":
-    case "preparing_audio":
-    case "speaking":
-    case "interrupted":
-    case "stopping":
-      return "/images/kiko-thinking.svg";
-    case "error":
-    case "disconnected":
-      return "/images/kiko-error.svg";
-    case "completed":
-    case "idle":
-    default:
-      return "/images/kiko-waiting.svg";
   }
 }

@@ -353,7 +353,7 @@ v1では以下を基本構成とする。
 * 既存ProviderのPeer Connection: `aiortc`
 * 既存ProviderのTURN: Kinesis Video Streamsの`GetIceServerConfig`で取得
 * OpenAI Realtime: Browserの`RTCPeerConnection`からOpenAI Calls APIへ接続し、server-side
-  sideband WebSocketで制御する。OpenAI経路ではKIKIORIの`aiortc`/KVSを経由しない。
+  sideband WebSocketで制御する。OpenAI経路ではMUSUBIの`aiortc`/KVSを経由しない。
 
 KVSシグナリングチャネルはv1では使用しない。
 

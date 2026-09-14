@@ -109,18 +109,6 @@ function waitForPath(pathname: string, timeoutMs: number) {
   });
 }
 
-function appendKikoBadge(popover: PopoverDOM) {
-  if (popover.wrapper.querySelector(".kikiori-driver-popover-kiko")) return;
-  const badge = document.createElement("span");
-  badge.className = "kikiori-driver-popover-kiko";
-  badge.setAttribute("aria-hidden", "true");
-  const image = document.createElement("img");
-  image.src = "/images/kiko-waiting.svg";
-  image.alt = "";
-  badge.append(image);
-  popover.wrapper.insertBefore(badge, popover.title);
-}
-
 export function InteractiveGuide({ definition, userId, currentPath, onNavigate, onClose }: InteractiveGuideProps) {
   const { t } = useI18n();
   const translateRef = useRef(t);
@@ -447,7 +435,6 @@ export function InteractiveGuide({ definition, userId, currentPath, onNavigate, 
         prevBtnText: translate("guide.previous"),
         doneBtnText: translate("guide.finish"),
         onPopoverRender: (popover, options) => {
-          appendKikoBadge(popover);
           if (typeof options.index === "number") {
             popover.progress.textContent = translate("guide.progress", { current: options.index + 1, total: steps.length });
             if (steps[options.index]?.kind === "action") {

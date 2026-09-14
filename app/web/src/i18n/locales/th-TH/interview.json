@@ -44,7 +44,7 @@
   },
   "configureNotice": "ตั้งค่าวัตถุประสงค์และโมเดลที่ใช้",
   "returnToStart": "กลับไปหน้าเริ่มสัมภาษณ์",
-  "kikoName": "kiko",
+  "assistantName": "ผู้สัมภาษณ์ AI",
   "resetDemo": "รีเซ็ตสถานะทดสอบ",
   "resettingDemo": "กำลังรีเซ็ต…",
   "reviewRequest": "ขอให้แก้ไข",

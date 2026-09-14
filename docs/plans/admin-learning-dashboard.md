@@ -1,7 +1,7 @@
 # ナレッジ分析と教育支援 実行計画
 
 Status: Draft（現行コードに一部実装済み。残作業の計画）
-Target: KIKIORI knowledge analysis  
+Target: MUSUBI knowledge analysis
 Last Updated: 2026-08-30
 
 関連ドキュメント:

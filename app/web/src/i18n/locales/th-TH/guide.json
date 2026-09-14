@@ -1,5 +1,5 @@
 {
-  "title": "คู่มือการใช้งาน KIKIORI",
+  "title": "คู่มือการใช้งาน MUSUBI",
   "progress": "{current} / {total}",
   "previous": "ย้อนกลับ",
   "next": "ถัดไป",
@@ -23,7 +23,7 @@
   },
   "catalog": {
     "gettingStarted": {
-      "title": "เริ่มใช้ KIKIORI ครั้งแรก",
+      "title": "เริ่มใช้ MUSUBI ครั้งแรก",
       "description": "ทำความรู้จักพื้นที่หลักของหน้าจอและจุดเริ่มต้นใช้งานแบบสั้น ๆ"
     },
     "createKnowledge": {

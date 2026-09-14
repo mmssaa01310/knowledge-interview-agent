@@ -1,5 +1,5 @@
-site_name: KIKIORI Documentation
-site_description: KIKIORIの仕様、現行実装、開発・運用ガイド
+site_name: MUSUBI Documentation
+site_description: MUSUBIの仕様、現行実装、開発・運用ガイド
 
 # docs/を唯一の公開ソースにする。docs/codebase/は実装調査用の詳細資料として
 # 同じサイトから参照できる。

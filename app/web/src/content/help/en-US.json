@@ -1,6 +1,6 @@
 {
-  "title": "KIKIORI user guide",
-  "intro": "KIKIORI helps you capture field knowledge through conversation. Start with the three steps below: prepare, talk, and confirm.",
+  "title": "MUSUBI user guide",
+  "intro": "MUSUBI helps you capture field knowledge through conversation. Start with the three steps below: prepare, talk, and confirm.",
   "quickStart": {
     "title": "Your first 3 steps",
     "summary": "Prepare a knowledge area, talk with KIKO, then review the result before using it as knowledge.",
@@ -28,7 +28,7 @@
   "groups": {
     "start": {
       "title": "Start here",
-      "description": "Learn what KIKIORI and KIKO do so the rest of the app is easier to understand."
+      "description": "Learn what MUSUBI and KIKO do so the rest of the app is easier to understand."
     },
     "core": {
       "title": "The basics",
@@ -48,8 +48,8 @@
       "id": "about",
       "group": "start",
       "icon": "kikiori",
-      "title": "About KIKIORI",
-      "summary": "KIKIORI organizes conversations with AI and keeps the content people have reviewed as shared knowledge."
+      "title": "About MUSUBI",
+      "summary": "MUSUBI organizes conversations with AI and keeps the content people have reviewed as shared knowledge."
     },
     {
       "id": "kiko",
@@ -160,7 +160,7 @@
       "id": "language",
       "group": "reference",
       "title": "Change the display language",
-      "summary": "Switch KIKIORI's display language from the user menu.",
+      "summary": "Switch MUSUBI's display language from the user menu.",
       "steps": [
         "Open the user area at the bottom of the sidebar and select Display language.",
         "Choose 日本語, English, 简体中文, or ไทย to update the interface."
@@ -178,7 +178,7 @@
     },
     {
       "question": "How can I see where an action is on screen?",
-      "answer": "Select Start interactive guide on this page or in the user menu on the original KIKIORI screen."
+      "answer": "Select Start interactive guide on this page or in the user menu on the original MUSUBI screen."
     }
   ]
 }

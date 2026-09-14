@@ -2,14 +2,14 @@
   "close": "Close",
   "tableOfContents": "Table of contents",
   "stepsLabel": "Steps",
-  "quickStartLabel": "New to KIKIORI?",
+  "quickStartLabel": "New to MUSUBI?",
   "referenceLabel": "More help",
   "tipLabel": "Good to know",
   "startGuide": "Start interactive guide",
   "viewOnScreen": "See this on screen",
-  "guideHint": "Follow the steps on the original KIKIORI screen.",
-  "guideRequestSent": "The guide is open on the original KIKIORI screen. Switch back to continue.",
-  "guideRequestUnavailable": "Return to the original KIKIORI screen and start the guide from the user menu.",
+  "guideHint": "Follow the steps on the original MUSUBI screen.",
+  "guideRequestSent": "The guide is open on the original MUSUBI screen. Switch back to continue.",
+  "guideRequestUnavailable": "Return to the original MUSUBI screen and start the guide from the user menu.",
   "faqTitle": "Frequently asked questions",
-  "externalNote": "This page is open in a separate tab. Return to the original KIKIORI tab when you are finished."
+  "externalNote": "This page is open in a separate tab. Return to the original MUSUBI tab when you are finished."
 }

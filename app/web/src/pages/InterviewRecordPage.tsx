@@ -9,7 +9,7 @@ import { VoiceConversationStatus } from "../features/realtime-voice/components/V
 import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
 import { VOICE_RUNTIME_PROVIDER } from "../features/realtime-voice/api/realtimeVoiceClient";
 import type { VoiceProvider } from "../features/realtime-voice/types";
-import { KikoAvatar, type KikoAvatarState } from "../features/interview-chat/components/KikoAvatar";
+import { AssistantLabel, type AssistantLabelState } from "../features/interview-chat/components/AssistantLabel";
 import { ProcessModelPanel } from "../features/interviews/components/ProcessModelPanel";
 import { SystemRequirementProgressPanel } from "../features/interviews/components/SystemRequirementProgressPanel";
 import {
@@ -168,19 +168,19 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     onCompleted: props.onRefreshInterviewSnapshot,
   });
 
-  const isKikoError = props.interviewError || realtimeVoice.status === "error";
-  const isKikoThinking = props.isInterviewStreaming || [
+  const isAssistantError = props.interviewError || realtimeVoice.status === "error";
+  const isAssistantThinking = props.isInterviewStreaming || [
     "preparing_initial_reply",
     "processing_interview",
     "preparing_audio",
     "processing",
     "speaking",
   ].includes(realtimeVoice.status);
-  const currentKikoState: KikoAvatarState = isKikoError
+  const currentAssistantState: AssistantLabelState = isAssistantError
     ? "error"
-    : isKikoThinking
+    : isAssistantThinking
       ? "thinking"
-      : "waiting";
+      : "default";
   const hasInterviewErrorMessage = props.interviewMessages.some(
     (message) => message.id?.startsWith("interview-error-"),
   );
@@ -592,9 +592,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 >
                   {message.role === "assistant" || message.role === "ai" ? (
                     <div className="message-meta">
-                      <KikoAvatar
-                        state={message.id?.startsWith("interview-error-") ? "error" : "waiting"}
-                        label={t("interview.kikoName")}
+                      <AssistantLabel
+                        state={message.id?.startsWith("interview-error-") ? "error" : "default"}
+                        label={t("interview.assistantName")}
                       />
                     </div>
                   ) : null}
@@ -653,20 +653,20 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               {props.streamingInterviewReply ? (
                 <div className="bubble ai">
                   <div className="message-meta">
-                    <KikoAvatar state={currentKikoState} label={t("interview.kikoName")} />
+                    <AssistantLabel state={currentAssistantState} label={t("interview.assistantName")} />
                   </div>
                   <p>{props.streamingInterviewReply}</p>
                 </div>
               ) : null}
-              {isKikoThinking && !props.streamingInterviewReply && !realtimeVoice.initialReplyActive ? (
-                <div className="kiko-chat-status thinking" role="status">
-                  <KikoAvatar state="thinking" label={t("interview.kikoName")} />
+              {isAssistantThinking && !props.streamingInterviewReply && !realtimeVoice.initialReplyActive ? (
+                <div className="assistant-chat-status thinking" role="status">
+                  <AssistantLabel state="thinking" label={t("interview.assistantName")} />
                   <span>{t("interview.receiving")}</span>
                 </div>
               ) : null}
-              {isKikoError && !hasInterviewErrorMessage ? (
-                <div className="kiko-chat-status error" role="alert">
-                  <KikoAvatar state="error" label={t("interview.kikoName")} />
+              {isAssistantError && !hasInterviewErrorMessage ? (
+                <div className="assistant-chat-status error" role="alert">
+                  <AssistantLabel state="error" label={t("interview.assistantName")} />
                   <span>{props.recordNotice || t("errors.interviewResponseReceiveFailed")}</span>
                 </div>
               ) : null}
@@ -745,7 +745,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             <section className="published-learning-guidance" aria-labelledby="published-learning-guidance-title">
               <div className="published-learning-guidance-header">
                 <div>
-                  <p className="eyebrow">KIKIORI</p>
+                  <p className="eyebrow">{t("common.appName")}</p>
                   <h2 id="published-learning-guidance-title">{t("interview.learningGuidance.title")}</h2>
                   <p>{t("interview.learningGuidance.description")}</p>
                 </div>

@@ -12,8 +12,8 @@ import { useI18n } from "../i18n";
 import { ThemeLogo } from "../components/ui/ThemeLogo";
 
 const helpSectionIconSources: Record<HelpSectionIcon, string> = {
-  kikiori: "/images/kikiori-icon.svg",
-  kiko: "/images/kiko-waiting.svg",
+  kikiori: "/favicon/musubi.svg",
+  kiko: "/favicon/musubi.svg",
 };
 
 export function HelpPage() {
@@ -44,7 +44,7 @@ export function HelpPage() {
       <article className="help-panel">
         <div className="help-hero">
           <div className="help-hero-copy">
-            <p className="eyebrow">KIKIORI</p>
+            <p className="eyebrow">{t("common.appName")}</p>
             <h1>{content.title}</h1>
             <p className="help-intro">{content.intro}</p>
           </div>

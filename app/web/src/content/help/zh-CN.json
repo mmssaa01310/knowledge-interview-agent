@@ -1,6 +1,6 @@
 {
-  "title": "KIKIORI 操作手册",
-  "intro": "KIKIORI通过对话帮助您整理现场知识。请先按照“3个步骤”开始：准备、访谈、确认。",
+  "title": "MUSUBI 操作手册",
+  "intro": "MUSUBI通过对话帮助您整理现场知识。请先按照“3个步骤”开始：准备、访谈、确认。",
   "quickStart": {
     "title": "开始使用的3个步骤",
     "summary": "先准备知识主题，再与KIKO对话，最后确认内容后作为知识使用。",
@@ -28,7 +28,7 @@
   "groups": {
     "start": {
       "title": "先了解这里",
-      "description": "先了解KIKIORI和KIKO的作用，之后更容易理解各个画面。"
+      "description": "先了解MUSUBI和KIKO的作用，之后更容易理解各个画面。"
     },
     "core": {
       "title": "基本使用方法",
@@ -48,8 +48,8 @@
       "id": "about",
       "group": "start",
       "icon": "kikiori",
-      "title": "关于KIKIORI",
-      "summary": "KIKIORI使用AI整理现场对话，并将人员确认过的内容保存为共享知识。"
+      "title": "关于MUSUBI",
+      "summary": "MUSUBI使用AI整理现场对话，并将人员确认过的内容保存为共享知识。"
     },
     {
       "id": "kiko",
@@ -160,7 +160,7 @@
       "id": "language",
       "group": "reference",
       "title": "更改显示语言",
-      "summary": "从用户菜单切换KIKIORI的显示语言。",
+      "summary": "从用户菜单切换MUSUBI的显示语言。",
       "steps": [
         "打开侧边栏底部的用户区域，选择“显示语言”。",
         "选择日本語、English、简体中文或ไทย，画面语言就会切换。"
@@ -178,7 +178,7 @@
     },
     {
       "question": "如何在画面上查看操作位置？",
-      "answer": "选择本页的“开始操作指南”，或者在原KIKIORI画面的用户菜单中选择“开始操作指南”。"
+      "answer": "选择本页的“开始操作指南”，或者在原MUSUBI画面的用户菜单中选择“开始操作指南”。"
     }
   ]
 }

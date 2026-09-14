@@ -1,5 +1,5 @@
 /*
- * KIKIORI UI layer
+ * MUSUBI UI layer
  *
  * The application is React/Vite, so the Nuxt UI patterns are represented by
  * the existing semantic components and class names. Keeping the tokens here
@@ -2215,50 +2215,31 @@ label {
   font-weight: 750;
 }
 
-.kiko-avatar {
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  overflow: hidden;
-  flex: 0 0 auto;
-  border: 1px solid var(--ki-border);
-  border-radius: 9px;
-  background: var(--ki-primary-soft);
-  box-shadow: var(--ki-shadow-sm);
-}
-
-.kiko-avatar-identity {
+.assistant-label {
   display: inline-flex;
+  min-height: 22px;
   align-items: center;
-  min-width: 0;
-  gap: 6px;
-}
-
-.kiko-avatar-name {
-  color: var(--ki-muted);
+  padding: 3px 8px;
+  border: 1px solid var(--ki-border);
+  border-radius: 999px;
+  background: var(--ki-primary-soft);
+  color: var(--ki-primary-strong);
   font-size: 10px;
   font-weight: 750;
   line-height: 1;
 }
 
-.kiko-avatar img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+.assistant-label.thinking {
+  border-color: var(--ki-border-strong);
 }
 
-.kiko-avatar.thinking {
-  border-color: rgba(25, 87, 215, 0.32);
+.assistant-label.error {
+  border-color: var(--ki-error);
+  background: var(--ki-error-soft);
+  color: var(--ki-error);
 }
 
-.kiko-avatar.error {
-  border-color: rgba(196, 67, 67, 0.35);
-  background: rgba(196, 67, 67, 0.08);
-}
-
-.kiko-chat-status {
+.assistant-chat-status {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2267,7 +2248,7 @@ label {
   font-size: 12px;
 }
 
-.kiko-chat-status.error {
+.assistant-chat-status.error {
   color: var(--ki-error);
 }
 
@@ -2359,17 +2340,19 @@ label {
 }
 
 .voice-button-icon {
-  width: 38px;
-  height: 38px;
-  flex: 0 0 38px;
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  margin-inline-end: 6px;
 }
 
-.voice-button-icon img {
+.voice-button-icon svg {
   display: block;
-  width: 40px;
-  height: 40px;
-  margin: -1px;
-  object-fit: contain;
+  width: 18px;
+  height: 18px;
 }
 
 .voice-conversation-status {
@@ -6298,21 +6281,6 @@ html[dir="rtl"] .interview-page-title {
 .kikiori-driver-popover .driver-popover-close-btn:focus-visible {
   color: var(--ki-primary-strong);
   outline: none;
-}
-
-.kikiori-driver-popover-kiko {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  margin-bottom: 8px;
-  place-items: center;
-}
-
-.kikiori-driver-popover-kiko img {
-  display: block;
-  width: 28px;
-  height: 28px;
-  object-fit: contain;
 }
 
 @media (max-width: 900px) {

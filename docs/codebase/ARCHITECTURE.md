@@ -2,7 +2,7 @@
 
 ## 1. 方式
 
-KIKIORIは、React/ViteのWeb、FastAPIのAPIとVoiceサービス、PostgreSQLからなるモノレポである。APIは`routers → services → repositories`で責務を分け、Webはページと機能単位で構成する。Voiceは内部HTTPを通じてAPIへ処理を委譲する。
+MUSUBIは、React/ViteのWeb、FastAPIのAPIとVoiceサービス、PostgreSQLからなるモノレポである。APIは`routers → services → repositories`で責務を分け、Webはページと機能単位で構成する。Voiceは内部HTTPを通じてAPIへ処理を委譲する。
 
 主な制約は次のとおりである。
 

@@ -37,7 +37,7 @@ export function GuideSelectorDialog({ isOpen, userId, userRole, currentPath, onC
       <div className="dialog-panel guide-selector-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-selector-title">
         <div className="dialog-header">
           <div>
-            <p className="eyebrow">KIKIORI</p>
+            <p className="eyebrow">{t("common.appName")}</p>
             <h2 id="guide-selector-title">{t("guide.selector.title")}</h2>
             <p>{t("guide.selector.description")}</p>
           </div>

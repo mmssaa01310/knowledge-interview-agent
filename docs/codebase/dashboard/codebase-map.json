@@ -1,6 +1,6 @@
 {
   "system": {
-    "name": "KIKIORI",
+    "name": "MUSUBI",
     "purpose": "インタビューを通じて知識を引き出し、人の確認を経て構造化ナレッジとして保存するWebアプリ。",
     "boundary": "app/apiが認可・インタビュー状態・AI処理・保存の正本で、app/voiceは音声I/Oを担当する。",
     "runtimePath": ["Browser", "React / Vite", "FastAPI API", "Service", "PostgreSQL"],

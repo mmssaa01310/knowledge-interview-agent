@@ -44,7 +44,7 @@
   },
   "configureNotice": "请设置用途和执行模型。",
   "returnToStart": "返回访谈开始页",
-  "kikoName": "kiko",
+  "assistantName": "AI访谈助手",
   "resetDemo": "重置测试状态",
   "resettingDemo": "正在重置…",
   "reviewRequest": "要求修改",

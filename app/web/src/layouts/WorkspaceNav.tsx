@@ -53,7 +53,7 @@ export function WorkspaceNav({
     return (
       <aside id={id} className="app-sidebar collapsed" aria-label={t("navigation.mainNavigation")} data-guide="navigation">
         <div className="sidebar-collapsed-brand">
-          <img src="/images/kikiori-icon.svg" alt="KIKIORI" />
+          <ThemeLogo compact alt={t("common.appName")} />
         </div>
         <button
           type="button"
@@ -81,7 +81,7 @@ export function WorkspaceNav({
     <aside id={id} className={isResponsiveOpen ? "app-sidebar responsive-open" : "app-sidebar"} aria-label={t("navigation.mainNavigation")} data-guide="navigation">
       <div className="sidebar-header">
         <div className="brand">
-          <ThemeLogo className="brand-logo-image" alt="KIKIORI" />
+          <ThemeLogo className="brand-logo-image" alt={t("common.appName")} />
           <span className="brand-tagline">{t("common.tagline")}</span>
         </div>
         <button

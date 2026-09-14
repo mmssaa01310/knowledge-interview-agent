@@ -1,8 +1,8 @@
-# KIKIORI AWSアーキテクチャ
+# MUSUBI AWSアーキテクチャ
 
 ## 1. 全体方針と実装状況
 
-この文書はKIKIORIの目標AWS構成を定義する。現行コードで確認できるローカル実装範囲は[現行実装](../../reference/current-implementation.md)を正本とする。
+この文書はMUSUBIの目標AWS構成を定義する。現行コードで確認できるローカル実装範囲は[現行実装](../../reference/current-implementation.md)を正本とする。
 
 | 領域 | 現行コードで確認できる状態 | 目標構成 |
 | --- | --- | --- |

@@ -1,5 +1,5 @@
 {
-  "title": "KIKIORI quick guide",
+  "title": "MUSUBI quick guide",
   "progress": "{current} / {total}",
   "previous": "Back",
   "next": "Next",
@@ -23,7 +23,7 @@
   },
   "catalog": {
     "gettingStarted": {
-      "title": "First steps in KIKIORI",
+      "title": "First steps in MUSUBI",
       "description": "Get a short orientation to the main screen areas and where to start."
     },
     "createKnowledge": {

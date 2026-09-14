@@ -1,7 +1,8 @@
 {
-  "appName": "KIKIORI",
-  "tagline": "AI Knowledge Interviewing",
-  "productDescription": "从对话中提取知识，并将其整理为可复用的知识。",
+  "appName": "MUSUBI",
+  "tagline": "把现场经验，变成团队智慧。",
+  "productDescription": "借助 AI 整理对话，并将确认后的知识沉淀为团队可用的内容。",
+  "loginTitle": "继续进入工作空间",
   "developmentAuthNotice": "开发环境使用演示用户登录。生产环境将使用Cognito进行身份验证。",
   "language": "显示语言",
   "selectLanguage": "选择显示语言",

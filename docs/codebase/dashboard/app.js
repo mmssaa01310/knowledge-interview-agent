@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  const fallback = { system: { purpose: "KIKIORIのコードベースマップを読み込めませんでした。", boundary: "codebase-map.jsonを確認してください。", runtimePath: [], status: "埋め込みの古い情報は表示しません。" }, components: [], flows: [], states: [], integrations: [], risks: [], tests: [], codeMap: [], sources: [] };
+  const fallback = { system: { purpose: "MUSUBIのコードベースマップを読み込めませんでした。", boundary: "codebase-map.jsonを確認してください。", runtimePath: [], status: "埋め込みの古い情報は表示しません。" }, components: [], flows: [], states: [], integrations: [], risks: [], tests: [], codeMap: [], sources: [] };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
   const $ = (id) => document.getElementById(id);
   const list = (items, render, separator = "") => (items || []).map(render).join(separator);

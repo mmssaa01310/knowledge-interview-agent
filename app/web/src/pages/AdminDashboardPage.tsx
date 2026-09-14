@@ -225,7 +225,7 @@ export function AdminDashboardPage({ user, knowledges, onNavigate }: AdminDashbo
           <button type="button" className="ghost compact" onClick={() => onNavigate("/knowledge-dbs")}>
             ← {t("dashboard.backToKnowledge")}
           </button>
-          <p className="eyebrow">KIKIORI</p>
+          <p className="eyebrow">{t("common.appName")}</p>
           <h1>{t("dashboard.title")}</h1>
           <p className="dashboard-description">{t("dashboard.description")}</p>
         </div>

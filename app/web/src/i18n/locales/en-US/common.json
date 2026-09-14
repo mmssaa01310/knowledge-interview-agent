@@ -1,7 +1,8 @@
 {
-  "appName": "KIKIORI",
-  "tagline": "AI Knowledge Interviewing",
-  "productDescription": "Draw knowledge from conversation and weave it into reusable knowledge.",
+  "appName": "MUSUBI",
+  "tagline": "Field knowledge, shared with purpose.",
+  "productDescription": "Turn conversations into clear, reviewed knowledge your team can use.",
+  "loginTitle": "Continue to your workspace",
   "developmentAuthNotice": "Development mode uses a demo user. Production authentication is provided by Cognito.",
   "language": "Display language",
   "selectLanguage": "Select display language",

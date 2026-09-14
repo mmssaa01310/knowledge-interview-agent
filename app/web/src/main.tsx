@@ -4,6 +4,7 @@ import { App } from "./app/App";
 import "./styles.css";
 import "driver.js/dist/driver.css";
 import "./kikiori.css";
+import "./workspace-brand.css";
 import { initializeColorTheme } from "./theme";
 
 initializeColorTheme();

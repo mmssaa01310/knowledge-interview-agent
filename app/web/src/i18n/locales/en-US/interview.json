@@ -44,7 +44,7 @@
   },
   "configureNotice": "Configure the purpose and execution model.",
   "returnToStart": "Back to interview start",
-  "kikoName": "kiko",
+  "assistantName": "AI interviewer",
   "resetDemo": "Reset test state",
   "resettingDemo": "Resetting…",
   "reviewRequest": "Request revision",
