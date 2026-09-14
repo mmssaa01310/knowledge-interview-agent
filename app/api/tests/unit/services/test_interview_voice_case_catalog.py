@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
+REPO_ROOT = Path(__file__).resolve().parents[5]
 CASE_CATALOG = (
     REPO_ROOT
     / "app"

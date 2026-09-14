@@ -134,7 +134,7 @@ uv run --no-sync pytest
 `uv run --no-sync` でも実行できない場合のみ、既存の `app/api/.venv/bin/python` を使ってよい。
 
 ```bash
-app/api/.venv/bin/python -m pytest app/api/tests/contract/test_mvp_flow.py
+app/api/.venv/bin/python -m pytest app/api/tests/integration/api/test_mvp_flow.py
 ```
 
 `.venv` 直接実行を使った場合は、回答に必ず以下を明記する。

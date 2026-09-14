@@ -14,25 +14,34 @@ cd app/api && uv run pytest
 cd app/voice && uv run pytest
 cd app/worker && uv run pytest
 
-# PostgreSQL Store integration（接続先を明示した場合だけ実行）
-cd app/api && TEST_DATABASE_URL=postgresql://... uv run pytest tests/repositories/test_postgres_store.py
+# API test levels
+cd app/api && uv run pytest tests/unit
+cd app/api && uv run pytest tests/integration
+cd app/api && uv run pytest tests/e2e
+
+# Voice test levels (the cross-package voice/API E2E is under app/api)
+cd app/voice && uv run pytest tests/unit
+cd app/voice && uv run pytest tests/integration
+
+# PostgreSQL Store integration (only with an explicit database)
+cd app/api && TEST_DATABASE_URL=postgresql://... uv run pytest tests/integration/persistence/test_postgres_store.py
 
 # Documentation
 uv run --group dev mkdocs build --strict
 
 # Voice interview critical conversation controls
-cd app/api && uv run pytest \
-  tests/services/test_structured_interview.py \
-  tests/services/test_interview_voice_case_catalog.py \
-  tests/services/test_interview_confirmation.py
+cd app/api && uv run pytest tests/unit/services/test_structured_interview.py \
+  tests/unit/services/test_interview_voice_case_catalog.py \
+  tests/unit/services/test_interview_confirmation.py
 ```
 
 ## 2. 配置と分離
 
-| 範囲 | テストの配置 | 主な確認 |
+| レベル | 配置 | 主な確認 |
 | --- | --- | --- |
-| API | `app/api/tests/agents`、`contract`、`services`、`repositories` | 認可、インタビュー状態、AI Provider境界、PostgreSQL Store |
-| Voice | `app/voice/tests/unit`、`contract`、`integration` | Runtime契約、WebRTC部品、API bridge、Provider固有処理 |
+| Unit | API: `app/api/tests/unit/{agents,services,state}`; Voice: `app/voice/tests/unit/runtimes` | 外部I/Oを使わない関数・クラス・サービス単位の検証 |
+| Integration | API: `app/api/tests/integration/{api,persistence,voice}`; Voice: `app/voice/tests/integration/voice` | Runtime/API/State/Persistence間の接続と状態遷移 |
+| E2E | `app/api/tests/e2e/voice` | 複数TurnのRuntime → API → 永続Stateのシナリオ |
 | Worker | `app/worker/tests/` | 文書取り込み状態のサンプル処理 |
 | Web | `app/web/tests/*.test.mjs` | 回答表示の状態分離 |
 
@@ -42,10 +51,11 @@ API通常テストはメモリStoreで動作する。PostgreSQL統合テスト�
 
 | スコープ | 現在の有無 | 備考 |
 | --- | --- | --- |
-| Unit | あり | API、Voice、Worker、Webの一部 |
-| Contract | あり | API・VoiceのHTTP / Runtime契約 |
+| Unit | あり | APIとVoiceの既存isolated suites |
+| Integration | あり | API契約、Persistence、Voice Runtime/API連携 |
+| E2E | 決定論的E2Eあり | Fake外部LLM/AWS境界で3Turn以上のAPI/Voice/State経路を確認 |
 | PostgreSQL integration | 条件付き | `TEST_DATABASE_URL`が必要 |
-| Browser E2E | 未確認 | 専用のE2E設定・テストは見当たらない |
+| Browser / real-audio E2E | 未確認 | 実ブラウザ・実マイク・実AWS/ProviderのE2Eは別途必要 |
 | 実AWS統合 | 手動確認が必要 | 認証情報、Bedrock、Transcribe / Polly、WebRTC環境に依存 |
 
 音声インタビューのCriticalケースは、`app/api/tests/fixtures/interview_voice_critical_cases.json`を
@@ -65,6 +75,6 @@ Fake Providerを使う状態遷移テストとして扱う。実音声・実AWS�
 * `app/web/tests/answerVisibility.test.mjs`
 * `app/api/pyproject.toml`
 * `app/api/tests/conftest.py`
-* `app/api/tests/repositories/test_postgres_store.py`
+* `app/api/tests/integration/persistence/test_postgres_store.py`
 * `app/voice/tests/`
 * `app/worker/tests/test_document_ingestion.py`

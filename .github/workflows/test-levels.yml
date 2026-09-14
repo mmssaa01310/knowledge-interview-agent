@@ -1,0 +1,51 @@
+name: Test levels
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: ${{ matrix.package }} / ${{ matrix.level }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: api
+            level: unit
+          - package: api
+            level: integration
+          - package: api
+            level: e2e
+          - package: voice
+            level: unit
+          - package: voice
+            level: integration
+    if: ${{ matrix.level != 'e2e' || github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: app/${{ matrix.package }}/uv.lock
+      - run: uv sync --locked
+        working-directory: app/${{ matrix.package }}
+      - run: uv run pytest tests/${{ matrix.level }} -q
+        working-directory: app/${{ matrix.package }}
+
+  web-unit:
+    name: web / unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/*.test.mjs
+        working-directory: app/web

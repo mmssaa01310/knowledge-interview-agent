@@ -9,7 +9,7 @@ side effects.
 Example (from ``app/api``):
 
     PYTHONPATH=src .venv/bin/python \
-      tests/evaluation/evaluate_canonical_intent_router.py
+      tests/unit/agents/evaluation/evaluate_canonical_intent_router.py
 
 The caller may source the repository's environment before invoking this
 script.  This module never prints environment values or credentials.
@@ -41,7 +41,7 @@ from ai_interviewer_api.services.conversation_policy import (
 )
 
 try:
-    from tests.evaluation.canonical_intent_cases import (
+    from tests.unit.agents.evaluation.canonical_intent_cases import (
         CASES,
         CanonicalIntentCase,
         build_case_context,

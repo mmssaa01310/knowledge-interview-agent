@@ -1,0 +1,5 @@
+[
+  {"resultId": "e2e-profile-1", "text": "プロジェクトリードです", "intent": "ANSWER"},
+  {"resultId": "e2e-profile-2", "text": "はい", "intent": "BACKCHANNEL"},
+  {"resultId": "e2e-profile-3", "text": "開発部です", "intent": "ANSWER"}
+]

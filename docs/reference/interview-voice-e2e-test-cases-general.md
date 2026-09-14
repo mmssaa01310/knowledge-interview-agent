@@ -186,9 +186,10 @@ forbidden:
 `app/api/tests/fixtures/interview_voice_critical_cases.json` に同期して管理する。fixtureは現時点では
 `deterministic_api`用であり、`audio.file: null` のケースを実音声E2Eの成功とはみなさない。
 
-- API の状態遷移・Dialogue Act 回帰: `app/api/tests/services/`
-- API の音声セッション契約: `app/api/tests/contract/`
-- Transcribe / Polly Runtime: `app/voice/tests/unit/transcribe_polly/`
-- 実音声・ブラウザ・AWS を含む E2E: 将来の E2E 専用テストランナー配下
+- API の状態遷移・Dialogue Act 回帰: `app/api/tests/unit/services/`、`app/api/tests/unit/state/`
+- API の音声セッション契約: `app/api/tests/integration/api/`
+- Transcribe / Polly Runtime: `app/voice/tests/unit/runtimes/transcribe_polly/`
+- Runtime → Voice API → 永続Stateの複数Turn E2E: `app/api/tests/e2e/voice/`（外部LLM/AWS境界は決定論的stub）
+- 実マイク・ブラウザ・実AWSを含む E2E: 専用環境での手動確認が必要
 
 実装コードへ変換した後も、この文書の ID（例: `GEN-014`）をテスト名・ログ・レポートに残し、テキスト単体テストと音声 E2E テストの対応を追跡できるようにする。

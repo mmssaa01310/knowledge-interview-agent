@@ -270,8 +270,8 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 
 現行アルゴリズムを変更前後で観測できるよう、次を追加した。
 
-* `app/api/tests/characterization/conversation_algorithm_harness.py:25-466`
-* `app/api/tests/characterization/test_conversation_algorithm_characterization.py:19-101`
+* `app/api/tests/unit/state/conversation_algorithm_harness.py`
+* `app/api/tests/unit/state/test_conversation_algorithm_characterization.py`
 
 これは本番Routerを実装せず、`generate_structured_interview_result()` に決定論的Providerを注入して、現行のStructured service / coordinatorの出力を記録する。`routerIntent`と`fastDecision`は現行にRouterがないため `N/A` として出力する（harness.py:34-39, 356-375）。
 
@@ -304,7 +304,7 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 検証結果:
 
 ```text
-tests/characterization/test_conversation_algorithm_characterization.py
+tests/unit/state/test_conversation_algorithm_characterization.py
 7 passed
 ```
 
@@ -656,7 +656,7 @@ Secretや実環境の値は記載しない。以下は設定コードのdefault�
 ```bash
 cd app/api
 UV_CACHE_DIR=/tmp/ai-interviewer-test-cache uv run pytest \
-  tests/characterization/test_conversation_algorithm_characterization.py -q
+  tests/unit/state/test_conversation_algorithm_characterization.py -q
 ```
 
 追加したharnessで、同じStateに対して次のJSONを比較できる。
@@ -782,7 +782,7 @@ Fast schemaに会話制御値を無制限に追加して第二のStructured Inte
 
 ### 18.1 Phase 1.5 実LLM Router評価
 
-`app/api/tests/evaluation/evaluate_canonical_intent_router.py` を使い、100件の日本語ケースを本番相当のRouter modelへ送り、結果を `/tmp` のJSONへ保存した。入力・出力全文や認証情報は保存・表示していない。
+`app/api/tests/unit/agents/evaluation/evaluate_canonical_intent_router.py` を使い、100件の日本語ケースを本番相当のRouter modelへ送り、結果を `/tmp` のJSONへ保存した。入力・出力全文や認証情報は保存・表示していない。
 
 同じデータセットで観測した値は次のとおり（LLMの実行ごとの揺らぎがあるため、Router単独実行とStructured比較実行を併記する）。
 
@@ -819,13 +819,13 @@ Structured比較実行のRouter分類は、`CONFIRMATION`、`REJECTION`、`CORRE
 * `app/voice/src/ai_interviewer_voice/routers/webrtc.py`
 * `app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py`
 * `app/voice/src/ai_interviewer_voice/runtimes/nova_sonic/tool_turn_coordinator.py`
-* `app/api/tests/evaluation/canonical_intent_cases.py`
-* `app/api/tests/evaluation/evaluate_canonical_intent_router.py`
-* `app/api/tests/services/test_interview_state_transition.py`
+* `app/api/tests/unit/agents/evaluation/canonical_intent_cases.py`
+* `app/api/tests/unit/agents/evaluation/evaluate_canonical_intent_router.py`
+* `app/api/tests/unit/state/test_interview_state_transition.py`
 * `app/voice/src/ai_interviewer_voice/services/runtime_factory.py`
 * `app/web/src/features/realtime-voice/hooks/useRealtimeVoiceInterview.ts`
 * `app/web/src/features/realtime-voice/webrtc/openaiRealtimePeerConnection.ts`
 * `app/web/src/features/realtime-voice/api/realtimeVoiceClient.ts`
 * `app/web/src/routes/useKnowledgeWorkspaceController.ts`
-* `app/api/tests/characterization/conversation_algorithm_harness.py`
-* `app/api/tests/characterization/test_conversation_algorithm_characterization.py`
+* `app/api/tests/unit/state/conversation_algorithm_harness.py`
+* `app/api/tests/unit/state/test_conversation_algorithm_characterization.py`

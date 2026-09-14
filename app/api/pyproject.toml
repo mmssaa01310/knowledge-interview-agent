@@ -28,5 +28,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 markers = [
-  "integration: requires an external PostgreSQL instance",
+  "unit: isolated function, class, or service tests without external I/O",
+  "integration: tests connecting multiple application components or persistence boundaries",
+  "e2e: multi-turn flows across provider runtime, API, and persisted interview state",
 ]

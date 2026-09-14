@@ -1,0 +1,12 @@
+{
+  "プロジェクトリードです": {
+    "itemId": "role_or_responsibility",
+    "value": "プロジェクトリード",
+    "answerResolution": "AUTO_CONFIRM"
+  },
+  "開発部です": {
+    "itemId": "department",
+    "value": "開発部",
+    "answerResolution": "AUTO_CONFIRM"
+  }
+}

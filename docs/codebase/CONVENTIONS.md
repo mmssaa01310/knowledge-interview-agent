@@ -42,6 +42,6 @@
 * `app/web/tsconfig.json`
 * `app/web/package.json`
 * `app/api/tests/conftest.py`
-* `app/api/tests/repositories/test_postgres_store.py`
+* `app/api/tests/integration/persistence/test_postgres_store.py`
 * `app/api/src/ai_interviewer_api/main.py`
 * `app/api/src/ai_interviewer_api/auth/deps.py`

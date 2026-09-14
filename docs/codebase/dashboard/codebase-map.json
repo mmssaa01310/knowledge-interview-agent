@@ -36,7 +36,7 @@
     {"level":"MEDIUM","topic":"Worker is not connected","impact":"非同期の文書取り込みは実行できない","evidence":"app/worker/src/ai_interviewer_worker/main.py","action":"要件確定後にSQS・保存・再試行を実装する"}
   ],
   "tests": [
-    {"risk":"API state and authorization","behavior":"記録アクセス、回答状態、Voice Session契約","existing":"app/api/tests/contract と services tests","gap":"本番IdP・実AWS"},
+    {"risk":"API state and authorization","behavior":"記録アクセス、回答状態、Voice Session契約","existing":"app/api/tests/integration/api、tests/unit/services、tests/unit/state","gap":"本番IdP・実AWS"},
     {"risk":"PostgreSQL persistence","behavior":"保存とテナントスコープ","existing":"test_postgres_store.py（TEST_DATABASE_URL指定時）","gap":"実運用負荷・接続プール"},
     {"risk":"Voice runtime","behavior":"Runtime契約、WebRTC部品、Provider処理","existing":"app/voice/tests/unit と contract","gap":"実Transcribe / Polly・Browser E2E"},
     {"risk":"Web UI","behavior":"回答表示の状態分離、型・翻訳・Build","existing":"Node test、TypeScript、i18n check","gap":"主要画面のE2E"}

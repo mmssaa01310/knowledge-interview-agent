@@ -34,7 +34,34 @@ node --test tests/*.test.mjs
 ```bash
 cd app/api
 uv run pytest
+uv run pytest tests/unit
+uv run pytest tests/integration
+uv run pytest tests/e2e
+# CI can use either paths or markers:
+uv run pytest -m unit
+uv run pytest -m integration
+uv run pytest -m e2e
 ```
+
+Voice runtime tests are run from `app/voice` with the same level markers:
+
+```bash
+cd app/voice
+uv run pytest
+uv run pytest tests/unit
+uv run pytest tests/integration
+uv run pytest -m unit
+uv run pytest -m integration
+```
+
+Development should run `unit`; pull requests should run `unit` and
+`integration`; pushes to `main` and manual workflow dispatch also run API E2E.
+The `.github/workflows/test-levels.yml` workflow keeps these levels as separate
+jobs. Release checks also include real-provider smoke tests, which are not
+replaced by deterministic pytest fixtures. API E2E scenarios include a
+deterministic Transcribe + Polly Runtime over the real API and persisted
+Interview State; they do not test microphone, AWS, browser audio, or real LLM
+behavior.
 
 ## 4. Worker
 
@@ -56,7 +83,7 @@ docker compose --env-file .env -f infra/docker-compose.yml build
 
 ```bash
 cd app/api
-TEST_DATABASE_URL=postgresql://... uv run pytest tests/repositories/test_postgres_store.py
+TEST_DATABASE_URL=postgresql://... uv run pytest tests/integration/persistence/test_postgres_store.py
 ```
 
 ローカルComposeの設定とスキーマは次でも確認する。
