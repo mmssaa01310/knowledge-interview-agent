@@ -160,6 +160,8 @@ class TranscribePollyRuntime:
         self._started = False
         self._closed = False
         self._input_available = True
+        self._input_gate_reason: str | None = None
+        self._silence_keepalive_logged = False
         self._listening_ready_at: float | None = None
         self._first_input_after_resume = False
         self._transcribe_unavailable = False
@@ -238,6 +240,8 @@ class TranscribePollyRuntime:
         self._context = context
         self._closed = False
         self._input_available = True
+        self._input_gate_reason = None
+        self._silence_keepalive_logged = False
         self._transcribe_unavailable = False
         transcribe_start_task = asyncio.create_task(self._transcribe.start(
             on_result=self._on_transcribe_result,
@@ -339,7 +343,7 @@ class TranscribePollyRuntime:
         if (
             not self._started
             or self._closed
-            or not self._input_available
+            or self._transcribe_unavailable
             or self._interview_status in {"completed", "stopped"}
         ):
             return
@@ -348,9 +352,17 @@ class TranscribePollyRuntime:
             or frame.channels != 1
         ):
             raise ValueError("TranscribePollyRuntime requires 16kHz mono PCM")
-        vad = self._vad.inspect(frame.pcm)
-        await self._handle_vad(vad.voiced, vad.duration_ms)
-        self._audio_batch.extend(frame.pcm)
+        if self._input_available:
+            vad = self._vad.inspect(frame.pcm)
+            await self._handle_vad(vad.voiced, vad.duration_ms)
+
+        # Keep the AWS streaming request alive while the application input
+        # gate is closed, without forwarding microphone audio or allowing VAD
+        # and transcript callbacks to start another user turn.  _handle_vad
+        # can close the gate while processing this very frame, so check the
+        # gate again after it returns.
+        gated = not self._input_available
+        self._audio_batch.extend(bytes(len(frame.pcm)) if gated else frame.pcm)
         target_bytes = int(
             self._config.input_sample_rate_hz
             * 2
@@ -360,7 +372,17 @@ class TranscribePollyRuntime:
             chunk = bytes(self._audio_batch[:target_bytes])
             del self._audio_batch[:target_bytes]
             await self._transcribe.send_audio(chunk)
-            if self._first_input_after_resume:
+            if gated and not self._silence_keepalive_logged:
+                self._silence_keepalive_logged = True
+                logger.info(
+                    "transcribe_polly_silence_keepalive_started voice_session_id=%s generation=%s "
+                    "chunk_ms=%s gate_reason=%s",
+                    self._context.voice_session_id if self._context else None,
+                    self._generation,
+                    self._config.transcribe_chunk_ms,
+                    self._input_gate_reason,
+                )
+            if not gated and self._first_input_after_resume:
                 self._first_input_after_resume = False
                 logger.info(
                     "voice_handoff event=first_user_audio_chunk voice_session_id=%s generation=%s "
@@ -531,7 +553,10 @@ class TranscribePollyRuntime:
         await self._emit(InputStateChanged(input_state=state, generation=self._generation))
 
     def _close_input_gate(self, *, reason: str) -> None:
+        if self._input_available:
+            self._silence_keepalive_logged = False
         self._input_available = False
+        self._input_gate_reason = reason
         self._turn_active = False
         self._speech_active = False
         self._silence_started_at = None
@@ -1497,6 +1522,8 @@ class TranscribePollyRuntime:
             self._input_available = False
         else:
             self._input_available = True
+            self._input_gate_reason = None
+            self._silence_keepalive_logged = False
             self._listening_ready_at = monotonic()
             self._first_input_after_resume = True
             self._turn_active = False

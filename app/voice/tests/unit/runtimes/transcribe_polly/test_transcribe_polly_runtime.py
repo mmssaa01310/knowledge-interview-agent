@@ -802,11 +802,12 @@ async def test_finalized_answer_blocks_transcribe_until_next_question_drains() -
     await asyncio.wait_for(bridge.process_started.wait(), timeout=1.0)
 
     # The final answer is already committed to the runtime, but API evaluation
-    # and the following formal reply are still in flight.
+    # and the following formal reply are still in flight. Microphone PCM must
+    # not reach Transcribe during this gate; zero PCM keeps its stream alive.
     assert runtime._input_available is False
     sent_audio_before_noise = len(transcribe.audio)
-    await runtime.push_audio(_frame(1200))
-    await runtime.push_audio(_frame(1200))
+    for _ in range(5):
+        await runtime.push_audio(_frame(1200))
     await transcribe.result(
         "ノイズ由来の発話",
         is_partial=False,
@@ -814,7 +815,8 @@ async def test_finalized_answer_blocks_transcribe_until_next_question_drains() -
     )
     assert runtime._input_available is False
     assert runtime._turn_active is False
-    assert len(transcribe.audio) == sent_audio_before_noise
+    assert len(transcribe.audio) == sent_audio_before_noise + 1
+    assert transcribe.audio[-1] == bytes(3200)
 
     processing_task = runtime._processing_task
     assert processing_task is not None

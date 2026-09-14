@@ -1046,8 +1046,11 @@ PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信�
 既知の音声長に1,000msの再生ガードを加えてdrainを通知する。既知の音声長は固定の5秒上限で
 切り捨てず、未知の場合だけ`VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS`を復旧待機時間に使う。
 
-回答の確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、後続の音声を
-VAD・Transcribeへ渡さない。`assistant_playback_drained`を受けた後にだけ次の入力を受け付けるため、
+回答の確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、マイクPCMを
+VAD・Transcribeへ渡さない。WebRTC frameが継続して届いている間は、AWS Transcribeの無音timeoutを
+避けるため、マイクPCMを同じ長さのゼロPCMへ置換して100ms単位でTranscribe streamへ送る。ゲート中は
+VADを実行せず、Transcript callbackもTurnを開始しない。入力再開時には未送信bufferを破棄してから
+マイクPCMの転送を再開する。`assistant_playback_drained`を受けた後にだけ次の入力を受け付けるため、
 このRuntimeでは正式応答中のbarge-inを行わない。古いLLM応答、未再生Polly音声、遅延通知はgeneration
 照合で破棄する。Transcribeは最大2回再接続し、その間の音声を最大3秒保持する。Pollyは指数
 バックオフ付きで1回再試行し、失敗時も正式応答テキストを表示して会話を継続する。
