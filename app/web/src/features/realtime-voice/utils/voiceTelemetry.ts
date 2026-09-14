@@ -14,6 +14,7 @@ export type VoiceStartupTrace = {
 };
 
 export type VoiceFrontendTrace = {
+  userSpeechStartedAt?: number;
   userSpeechEndedAt?: number;
   userTranscriptFinalAt?: number;
   processingStartedAt?: number;

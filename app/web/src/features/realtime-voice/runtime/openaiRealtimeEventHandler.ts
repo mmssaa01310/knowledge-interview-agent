@@ -84,6 +84,12 @@ export function createOpenAIRealtimeEventHandler(
         setStatus(hasPendingInitialReply(voiceSessionRef.current) ? "preparing_initial_reply" : "listening");
         return;
       case "input_audio_buffer.speech_started":
+        frontendTraceRef.current.userSpeechStartedAt = performance.now();
+        console.info("openai_realtime_input_trace", {
+          event: "user_speech_started",
+          voice_session_id: voiceSessionId,
+          timestamp_ms: Math.round(frontendTraceRef.current.userSpeechStartedAt),
+        });
         if (openAIActiveResponseRef.current) {
           console.info("openai_realtime_latency", {
             event: "barge_in_detected",
@@ -98,13 +104,39 @@ export function createOpenAIRealtimeEventHandler(
         return;
       case "input_audio_buffer.speech_stopped":
         frontendTraceRef.current.userSpeechEndedAt = performance.now();
+        console.info("openai_realtime_input_trace", {
+          event: "user_speech_stopped",
+          voice_session_id: voiceSessionId,
+          timestamp_ms: Math.round(frontendTraceRef.current.userSpeechEndedAt),
+          speech_duration_ms:
+            frontendTraceRef.current.userSpeechStartedAt === undefined
+              ? undefined
+              : Math.round(
+                  frontendTraceRef.current.userSpeechEndedAt
+                    - frontendTraceRef.current.userSpeechStartedAt,
+                ),
+        });
         setStatus("finalizing_transcript");
         return;
       case "conversation.item.input_audio_transcription.delta": {
         const itemId = stringValue(event.item_id);
         const delta = stringValue(event.delta);
         if (!itemId || !delta) return;
-        const transcript = `${openAIUserTranscriptRef.current.get(itemId) ?? ""}${delta}`;
+        const previousTranscript = openAIUserTranscriptRef.current.get(itemId);
+        const transcript = `${previousTranscript ?? ""}${delta}`;
+        if (previousTranscript === undefined) {
+          const firstDeltaAt = performance.now();
+          console.info("openai_realtime_input_trace", {
+            event: "user_transcript_first_delta",
+            voice_session_id: voiceSessionId,
+            item_id: itemId,
+            timestamp_ms: Math.round(firstDeltaAt),
+            speech_start_to_first_delta_ms:
+              frontendTraceRef.current.userSpeechStartedAt === undefined
+                ? undefined
+                : Math.round(firstDeltaAt - frontendTraceRef.current.userSpeechStartedAt),
+          });
+        }
         openAIUserTranscriptRef.current.set(itemId, transcript);
         setPartialTranscript(transcript);
         return;
@@ -113,6 +145,18 @@ export function createOpenAIRealtimeEventHandler(
         const itemId = stringValue(event.item_id);
         const transcript = stringValue(event.transcript).trim();
         if (!transcript) return;
+        const transcriptFinalAt = performance.now();
+        console.info("openai_realtime_input_trace", {
+          event: "user_transcript_final",
+          voice_session_id: voiceSessionId,
+          item_id: itemId || undefined,
+          timestamp_ms: Math.round(transcriptFinalAt),
+          transcript_chars: transcript.length,
+          speech_stop_to_final_ms:
+            frontendTraceRef.current.userSpeechEndedAt === undefined
+              ? undefined
+              : Math.round(transcriptFinalAt - frontendTraceRef.current.userSpeechEndedAt),
+        });
         openAITranscriptFinalCountRef.current += 1;
         if (itemId) {
           openAITranscriptItemIdsRef.current.add(itemId);
