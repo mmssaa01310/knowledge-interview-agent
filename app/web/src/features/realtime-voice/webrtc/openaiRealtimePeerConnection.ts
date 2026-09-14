@@ -37,6 +37,84 @@ export async function createOpenAIRealtimePeerConnection(
   });
   let remoteStream: MediaStream | null = null;
   let playbackInitialized = false;
+  let microphoneStatsTimer: number | null = null;
+  let microphoneStatsInFlight = false;
+  let previousMicrophoneBytesSent: number | undefined;
+  let previousMicrophonePacketsSent: number | undefined;
+
+  const sampleMicrophoneRtp = async () => {
+    if (microphoneStatsInFlight) return;
+    microphoneStatsInFlight = true;
+    try {
+      const senders = peerConnection
+        .getSenders()
+        .filter((sender) => sender.track?.kind === "audio");
+      const reports = await Promise.all(senders.map((sender) => sender.getStats()));
+      let bytesSent = 0;
+      let packetsSent = 0;
+      let audioLevel: number | undefined;
+      let outboundAudioReportCount = 0;
+      for (const report of reports) {
+        report.forEach((stat) => {
+          const metric = stat as RTCStats & {
+            audioLevel?: number;
+            bytesSent?: number;
+            kind?: string;
+            mediaType?: string;
+            packetsSent?: number;
+          };
+          if (
+            metric.type === "outbound-rtp"
+            && (metric.kind === "audio" || metric.mediaType === "audio")
+          ) {
+            bytesSent += metric.bytesSent ?? 0;
+            packetsSent += metric.packetsSent ?? 0;
+            outboundAudioReportCount += 1;
+          }
+          if (
+            metric.type === "media-source"
+            && (metric.kind === "audio" || metric.mediaType === "audio")
+            && typeof metric.audioLevel === "number"
+          ) {
+            audioLevel = metric.audioLevel;
+          }
+        });
+      }
+      const bytesSentDelta = previousMicrophoneBytesSent === undefined
+        ? undefined
+        : bytesSent - previousMicrophoneBytesSent;
+      const packetsSentDelta = previousMicrophonePacketsSent === undefined
+        ? undefined
+        : packetsSent - previousMicrophonePacketsSent;
+      previousMicrophoneBytesSent = bytesSent;
+      previousMicrophonePacketsSent = packetsSent;
+      console.info("openai_realtime_microphone_rtp", {
+        voice_session_id: options.voiceSessionId,
+        timestamp_ms: Math.round(performance.now()),
+        connection_state: peerConnection.connectionState,
+        microphone_track_live: options.microphoneStream
+          .getAudioTracks()
+          .some((track) => track.readyState === "live"),
+        outbound_audio_report_count: outboundAudioReportCount,
+        bytes_sent_delta: bytesSentDelta,
+        packets_sent_delta: packetsSentDelta,
+        audio_level: audioLevel,
+      });
+    } catch (error) {
+      console.debug("openai_realtime_microphone_rtp_unavailable", {
+        voice_session_id: options.voiceSessionId,
+        error_name: error instanceof Error ? error.name : "unknown",
+      });
+    } finally {
+      microphoneStatsInFlight = false;
+    }
+  };
+
+  const stopMicrophoneRtpSampling = () => {
+    if (microphoneStatsTimer === null) return;
+    window.clearInterval(microphoneStatsTimer);
+    microphoneStatsTimer = null;
+  };
 
   dataChannel.onopen = () => {
     console.info("openai_realtime_data_channel_open", {
@@ -93,6 +171,14 @@ export async function createOpenAIRealtimePeerConnection(
 
   peerConnection.onconnectionstatechange = () => {
     options.onConnectionStateChange(peerConnection.connectionState);
+    if (peerConnection.connectionState === "connected" && microphoneStatsTimer === null) {
+      void sampleMicrophoneRtp();
+      microphoneStatsTimer = window.setInterval(() => {
+        void sampleMicrophoneRtp();
+      }, 1000);
+    } else if (["failed", "closed"].includes(peerConnection.connectionState)) {
+      stopMicrophoneRtpSampling();
+    }
   };
   peerConnection.oniceconnectionstatechange = () => {
     options.onConnectionStateChange(peerConnection.iceConnectionState);
@@ -150,6 +236,7 @@ export async function createOpenAIRealtimePeerConnection(
     dataChannel,
     offer: peerConnection.localDescription?.toJSON() ?? offer,
     stop: () => {
+      stopMicrophoneRtpSampling();
       if (options.remoteAudioElement !== null) {
         options.remoteAudioElement.onplaying = null;
         options.remoteAudioElement.pause();
