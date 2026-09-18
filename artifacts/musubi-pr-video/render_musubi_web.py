@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a 30-second, silent, landscape MUSUBI promo for website embeds."""
+"""Render a 30-second landscape MUSUBI promo with an original soundtrack."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from render_musubi_pr import (
     FOREST,
     INK,
     LEAF,
+    LOGO_YELLOW,
     MUTED,
     PAPER,
     SOFT_GREEN,
@@ -31,6 +32,7 @@ from render_musubi_pr import (
     label,
     rounded,
 )
+from render_musubi_audio import add_background_music
 
 
 ROOT = Path(__file__).resolve().parent
@@ -39,7 +41,7 @@ POSTER = ROOT / "MUSUBI_PR_poster_landscape.png"
 CAPTIONS = ROOT / "captions-landscape.srt"
 EMBED = ROOT / "MUSUBI_PR_embed_example.html"
 
-W, H, FPS = 1920, 1080, 24
+W, H, FPS = 1920, 1080, 30
 X0, Y0, SW, SH, SIDEBAR = 830, 184, 1010, 724, 218
 
 
@@ -140,7 +142,7 @@ def draw_interview(image):
 
     rounded(draw, (x, y + 194, x + width, y + 350), 19, WHITE, outline=BORDER, width=1)
     rounded(draw, (x + 20, y + 210, x + 216, y + 250), 18, SOFT_GREEN)
-    label(draw, (x + 118, y + 230), "AIインタビューアー", 16, FOREST, anchor="mm")
+    label(draw, (x + 118, y + 230), "AIインタビュアー", 16, FOREST, anchor="mm")
     label(draw, (x + 22, y + 268), "設備の調子が変わったとき、まずどこを確認しますか？", 22, INK)
 
     rounded(draw, (x + 143, y + 367, x + width, y + 490), 19, "#f3f6e9", outline="#d8e2ce", width=1)
@@ -275,13 +277,22 @@ def make_intro():
         for path in paths:
             draw.line(path, fill=(232, 206, 77, alpha), width=3)
     draw_logo(draw, 1470, 240, 88, 50, dark=True)
-    draw_knot(draw, 1516, 515, 185, CITRUS, 5)
-    draw_logo(draw, 150, 150, 78, 47, dark=True)
-    label(draw, (157, 390), "現場の知恵を、", 82, WHITE, stroke=1)
-    label(draw, (157, 495), "みんなの知識へ。", 82, WHITE, stroke=1)
-    label(draw, (161, 642), "AIインタビューから、確認できるナレッジへ。", 29, "#d9e3d3")
-    rounded(draw, (160, 735, 675, 799), 29, CITRUS)
-    label(draw, (417, 767), "AIインタビュー × 知識整理", 22, FOREST, anchor="mm")
+    draw_knot(draw, 1454, 448, 156, LOGO_YELLOW, 5)
+    # Make the opening start with the field problem, then frame MUSUBI as the handover.
+    rounded(draw, (1066, 439, 1320, 501), 22, "#254c37", outline="#46674e", width=1)
+    label(draw, (1193, 470), "熟練者の経験", 20, "#e3eadb", anchor="mm")
+    rounded(draw, (1655, 439, 1890, 501), 22, "#254c37", outline="#46674e", width=1)
+    label(draw, (1772, 470), "次の世代へ", 20, "#e3eadb", anchor="mm")
+    for x in (1336, 1362, 1625):
+        draw.ellipse((x - 4, 466, x + 4, 474), fill=CITRUS)
+    left_copy(
+        image,
+        "現場の課題",
+        ["熟練者の減少で、", "技能継承が難しく。"],
+        "経験や判断のコツが、個人の中に埋もれていませんか？",
+        ("現場の知恵を、次の世代へ。",),
+        dark=True,
+    )
     return image
 
 
@@ -316,9 +327,7 @@ def make_outro():
         draw.line(cubic((1900, yy), (1720, yy + 70), (1645, yy + 195), (1450, yy + 220)), fill=(135, 167, 90, alpha), width=4)
         draw.line(cubic((1040, yy + 220), (1220, yy + 150), (1295, yy + 25), (1490, yy)), fill=(135, 167, 90, alpha), width=4)
         draw.line(cubic((1900, yy + 220), (1720, yy + 150), (1645, yy + 25), (1450, yy)), fill=(232, 206, 77, alpha), width=4)
-    draw_logo(draw, 150, 150, 78, 47, dark=True)
     draw_logo(draw, 1490, 280, 88, 50, dark=True)
-    draw_knot(draw, 1536, 555, 185, CITRUS, 5)
     label(draw, (157, 420), "知恵をつなぎ、", 78, WHITE, stroke=1)
     label(draw, (157, 520), "次の一歩へ。", 78, WHITE, stroke=1)
     label(draw, (161, 660), "AIインタビュー / ナレッジ構造化アプリ", 28, "#d9e3d3")
@@ -329,17 +338,6 @@ def make_outro():
 
 def to_bgr(image):
     return cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
-
-
-def zoom(frame, amount):
-    if amount < 0.0001:
-        return frame
-    width = int(W * (1 + amount))
-    height = int(H * (1 + amount))
-    scaled = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
-    x = (width - W) // 2
-    y = (height - H) // 2
-    return scaled[y : y + H, x : x + W]
 
 
 def motion(frame, index, local_time):
@@ -387,7 +385,7 @@ def timestamp(seconds):
 def write_sidecars():
     boundaries = [0.0, 4.4, 9.5, 14.6, 19.7, 24.8, 30.0]
     captions = [
-        "現場の知恵を、みんなの知識へ。\nAIインタビューから、確認できるナレッジへ。",
+        "熟練者の減少で、技能継承が難しく。\n経験や判断のコツを、次の世代へ。",
         "経験の“なぜ”まで、対話で聞く。\nテキスト・音声で、判断の背景を引き出す。",
         "会話から、知識候補を整理。\n回答を、確認しやすい構造へ。",
         "AIの提案は、人が確かめてから。\n修正や承認を経て、チームの知識へ。",
@@ -431,14 +429,13 @@ def render():
         raise RuntimeError("OpenCV could not open an MP4 video writer")
 
     scene_index = 0
-    transition = 0.36
+    transition = 0.52
     for frame_number in range(total_frames):
         time_sec = frame_number / FPS
         while scene_index < len(durations) - 1 and time_sec >= starts[scene_index] + durations[scene_index]:
             scene_index += 1
         local_time = time_sec - starts[scene_index]
-        progress = min(1.0, max(0.0, local_time / durations[scene_index]))
-        current = zoom(arrays[scene_index], 0.012 * progress)
+        current = arrays[scene_index]
 
         if scene_index == 3:
             alpha = min(1.0, max(0.0, (local_time - 2.3) / 0.45))
@@ -452,14 +449,17 @@ def render():
                 next_image = arrays[3]
             alpha = min(1.0, max(0.0, 1 - remaining / transition))
             alpha = alpha * alpha * (3 - 2 * alpha)
+            current = motion(current, scene_index, local_time)
+            next_image = motion(next_image, scene_index + 1, 0.0)
             current = cv2.addWeighted(current, 1 - alpha, next_image, alpha, 0)
-
-        current = motion(current, scene_index, local_time)
+        else:
+            current = motion(current, scene_index, local_time)
         writer.write(current)
         if frame_number % (FPS * 5) == 0:
             print(f"Rendered {time_sec:05.1f}s / 30.0s", flush=True)
 
     writer.release()
+    add_background_music(OUTPUT)
     intro.save(POSTER)
     write_sidecars()
     print(f"Video: {OUTPUT}")

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Render a 30-second, silent, vertical MUSUBI product promo."""
+"""Render a 30-second vertical MUSUBI promo with an original soundtrack."""
 
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from render_musubi_audio import add_background_music
 
 
 ROOT = Path(__file__).resolve().parent
@@ -17,8 +20,16 @@ POSTER = ROOT / "MUSUBI_PR_poster.png"
 CAPTIONS = ROOT / "captions.srt"
 VOICEOVER = ROOT / "voiceover-script.txt"
 
-W, H, FPS = 1080, 1920, 24
-JA_FONT_PATH = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
+W, H, FPS = 1080, 1920, 30
+JA_FONT_CANDIDATES = (
+    "/mnt/c/Windows/Fonts/NotoSansJP-VF.ttf",
+    "/mnt/c/Windows/Fonts/YuGothR.ttc",
+    "/mnt/c/Windows/Fonts/meiryo.ttc",
+    "/mnt/c/Windows/Fonts/BIZ-UDGothicR.ttc",
+    r"C:\Windows\Fonts\NotoSansJP-VF.ttf",
+    r"C:\Windows\Fonts\YuGothR.ttc",
+)
+JA_FONT_PATH = next((path for path in JA_FONT_CANDIDATES if Path(path).is_file()), None)
 LATIN_REGULAR_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 LATIN_BOLD_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
@@ -26,6 +37,7 @@ FOREST = "#183e2c"
 DEEP = "#122f22"
 LEAF = "#87a75a"
 CITRUS = "#e8ce4d"
+LOGO_YELLOW = "#f5d21f"
 CREAM = "#f4f5e9"
 PAPER = "#fffef8"
 INK = "#1b3023"
@@ -38,9 +50,28 @@ SOFT_YELLOW = "#f5edbd"
 WHITE = "#ffffff"
 
 
+@lru_cache(maxsize=None)
 def font(size: int, latin: bool = False, bold: bool = False) -> ImageFont.FreeTypeFont:
-    path = (LATIN_BOLD_FONT_PATH if bold else LATIN_REGULAR_FONT_PATH) if latin else JA_FONT_PATH
-    return ImageFont.truetype(path, size)
+    if latin:
+        path = LATIN_BOLD_FONT_PATH if bold else LATIN_REGULAR_FONT_PATH
+    else:
+        if JA_FONT_PATH is None:
+            raise FileNotFoundError(
+                "A Japanese font is required to render MUSUBI promo text; "
+                "install Noto Sans JP, Yu Gothic, Meiryo, or BIZ UD Gothic."
+            )
+        path = JA_FONT_PATH
+
+    loaded = ImageFont.truetype(path, size)
+    if not latin:
+        axes = loaded.get_variation_axes()
+        if axes:
+            values = [
+                400 if axis["name"].lower() in (b"weight", b"wght") else axis["default"]
+                for axis in axes
+            ]
+            loaded.set_variation_by_axes(values)
+    return loaded
 
 
 def rgb(value: str) -> tuple[int, int, int]:
@@ -106,7 +137,7 @@ def cubic(p0, p1, p2, p3, count=36):
     return points
 
 
-def draw_knot(draw, x, y, size, color, width=6):
+def _draw_knot_path(draw, x, y, size, color, width):
     scale = size / 64
     def p(px, py):
         return (x + px * scale, y + py * scale)
@@ -118,14 +149,84 @@ def draw_knot(draw, x, y, size, color, width=6):
     draw.line(bottom, fill=color, width=max(2, round(width * scale)), joint="curve")
 
 
+def _composite_logo_patch(draw, patch: Image.Image, x: int, y: int) -> None:
+    target = draw._image
+    if target.mode == "RGBA":
+        target.alpha_composite(patch, dest=(x, y))
+    else:
+        target.paste(patch, (x, y), patch.getchannel("A"))
+
+
+def draw_knot(draw, x, y, size, color, width=6):
+    """Draw the knot mark with 4x supersampling for clean curved edges."""
+    supersample = 4
+    padding = max(2, math.ceil(width * size / 128) + 2)
+    left = math.floor(x) - padding
+    top = math.floor(y) - padding
+    right = math.ceil(x + size) + padding
+    bottom = math.ceil(y + size) + padding
+    output_size = (right - left, bottom - top)
+    high_res = Image.new(
+        "RGBA",
+        (output_size[0] * supersample, output_size[1] * supersample),
+        (0, 0, 0, 0),
+    )
+    high_draw = ImageDraw.Draw(high_res)
+    _draw_knot_path(
+        high_draw,
+        (x - left) * supersample,
+        (y - top) * supersample,
+        size * supersample,
+        color,
+        width,
+    )
+    patch = high_res.resize(output_size, Image.Resampling.LANCZOS)
+    _composite_logo_patch(draw, patch, left, top)
+
+
 def draw_logo(draw, x, y, symbol_size=64, word_size=39, dark=False, word=True):
-    tile = CITRUS
+    """Render the compact wordmark at 4x resolution before compositing it."""
+    supersample = 4
+    tile = LOGO_YELLOW
     ink = FOREST if not dark else DEEP
-    rounded(draw, (x, y, x + symbol_size, y + symbol_size), 18, tile)
-    draw_knot(draw, x + symbol_size * 0.08, y + symbol_size * 0.08, symbol_size * 0.84, ink, 4)
+    text_font = font(word_size, latin=True) if word else None
+    text_width = draw.textlength("MUSUBI", font=text_font) if text_font else 0
+    output_width = math.ceil(symbol_size + 19 + text_width) if word else symbol_size
+    high_res = Image.new(
+        "RGBA",
+        (output_width * supersample, symbol_size * supersample),
+        (0, 0, 0, 0),
+    )
+    high_draw = ImageDraw.Draw(high_res)
+    high_symbol_size = symbol_size * supersample
+    high_draw.rounded_rectangle(
+        (0, 0, high_symbol_size, high_symbol_size),
+        radius=18 * supersample,
+        fill=tile,
+    )
+    _draw_knot_path(
+        high_draw,
+        symbol_size * 0.08 * supersample,
+        symbol_size * 0.08 * supersample,
+        symbol_size * 0.84 * supersample,
+        ink,
+        4,
+    )
     if word:
-        letter = font(word_size, latin=True)
-        draw.text((x + symbol_size + 19, y + (symbol_size - word_size) // 2 - 1), "MUSUBI", font=letter, fill=WHITE if dark else FOREST, stroke_width=1, stroke_fill=WHITE if dark else FOREST)
+        letter = font(word_size * supersample, latin=True)
+        high_draw.text(
+            (
+                (symbol_size + 19) * supersample,
+                ((symbol_size - word_size) // 2 - 1) * supersample,
+            ),
+            "MUSUBI",
+            font=letter,
+            fill=WHITE if dark else FOREST,
+            stroke_width=supersample,
+            stroke_fill=WHITE if dark else FOREST,
+        )
+    patch = high_res.resize((output_width, symbol_size), Image.Resampling.LANCZOS)
+    _composite_logo_patch(draw, patch, round(x), round(y))
 
 
 def gradient(top: str, bottom: str) -> Image.Image:
@@ -247,7 +348,7 @@ def draw_interview_ui(image: Image.Image):
     # AI prompt and a sample human answer in the conversation.
     rounded(draw, (x, y + 244, x + 574, y + 451), 22, WHITE, outline=BORDER, width=1)
     rounded(draw, (x + 20, y + 263, x + 221, y + 302), 18, SOFT_GREEN)
-    label(draw, (x + 120, y + 282), "AIインタビューアー", 16, FOREST, anchor="mm")
+    label(draw, (x + 120, y + 282), "AIインタビュアー", 16, FOREST, anchor="mm")
     text_lines(draw, x + 24, y + 324, ["設備の調子が変わったとき、", "まずどこを確認しますか？"], 23, INK, gap=1.32)
     rounded(draw, (x + 115, y + 470, x + 662, y + 639), 22, "#f3f6e9", outline="#d8e2ce", width=1)
     label(draw, (x + 140, y + 493), "あなたの回答", 16, MUTED)
@@ -372,12 +473,30 @@ def make_intro() -> Image.Image:
         color = (232, 206, 77, alpha)
         for path in paths:
             draw.line(path, fill=color, width=3)
-    draw_logo(draw, 371, 397, 80, 48, dark=True)
-    draw_knot(draw, 452, 680, 176, CITRUS, 5)
-    text_lines(draw, 117, 1032, ["現場の知恵を、", "みんなの知識へ。"], 75, WHITE, gap=1.28, stroke=1)
-    label(draw, (121, 1260), "AIインタビューから、確認できるナレッジへ。", 27, "#d9e3d3")
-    rounded(draw, (121, 1350, 539, 1409), 28, CITRUS)
-    label(draw, (330, 1380), "AIインタビュー × 知識整理", 21, FOREST, anchor="mm")
+    draw_logo(draw, 68, 62, 58, 33, dark=True)
+    rounded(draw, (786, 71, 1011, 119), 23, "#254c37", outline="#46674e", width=1)
+    label(draw, (898, 95), "現場の課題", 19, "#e3eadb", anchor="mm")
+
+    text_lines(draw, 68, 255, ["熟練者の減少で、", "技能継承が難しく。"], 65, WHITE, gap=1.22, stroke=1)
+    label(draw, (70, 430), "経験や判断のコツが、個人の中に埋もれていませんか？", 27, "#cbd9c7")
+
+    # Show the handover gap between experienced workers and the next generation.
+    rounded(draw, (82, 670, 364, 838), 24, "#254c37", outline="#46674e", width=2)
+    label(draw, (223, 719), "熟練者の経験", 25, WHITE, anchor="mm")
+    label(draw, (223, 773), "判断・段取り・勘所", 18, "#cbd9c7", anchor="mm")
+    rounded(draw, (714, 670, 998, 838), 24, "#254c37", outline="#46674e", width=2)
+    label(draw, (856, 719), "次の世代へ", 25, WHITE, anchor="mm")
+    label(draw, (856, 773), "チームの知識に", 18, "#cbd9c7", anchor="mm")
+    for x in (382, 414, 666, 698):
+        draw.ellipse((x - 5, 749, x + 5, 759), fill=CITRUS)
+    draw_knot(draw, 452, 669, 176, LOGO_YELLOW, 5)
+
+    draw_caption(
+        draw,
+        "その知恵を、次の世代へ。",
+        "MUSUBIのAIインタビューで、現場の経験をチームの知識に。",
+        dark=True,
+    )
     return image
 
 
@@ -423,7 +542,7 @@ def make_outro() -> Image.Image:
         draw.line(cubic((76, yy + 330), (385, yy + 218), (387, yy + 42), (540, yy)), fill=(135, 167, 90, alpha), width=4)
         draw.line(cubic((1004, yy + 330), (695, yy + 218), (693, yy + 42), (540, yy)), fill=(232, 206, 77, alpha), width=4)
     draw_logo(draw, 371, 394, 80, 48, dark=True)
-    draw_knot(draw, 450, 741, 180, CITRUS, 5)
+    draw_knot(draw, 450, 741, 180, LOGO_YELLOW, 5)
     text_lines(draw, 145, 1070, ["知恵をつなぎ、", "次の一歩へ。"], 74, WHITE, gap=1.28, stroke=1)
     label(draw, (151, 1290), "AIインタビュー / ナレッジ構造化アプリ", 25, "#d9e3d3")
     rounded(draw, (151, 1381, 929, 1461), 30, CITRUS)
@@ -433,17 +552,6 @@ def make_outro() -> Image.Image:
 
 def image_to_bgr(image: Image.Image):
     return cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
-
-
-def zoom_frame(frame: np.ndarray, amount: float):
-    if amount < 0.0001:
-        return frame
-    sw = int(W * (1 + amount))
-    sh = int(H * (1 + amount))
-    scaled = cv2.resize(frame, (sw, sh), interpolation=cv2.INTER_LINEAR)
-    x0 = (sw - W) // 2
-    y0 = (sh - H) // 2
-    return scaled[y0 : y0 + H, x0 : x0 + W]
 
 
 def draw_motion(frame: np.ndarray, scene_index: int, local_time: float):
@@ -494,7 +602,7 @@ def srt_timestamp(seconds: float) -> str:
 def write_supporting_files():
     boundaries = [0.0, 4.4, 9.5, 14.6, 19.7, 24.8, 30.0]
     captions = [
-        "現場の知恵を、みんなの知識へ。\nAIインタビューから、確認できるナレッジへ。",
+        "熟練者の減少で、技能継承が難しく。\n経験や判断のコツを、次の世代へ。",
         "経験の“なぜ”まで、対話で聞く。\nテキスト・音声のインタビューに対応。",
         "会話から、ナレッジ候補を整理。\nAIの提案は、確認前の候補として表示。",
         "AIの提案は、人が確かめてから。\n修正や承認を経て、チームの知識へ。",
@@ -507,12 +615,12 @@ def write_supporting_files():
     CAPTIONS.write_text("\n".join(entries), encoding="utf-8")
     VOICEOVER.write_text(
         "MUSUBI PR動画 ナレーション案（約30秒）\n\n"
-        "現場で培った経験や、判断のコツ。\n"
+        "熟練者の減少で、経験や判断のコツを次の世代へ引き継ぐことが難しくなっています。\n"
         "MUSUBIは、AIインタビューで一人ひとりの知恵を聞き取ります。\n"
         "会話から整理された知識候補は、人が確認し、必要に応じて修正・承認。\n"
         "記録やドキュメントとあわせて、チームの知識として活用できます。\n"
         "現場の知恵を、みんなの知識へ。MUSUBI。\n\n"
-        "※動画は字幕付き・音声なしです。ナレーション案は後付け用です。\n",
+        "※ナレーション収録用の原稿です。動画にはBGMを収録しています。\n",
         encoding="utf-8",
     )
 
@@ -554,14 +662,13 @@ def render():
         raise RuntimeError("OpenCV could not open an MP4 video writer")
 
     scene_index = 0
-    transition_frames = round(0.36 * FPS)
+    transition_frames = round(0.52 * FPS)
     for frame_number in range(frame_count):
         time_sec = frame_number / FPS
         while scene_index < len(durations) - 1 and time_sec >= starts[scene_index] + durations[scene_index]:
             scene_index += 1
         local_time = time_sec - starts[scene_index]
-        progress = min(1.0, max(0.0, local_time / durations[scene_index]))
-        current = zoom_frame(scene_arrays[scene_index], 0.012 * progress)
+        current = scene_arrays[scene_index]
 
         if scene_index == 3:
             approve_start = 2.3
@@ -579,14 +686,17 @@ def render():
             next_frame = scene_arrays[next_index]
             if next_index == 3:
                 next_frame = pending_array
+            current = draw_motion(current, scene_index, local_time)
+            next_frame = draw_motion(next_frame, next_index, 0.0)
             current = cv2.addWeighted(current, 1 - alpha, next_frame, alpha, 0)
-
-        current = draw_motion(current, scene_index, local_time)
+        else:
+            current = draw_motion(current, scene_index, local_time)
         writer.write(current)
         if frame_number % (FPS * 5) == 0:
             print(f"Rendered {time_sec:05.1f}s / 30.0s", flush=True)
 
     writer.release()
+    add_background_music(OUTPUT)
     make_outro().save(POSTER, quality=95)
     write_supporting_files()
     print(f"Video: {OUTPUT}")
