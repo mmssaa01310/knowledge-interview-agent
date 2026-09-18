@@ -43,6 +43,9 @@ services:
       BEDROCK_AWS_REGION: ${BEDROCK_AWS_REGION:-ap-northeast-1}
       AWS_SDK_LOAD_CONFIG: "1"
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token}
+      # GPT-Live is created by the authenticated API backend. Keep this key
+      # server-side and never expose it through a VITE_* variable.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       DEV_AUTO_SEED_VOICE_DEMO: ${DEV_AUTO_SEED_VOICE_DEMO:-true}
       DEV_AUTO_SEED_MAINTENANCE_DEMO: ${DEV_AUTO_SEED_MAINTENANCE_DEMO:-true}
       DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO: ${DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO:-true}

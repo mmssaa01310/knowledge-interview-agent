@@ -1,9 +1,19 @@
 import { API_BASE_URL, ApiError } from "../../../lib/api";
-import type { VoiceIceConfigResponse, VoiceProvider, VoiceSessionResponse } from "../types";
+import type { LegacyVoiceProvider, VoiceIceConfigResponse, VoiceSessionResponse } from "../types";
 
 const VOICE_API_BASE_URL = "";
 const DEV_AUTH_TOKEN = import.meta.env.VITE_DEV_TOKEN ?? "dev-manager";
 export const VOICE_RUNTIME_PROVIDER = import.meta.env.VITE_VOICE_RUNTIME_PROVIDER ?? "transcribe_polly";
+
+export type GPTLiveSessionResponse = {
+  session: {
+    id: string;
+  };
+  transport: {
+    type: "webrtc";
+    sdp: string;
+  };
+};
 
 type RequestOptions = {
   method?: "GET" | "POST" | "DELETE";
@@ -57,13 +67,35 @@ async function safeDetail(response: Response): Promise<string> {
 
 export async function createVoiceSession(
   recordId: string,
-  provider: VoiceProvider = VOICE_RUNTIME_PROVIDER as VoiceProvider,
+  provider: LegacyVoiceProvider = getDefaultLegacyVoiceProvider(),
   signal?: AbortSignal,
 ) {
   return requestJson<VoiceSessionResponse>(
     API_BASE_URL,
     `/api/records/${recordId}/voice-sessions`,
     { method: "POST", body: { provider }, signal },
+  );
+}
+
+export function getDefaultLegacyVoiceProvider(): LegacyVoiceProvider {
+  if (VOICE_RUNTIME_PROVIDER === "nova_sonic" || VOICE_RUNTIME_PROVIDER === "openai_realtime") {
+    return VOICE_RUNTIME_PROVIDER;
+  }
+  return "transcribe_polly";
+}
+
+export async function createGPTLiveSession(
+  offerSdp: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<GPTLiveSessionResponse>(
+    API_BASE_URL,
+    "/api/live/sessions",
+    {
+      method: "POST",
+      body: { offer_sdp: offerSdp },
+      signal,
+    },
   );
 }
 

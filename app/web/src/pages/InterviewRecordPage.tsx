@@ -7,6 +7,7 @@ import {
 import { VoiceConversationButton } from "../features/realtime-voice/components/VoiceConversationButton";
 import { VoiceConversationStatus } from "../features/realtime-voice/components/VoiceConversationStatus";
 import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
+import { useGPTLiveVoiceConversation } from "../features/realtime-voice/hooks/useGPTLiveVoiceConversation";
 import { VOICE_RUNTIME_PROVIDER } from "../features/realtime-voice/api/realtimeVoiceClient";
 import type { VoiceProvider } from "../features/realtime-voice/types";
 import { AssistantLabel, type AssistantLabelState } from "../features/interview-chat/components/AssistantLabel";
@@ -90,7 +91,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   );
 
   async function handleResetDemo() {
-    if (!import.meta.env.DEV || !isManagementUser || isResettingDemo || realtimeVoice.isActive) return;
+    if (!import.meta.env.DEV || !isManagementUser || isResettingDemo || activeVoice.isActive) return;
     setIsResettingDemo(true);
     try {
       if (props.selectedRecord?.id === DEV_VOICE_DEMO_RECORD_ID) {
@@ -158,24 +159,30 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   useEffect(() => {
     setSelectedInterviewLocale(resolvedInterviewLocale);
   }, [props.selectedRecord?.id, props.selectedRecord?.interviewLocale, resolvedInterviewLocale]);
+  const legacyVoiceProvider = voiceProvider === "gpt_live" ? "transcribe_polly" : voiceProvider;
   const realtimeVoice = useRealtimeVoiceInterview({
     recordId: props.selectedRecord?.id,
-    provider: voiceProvider,
+    provider: legacyVoiceProvider,
     hasQuestions: hasVoiceQuestions,
     remoteAudioRef,
     onMessage: props.onAppendInterviewMessage,
     onInterviewStateChanged: props.onRefreshInterviewSnapshot,
     onCompleted: props.onRefreshInterviewSnapshot,
   });
+  const gptLiveVoice = useGPTLiveVoiceConversation({
+    enabled: voiceProvider === "gpt_live",
+    remoteAudioRef,
+  });
+  const activeVoice = voiceProvider === "gpt_live" ? gptLiveVoice : realtimeVoice;
 
-  const isAssistantError = props.interviewError || realtimeVoice.status === "error";
+  const isAssistantError = props.interviewError || activeVoice.status === "error";
   const isAssistantThinking = props.isInterviewStreaming || [
     "preparing_initial_reply",
     "processing_interview",
     "preparing_audio",
     "processing",
     "speaking",
-  ].includes(realtimeVoice.status);
+  ].includes(activeVoice.status);
   const currentAssistantState: AssistantLabelState = isAssistantError
     ? "error"
     : isAssistantThinking
@@ -257,7 +264,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       || props.isInterviewStreaming
       || props.interviewState?.status === "completed"
       || !canAnswerRecord
-      || realtimeVoice.isActive
+      || activeVoice.isActive
     ) {
       return;
     }
@@ -272,7 +279,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     if (!(await props.onSaveInterviewLocale(selectedInterviewLocale))) {
       return;
     }
-    await realtimeVoice.start();
+    await activeVoice.start();
   }
 
   function proposalTarget(message: KnowledgeLayoutProps["interviewMessages"][number]) {
@@ -303,7 +310,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       || !canAnswerRecord
       || isCompleted
       || props.isInterviewStreaming
-      || realtimeVoice.isActive
+      || activeVoice.isActive
     ) {
       return;
     }
@@ -315,7 +322,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const canStartInterview = Boolean(props.selectedRecord)
     && canAnswerRecord
     && !props.isInterviewStreaming
-    && !realtimeVoice.isActive
+    && !activeVoice.isActive
     && !hasInterviewConversationMessages
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
@@ -324,7 +331,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID
   );
   const hasReviewActions = isManagementUser && props.selectedRecord?.status === "submitted";
-  const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && realtimeVoice.isActive);
+  const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && activeVoice.isActive);
   const interviewLaunchPath = props.selectedKnowledgeDb && props.selectedKnowledge
     ? `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}/interview`
     : null;
@@ -395,7 +402,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   type="button"
                   className="ghost compact"
                   onClick={handleResetDemo}
-                  disabled={isResettingDemo || realtimeVoice.isActive}
+                  disabled={isResettingDemo || activeVoice.isActive}
                 >
                   {isResettingDemo ? t("interview.resettingDemo") : t("interview.resetDemo")}
                 </button>
@@ -643,7 +650,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                       className="proposal-confirm-button"
                       data-guide="knowledge-confirm"
                       onClick={() => handleConfirmProposal(message)}
-                      disabled={!canAnswerRecord || isCompleted || props.isInterviewStreaming || realtimeVoice.isActive}
+                      disabled={!canAnswerRecord || isCompleted || props.isInterviewStreaming || activeVoice.isActive}
                     >
                       {t("interview.ok")}
                     </button>
@@ -658,7 +665,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   <p>{props.streamingInterviewReply}</p>
                 </div>
               ) : null}
-              {isAssistantThinking && !props.streamingInterviewReply && !realtimeVoice.initialReplyActive ? (
+              {isAssistantThinking && !props.streamingInterviewReply && !activeVoice.initialReplyActive ? (
                 <div className="assistant-chat-status thinking" role="status">
                   <AssistantLabel state="thinking" label={t("interview.assistantName")} />
                   <span>{t("interview.receiving")}</span>
@@ -684,9 +691,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
             <div className="answer-composer" data-guide="message-composer">
               {!isChatOnlyInterview ? (
                 <VoiceConversationStatus
-                  status={realtimeVoice.status}
-                  message={realtimeVoice.message}
-                  partialTranscript={realtimeVoice.partialTranscript}
+                  status={activeVoice.status}
+                  message={activeVoice.message}
+                  partialTranscript={activeVoice.partialTranscript}
                 />
               ) : null}
               <textarea
@@ -696,7 +703,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 placeholder={
                   isCompleted
                     ? t("interview.completedInput")
-                    : realtimeVoice.isActive
+                    : activeVoice.isActive
                       ? t("interview.voiceInputDisabled")
                       : t("interview.answerPlaceholder")
                 }
@@ -705,8 +712,8 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
               {!isChatOnlyInterview ? (
                 <audio ref={remoteAudioRef} className="voice-remote-audio" autoPlay playsInline />
               ) : null}
-              {!isChatOnlyInterview && realtimeVoice.requiresManualPlayback ? (
-                <button className="secondary" type="button" onClick={() => void realtimeVoice.playRemoteAudio()}>
+              {!isChatOnlyInterview && activeVoice.requiresManualPlayback ? (
+                <button className="secondary" type="button" onClick={() => void activeVoice.playRemoteAudio()}>
                   {t("interview.playAudio")}
                 </button>
               ) : null}
@@ -721,18 +728,19 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                       <select
                         value={voiceProvider}
                         onChange={(event) => setVoiceProvider(normalizeVoiceProvider(event.target.value))}
-                        disabled={realtimeVoice.isActive}
+                        disabled={activeVoice.isActive}
                       >
                         <option value="transcribe_polly">transcribe_polly</option>
                         <option value="nova_sonic">nova_sonic</option>
                         <option value="openai_realtime">openai_realtime</option>
+                        <option value="gpt_live">gpt_live</option>
                       </select>
                     </label>
                     <VoiceConversationButton
-                      status={realtimeVoice.status}
-                      disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || realtimeVoice.status === "completed"}
+                      status={activeVoice.status}
+                      disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || activeVoice.status === "completed"}
                       onStart={() => void handleStartVoiceInterview()}
-                      onStop={() => void realtimeVoice.stop()}
+                      onStop={() => void activeVoice.stop()}
                     />
                   </div>
                 ) : null}
@@ -803,7 +811,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
 }
 
 function normalizeVoiceProvider(value: string): VoiceProvider {
-  if (value === "nova_sonic" || value === "openai_realtime") {
+  if (value === "nova_sonic" || value === "openai_realtime" || value === "gpt_live") {
     return value;
   }
   return "transcribe_polly";

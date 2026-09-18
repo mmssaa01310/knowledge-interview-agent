@@ -6,6 +6,7 @@ import os
 class Settings:
     app_name: str = os.getenv("APP_NAME", "KIKIORI API")
     app_env: str = os.getenv("APP_ENV", "local")
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     dev_auto_seed_voice_demo: bool = (
         os.getenv("DEV_AUTO_SEED_VOICE_DEMO", "false").lower() == "true"
     )

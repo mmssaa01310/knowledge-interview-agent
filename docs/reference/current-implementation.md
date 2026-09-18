@@ -80,9 +80,20 @@ app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/coordinator.py::Open
 `openai_realtime`ではAmazon Transcribe、Amazon Polly、`PollyTextChunker`、既存の独自VADを使用しない。
 OpenAI Secret Keyは`app/voice`だけで読み込み、Browserへ返さない。Provider failure時の自動fallbackも行わない。
 
+GPT-Live Phase 1は、上記の旧OpenAI Realtime経路とは別の接続検証経路として実装している。
+
+```text
+Browser RTCPeerConnection
+  → POST /api/live/sessions
+  → OpenAI Live API /v1/live/sessions
+  → GPT-Live-1音声・Data Channelイベント
+```
+
+`app/api/src/ai_interviewer_api/services/live_session.py`がOpenAI Python SDKの`client.live.create()`を呼び出し、`gpt-live-1`と短い日本語会話プロンプト、音声`marin`を固定する。GPT-Live経路ではVoiceSession/VoiceTurn、InterviewBridge、`speech_stopped`、`response.completed`、`response.done`、独自VAD、Transcribe、Pollyを使用しない。詳細は[GPT-Live Phase 1](../architecture/voice/gpt-live-phase1.md)を参照する。
+
 分類は次のとおりである。
 
-* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。追加でOpenAI RealtimeのBrowser WebRTC + server-side sideband経路。
+* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。追加で旧OpenAI Realtime経路と、Phase 1のGPT-Live Browser WebRTC経路。
 * B（共通）: 認証・Record認可、Store/Repository、VoiceSession/VoiceTurn、Interview Bridge、文書検索、メッセージ・イベントの冪等性。
 * C（旧・削除済み）: 旧Strands Interview Agent、旧Voice回答評価、`dialogue_interpreter`、`interview_answer_processor`、Strands共通Tool、旧Feature Flagと旧専用設定。
 * D（判断不能）: なし。Structured Interviewのみを正式経路とする方針に確定したため、旧経路分岐も削除した。
@@ -282,6 +293,7 @@ JSON形式の文書登録は後続Worker向けのメタデータ登録として�
 * `POST /api/records/{record_id}/voice-sessions`
 * `GET /api/voice-sessions/{voice_session_id}`
 * `POST /api/voice-sessions/{voice_session_id}/stop`
+* `POST /api/live/sessions`（GPT-Live Phase 1。VoiceSessionとは分離）
 
 `POST /api/records/{record_id}/voice-sessions`の`provider`は`transcribe_polly`、`nova_sonic`、
 `openai_realtime`を受け付ける。省略時は`transcribe_polly`である。

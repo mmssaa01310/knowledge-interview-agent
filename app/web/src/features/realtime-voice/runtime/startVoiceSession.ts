@@ -14,7 +14,7 @@ import type {
   VoiceConnectionStats,
   VoiceConversationStatus,
   VoiceDataChannelEvent,
-  VoiceProvider,
+  LegacyVoiceProvider,
   VoiceSessionResponse,
 } from "../types";
 import { toStartErrorMessage } from "../utils/voiceErrors";
@@ -33,7 +33,7 @@ type VoicePeerHandle = VoicePeerConnectionHandle | OpenAIRealtimePeerConnectionH
 
 export type StartVoiceSessionOptions = {
   recordId: string;
-  provider: VoiceProvider;
+  provider: LegacyVoiceProvider;
   hasQuestions: boolean;
   remoteAudioRef: RefObject<HTMLAudioElement>;
   voiceSessionRef: MutableRefObject<VoiceSessionResponse | null>;

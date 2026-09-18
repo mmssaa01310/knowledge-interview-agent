@@ -59,6 +59,10 @@ from ai_interviewer_api.routers.knowledges import (
     router as knowledges_router,
     update_knowledge,
 )
+from ai_interviewer_api.routers.live_sessions import (
+    create_live_web_session,
+    router as live_sessions_router,
+)
 from ai_interviewer_api.routers.proposals import (
     approve_all,
     approve_proposal,
@@ -96,6 +100,7 @@ router.include_router(knowledge_fields_router)
 router.include_router(knowledge_tags_router)
 router.include_router(records_router)
 router.include_router(voice_sessions_router)
+router.include_router(live_sessions_router)
 router.include_router(proposals_router)
 router.include_router(documents_router)
 router.include_router(internal_voice_router)
@@ -117,6 +122,7 @@ __all__ = [
     "create_knowledge_db",
     "create_knowledge_tag",
     "create_knowledge",
+    "create_live_web_session",
     "create_record",
     "create_record_message",
     "create_record_voice_session",
