@@ -25,6 +25,17 @@ export type DocumentReadState = {
 
 export type InterviewQuestionType = "configured_field" | "follow_up" | "structured";
 
+export type InterviewCandidateSource =
+  | "user_statement"
+  | "assistant_proposal"
+  | "document_reference";
+
+export type InterviewAnswerResolution =
+  | "AUTO_CONFIRM"
+  | "TENTATIVE"
+  | "RETRY"
+  | "CONFIRM_REQUIRED";
+
 export type InterviewQuestion = {
   questionId: string;
   questionType: InterviewQuestionType;
@@ -37,7 +48,7 @@ export type InterviewQuestion = {
   retrievalPolicy?: "never" | "auto" | "required";
   targetType?: string | null;
   targetId?: string | null;
-  candidateSource?: "user_statement" | "assistant_proposal" | null;
+  candidateSource?: InterviewCandidateSource | null;
 };
 
 export type InterviewFieldState = {
@@ -47,7 +58,9 @@ export type InterviewFieldState = {
   missingInformation: string[];
   answerState?: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
   candidateAnswer?: string | null;
-  candidateSource?: "user_statement" | "assistant_proposal" | null;
+  candidateSource?: InterviewCandidateSource | null;
+  candidateSourceIds?: string[];
+  answerResolution?: InterviewAnswerResolution | null;
   candidateProposalMessageId?: string | null;
   confirmedSource?: "user_statement" | "assistant_proposal" | "management_edit" | null;
   confirmedProposalMessageId?: string | null;
@@ -77,7 +90,7 @@ export type InterviewState = {
     targetId: string;
     label: string;
     priority: number;
-    candidateSource?: "user_statement" | "assistant_proposal" | null;
+    candidateSource?: InterviewCandidateSource | null;
   } | null;
   deferredProposalTarget?: string | null;
   requirementStates?: Record<string, {
@@ -86,7 +99,10 @@ export type InterviewState = {
     kind: string;
     status: "UNANSWERED" | "CANDIDATE_PENDING" | "AWAITING_CONFIRMATION" | "CONFIRMED";
     candidateValue?: string | null;
-    candidateSource?: "user_statement" | "assistant_proposal" | null;
+    candidateSource?: InterviewCandidateSource | null;
+    answerResolution?: InterviewAnswerResolution | null;
+    candidateSourceIds?: string[];
+    confirmedSourceIds?: string[];
     candidateProposalMessageId?: string | null;
     confirmedSource?: "user_statement" | "assistant_proposal" | "management_edit" | null;
     confirmedProposalMessageId?: string | null;
@@ -138,7 +154,16 @@ export type ChatMessage = {
   isLegacy?: boolean;
   targetType?: string | null;
   targetId?: string | null;
-  candidateSource?: "user_statement" | "assistant_proposal" | null;
+  candidateSource?: InterviewCandidateSource | null;
+  candidateValue?: string | null;
+  candidateSourceIds?: string[];
+  messageType?: string;
+  processCommandId?: string | null;
+  instructionSummary?: string | null;
+  updatedTargets?: string[];
+  processChangeSummary?: string | null;
+  processUpdatedPoints?: string[];
+  processVersion?: number | null;
 };
 
 export type InterviewAnswerTarget = {
