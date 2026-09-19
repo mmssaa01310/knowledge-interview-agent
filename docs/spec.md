@@ -216,9 +216,10 @@ WebRTC接続の確立や制御に必要なシグナリング通信には、WebSo
 Provider自動fallbackは行わない。
 
 GPT-Live-1は既存のStructured Interview音声経路から分離したWebRTC経路を使用する。
-記録付きの会話では、モデルの委譲を通じて既存Backendで回答を保存・検証する。
+記録付きの会話では、字幕の累積観測を既存BackendのLLMで並列に整理し、全質問項目へ保存・検証する。モデルの委譲イベントは保存の必須条件としない。
 音声会話は保存・検証結果を待たず進行し、正式な状態の更新はBackendが担う。
-接続、字幕、委譲の契約は[GPT-Live WebRTC](architecture/voice/gpt-live-phase1.md)に従う。
+未充足項目の回答は整理中として表示し、追加回答・訂正を同じ質問項目へ統合する。全必須詳細が揃うまでは回答済みとしない。
+接続、字幕、バックグラウンド保存の契約は[GPT-Live WebRTC](architecture/voice/gpt-live-phase1.md)に従う。
 
 Assistant音声への割り込みは音声出力の停止であり、コミット済みUser Turnの取消しを意味しない。
 未コミットTurnだけを取消可能とし、明示的な訂正は新しいTurnとして状態更新する。

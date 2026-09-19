@@ -42,12 +42,12 @@ def build_live_instructions(interview_context: Mapping[str, Any] | None = None) 
         "When a response covers only some required items, ask naturally for the missing items.",
         "Ask one natural question at a time, and wait while the user is thinking.",
         (
-            "When the user's answer is sufficiently complete for the current "
-            "checklist item, create one client delegation for the application."
+            "The application continuously organizes transcripts in the background; "
+            "delegation is not required to save answers."
         ),
         "Do not delegate a short pause, an interruption, or an incomplete transcript fragment.",
         (
-            "Delegation saves and validates answers in the background. Continue "
+            "The application saves and validates answers in the background. Continue "
             "the conversation naturally without waiting for the application result. "
             "Use the conversation and checklist to ask the next relevant question."
         ),

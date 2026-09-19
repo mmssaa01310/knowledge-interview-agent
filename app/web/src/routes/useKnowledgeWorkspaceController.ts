@@ -273,6 +273,9 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     : null;
   const selectedRecordId = "recordId" in args.route ? args.route.recordId : undefined;
   const selectedRecord = selectedRecordId ? records.find((record) => record.id === selectedRecordId) ?? null : null;
+  const selectedRecordIdRef = useRef(selectedRecordId);
+  selectedRecordIdRef.current = selectedRecordId;
+  const snapshotRequestRef = useRef(0);
 
   const hasUnsavedSettingsChanges = useMemo(() => {
     if (args.route.name !== "knowledge-settings" || !selectedKnowledge) return false;
@@ -344,8 +347,10 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   }
 
   async function loadInterviewSnapshot(recordId: string) {
+    const requestId = ++snapshotRequestRef.current;
     const startedAt = performance.now();
     const snapshot = await fetchInterviewState(recordId).catch((error: unknown) => {
+      if (selectedRecordIdRef.current !== recordId || requestId !== snapshotRequestRef.current) return null;
       // Do not log response bodies: they may contain private interview data.
       console.warn("interview_snapshot_failed", {
         record_id: recordId,
@@ -356,6 +361,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       });
       throw error;
     });
+    // Background refreshes can overlap or finish after navigation.
+    if (!snapshot || selectedRecordIdRef.current !== recordId || requestId !== snapshotRequestRef.current) return;
     console.info("interview_snapshot_ready", {
       record_id: recordId,
       elapsed_ms: Math.round(performance.now() - startedAt),

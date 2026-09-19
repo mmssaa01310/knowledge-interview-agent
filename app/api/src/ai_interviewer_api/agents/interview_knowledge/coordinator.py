@@ -2199,6 +2199,8 @@ def _apply_field_update(
         resolution = "CONFIRM_REQUIRED"
     was_confirmed = field_state.get("answerState") == "CONFIRMED"
     if was_confirmed:
+        # Corrections replace one item, not the other facts already collected.
+        field_state["candidateItems"] = deepcopy(field_state.get("confirmedItems") or [])
         field_state["recordAnswer"] = None
         field_state["confirmedItems"] = []
         state["completedFieldIds"] = [

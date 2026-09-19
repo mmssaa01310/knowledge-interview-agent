@@ -22,6 +22,27 @@ export type GPTLiveDelegationResponse = {
   stateVersion?: number | null;
 };
 
+export type LiveTranscriptFragment = {
+  role: "user" | "assistant";
+  text: string;
+  start_ms?: number;
+  end_ms?: number;
+};
+
+export type GPTLiveCaptureResponse = GPTLiveDelegationResponse & {
+  checklist: { id: string; label: string; answer_state: string; missing_required_items: string[] }[];
+};
+
+export function submitGPTLiveCapture(
+  recordId: string, captureId: string, revision: number, fragments: LiveTranscriptFragment[],
+) {
+  return requestJson<GPTLiveCaptureResponse>(API_BASE_URL, "/api/live/captures", {
+    method: "POST",
+    body: { record_id: recordId, capture_id: captureId, revision, fragments },
+    signal: AbortSignal.timeout(120000),
+  });
+}
+
 type RequestOptions = {
   method?: "GET" | "POST" | "DELETE";
   body?: unknown;

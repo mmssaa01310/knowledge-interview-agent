@@ -147,7 +147,8 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       const answer = getInterviewDisplayAnswer(
         fieldState,
         props.structuredDraft[field.name],
-      ) || undefined;
+      ) || (voiceProvider === "gpt_live" && fieldState?.candidateAnswer
+        ? `（整理中）${fieldState.candidateAnswer}` : undefined);
       const status: InterviewSidebarItem["status"] = fieldState?.answerState === "CONFIRMED"
         ? "answered"
         : fieldState?.answerState === "AWAITING_CONFIRMATION" || fieldState?.answerState === "CANDIDATE_PENDING"
@@ -167,7 +168,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
         status,
       };
     }),
-    [configuredQuestionMessages, props.interviewState, props.sortedFields, props.structuredDraft, t],
+    [configuredQuestionMessages, props.interviewState, props.sortedFields, props.structuredDraft, t, voiceProvider],
   );
   const interviewProfile = props.interviewState?.interviewProfile
     ?? props.selectedKnowledge?.interviewPlan?.profile;

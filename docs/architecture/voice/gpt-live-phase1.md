@@ -1,6 +1,6 @@
 # GPT-Live WebRTC
 
-GPT-Live-1のWeb音声会話経路。接続確認後は、会話音声と字幕をGPT-Liveに任せたまま、モデルが明示的に委譲した回答だけを既存のStructured Interview状態へ反映する。既存のVoiceSession/VoiceTurn保存、旧Realtimeのターン制御、独自VADは共有しない。
+GPT-Live-1のWeb音声会話経路。会話音声と字幕をGPT-Liveに任せたまま、字幕の累積観測を既存Structured Interpreterで整理し、共通の状態writerで質問リストへ反映する。既存のVoiceSession/VoiceTurn保存、旧Realtimeのターン制御、独自VADは共有しない。
 
 既存の`openai_realtime`（旧Realtime API）経路は後方互換のため残すが、`gpt_live`経路からは実装・イベント処理・ターン制御を共有しない。
 
@@ -47,13 +47,17 @@ Frontendの`gpt_live`経路は次の順序を固定する。
 
 ## イベント、字幕、状態委譲
 
-最低限、`session.started`、`session.closed`、`session.input_transcript.delta`、`session.output_transcript.delta`、error系イベントをログへ記録する。Transcript deltaは断片なので、順序どおりに連結して字幕へ表示するだけであり、ターン完了、回答処理、次質問生成、応答待ちの起点にはしない。
+最低限、`session.started`、`session.closed`、`session.input_transcript.delta`、`session.output_transcript.delta`、error系イベントをログへ記録する。Transcript deltaは断片なので、順序どおりに字幕表示し、話者・時刻とともに蓄積する。ターン完了、次質問生成、応答待ちの起点にはしない。
 
-記録付きセッションでは`session.delegation.created`だけをアプリケーション状態更新の境界として扱う。ブラウザはそれまでに蓄積したユーザー字幕を`POST /api/live/delegations`へ送り、FastAPIが既存のStructured Interview状態 writerで評価・確定し、結果を`session.thinking.append`でLiveへ返す。これはモデルの委譲結果を返す処理であり、無音時間や字幕deltaの終端を検出する独自ターン管理ではない。
+記録付きセッションでは`POST /api/live/captures`へ未送信の字幕を送る。2秒の間隔は通信頻度の制限であり、新しい発話でリセットする無音検出ではない。`session.delegation.created`は送信を早めるだけで、届かなくても保存する。リクエストは認証・記録操作権限・Knowledgeアクセスを検証し、capture_idとrevisionで冪等化する。失敗時も原文を保持し、同一バッチを再試行してから後続を送る。
+
+Backendは同一captureの両話者の履歴と全質問定義を共通Interpreterへ渡す。最新の固定質問への紐付けや次質問生成は行わない。部分回答・追加回答・訂正をitemId単位で統合し、共通Coordinatorが根拠とrequiredItemsを検証する。未回答を推測で埋めず、全必須詳細が揃うまでは整理中として表示する。完了済み項目の訂正でも他の既取得詳細を保持する。正式ナレッジの承認処理は呼ばない。
+
+整理済みの状態と不足詳細を`session.thinking.append`（delegation_id=null）で返す。同じ状態を繰り返し送らず、追加質問の参考情報として扱う。モデルには保存結果を待つことや新たな発話を要求しない。これは[Liveのバックグラウンド連携仕様](https://developers.openai.com/es-419/api/docs/guides/live-delegation)に基づく観測処理である。
 
 DataChannel自体の切断はLiveセッションの正式終了を意味しないため、クライアント内部では`transport.closed`として切り分ける。サーバーから実際に届いた`session.closed`だけをLiveセッション終了イベントとして記録する。
 
-会話は委譲した回答の保存・検証完了を待たず継続する。Liveには会話中に得た回答とチェックリストに基づいて質問を進めるよう指示し、保存済み・完了の断定だけはbackendの結果を根拠とする。保存処理は記録の整合性のため順序を保持するが、MediaTrackや字幕の処理を止めない。委譲時に字幕を予約して後続委譲との重複を防ぎ、切断後の古い結果は新しい接続へ返さない。状態再取得の完了をLiveへの結果通知の条件にしない。`gpt_live_delegation_applied.elapsed_ms`は保存APIの待ち時間であり、発話遅延の実測値ではない。
+会話は保存・検証完了を待たず継続する。保存中の追加字幕は次のバッチへ蓄積し、MediaTrackや字幕処理を止めない。状態再取得も保存キューを待たせない。切断時は未送信分を送信し、保存中の処理を取り消さない。ただし古い結果を新しい音声接続へ送らない。ブラウザ終了・ページ再読み込みを跨ぐ送信保証はないため、保存エラー表示中はページを閉じず再試行を待つ。LLMの意味抽出精度と実音声の応答時間は、自動テストだけでは保証できない。
 
 GPT-Liveの全二重会話制御を利用するため、次を実装しない。
 

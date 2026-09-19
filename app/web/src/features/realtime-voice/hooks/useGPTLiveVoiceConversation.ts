@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useI18n } from "../../../i18n";
-import { submitGPTLiveDelegation } from "../api/realtimeVoiceClient";
+import { submitGPTLiveCapture } from "../api/realtimeVoiceClient";
 import type { VoiceConnectionStats, VoiceConversationStatus } from "../types";
 import {
   createGPTLivePeerConnection,
   type GPTLiveEvent,
   type GPTLivePeerConnectionHandle,
 } from "../webrtc/gptLivePeerConnection";
+import { createLiveTranscriptCapture } from "../utils/liveTranscriptCapture";
 import { toStartErrorMessage } from "../utils/voiceErrors";
 
 type UseGPTLiveVoiceConversationArgs = {
@@ -51,9 +52,9 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const sessionStartedRef = useRef(false);
   const initialGreetingInstructionIdRef = useRef<string | null>(null);
   const transcriptLineSequenceRef = useRef(0);
-  const pendingUserTranscriptRef = useRef("");
-  const processedDelegationIdsRef = useRef(new Set<string>());
-  const delegationQueueRef = useRef(Promise.resolve());
+  const captureRef = useRef<ReturnType<typeof createLiveTranscriptCapture> | null>(null);
+  const currentRecordRef = useRef(recordId);
+  currentRecordRef.current = recordId;
   const onInterviewStateChangedRef = useRef(onInterviewStateChanged);
 
   useEffect(() => {
@@ -79,82 +80,12 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         },
       ];
     });
-    if (role === "user") {
-      pendingUserTranscriptRef.current += delta;
-    }
+
   }, []);
 
-  const processDelegation = useCallback(async (
-    delegationId: string,
-    transcript: string,
-    generation: number,
-  ) => {
-    if (generation !== connectionGenerationRef.current) return;
-    if (!recordId) {
-      console.warn("gpt_live_delegation_without_record", { delegation_id: delegationId });
-      return;
-    }
-    const startedAt = performance.now();
-    try {
-      const result = await submitGPTLiveDelegation(recordId, delegationId, transcript);
-      if (generation !== connectionGenerationRef.current) return;
-      const sent = peerRef.current?.sendEvent({
-        type: "session.thinking.append",
-        event_id: `gpt_live_state_${delegationId}`,
-        delegation_id: delegationId,
-        content: result.status === "completed"
-          ? "Background validation confirmed the interview is complete. Close naturally when the user has finished speaking."
-          : "Background saving and validation succeeded for the delegated answer. Continue the ongoing conversation; this update does not request a new spoken response or repetition of a question.",
-      });
-      if (!sent) {
-        console.warn("gpt_live_delegation_result_not_sent", { delegation_id: delegationId });
-      }
-      // Refreshing the sidebar must neither delay Live context nor fail saving.
-      void Promise.resolve().then(() => {
-        if (generation === connectionGenerationRef.current) {
-          return onInterviewStateChangedRef.current?.();
-        }
-      }).catch(() => console.warn("gpt_live_state_refresh_failed"));
-      console.info("gpt_live_delegation_applied", {
-        delegation_id: delegationId,
-        status: result.status,
-        state_version: result.stateVersion,
-        elapsed_ms: Math.round(performance.now() - startedAt),
-      });
-    } catch (error) {
-      if (generation !== connectionGenerationRef.current) return;
-      processedDelegationIdsRef.current.delete(delegationId);
-      pendingUserTranscriptRef.current = transcript + "\n" + pendingUserTranscriptRef.current;
-      peerRef.current?.sendEvent({
-        type: "session.thinking.append",
-        event_id: `gpt_live_state_failed_${delegationId}`,
-        delegation_id: delegationId,
-        content: "Background saving failed. Do not claim this answer is saved. Continue listening naturally.",
-      });
-      console.warn("gpt_live_delegation_failed", {
-        delegation_id: delegationId,
-        error_name: error instanceof Error ? error.name : "unknown",
-      });
-    }
-  }, [recordId]);
-
-  const enqueueDelegation = useCallback((event: GPTLiveEvent) => {
-    const delegationId = readDelegationId(event);
-    const transcript = pendingUserTranscriptRef.current.trim();
-    if (!delegationId || !transcript || processedDelegationIdsRef.current.has(delegationId)) {
-      return;
-    }
-    processedDelegationIdsRef.current.add(delegationId);
-    // Reserve this fragment now so a later delegation cannot save it twice.
-    pendingUserTranscriptRef.current = "";
-    const generation = connectionGenerationRef.current;
-    const work = delegationQueueRef.current
-      .catch(() => undefined)
-      .then(() => processDelegation(delegationId, transcript, generation));
-    delegationQueueRef.current = work.then(() => undefined, () => undefined);
-  }, [processDelegation]);
-
   const cleanup = useCallback(() => {
+    captureRef.current?.stop();
+    captureRef.current = null;
     connectionGenerationRef.current += 1;
     startAbortRef.current?.abort();
     startAbortRef.current = null;
@@ -251,6 +182,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         delta_length: delta.length,
       });
       appendTranscriptDelta("user", delta);
+      captureRef.current?.append({ role: "user", text: delta, ...transcriptTiming(event) });
       return;
     }
 
@@ -261,15 +193,24 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         delta_length: delta.length,
       });
       appendTranscriptDelta("assistant", delta);
+      captureRef.current?.append({ role: "assistant", text: delta, ...transcriptTiming(event) });
       return;
     }
 
     if (eventType === "session.delegation.created") {
+      const delegationId = readDelegationId(event);
       console.info("gpt_live_delegation_created", {
         session_id: eventSessionId,
         delegation_id: readDelegationId(event),
       });
-      enqueueDelegation(event);
+      void captureRef.current?.flush();
+      if (delegationId && captureRef.current) {
+        peerRef.current?.sendEvent({
+          type: "session.thinking.append",
+          delegation_id: delegationId,
+          content: "Transcript capture runs independently in the background. Saving is not yet confirmed. Continue the ongoing conversation without waiting; checklist updates will arrive separately.",
+        });
+      }
       return;
     }
 
@@ -285,9 +226,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       setMessage(t("errors.voiceConnectFailed"));
       setStatus("error");
     }
-    // Transcript deltas are observational/UI updates. Only the model's
-    // delegation event can request canonical application-state processing.
-  }, [appendTranscriptDelta, cleanup, enqueueDelegation, remoteAudioRef, t]);
+    // Observation never controls speech scheduling.
+  }, [appendTranscriptDelta, cleanup, remoteAudioRef, t]);
 
   const start = useCallback(async () => {
     if (!enabled || startingRef.current || peerRef.current) {
@@ -298,15 +238,52 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     setRequiresManualPlayback(false);
     setStats(EMPTY_STATS);
     setTranscriptLines([]);
-    pendingUserTranscriptRef.current = "";
-    processedDelegationIdsRef.current.clear();
-    delegationQueueRef.current = Promise.resolve();
     setConnectionState("connecting");
     setStatus("connecting");
     const startAbortController = new AbortController();
     const connectionGeneration = connectionGenerationRef.current + 1;
     connectionGenerationRef.current = connectionGeneration;
     startAbortRef.current = startAbortController;
+    if (recordId) {
+      const captureId = crypto.randomUUID();
+      const sentChecklist = new Map<string, string>();
+      captureRef.current = createLiveTranscriptCapture({
+        submit: (revision, fragments) => submitGPTLiveCapture(recordId, captureId, revision, fragments),
+        onSaved: (result) => {
+          if (currentRecordRef.current !== recordId) return;
+          void Promise.resolve().then(() => {
+            if (currentRecordRef.current === recordId) return onInterviewStateChangedRef.current?.();
+          })
+            .catch(() => console.warn("gpt_live_state_refresh_failed"));
+          if (connectionGenerationRef.current === connectionGeneration
+            || (connectionGenerationRef.current === connectionGeneration + 1 && !peerRef.current)) {
+            setMessage("");
+          }
+          if (connectionGenerationRef.current !== connectionGeneration) return;
+          for (const field of result.checklist) {
+            const signature = JSON.stringify(field);
+            if (sentChecklist.get(field.id) === signature) continue;
+            const sent = peerRef.current?.sendEvent({
+              type: "session.thinking.append", delegation_id: null,
+              content: JSON.stringify({
+                note: "Saved checklist observation. May lag speech. Continue naturally; do not repeat answered questions. Follow up missing details when appropriate.",
+                field: field.label.slice(0, 100), state: field.answer_state,
+                missing: field.missing_required_items.join("、").slice(0, 220),
+              }),
+            });
+            if (sent) sentChecklist.set(field.id, signature);
+          }
+        },
+        onError: () => {
+          console.warn("gpt_live_capture_failed_retrying");
+          if (currentRecordRef.current === recordId
+            && (connectionGenerationRef.current === connectionGeneration
+              || (connectionGenerationRef.current === connectionGeneration + 1 && !peerRef.current))) {
+            setMessage("回答の記録に失敗しました。音声会話を継続しながら再試行しています。ページを閉じないでください。");
+          }
+        },
+      });
+    }
     let startTimedOut = false;
     const startTimeoutId = window.setTimeout(() => {
       startTimedOut = true;
@@ -400,7 +377,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     stop();
   }, [enabled, stop]);
 
-  useEffect(() => () => stop(), [stop]);
+  useEffect(() => () => stop(), [stop, recordId]);
 
   const playRemoteAudio = useCallback(async () => {
     const connectionGeneration = connectionGenerationRef.current;
@@ -474,4 +451,11 @@ function readErrorField(error: unknown, field: "code" | "message"): string | und
   }
   const value = (error as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
+}
+
+function transcriptTiming(event: GPTLiveEvent): { start_ms?: number; end_ms?: number } {
+  return {
+    ...(typeof event.start_ms === "number" ? { start_ms: event.start_ms } : {}),
+    ...(typeof event.end_ms === "number" ? { end_ms: event.end_ms } : {}),
+  };
 }

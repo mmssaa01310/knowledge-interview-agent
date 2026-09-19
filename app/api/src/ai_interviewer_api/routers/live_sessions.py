@@ -6,6 +6,7 @@ from ai_interviewer_api.core.permissions import require_record_action
 from ai_interviewer_api.routers.common import ensure_interviewer_knowledge_access, get_scoped_item
 from ai_interviewer_api.schemas.live import (
     LiveDelegationCreate,
+    LiveCaptureCreate,
     LiveSessionCreate,
     LiveSessionResponse,
 )
@@ -13,10 +14,24 @@ from ai_interviewer_api.services.live_interview import (
     build_live_interview_context,
     process_live_delegation,
 )
+from ai_interviewer_api.services.live_capture import process_live_capture
 from ai_interviewer_api.services.live_session import create_live_session
 
 
 router = APIRouter(prefix="/api/live")
+
+
+@router.post("/captures")
+def capture_live_transcript(
+    payload: LiveCaptureCreate,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    record = get_scoped_item("records", payload.record_id, user, "record_not_found")
+    require_record_action(record, user, "interview")
+    knowledge = get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
+    ensure_interviewer_knowledge_access(knowledge, user)
+    require_interview_configuration(knowledge)
+    return process_live_capture(payload, record=record, knowledge=knowledge, user=user)
 
 
 @router.post("/sessions", response_model=LiveSessionResponse)
