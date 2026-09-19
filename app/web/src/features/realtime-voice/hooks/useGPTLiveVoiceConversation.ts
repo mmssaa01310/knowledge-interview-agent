@@ -49,6 +49,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const connectionGenerationRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const sessionStartedRef = useRef(false);
+  const initialGreetingInstructionIdRef = useRef<string | null>(null);
   const transcriptLineSequenceRef = useRef(0);
   const pendingUserTranscriptRef = useRef("");
   const processedDelegationIdsRef = useRef(new Set<string>());
@@ -83,40 +84,53 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }
   }, []);
 
-  const processDelegation = useCallback(async (delegationId: string, transcript: string) => {
+  const processDelegation = useCallback(async (
+    delegationId: string,
+    transcript: string,
+    generation: number,
+  ) => {
+    if (generation !== connectionGenerationRef.current) return;
     if (!recordId) {
       console.warn("gpt_live_delegation_without_record", { delegation_id: delegationId });
       return;
     }
+    const startedAt = performance.now();
     try {
       const result = await submitGPTLiveDelegation(recordId, delegationId, transcript);
-      const callback = onInterviewStateChangedRef.current;
-      if (callback) {
-        await callback();
-      }
+      if (generation !== connectionGenerationRef.current) return;
       const sent = peerRef.current?.sendEvent({
         type: "session.thinking.append",
         event_id: `gpt_live_state_${delegationId}`,
         delegation_id: delegationId,
         content: result.status === "completed"
-          ? "The application marked the interview complete. Respond naturally and briefly."
-          : "The application updated the interview state. Continue with the next missing checklist item.",
+          ? "Background validation confirmed the interview is complete. Close naturally when the user has finished speaking."
+          : "Background saving and validation succeeded for the delegated answer. Continue the ongoing conversation; this update does not request a new spoken response or repetition of a question.",
       });
       if (!sent) {
         console.warn("gpt_live_delegation_result_not_sent", { delegation_id: delegationId });
       }
-      if (pendingUserTranscriptRef.current === transcript) {
-        pendingUserTranscriptRef.current = "";
-      } else if (pendingUserTranscriptRef.current.startsWith(transcript)) {
-        pendingUserTranscriptRef.current = pendingUserTranscriptRef.current.slice(transcript.length);
-      }
+      // Refreshing the sidebar must neither delay Live context nor fail saving.
+      void Promise.resolve().then(() => {
+        if (generation === connectionGenerationRef.current) {
+          return onInterviewStateChangedRef.current?.();
+        }
+      }).catch(() => console.warn("gpt_live_state_refresh_failed"));
       console.info("gpt_live_delegation_applied", {
         delegation_id: delegationId,
         status: result.status,
         state_version: result.stateVersion,
+        elapsed_ms: Math.round(performance.now() - startedAt),
       });
     } catch (error) {
+      if (generation !== connectionGenerationRef.current) return;
       processedDelegationIdsRef.current.delete(delegationId);
+      pendingUserTranscriptRef.current = transcript + "\n" + pendingUserTranscriptRef.current;
+      peerRef.current?.sendEvent({
+        type: "session.thinking.append",
+        event_id: `gpt_live_state_failed_${delegationId}`,
+        delegation_id: delegationId,
+        content: "Background saving failed. Do not claim this answer is saved. Continue listening naturally.",
+      });
       console.warn("gpt_live_delegation_failed", {
         delegation_id: delegationId,
         error_name: error instanceof Error ? error.name : "unknown",
@@ -131,9 +145,12 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
     processedDelegationIdsRef.current.add(delegationId);
+    // Reserve this fragment now so a later delegation cannot save it twice.
+    pendingUserTranscriptRef.current = "";
+    const generation = connectionGenerationRef.current;
     const work = delegationQueueRef.current
       .catch(() => undefined)
-      .then(() => processDelegation(delegationId, transcript));
+      .then(() => processDelegation(delegationId, transcript, generation));
     delegationQueueRef.current = work.then(() => undefined, () => undefined);
   }, [processDelegation]);
 
@@ -145,6 +162,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     peerRef.current = null;
     sessionIdRef.current = null;
     sessionStartedRef.current = false;
+    initialGreetingInstructionIdRef.current = null;
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = null;
     }
@@ -192,6 +210,29 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       cleanup();
       setConnectionState("closed");
       setStatus((current) => current === "stopping" ? current : "disconnected");
+      return;
+    }
+
+    if (eventType === "session.instructions.appended") {
+      const acknowledgedEventId = readClientEventId(event);
+      const initialGreetingInstructionId = initialGreetingInstructionIdRef.current;
+      if (initialGreetingInstructionId && acknowledgedEventId === initialGreetingInstructionId) {
+        const sent = peerRef.current?.sendEvent({
+          type: "session.commentary.append",
+          event_id: `gpt_live_greeting_begin_${connectionGenerationRef.current}`,
+          delegation_id: null,
+          content: "Begin the conversation now. Greet the user in Japanese and ask the first missing checklist question, then pause and listen.",
+        });
+        if (!sent) {
+          console.warn("gpt_live_initial_greeting_not_sent", {
+            session_id: eventSessionId,
+          });
+        }
+        console.info("gpt_live_initial_greeting_requested", {
+          session_id: eventSessionId,
+        });
+        initialGreetingInstructionIdRef.current = null;
+      }
       return;
     }
 
@@ -275,7 +316,9 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const peer = await createGPTLivePeerConnection({
         remoteAudioElement: remoteAudioRef.current,
         recordId,
-        onEvent: handleEvent,
+        onEvent: (event) => {
+          if (connectionGenerationRef.current === connectionGeneration) handleEvent(event);
+        },
         signal: startAbortController.signal,
         onConnectionStateChange: (state) => {
           if (connectionGenerationRef.current !== connectionGeneration) {
@@ -307,6 +350,20 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       }
       peerRef.current = peer;
       sessionIdRef.current = peer.sessionId;
+      const initialGreetingEventId = `gpt_live_greeting_instructions_${connectionGeneration}`;
+      initialGreetingInstructionIdRef.current = initialGreetingEventId;
+      const initialGreetingSent = peer.sendEvent({
+        type: "session.instructions.append",
+        event_id: initialGreetingEventId,
+        delegation_id: null,
+        content: "会話を今すぐ開始してください。日本語で短く自然に挨拶し、これからインタビューを始めることを伝えてください。アプリケーションのチェックリストで最初に不足している項目について、一度に一つだけ具体的な質問をしてください。ユーザーが先に話し始めるのを待たず、その後は回答を遮らずに聞いてください。",
+      });
+      if (!initialGreetingSent) {
+        initialGreetingInstructionIdRef.current = null;
+        console.warn("gpt_live_initial_greeting_instructions_not_sent", {
+          session_id: peer.sessionId,
+        });
+      }
     } catch (error) {
       const wasCancelled = startAbortController.signal.aborted;
       cleanup();
@@ -394,6 +451,16 @@ function readDelegationId(event: GPTLiveEvent): string | undefined {
   const delegationId = event.delegation_id;
   return typeof delegationId === "string" && delegationId.trim()
     ? delegationId
+    : undefined;
+}
+
+function readClientEventId(event: GPTLiveEvent): string | undefined {
+  const clientEventId = event.client_event_id;
+  if (typeof clientEventId === "string" && clientEventId.trim()) {
+    return clientEventId;
+  }
+  return typeof event.event_id === "string" && event.event_id.trim()
+    ? event.event_id
     : undefined;
 }
 

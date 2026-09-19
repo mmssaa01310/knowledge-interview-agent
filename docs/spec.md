@@ -215,11 +215,10 @@ WebRTC接続の確立や制御に必要なシグナリング通信には、WebSo
 共通契約の下で分離し、Voice Session作成時に選択できるものとする。接続中Sessionの
 Provider自動fallbackは行わない。
 
-GPT-Live-1のWebRTC接続検証は、Phase 1として既存のStructured Interview音声経路から
-分離して提供する。Phase 1ではGPT-Live自身の会話性能、音声入出力、割り込み、Transcript
-delta、接続・切断イベントだけを確認し、VoiceSession/VoiceTurn保存、回答評価、質問進行、
-RAG、Transcribe、Polly、独自VADは接続しない。正式なインタビュー状態を更新する音声経路へ
-昇格する場合は、別途Backendの共通Interview Coordinatorとの統合仕様を定める。
+GPT-Live-1は既存のStructured Interview音声経路から分離したWebRTC経路を使用する。
+記録付きの会話では、モデルの委譲を通じて既存Backendで回答を保存・検証する。
+音声会話は保存・検証結果を待たず進行し、正式な状態の更新はBackendが担う。
+接続、字幕、委譲の契約は[GPT-Live WebRTC](architecture/voice/gpt-live-phase1.md)に従う。
 
 Assistant音声への割り込みは音声出力の停止であり、コミット済みUser Turnの取消しを意味しない。
 未コミットTurnだけを取消可能とし、明示的な訂正は新しいTurnとして状態更新する。

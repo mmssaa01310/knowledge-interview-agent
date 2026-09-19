@@ -128,6 +128,8 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
     assert captured["session"]["delegation"] == {"type": "client"}
     assert "基本プロフィール" in captured["session"]["instructions"]
     assert "お名前、所属" in captured["session"]["instructions"]
+    assert "without waiting for the application result" in captured["session"]["instructions"]
+    assert "After delegation, wait" not in captured["session"]["instructions"]
 
 
 def test_create_live_session_requires_server_key(monkeypatch) -> None:

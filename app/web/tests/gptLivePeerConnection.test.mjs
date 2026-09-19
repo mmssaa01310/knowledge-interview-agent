@@ -69,3 +69,21 @@ test("GPT-Live transcript deltas stay observational", () => {
   assert.match(hookSource, /session\.delegation\.created/);
   assert.match(hookSource, /session\.thinking\.append/);
 });
+
+test("GPT-Live requests an initial greeting after session.started", () => {
+  const peerReady = hookSource.indexOf("peerRef.current = peer;");
+  const greeting = hookSource.indexOf('type: "session.instructions.append"');
+  const acknowledgement = hookSource.indexOf('eventType === "session.instructions.appended"');
+  const commentary = hookSource.indexOf('type: "session.commentary.append"');
+
+  assert.notEqual(peerReady, -1);
+  assert.notEqual(greeting, -1);
+  assert.notEqual(acknowledgement, -1);
+  assert.notEqual(commentary, -1);
+  assert.ok(peerReady < greeting);
+  assert.match(hookSource, /delegation_id: null/);
+  assert.match(hookSource, /ユーザーが先に話し始めるのを待たず/);
+  assert.match(hookSource, /type: "session\.commentary\.append",\s+event_id:[\s\S]+delegation_id: null/);
+  assert.ok(acknowledgement < commentary);
+  assert.doesNotMatch(hookSource, /type: "session\.start"/);
+});
