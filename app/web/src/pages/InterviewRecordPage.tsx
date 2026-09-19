@@ -148,7 +148,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
         fieldState,
         props.structuredDraft[field.name],
       ) || (voiceProvider === "gpt_live" && fieldState?.candidateAnswer
-        ? `（整理中）${fieldState.candidateAnswer}` : undefined);
+        ? `（補足・確認待ち）${fieldState.candidateAnswer}` : undefined);
       const status: InterviewSidebarItem["status"] = fieldState?.answerState === "CONFIRMED"
         ? "answered"
         : fieldState?.answerState === "AWAITING_CONFIRMATION" || fieldState?.answerState === "CANDIDATE_PENDING"

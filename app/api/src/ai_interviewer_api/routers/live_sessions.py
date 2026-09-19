@@ -17,25 +17,48 @@ from ai_interviewer_api.services.live_interview import (
     build_live_interview_context,
     process_live_delegation,
 )
-from ai_interviewer_api.services.live_capture import process_live_capture
+from ai_interviewer_api.services.live_capture import receive_live_capture, _response
 from ai_interviewer_api.services.live_session import create_live_session
+from ai_interviewer_api.repositories.store import store
 
 
 router = APIRouter(prefix="/api/live")
 logger = logging.getLogger(__name__)
 
 
-@router.post("/captures")
+@router.post("/captures", status_code=202)
 def capture_live_transcript(
     payload: LiveCaptureCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", payload.record_id, user, "record_not_found")
-    require_record_action(record, user, "interview")
+    # A completed Live session can still deliver its trailing transcript before
+    # the browser receives the completion status. Only that existing capture
+    # may continue a submitted record; a new session still needs edit access.
+    continuation = record.get("status") == "submitted" and any(
+        row.get("recordId") == record["id"] and row.get("liveCaptureId") == payload.capture_id
+        and row.get("createdByUserId") == user.user_id
+        and row.get("liveCaptureCompletedAt", 0) >= time() - 30
+        for row in store.list("messages", user.tenant_id)
+    )
+    require_record_action(record, user, "interview_read" if continuation else "interview")
     knowledge = get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
     ensure_interviewer_knowledge_access(knowledge, user)
     require_interview_configuration(knowledge)
-    return process_live_capture(payload, record=record, knowledge=knowledge, user=user)
+    return receive_live_capture(payload, record=record, knowledge=knowledge, user=user)
+
+
+@router.get("/captures/{record_id}")
+def get_live_capture_status(
+    record_id: str,
+    capture_id: str | None = None,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_record_action(record, user, "interview_read")
+    knowledge = get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
+    ensure_interviewer_knowledge_access(knowledge, user)
+    return _response(record, knowledge, user, "updated", capture_id=capture_id)
 
 
 @router.post("/sessions", response_model=LiveSessionResponse)

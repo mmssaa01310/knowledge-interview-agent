@@ -120,6 +120,9 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
                     "label": "基本プロフィール",
                     "required_items": [{"label": "お名前"}, {"label": "所属"}],
                     "missing_required_items": ["お名前", "所属"],
+                    "answer_state": "CANDIDATE_PENDING",
+                    "candidate_answer": "候補の回答",
+                    "needs_confirmation": True,
                 },
             ],
         },
@@ -129,6 +132,9 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
     assert "基本プロフィール" in captured["session"]["instructions"]
     assert "お名前、所属" in captured["session"]["instructions"]
     assert "without waiting for the application result" in captured["session"]["instructions"]
+    assert "not CONFIRMED" in captured["session"]["instructions"]
+    assert "Never close the interview" in captured["session"]["instructions"]
+    assert "Unconfirmed candidate: 候補の回答" in captured["session"]["instructions"]
     assert "After delegation, wait" not in captured["session"]["instructions"]
 
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useI18n } from "../../../i18n";
-import { submitGPTLiveCapture } from "../api/realtimeVoiceClient";
+import { submitGPTLiveCapture, getGPTLiveCaptureStatus } from "../api/realtimeVoiceClient";
 import type { VoiceConnectionStats, VoiceConversationStatus } from "../types";
 import {
   createGPTLivePeerConnection,
@@ -281,6 +281,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const sentChecklist = new Map<string, string>();
       captureRef.current = createLiveTranscriptCapture({
         submit: (revision, fragments) => submitGPTLiveCapture(recordId, captureId, revision, fragments),
+        poll: () => getGPTLiveCaptureStatus(recordId, captureId),
         onSaved: (result) => {
           if (currentRecordRef.current !== recordId) return;
           void Promise.resolve().then(() => {
@@ -291,7 +292,35 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
             || (connectionGenerationRef.current === connectionGeneration + 1 && !peerRef.current)) {
             setMessage("");
           }
-          if (connectionGenerationRef.current !== connectionGeneration) return;
+          const isCurrent = connectionGenerationRef.current === connectionGeneration;
+          const isStopped = connectionGenerationRef.current === connectionGeneration + 1 && !peerRef.current;
+          if (!isCurrent && !isStopped) return;
+          if (!result.processing && result.interviewState?.status === "completed") {
+            if (isCurrent) cleanup();
+            setConnectionState("closed");
+            setStatus("completed");
+            return;
+          }
+          if (isStopped) {
+            setStatus(result.processing ? "processing" : "idle");
+            return;
+          }
+          const completion = result.completion;
+          if (result.processing && completion && !completion.closingRequired
+            && !completion.missingRequiredTargets.length && !completion.pendingConfirmationTargets.length
+            && !completion.unknownApplicabilityTopics.length && !completion.unresolvedContradictionIds.length) {
+            setStatus("processing");
+          } else if (sessionStartedRef.current) {
+            setStatus("listening");
+          }
+          if (completion?.closingRequired && !completion.missingRequiredTargets.length
+            && !completion.pendingConfirmationTargets.length && !completion.unknownApplicabilityTopics.length
+            && !completion.unresolvedContradictionIds.length && !sentChecklist.has("closing")) {
+            if (peerRef.current?.sendEvent({
+              type: "session.thinking.append", delegation_id: null,
+              content: "必須項目は保存済みです。まだ尋ねていなければ、ここまで触れなかった重要なことがあるか最後に一問だけ尋ねてください。既に回答済みなら繰り返さず、保存結果を待つようユーザーに要求しないでください。",
+            })) sentChecklist.set("closing", "sent");
+          }
           for (const field of result.checklist) {
             const signature = JSON.stringify(field);
             if (sentChecklist.get(field.id) === signature) continue;
@@ -300,7 +329,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
               content: JSON.stringify({
                 note: "Saved checklist observation. May lag speech. Continue naturally; do not repeat answered questions. Follow up missing details when appropriate.",
                 field: field.label.slice(0, 100), state: field.answer_state,
+                answer_resolution: field.answer_resolution ?? null,
+                needs_confirmation: field.needs_confirmation ?? field.answer_state !== "CONFIRMED",
+                candidate: field.candidate_answer?.slice(0, 400) ?? "",
                 missing: field.missing_required_items.join("、").slice(0, 220),
+                instruction: field.answer_state === "CONFIRMED"
+                  ? "This field is confirmed. Continue with the next missing field."
+                  : "This field is not confirmed. Ask one concise clarification or confirmation question before the final additional-information question.",
               }),
             });
             if (sent) sentChecklist.set(field.id, signature);
@@ -410,10 +445,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
     stoppingRef.current = true;
+    const processing = captureRef.current?.isProcessing();
     setStatus("stopping");
     cleanup();
     setConnectionState("closed");
-    setStatus("idle");
+    setStatus(processing ? "processing" : "idle");
     stoppingRef.current = false;
   }, [cleanup]);
 

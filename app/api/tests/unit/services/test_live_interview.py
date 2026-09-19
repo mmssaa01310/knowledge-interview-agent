@@ -81,6 +81,53 @@ def test_build_live_context_includes_required_question_plan_items(
     field = context["fields"][0]
     assert [item["label"] for item in field["required_items"]] == ["お名前", "所属", "役職"]
     assert field["missing_required_items"] == ["お名前", "所属", "役職"]
+    assert field["needs_confirmation"] is True
+
+
+def test_build_live_context_exposes_candidate_confirmation_state(
+    monkeypatch,
+    clean_interview_store,
+) -> None:
+    user = _user()
+    knowledge = {
+        "id": "knowledge-live-test",
+        "knowledgeDbId": "knowledge-db-live-test",
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    state = {
+        "status": "in_progress",
+        "interviewProfile": "fixed_form",
+        "fieldStates": {
+            "field-profile": {
+                "answerState": "CANDIDATE_PENDING",
+                "answerResolution": "TENTATIVE",
+                "candidateAnswer": "生成AIを活用して設計を効率化したい",
+                "capturedItems": [{"itemId": "goal"}],
+            },
+        },
+    }
+    monkeypatch.setattr(
+        live_interview_module,
+        "get_interview_state_snapshot",
+        lambda *_args, **_kwargs: _snapshot(state),
+    )
+    store.upsert("knowledge_dbs", {
+        "id": "knowledge-db-live-test", "tenantId": user.tenant_id, "status": "active",
+    })
+    store.upsert("knowledge_fields", {
+        "id": "field-profile", "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"], "name": "方針", "required": True, "askByAi": True,
+        "questionPlan": {"requiredItems": [{"itemId": "goal", "label": "方針"}]},
+    })
+
+    field = live_interview_module.build_live_interview_context(
+        _record(), knowledge, user,
+    )["fields"][0]
+
+    assert field["answer_state"] == "CANDIDATE_PENDING"
+    assert field["answer_resolution"] == "TENTATIVE"
+    assert field["candidate_answer"] == "生成AIを活用して設計を効率化したい"
+    assert field["needs_confirmation"] is True
 
 
 def test_process_live_delegation_is_idempotent(monkeypatch, clean_interview_store) -> None:

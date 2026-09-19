@@ -294,6 +294,8 @@ JSON形式の文書登録は後続Worker向けのメタデータ登録として�
 * `GET /api/voice-sessions/{voice_session_id}`
 * `POST /api/voice-sessions/{voice_session_id}/stop`
 * `POST /api/live/sessions`（GPT-Live Phase 1。VoiceSessionとは分離）
+* `POST /api/live/captures`（字幕をDBに永続化して202を返す。API側で整理・再試行）
+* `GET /api/live/captures/{record_id}?capture_id={capture_id}`（認証・記録参照権限付き。対象captureに限定した整理状態・チェックリスト取得）
 
 `POST /api/records/{record_id}/voice-sessions`の`provider`は`transcribe_polly`、`nova_sonic`、
 `openai_realtime`を受け付ける。省略時は`transcribe_polly`である。

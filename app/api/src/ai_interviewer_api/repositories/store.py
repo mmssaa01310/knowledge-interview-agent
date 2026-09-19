@@ -4,6 +4,8 @@ from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+from threading import RLock
+from time import time
 
 import psycopg
 from psycopg.rows import dict_row
@@ -111,6 +113,22 @@ class InMemoryStore:
 
     def __init__(self) -> None:
         self.tables: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+        self._live_lock_guard = RLock()
+        self._live_locks: dict[str, RLock] = {}
+
+    @contextmanager
+    def live_capture_lock(self, key: str) -> Iterator[None]:
+        with self._live_lock_guard:
+            lock = self._live_locks.setdefault(key, RLock())
+        with lock:
+            yield
+
+    def pending_live_captures(self) -> list[dict[str, Any]]:
+        return sorted([
+            row for row in list(self.tables["messages"].values())
+            if row.get("liveCaptureUser") and not row.get("liveCaptureApplied")
+            and row.get("liveCaptureRetryAt", 0) <= time()
+        ], key=lambda row: (row["createdAt"], row["liveCaptureRevision"]))[:100]
 
     def ensure_schema(self) -> None:
         return None
@@ -145,6 +163,29 @@ class PostgresStore:
 
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
+
+    @contextmanager
+    def live_capture_lock(self, key: str) -> Iterator[None]:
+        # Session lock spans independent store transactions and API replicas.
+        with self._connection() as connection:
+            connection.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (key,))
+            try:
+                yield
+            finally:
+                connection.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,))
+
+    def pending_live_captures(self) -> list[dict[str, Any]]:
+        """Internal recovery scan; tenant/user authorization is rechecked by the consumer."""
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT payload FROM kikiori.entity_store
+                WHERE entity_type = 'messages' AND payload ? 'liveCaptureUser'
+                  AND payload ->> 'liveCaptureApplied' = 'false'
+                  AND COALESCE((payload ->> 'liveCaptureRetryAt')::double precision, 0) <= %s
+                ORDER BY created_at, (payload ->> 'liveCaptureRevision')::integer
+                LIMIT 100""", (time(),),
+            ).fetchall()
+        return [dict(row["payload"]) for row in rows]
 
     @contextmanager
     def _connection(self) -> Iterator[psycopg.Connection[Any]]:

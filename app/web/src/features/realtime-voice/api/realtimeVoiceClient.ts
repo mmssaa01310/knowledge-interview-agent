@@ -30,16 +30,36 @@ export type LiveTranscriptFragment = {
 };
 
 export type GPTLiveCaptureResponse = GPTLiveDelegationResponse & {
-  checklist: { id: string; label: string; answer_state: string; missing_required_items: string[] }[];
+  checklist: {
+    id: string;
+    label: string;
+    answer_state: string;
+    answer_resolution?: string | null;
+    candidate_answer?: string;
+    needs_confirmation?: boolean;
+    missing_required_items: string[];
+  }[];
+  processing?: boolean;
+  completion?: { complete: boolean; closingRequired: boolean; missingRequiredTargets: unknown[]; pendingConfirmationTargets: unknown[]; unknownApplicabilityTopics: string[]; unresolvedContradictionIds: string[] };
 };
+
+export type GPTLiveCaptureReceipt = { status: "accepted"; revision: number };
+
+export function getGPTLiveCaptureStatus(recordId: string, captureId: string) {
+  return requestJson<GPTLiveCaptureResponse>(
+    API_BASE_URL,
+    `/api/live/captures/${encodeURIComponent(recordId)}?capture_id=${encodeURIComponent(captureId)}`,
+  );
+}
 
 export function submitGPTLiveCapture(
   recordId: string, captureId: string, revision: number, fragments: LiveTranscriptFragment[],
 ) {
-  return requestJson<GPTLiveCaptureResponse>(API_BASE_URL, "/api/live/captures", {
+  return requestJson<GPTLiveCaptureReceipt>(API_BASE_URL, "/api/live/captures", {
     method: "POST",
     body: { record_id: recordId, capture_id: captureId, revision, fragments },
-    signal: AbortSignal.timeout(120000),
+    signal: AbortSignal.timeout(15000),
+    keepalive: true,
   });
 }
 

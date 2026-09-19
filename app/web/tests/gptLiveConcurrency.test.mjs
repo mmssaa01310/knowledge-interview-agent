@@ -24,13 +24,19 @@ const captureCode = ts.transpileModule(captureSource, {
 function setup(refresh = () => {}) {
   const sent = [];
   const requests = [];
+  const polls = [];
   const states = [];
   let receive;
   const timers = new Map();
   let nextTimer = 0;
   const captureExports = {};
+  const pageListeners = new Map();
   vm.runInNewContext(captureCode, {
-    exports: captureExports, console,
+    exports: captureExports, console, TextEncoder,
+    window: {
+      addEventListener: (type, listener) => pageListeners.set(type, listener),
+      removeEventListener: (type) => pageListeners.delete(type),
+    },
     setTimeout: (callback) => { const id = ++nextTimer; timers.set(id, callback); return id; },
     clearTimeout: (id) => timers.delete(id),
   });
@@ -54,8 +60,10 @@ function setup(refresh = () => {}) {
       };
       if (name.endsWith("i18n")) return { useI18n: () => ({ t: (key) => key }) };
       if (name.endsWith("voiceErrors")) return { toStartErrorMessage: () => "error" };
+      if (name.endsWith("voiceTelemetry")) return { logVoiceStartupEvent() {} };
       if (name.endsWith("liveTranscriptCapture")) return captureExports;
       if (name.endsWith("realtimeVoiceClient")) return {
+        getGPTLiveCaptureStatus: () => new Promise((resolve, reject) => polls.push({ resolve, reject })),
         submitGPTLiveCapture: (...args) => new Promise((resolve, reject) => {
           requests.push({ args, resolve, reject });
         }),
@@ -74,7 +82,7 @@ function setup(refresh = () => {}) {
     enabled: true, recordId: "record", remoteAudioRef: { current: null },
     onInterviewStateChanged: refresh,
   });
-  return { hook, sent, requests, states, receive: (event) => receive(event),
+  return { hook, sent, requests, polls, states, pageListeners, receive: (event) => receive(event),
     tick: () => { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach((fn) => fn()); },
   };
 }
@@ -104,6 +112,86 @@ test("without delegation, Live transcripts continue while background LLM and UI 
   app.hook.stop();
   app.requests[1].resolve({ status: "updated", checklist: [] });
   await flush();
+});
+
+test("durable receipt releases the next batch while server organization is pending", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "最初の回答" });
+  app.tick();
+  app.requests[0].resolve({ status: "accepted", revision: 1 });
+  await flush();
+  app.receive({ type: "session.input_transcript.delta", delta: "追加回答" });
+  app.tick();
+  assert.equal(app.requests.length, 2);
+  assert.equal(app.polls.length, 1);
+  app.polls[0].resolve({ status: "updated", checklist: [], processing: false, interviewState: { status: "completed" } });
+  await flush();
+  assert.notEqual(app.states[0].value, "completed", "unsaved speech prevents stale completion");
+  app.requests[1].resolve({ status: "accepted", revision: 2 });
+  await flush();
+  app.tick();
+  app.polls[1].resolve({ status: "updated", checklist: [], processing: false, interviewState: { status: "completed" } });
+  await flush();
+  assert.equal(app.states[0].value, "completed");
+});
+
+test("manual stop shows organization until a persisted result arrives", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "最後の回答" });
+  app.hook.stop();
+  assert.equal(app.states[0].value, "processing");
+  app.requests[0].resolve({ status: "accepted", revision: 1 });
+  await flush();
+  app.tick();
+  app.polls[0].resolve({ status: "updated", checklist: [], processing: false, interviewState: { status: "completed" } });
+  await flush();
+  assert.equal(app.states[0].value, "completed");
+});
+
+test("candidate checklist state instructs Live to clarify before closing", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答" });
+  app.tick();
+  app.requests[0].resolve({ status: "accepted", revision: 1 });
+  await flush();
+  app.tick();
+  app.polls[0].resolve({
+    status: "updated", processing: false,
+    interviewState: { status: "in_progress" },
+    completion: {
+      complete: false, closingRequired: true,
+      missingRequiredTargets: [{ targetId: "profile" }],
+      pendingConfirmationTargets: [], unknownApplicabilityTopics: [], unresolvedContradictionIds: [],
+    },
+    checklist: [{
+      id: "profile", label: "基本プロフィール", answer_state: "CANDIDATE_PENDING",
+      answer_resolution: "TENTATIVE", candidate_answer: "候補", needs_confirmation: true,
+      missing_required_items: [],
+    }],
+  });
+  await flush();
+  const checklistEvent = app.sent.find((event) => event.content.includes("CANDIDATE_PENDING"));
+  assert.ok(checklistEvent);
+  assert.match(checklistEvent.content, /clarification or confirmation/);
+  assert.equal(app.sent.some((event) => event.content.includes("必須項目は保存済みです")), false);
+});
+
+test("page exit flushes speech and keeps the unsaved warning after audio stop", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "保存前の回答" });
+  app.pageListeners.get("pagehide")();
+  assert.equal(app.requests.length, 1);
+  app.hook.stop();
+  let prevented = false;
+  app.pageListeners.get("beforeunload")({ preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  app.requests[0].resolve({ status: "accepted", revision: 1 });
+  await flush();
+  assert.equal(app.pageListeners.has("beforeunload"), false, "only receipt acknowledgment releases the warning");
 });
 
 test("a disconnected session cannot send late results into the next session", async () => {

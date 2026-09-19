@@ -220,6 +220,13 @@ class StructuredInterviewOutput(StrictModel):
     openIssues: list[OpenIssue] = Field(default_factory=list)
 
 
+class LiveObservationOutput(StructuredInterviewOutput):
+    """Evidence of an open-ended closing, never a model completion decision."""
+
+    closingQuestionEvidenceIds: list[str] = Field(default_factory=list)
+    closingAnswerEvidenceIds: list[str] = Field(default_factory=list)
+
+
 class ProcessModelEditOutput(StrictModel):
     """Structured contract for a management user's full-screen edit command."""
 

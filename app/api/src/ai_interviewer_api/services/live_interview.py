@@ -77,6 +77,9 @@ def build_live_interview_context(
                 "required_items": required_items,
                 "optional_items": optional_items,
                 "answer_state": str(field_state.get("answerState") or "UNANSWERED"),
+                "answer_resolution": field_state.get("answerResolution"),
+                "candidate_answer": str(field_state.get("candidateAnswer") or "").strip(),
+                "needs_confirmation": str(field_state.get("answerState") or "UNANSWERED") != "CONFIRMED",
                 "captured_items": [
                     item["label"]
                     for item in required_items + optional_items

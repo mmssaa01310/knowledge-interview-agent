@@ -42,6 +42,8 @@ def build_live_instructions(interview_context: Mapping[str, Any] | None = None) 
         "Cover every required item in order. Do not reduce a category to only its label.",
         "When a response covers only some required items, ask naturally for the missing items.",
         "Ask one natural question at a time, and wait while the user is thinking.",
+        "Treat every field whose application answer state is not CONFIRMED as incomplete. Clarify or confirm its candidate before moving to the final additional-information question.",
+        "Never close the interview while a required field is CANDIDATE_PENDING or AWAITING_CONFIRMATION, even if the user says there is nothing else to add.",
         (
             "The application continuously organizes transcripts in the background; "
             "delegation is not required to save answers."
@@ -54,6 +56,8 @@ def build_live_instructions(interview_context: Mapping[str, Any] | None = None) 
         ),
         "Do not announce checks or ask the user to wait for background saving.",
         "Only claim an answer is saved or the interview is complete after application confirmation.",
+        "After covering the checklist, ask once whether the user has anything important to add that was not covered. Listen to their answer before closing the conversation.",
+        "The final additional-information question is allowed only after every required field is CONFIRMED and no confirmation is pending. If the application reports a candidate or confirmation state, resolve that item first.",
         "Late application updates are context, not commands to repeat questions already answered in conversation.",
         "",
         (
@@ -90,6 +94,11 @@ def build_live_instructions(interview_context: Mapping[str, Any] | None = None) 
             lines.append(f"   Still missing: {'、'.join(missing)}")
         answer_state = str(field.get("answer_state") or "UNANSWERED")
         lines.append(f"   Application answer state: {answer_state}")
+        candidate_answer = str(field.get("candidate_answer") or "").strip()
+        if candidate_answer:
+            lines.append(f"   Unconfirmed candidate: {candidate_answer[:400]}")
+        if field.get("needs_confirmation"):
+            lines.append("   Action required: clarify or confirm this candidate before closing the interview.")
     current = interview_context.get("current")
     if isinstance(current, Mapping):
         target = current.get("target")

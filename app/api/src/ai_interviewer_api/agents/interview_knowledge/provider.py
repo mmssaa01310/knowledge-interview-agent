@@ -15,6 +15,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     ProcessModelEditOutput,
     QuestionGenerationOutput,
     StructuredInterviewOutput,
+    LiveObservationOutput,
 )
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_locale import (
@@ -107,13 +108,14 @@ class BedrockResponsesStructuredProvider:
             if context.get("captureMode") == "live_observation"
             else ""
         )
+        output_type = LiveObservationOutput if observation_instructions else StructuredInterviewOutput
         for attempt in range(2):
             try:
                 payload = self._request(
                     model=self.model_id,
                     reasoning_effort=reasoning_effort,
                     schema_name="structured_interview_output",
-                    schema=StructuredInterviewOutput.model_json_schema(),
+                    schema=output_type.model_json_schema(),
                     system_prompt=_interpreter_system_prompt(
                         profile,
                         normalize_interview_locale(context.get("interviewLocale")) or "ja-JP",
@@ -121,7 +123,7 @@ class BedrockResponsesStructuredProvider:
                     user_payload=context,
                     max_output_tokens=max_output_tokens,
                 )
-                return StructuredInterviewOutput.model_validate(payload)
+                return output_type.model_validate(payload)
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
                 if attempt == 0:
@@ -582,6 +584,8 @@ _LIVE_OBSERVATION_INSTRUCTIONS = """
 - 既存状態から変化した項目だけ返します。明確なユーザー事実はAUTO_CONFIRM、曖昧なものはTENTATIVEです。
 - 十分性は抽出事実の確かさを評価します。質問全体の不足はbackendがrequiredItemsから検証します。
 - 根拠は該当user発言のidをevidenceTranscriptIdsへ指定します。質問生成や会話進行を行いません。
+- 最後の自由な追加事項の質問が実際に発話された場合だけ、そのassistant断片のidをclosingQuestionEvidenceIdsへ返します。
+- その質問への完結したuser回答（明示的な「特にない」・unknown・skipも含む）のidだけclosingAnswerEvidenceIdsへ返します。途中の回答、挨拶、通常項目への回答、assistantの終了宣言だけでは返しません。該当しない場合は両方空配列です。インタビュー全体の完了判断はBackendが行います。
 """
 
 

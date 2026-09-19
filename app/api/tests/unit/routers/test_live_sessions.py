@@ -22,6 +22,13 @@ def test_live_session_router_exposes_authenticated_post_contract() -> None:
 def test_live_capture_requires_authentication() -> None:
     route = next(route for route in router.routes if route.path == "/api/live/captures")
     assert route.methods == {"POST"}
+    assert route.status_code == 202
+    assert any(dependency.call is get_current_user for dependency in route.dependant.dependencies)
+
+
+def test_live_capture_status_requires_authentication() -> None:
+    route = next(route for route in router.routes if route.path == "/api/live/captures/{record_id}")
+    assert route.methods == {"GET"}
     assert any(dependency.call is get_current_user for dependency in route.dependant.dependencies)
 
 
@@ -38,7 +45,7 @@ def test_live_capture_checks_permissions_before_llm(monkeypatch, denied_stage) -
     monkeypatch.setattr(live_router, "get_scoped_item", scoped)
     monkeypatch.setattr(live_router, "require_record_action", lambda *_: deny() if denied_stage == "record_permission" else None)
     monkeypatch.setattr(live_router, "ensure_interviewer_knowledge_access", lambda *_: deny() if denied_stage == "knowledge_access" else None)
-    monkeypatch.setattr(live_router, "process_live_capture", lambda *_, **__: pytest.fail("must not invoke LLM"))
+    monkeypatch.setattr(live_router, "receive_live_capture", lambda *_, **__: pytest.fail("must not accept receipt"))
     with pytest.raises(HTTPException) as error:
         live_router.capture_live_transcript(LiveCaptureCreate(
             record_id="r", capture_id="c", revision=1, fragments=[{"role": "user", "text": "回答"}],

@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from ai_interviewer_api.routers.routes import router
 from ai_interviewer_api.services.dev_maintenance_demo import ensure_dev_maintenance_demo
 from ai_interviewer_api.services.dev_system_requirement_demo import ensure_dev_system_requirement_demo
 from ai_interviewer_api.services.dev_voice_demo import ensure_dev_voice_demo
+from ai_interviewer_api.services.live_capture_consumer import run_capture_consumer
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s", force=True)
 logger = logging.getLogger(__name__)
@@ -56,7 +58,13 @@ async def lifespan(_: FastAPI):
             identifiers["knowledgeId"],
             identifiers["recordId"],
         )
-    yield
+    stop_captures = asyncio.Event()
+    capture_task = asyncio.create_task(run_capture_consumer(stop_captures))
+    try:
+        yield
+    finally:
+        stop_captures.set()
+        await capture_task
 
 
 app = FastAPI(title="KIKIORI API", version="0.1.0", lifespan=lifespan)
