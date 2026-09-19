@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useI18n } from "../../../i18n";
+import { submitGPTLiveDelegation } from "../api/realtimeVoiceClient";
 import type { VoiceConnectionStats, VoiceConversationStatus } from "../types";
 import {
   createGPTLivePeerConnection,
@@ -11,6 +12,14 @@ import { toStartErrorMessage } from "../utils/voiceErrors";
 type UseGPTLiveVoiceConversationArgs = {
   enabled: boolean;
   remoteAudioRef: RefObject<HTMLAudioElement>;
+  recordId?: string;
+  onInterviewStateChanged?: () => void | Promise<void>;
+};
+
+export type GPTLiveTranscriptLine = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
 };
 
 const EMPTY_STATS: VoiceConnectionStats = {
@@ -20,13 +29,19 @@ const EMPTY_STATS: VoiceConnectionStats = {
 const GPT_LIVE_START_TIMEOUT_MS = 30000;
 
 export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArgs) {
-  const { enabled, remoteAudioRef } = args;
+  const {
+    enabled,
+    onInterviewStateChanged,
+    recordId,
+    remoteAudioRef,
+  } = args;
   const { t } = useI18n();
   const [status, setStatus] = useState<VoiceConversationStatus>("idle");
   const [message, setMessage] = useState("");
   const [connectionState, setConnectionState] = useState("new");
   const [requiresManualPlayback, setRequiresManualPlayback] = useState(false);
   const [stats, setStats] = useState<VoiceConnectionStats>(EMPTY_STATS);
+  const [transcriptLines, setTranscriptLines] = useState<GPTLiveTranscriptLine[]>([]);
   const peerRef = useRef<GPTLivePeerConnectionHandle | null>(null);
   const startingRef = useRef(false);
   const stoppingRef = useRef(false);
@@ -34,6 +49,93 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const connectionGenerationRef = useRef(0);
   const sessionIdRef = useRef<string | null>(null);
   const sessionStartedRef = useRef(false);
+  const transcriptLineSequenceRef = useRef(0);
+  const pendingUserTranscriptRef = useRef("");
+  const processedDelegationIdsRef = useRef(new Set<string>());
+  const delegationQueueRef = useRef(Promise.resolve());
+  const onInterviewStateChangedRef = useRef(onInterviewStateChanged);
+
+  useEffect(() => {
+    onInterviewStateChangedRef.current = onInterviewStateChanged;
+  }, [onInterviewStateChanged]);
+
+  const appendTranscriptDelta = useCallback((role: GPTLiveTranscriptLine["role"], delta: string) => {
+    if (!delta) {
+      return;
+    }
+    setTranscriptLines((current) => {
+      const last = current[current.length - 1];
+      if (last?.role === role) {
+        return [...current.slice(0, -1), { ...last, text: `${last.text}${delta}` }];
+      }
+      transcriptLineSequenceRef.current += 1;
+      return [
+        ...current,
+        {
+          id: `gpt-live-transcript-${transcriptLineSequenceRef.current}`,
+          role,
+          text: delta,
+        },
+      ];
+    });
+    if (role === "user") {
+      pendingUserTranscriptRef.current += delta;
+    }
+  }, []);
+
+  const processDelegation = useCallback(async (delegationId: string, transcript: string) => {
+    if (!recordId) {
+      console.warn("gpt_live_delegation_without_record", { delegation_id: delegationId });
+      return;
+    }
+    try {
+      const result = await submitGPTLiveDelegation(recordId, delegationId, transcript);
+      const callback = onInterviewStateChangedRef.current;
+      if (callback) {
+        await callback();
+      }
+      const sent = peerRef.current?.sendEvent({
+        type: "session.thinking.append",
+        event_id: `gpt_live_state_${delegationId}`,
+        delegation_id: delegationId,
+        content: result.status === "completed"
+          ? "The application marked the interview complete. Respond naturally and briefly."
+          : "The application updated the interview state. Continue with the next missing checklist item.",
+      });
+      if (!sent) {
+        console.warn("gpt_live_delegation_result_not_sent", { delegation_id: delegationId });
+      }
+      if (pendingUserTranscriptRef.current === transcript) {
+        pendingUserTranscriptRef.current = "";
+      } else if (pendingUserTranscriptRef.current.startsWith(transcript)) {
+        pendingUserTranscriptRef.current = pendingUserTranscriptRef.current.slice(transcript.length);
+      }
+      console.info("gpt_live_delegation_applied", {
+        delegation_id: delegationId,
+        status: result.status,
+        state_version: result.stateVersion,
+      });
+    } catch (error) {
+      processedDelegationIdsRef.current.delete(delegationId);
+      console.warn("gpt_live_delegation_failed", {
+        delegation_id: delegationId,
+        error_name: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }, [recordId]);
+
+  const enqueueDelegation = useCallback((event: GPTLiveEvent) => {
+    const delegationId = readDelegationId(event);
+    const transcript = pendingUserTranscriptRef.current.trim();
+    if (!delegationId || !transcript || processedDelegationIdsRef.current.has(delegationId)) {
+      return;
+    }
+    processedDelegationIdsRef.current.add(delegationId);
+    const work = delegationQueueRef.current
+      .catch(() => undefined)
+      .then(() => processDelegation(delegationId, transcript));
+    delegationQueueRef.current = work.then(() => undefined, () => undefined);
+  }, [processDelegation]);
 
   const cleanup = useCallback(() => {
     connectionGenerationRef.current += 1;
@@ -102,18 +204,31 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }
 
     if (isInputTranscriptDelta(eventType)) {
+      const delta = typeof event.delta === "string" ? event.delta : "";
       console.info("gpt_live_input_transcript_delta", {
         session_id: eventSessionId,
-        delta_length: typeof event.delta === "string" ? event.delta.length : 0,
+        delta_length: delta.length,
       });
+      appendTranscriptDelta("user", delta);
       return;
     }
 
     if (isOutputTranscriptDelta(eventType)) {
+      const delta = typeof event.delta === "string" ? event.delta : "";
       console.info("gpt_live_output_transcript_delta", {
         session_id: eventSessionId,
-        delta_length: typeof event.delta === "string" ? event.delta.length : 0,
+        delta_length: delta.length,
       });
+      appendTranscriptDelta("assistant", delta);
+      return;
+    }
+
+    if (eventType === "session.delegation.created") {
+      console.info("gpt_live_delegation_created", {
+        session_id: eventSessionId,
+        delegation_id: readDelegationId(event),
+      });
+      enqueueDelegation(event);
       return;
     }
 
@@ -129,9 +244,9 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       setMessage(t("errors.voiceConnectFailed"));
       setStatus("error");
     }
-    // Transcript deltas are observability/UI updates only. They do not close
-    // a turn, trigger processing, or send a command back over the DataChannel.
-  }, [cleanup, remoteAudioRef, setConnectionState, t]);
+    // Transcript deltas are observational/UI updates. Only the model's
+    // delegation event can request canonical application-state processing.
+  }, [appendTranscriptDelta, cleanup, enqueueDelegation, remoteAudioRef, t]);
 
   const start = useCallback(async () => {
     if (!enabled || startingRef.current || peerRef.current) {
@@ -141,6 +256,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     setMessage("");
     setRequiresManualPlayback(false);
     setStats(EMPTY_STATS);
+    setTranscriptLines([]);
+    pendingUserTranscriptRef.current = "";
+    processedDelegationIdsRef.current.clear();
+    delegationQueueRef.current = Promise.resolve();
     setConnectionState("connecting");
     setStatus("connecting");
     const startAbortController = new AbortController();
@@ -155,6 +274,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     try {
       const peer = await createGPTLivePeerConnection({
         remoteAudioElement: remoteAudioRef.current,
+        recordId,
         onEvent: handleEvent,
         signal: startAbortController.signal,
         onConnectionStateChange: (state) => {
@@ -202,7 +322,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       }
       startingRef.current = false;
     }
-  }, [cleanup, enabled, handleEvent, remoteAudioRef, t]);
+  }, [cleanup, enabled, handleEvent, recordId, remoteAudioRef, t]);
 
   const stop = useCallback(() => {
     if (stoppingRef.current) {
@@ -242,7 +362,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   return {
     status,
     message,
-    partialTranscript: "",
+    partialTranscript: transcriptLines[transcriptLines.length - 1]?.text ?? "",
+    transcriptLines,
     connectionState,
     stats,
     requiresManualPlayback,
@@ -260,6 +381,20 @@ function isInputTranscriptDelta(type: string): boolean {
 
 function isOutputTranscriptDelta(type: string): boolean {
   return type === "session.output_transcript.delta" || type === "output_transcript.delta";
+}
+
+function readDelegationId(event: GPTLiveEvent): string | undefined {
+  const delegation = event.delegation;
+  if (delegation && typeof delegation === "object" && "id" in delegation) {
+    const id = (delegation as Record<string, unknown>).id;
+    if (typeof id === "string" && id.trim()) {
+      return id;
+    }
+  }
+  const delegationId = event.delegation_id;
+  return typeof delegationId === "string" && delegationId.trim()
+    ? delegationId
+    : undefined;
 }
 
 function isErrorEvent(type: string): boolean {

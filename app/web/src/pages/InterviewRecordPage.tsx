@@ -51,7 +51,21 @@ function toSpokenQuestionFromLabel(label: string, t: Translate) {
 }
 
 function buildFieldQuestion(field: KnowledgeLayoutProps["sortedFields"][number], t: Translate) {
-  return field.aiQuestionExamples?.find((example) => example.trim()) ?? toSpokenQuestionFromLabel(field.name, t);
+  const fieldName = field.name.trim();
+  const requiredItems = field.questionPlan?.requiredItems
+    ?.map((item) => item.label.trim())
+    .filter(Boolean) ?? [];
+  if (fieldName && requiredItems.length) {
+    return `${fieldName}について教えてください。${requiredItems.join("、")}についてお聞かせください。`;
+  }
+  const example = field.aiQuestionExamples?.find((candidate) => candidate.trim());
+  if (example) {
+    return example;
+  }
+  if (fieldName && field.description?.trim()) {
+    return `${fieldName}について教えてください。${field.description.trim()}`;
+  }
+  return toSpokenQuestionFromLabel(field.name, t);
 }
 
 function isProcessModelEditMessage(message: KnowledgeLayoutProps["interviewMessages"][number]) {
@@ -127,6 +141,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
         .reverse()
         .find((message) => message.fieldId === field.id);
       const fieldState = field.id ? props.interviewState?.fieldStates?.[field.id] : undefined;
+      const latestStateQuestion = [...(props.interviewState?.askedQuestions ?? [])]
+        .reverse()
+        .find((question) => question.fieldId === field.id);
       const answer = getInterviewDisplayAnswer(
         fieldState,
         props.structuredDraft[field.name],
@@ -136,12 +153,16 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
         : fieldState?.answerState === "AWAITING_CONFIRMATION" || fieldState?.answerState === "CANDIDATE_PENDING"
           ? "active"
           : "pending";
+      const configuredQuestion = latestConfiguredQuestion?.text ?? latestStateQuestion?.text;
+      const isUnanswered = !fieldState || fieldState.answerState === "UNANSWERED";
       return {
         id: field.id ?? `field-${field.displayOrder}-${field.name}`,
         fieldId: field.id ?? null,
-        questionId: latestConfiguredQuestion?.questionId ?? null,
+        questionId: latestConfiguredQuestion?.questionId ?? latestStateQuestion?.questionId ?? null,
         label: field.name,
-        question: latestConfiguredQuestion?.text ?? buildFieldQuestion(field, t),
+        question: isUnanswered && field.questionPlan?.requiredItems?.length
+          ? buildFieldQuestion(field, t)
+          : configuredQuestion ?? buildFieldQuestion(field, t),
         answer,
         status,
       };
@@ -172,6 +193,8 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const gptLiveVoice = useGPTLiveVoiceConversation({
     enabled: voiceProvider === "gpt_live",
     remoteAudioRef,
+    recordId: props.selectedRecord?.id,
+    onInterviewStateChanged: props.onRefreshInterviewSnapshot,
   });
   const activeVoice = voiceProvider === "gpt_live" ? gptLiveVoice : realtimeVoice;
 
@@ -198,7 +221,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       return;
     }
     container.scrollTop = container.scrollHeight;
-  }, [props.interviewMessages.length, props.streamingInterviewReply]);
+  }, [gptLiveVoice.transcriptLines, props.interviewMessages.length, props.streamingInterviewReply]);
 
   useEffect(() => {
     document.body.classList.toggle("interview-context-open", isInterviewContextOpen);
@@ -657,6 +680,29 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   ) : null}
                 </div>
               ))}
+              {voiceProvider === "gpt_live" ? gptLiveVoice.transcriptLines.map((line) => {
+                const isUserLine = line.role === "user";
+                const isAlreadyPersisted = isUserLine && props.interviewMessages.some(
+                  (message) => message.role === "user" && message.text === line.text,
+                );
+                if (isAlreadyPersisted) {
+                  return null;
+                }
+                return (
+                  <div
+                    key={line.id}
+                    className={`bubble ${isUserLine ? "user" : "ai"} gpt-live-transcript`}
+                    aria-live="polite"
+                  >
+                    {!isUserLine ? (
+                      <div className="message-meta">
+                        <AssistantLabel state="default" label={t("interview.assistantName")} />
+                      </div>
+                    ) : null}
+                    <p>{line.text}</p>
+                  </div>
+                );
+              }) : null}
               {props.streamingInterviewReply ? (
                 <div className="bubble ai">
                   <div className="message-meta">
@@ -693,7 +739,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 <VoiceConversationStatus
                   status={activeVoice.status}
                   message={activeVoice.message}
-                  partialTranscript={activeVoice.partialTranscript}
+                  partialTranscript={voiceProvider === "gpt_live" ? "" : activeVoice.partialTranscript}
                 />
               ) : null}
               <textarea

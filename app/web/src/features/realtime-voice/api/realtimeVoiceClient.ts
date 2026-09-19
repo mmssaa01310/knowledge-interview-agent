@@ -15,6 +15,13 @@ export type GPTLiveSessionResponse = {
   };
 };
 
+export type GPTLiveDelegationResponse = {
+  status: "updated" | "duplicate" | "completed";
+  interviewState: Record<string, unknown>;
+  structuredDraft: Record<string, string>;
+  stateVersion?: number | null;
+};
+
 type RequestOptions = {
   method?: "GET" | "POST" | "DELETE";
   body?: unknown;
@@ -86,6 +93,7 @@ export function getDefaultLegacyVoiceProvider(): LegacyVoiceProvider {
 
 export async function createGPTLiveSession(
   offerSdp: string,
+  recordId?: string,
   signal?: AbortSignal,
 ) {
   return requestJson<GPTLiveSessionResponse>(
@@ -93,7 +101,31 @@ export async function createGPTLiveSession(
     "/api/live/sessions",
     {
       method: "POST",
-      body: { offer_sdp: offerSdp },
+      body: {
+        offer_sdp: offerSdp,
+        ...(recordId ? { record_id: recordId } : {}),
+      },
+      signal,
+    },
+  );
+}
+
+export async function submitGPTLiveDelegation(
+  recordId: string,
+  delegationId: string,
+  transcript: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<GPTLiveDelegationResponse>(
+    API_BASE_URL,
+    "/api/live/delegations",
+    {
+      method: "POST",
+      body: {
+        record_id: recordId,
+        delegation_id: delegationId,
+        transcript,
+      },
       signal,
     },
   );

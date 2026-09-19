@@ -43,9 +43,9 @@ services:
       BEDROCK_AWS_REGION: ${BEDROCK_AWS_REGION:-ap-northeast-1}
       AWS_SDK_LOAD_CONFIG: "1"
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-dev-internal-token}
-      # GPT-Live is created by the authenticated API backend. Keep this key
-      # server-side and never expose it through a VITE_* variable.
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # GPT-Live and the legacy OpenAI Realtime runtime share this server-side
+      # key. Never expose it through a VITE_* variable.
+      OPENAI_SECRET_KEY: ${OPENAI_SECRET_KEY:-}
       DEV_AUTO_SEED_VOICE_DEMO: ${DEV_AUTO_SEED_VOICE_DEMO:-true}
       DEV_AUTO_SEED_MAINTENANCE_DEMO: ${DEV_AUTO_SEED_MAINTENANCE_DEMO:-true}
       DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO: ${DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO:-true}
@@ -104,8 +104,8 @@ services:
       VOICE_ENABLE_BACKCHANNELS: ${VOICE_ENABLE_BACKCHANNELS:-false}
       VOICE_TURN_PROCESS_TIMEOUT_SECONDS: ${VOICE_TURN_PROCESS_TIMEOUT_SECONDS:-30}
       VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS: ${VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS:-5}
-      # OpenAI Realtime credentials/configuration stay in the voice server.
-      # Do not expose OPENAI_SECRET_KEY through any VITE_* variable.
+      # The legacy OpenAI Realtime runtime uses this shared server-side key.
+      # Do not expose it through any VITE_* variable.
       OPENAI_SECRET_KEY: ${OPENAI_SECRET_KEY:-}
       OPENAI_REALTIME_ENABLED: ${OPENAI_REALTIME_ENABLED:-false}
       OPENAI_REALTIME_MODEL: ${OPENAI_REALTIME_MODEL:-gpt-realtime-2}

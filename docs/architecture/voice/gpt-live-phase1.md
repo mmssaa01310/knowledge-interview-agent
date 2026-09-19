@@ -1,6 +1,6 @@
-# GPT-Live Phase 1
+# GPT-Live WebRTC
 
-GPT-Live Phase 1は、GPT-Live-1のWeb音声会話性能を確認するための接続検証経路である。既存のStructured Interview、VoiceSession/VoiceTurn保存、回答評価、RAG、質問生成とは分離する。
+GPT-Live-1のWeb音声会話経路。接続確認後は、会話音声と字幕をGPT-Liveに任せたまま、モデルが明示的に委譲した回答だけを既存のStructured Interview状態へ反映する。既存のVoiceSession/VoiceTurn保存、旧Realtimeのターン制御、独自VADは共有しない。
 
 既存の`openai_realtime`（旧Realtime API）経路は後方互換のため残すが、`gpt_live`経路からは実装・イベント処理・ターン制御を共有しない。
 
@@ -21,7 +21,11 @@ FastAPI app/api
        └─ OpenAI Python SDK client.live.create()
 ```
 
-FastAPIはブラウザから受け取ったSDP offerでLiveセッションを作成し、`session.id`、`transport.type`、`transport.sdp`だけを返す。`OPENAI_API_KEY`はAPIコンテナの環境変数だけで読み込み、Frontendへ返さない。
+FastAPIはブラウザから受け取ったSDP offerでLiveセッションを作成し、`session.id`、`transport.type`、`transport.sdp`だけを返す。旧Realtime経路と共通の`OPENAI_SECRET_KEY`をAPIコンテナの環境変数だけで読み込み、Frontendへ返さない。
+
+記録付きのセッション作成では、FastAPIが認証済みの`record_id`から質問項目、`questionPlan.requiredItems`、現在の状態を読み取り、Live instructionsへチェックリストとして渡す。ブラウザから質問項目や権限情報を受け取って信頼しない。
+
+APIはLive API対応の`openai-python`（`openai>=3.12.0,<4.0.0`、現在のlock解決版は`3.16.2`）を使用し、セッション作成は公式の`client.live.create()`だけで行う。`/live/sessions`への互換HTTP層や旧Realtime APIへのフォールバックは実装しない。
 
 ## Browserの接続順
 
@@ -41,17 +45,18 @@ Frontendの`gpt_live`経路は次の順序を固定する。
 
 音声はWebRTC MediaTrackだけで送受信する。DataChannelはJSONイベントの監視専用であり、音声データを送受信しない。
 
-## イベントとターン制御
+## イベント、字幕、状態委譲
 
-最低限、`session.started`、`session.closed`、`session.input_transcript.delta`、`session.output_transcript.delta`、error系イベントをログへ記録する。Transcript deltaは断片であり、表示・観測用に扱うだけで、ターン完了、回答処理、次質問生成、応答待ちの起点にはしない。
+最低限、`session.started`、`session.closed`、`session.input_transcript.delta`、`session.output_transcript.delta`、error系イベントをログへ記録する。Transcript deltaは断片なので、順序どおりに連結して字幕へ表示するだけであり、ターン完了、回答処理、次質問生成、応答待ちの起点にはしない。
+
+記録付きセッションでは`session.delegation.created`だけをアプリケーション状態更新の境界として扱う。ブラウザはそれまでに蓄積したユーザー字幕を`POST /api/live/delegations`へ送り、FastAPIが既存のStructured Interview状態 writerで評価・確定し、結果を`session.thinking.append`でLiveへ返す。これはモデルの委譲結果を返す処理であり、無音時間や字幕deltaの終端を検出する独自ターン管理ではない。
 
 DataChannel自体の切断はLiveセッションの正式終了を意味しないため、クライアント内部では`transport.closed`として切り分ける。サーバーから実際に届いた`session.closed`だけをLiveセッション終了イベントとして記録する。
 
-GPT-Liveの全二重会話制御を利用するため、Phase 1では次を実装しない。
+GPT-Liveの全二重会話制御を利用するため、次を実装しない。
 
 * `session.start`の送信
 * `session.input_audio.append`による音声送信
 * `session.output_audio.delta`のDataChannel再生
 * 独自VAD、独自Turn Detector、無音起点のターン確定
 * `speech_stopped`、`response.completed`、`response.done`起点の同期処理
-* Transcribe、Polly、InterviewBridge、RAG、回答評価、質問生成

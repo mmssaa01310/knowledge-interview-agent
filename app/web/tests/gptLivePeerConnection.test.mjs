@@ -28,7 +28,7 @@ test("GPT-Live WebRTC setup follows the required browser order", () => {
     "peerConnection.createOffer()",
     "peerConnection.setLocalDescription(offer)",
     "waitForIceGatheringComplete(peerConnection",
-    "createGPTLiveSession(offerSdp, options.signal)",
+    "createGPTLiveSession(offerSdp, options.recordId, options.signal)",
     'peerConnection.setRemoteDescription({',
     "waitForSessionStarted(sessionStarted",
   ].map(position);
@@ -38,7 +38,8 @@ test("GPT-Live WebRTC setup follows the required browser order", () => {
 });
 
 test("GPT-Live DataChannel is not used for audio or legacy turn control", () => {
-  assert.doesNotMatch(source, /dataChannel\.send\s*\(/);
+  assert.match(source, /dataChannel\.send\(JSON\.stringify\(event\)\)/);
+  assert.doesNotMatch(source, /dataChannel\.send\((?!JSON\.stringify\(event\))/);
   assert.doesNotMatch(source, /session\.input_audio\.append/);
   assert.doesNotMatch(source, /session\.output_audio\.delta/);
   assert.doesNotMatch(source, /["']session\.start["']/);
@@ -46,7 +47,7 @@ test("GPT-Live DataChannel is not used for audio or legacy turn control", () => 
 });
 
 test("GPT-Live readiness and transport failures are observable", () => {
-  assert.match(source, /createGPTLiveSession\(offerSdp, options\.signal\)/);
+  assert.match(source, /createGPTLiveSession\(offerSdp, options\.recordId, options\.signal\)/);
   assert.match(source, /gpt_live_session_started_timeout/);
   assert.match(source, /void sessionStarted\.catch\(\(\) => undefined\)/);
   assert.match(source, /waitForMediaStream\(microphonePromise, options\.signal\)/);
@@ -65,4 +66,6 @@ test("GPT-Live transcript deltas stay observational", () => {
   assert.match(hookSource, /gpt_live_input_transcript_delta/);
   assert.match(hookSource, /gpt_live_output_transcript_delta/);
   assert.doesNotMatch(hookSource, /setPartialTranscript|speech_stopped|response\.completed|response\.done|process_turn/);
+  assert.match(hookSource, /session\.delegation\.created/);
+  assert.match(hookSource, /session\.thinking\.append/);
 });

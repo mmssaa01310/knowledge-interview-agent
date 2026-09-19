@@ -13,6 +13,7 @@ export type GPTLiveEvent = {
 
 type GPTLivePeerConnectionOptions = {
   remoteAudioElement: HTMLAudioElement | null;
+  recordId?: string;
   onEvent: (event: GPTLiveEvent) => void;
   onConnectionStateChange: (state: string) => void;
   onStatsChange: (stats: VoiceConnectionStats) => void;
@@ -21,6 +22,7 @@ type GPTLivePeerConnectionOptions = {
 
 export type GPTLivePeerConnectionHandle = {
   sessionId: string;
+  sendEvent: (event: Record<string, unknown>) => boolean;
   stop: () => void;
 };
 
@@ -179,7 +181,7 @@ export async function createGPTLivePeerConnection(
     }
 
     // 10. FastAPI creates the Live session; the API key never reaches this code.
-    const liveSession = await createGPTLiveSession(offerSdp, options.signal);
+    const liveSession = await createGPTLiveSession(offerSdp, options.recordId, options.signal);
 
     // 11. Apply the SDP answer returned by FastAPI.
     await peerConnection.setRemoteDescription({
@@ -198,6 +200,13 @@ export async function createGPTLivePeerConnection(
     // 12. The caller receives a ready handle only after session.started.
     return {
       sessionId: liveSession.session.id,
+      sendEvent: (event: Record<string, unknown>) => {
+        if (stopped || !dataChannel || dataChannel.readyState !== "open") {
+          return false;
+        }
+        dataChannel.send(JSON.stringify(event));
+        return true;
+      },
       stop,
     };
   } catch (error) {
