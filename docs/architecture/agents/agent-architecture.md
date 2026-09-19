@@ -145,6 +145,8 @@ Question Design Validator（同じモデル・同じStructured Output）
 
 インタビューの次質問生成では、`services/interview_document_retrieval.py`の共通検索契約を利用する。Backendがテナント、Knowledge、取り込み状態を検証したうえで、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`を渡す。生成質問には`retrievedSources`を保持し、音声経路も`app/api`が生成した質問と出典を再利用する。`app/voice`に検索やインタビュー判断を複製してはならない。
 
+事前知識の直接入力への移行後は、追加検索とは別に設定コンテキストを質問設計・質問生成・回答解釈・非同期整理へ提供する。GPT-Liveの初期会話コンテキストも対象とする。利用・確認・出典のルールは[プロダクト仕様](../../spec.md)7.3.3を正本とする。この共通適用は未実装であり、[移行計画](../../plans/interview-prior-knowledge-text.md)に従って接続する。
+
 Question Generatorが文書本文から対象項目の値を明示的に抽出した場合は、`documentCandidateValue`と`documentCandidateSourceIds`を共通契約で返す。Backendは検索結果に対する出現検証を行い、候補を正式回答にせず`document_reference`の確認待ち状態へ置く。設備名などが文書に記載されているときは、通常質問を繰り返さず文書記載値の確認質問を生成する。確認、訂正、出典の確定は`app/api`の状態機械が担い、Providerや音声層に任せない。
 
 ## 4. エージェント間の違い

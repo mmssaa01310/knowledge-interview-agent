@@ -51,6 +51,7 @@ nav:
       - テスト: codebase/TESTING.md
       - 注意点: codebase/CONCERNS.md
   - 計画（未確定）:
+      - 事前知識の直接入力への移行: plans/interview-prior-knowledge-text.md
       - ナレッジ分析・教育支援: plans/admin-learning-dashboard.md
       - 音声 v2: plans/realtime-voice-v2.md
   - 実装履歴:
