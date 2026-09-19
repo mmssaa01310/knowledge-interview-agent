@@ -10,6 +10,7 @@ from aiortc import MediaStreamTrack
 
 from ai_interviewer_voice.transports.webrtc.audio_resampler import OutputAudioResampler
 from ai_interviewer_voice.transports.webrtc.playback_buffer import PlaybackBuffer
+from ai_interviewer_voice.startup_timing import log_voice_startup_stage
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class AudioOutputTrack(MediaStreamTrack):
         playback_buffer: PlaybackBuffer,
         *,
         voice_session_id: str | None = None,
+        provider: str | None = None,
         input_rate_hz: int = 24000,
         preroll_ms: float = 80.0,
         short_underrun_ms: float = 40.0,
@@ -41,6 +43,7 @@ class AudioOutputTrack(MediaStreamTrack):
         super().__init__()
         self._playback_buffer = playback_buffer
         self._voice_session_id = voice_session_id
+        self._provider = provider
         self._preroll_ms = preroll_ms
         self._primed = False
         self._draining = False
@@ -51,6 +54,7 @@ class AudioOutputTrack(MediaStreamTrack):
         self._input_bytes_per_frame = self._input_samples_per_frame * 2
         self._frames_created = 0
         self._non_silence_frames = 0
+        self._first_audio_frame_logged = False
         self._output_resampler = OutputAudioResampler(
             input_rate_hz=input_rate_hz,
             output_rate_hz=OUTPUT_RATE_HZ,
@@ -111,6 +115,16 @@ class AudioOutputTrack(MediaStreamTrack):
             silence_frame_returned=silence_frame_returned,
             resampler_processing_ms=stats.audio_resampler_processing_ms,
         )
+        if not silence_frame_returned and not self._first_audio_frame_logged:
+            self._first_audio_frame_logged = True
+            log_voice_startup_stage(
+                logger,
+                voice_session_id=self._voice_session_id,
+                provider=self._provider or "unknown",
+                stage="first_audio_frame_sent_to_browser",
+                buffer_depth_ms=round(depth_before_ms, 1),
+                frame_count=self._frames_created,
+            )
         if self._on_frame_emitted is not None:
             self._on_frame_emitted(
                 OutputFrameMetrics(

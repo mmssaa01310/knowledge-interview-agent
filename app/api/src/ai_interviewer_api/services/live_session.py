@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from time import monotonic, time
 from typing import Any
 
 from fastapi import HTTPException
@@ -114,11 +115,19 @@ def create_live_session(
     client_factory: Callable[[], Any] | None = None,
     interview_context: Mapping[str, Any] | None = None,
 ) -> LiveSessionResponse:
+    started_at = monotonic()
     offer_sdp = payload.offer_sdp
     if not offer_sdp.strip().startswith("v=0"):
         raise HTTPException(status_code=422, detail="invalid_sdp_offer")
     if not settings.openai_secret_key.strip():
         raise HTTPException(status_code=503, detail="openai_api_key_missing")
+
+    logger.info(
+        "voice_startup_stage source=api voice_session_id=- provider=gpt_live "
+        "stage=backend_live_session_request_started monotonic_ms=%s timestamp_ms=%s",
+        round(monotonic() * 1000, 3),
+        round(time() * 1000),
+    )
 
     try:
         if client_factory is None:
@@ -138,12 +147,26 @@ def create_live_session(
         }
         if interview_context:
             session["delegation"] = {"type": "client"}
+        external_started_at = monotonic()
+        logger.info(
+            "voice_startup_stage source=api voice_session_id=- provider=gpt_live "
+            "stage=external_session_create_started monotonic_ms=%s timestamp_ms=%s",
+            round(external_started_at * 1000, 3),
+            round(time() * 1000),
+        )
         live = client.live.create(
             session=session,
             transport={
                 "type": "webrtc",
                 "sdp": offer_sdp,
             },
+        )
+        logger.info(
+            "voice_startup_stage source=api voice_session_id=- provider=gpt_live "
+            "stage=external_session_create_returned monotonic_ms=%s timestamp_ms=%s elapsed_ms=%s",
+            round(monotonic() * 1000, 3),
+            round(time() * 1000),
+            round((monotonic() - external_started_at) * 1000, 1),
         )
     except Exception as exc:
         logger.warning(
@@ -169,6 +192,15 @@ def create_live_session(
     if transport_type != "webrtc":
         logger.warning("gpt_live_session_invalid_transport transport_type=%s", transport_type)
         raise HTTPException(status_code=502, detail="gpt_live_invalid_transport")
+
+    logger.info(
+        "voice_startup_stage source=api voice_session_id=%s provider=gpt_live "
+        "stage=backend_live_session_ready monotonic_ms=%s timestamp_ms=%s elapsed_ms=%s",
+        session_id,
+        round(monotonic() * 1000, 3),
+        round(time() * 1000),
+        round((monotonic() - started_at) * 1000, 1),
+    )
 
     return LiveSessionResponse(
         session=LiveSessionInfo(id=session_id),

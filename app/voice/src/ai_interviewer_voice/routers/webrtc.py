@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+from time import monotonic
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
@@ -22,11 +24,13 @@ from ai_interviewer_voice.runtimes.openai_realtime.config import OpenAIRealtimeC
 from ai_interviewer_voice.services.ice_server_service import IceServerService
 from ai_interviewer_voice.services.runtime_factory import create_runtime
 from ai_interviewer_voice.services.voice_session_service import VoiceSessionService
+from ai_interviewer_voice.startup_timing import log_voice_startup_stage
 from ai_interviewer_voice.transports.webrtc.peer_connection import VoicePeerConnection
 from ai_interviewer_voice.transports.webrtc.registry import DuplicatePeerConnectionError, PeerConnectionRegistry
 
 
 router = APIRouter(prefix="/voice")
+logger = logging.getLogger(__name__)
 
 _voice_session_service = VoiceSessionService(
     api_base_url=settings.api_base_url,
@@ -99,15 +103,46 @@ async def post_offer(
     payload: OfferRequest,
     authorization: str | None = Header(default=None),
 ) -> AnswerResponse:
+    offer_started_at = monotonic()
     bearer_token = _extract_bearer_token(authorization)
+    log_voice_startup_stage(
+        logger,
+        voice_session_id=voice_session_id,
+        provider="unknown",
+        stage="backend_offer_request_received",
+    )
     session = await _voice_session_service.authorize_session(voice_session_id, bearer_token=bearer_token)
+    log_voice_startup_stage(
+        logger,
+        voice_session_id=voice_session_id,
+        provider=session.provider,
+        stage="backend_offer_authorized",
+        elapsed_ms=round((monotonic() - offer_started_at) * 1000, 1),
+    )
     if session.provider == "openai_realtime":
         raise HTTPException(status_code=400, detail="openai_realtime_offer_endpoint_required")
     existing = await _registry.get(voice_session_id)
     if existing is not None:
         raise HTTPException(status_code=409, detail="voice_session_already_connected")
 
+    ice_started_at = monotonic()
+    log_voice_startup_stage(
+        logger,
+        voice_session_id=voice_session_id,
+        provider=session.provider,
+        stage="external_ice_config_started",
+        service="kvs_turn",
+    )
     ice_config = await _ice_server_service.get_ice_servers()
+    log_voice_startup_stage(
+        logger,
+        voice_session_id=voice_session_id,
+        provider=session.provider,
+        stage="external_ice_config_ready",
+        service="kvs_turn",
+        elapsed_ms=round((monotonic() - ice_started_at) * 1000, 1),
+        server_count=len(ice_config.ice_servers),
+    )
     peer = VoicePeerConnection(
         session=session,
         bearer_token=bearer_token,

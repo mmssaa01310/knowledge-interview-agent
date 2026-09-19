@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from queue import Queue
 from threading import Lock, RLock, Thread
-from time import monotonic
+from time import monotonic, time
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -113,6 +113,13 @@ class VoiceTurnProcessResult:
 
 def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: UserContext) -> dict:
     started_at = monotonic()
+    logger.info(
+        "voice_startup_stage source=api voice_session_id=- provider=%s "
+        "stage=backend_voice_session_request_started monotonic_ms=%s timestamp_ms=%s",
+        payload.provider,
+        round(monotonic() * 1000, 3),
+        round(time() * 1000),
+    )
     record = get_scoped_item("records", record_id, user, "record_not_found")
     require_record_action(record, user, "answer")
     knowledge = get_scoped_item("knowledges", record["knowledgeId"], user, "knowledge_not_found")
@@ -159,6 +166,15 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
         current_question_id,
         session.get("initialReplyStatus"),
         round((monotonic() - started_at) * 1000),
+    )
+    logger.info(
+        "voice_startup_stage source=api voice_session_id=%s provider=%s "
+        "stage=backend_voice_session_ready monotonic_ms=%s timestamp_ms=%s elapsed_ms=%s",
+        session["id"],
+        payload.provider,
+        round(monotonic() * 1000, 3),
+        round(time() * 1000),
+        round((monotonic() - started_at) * 1000, 1),
     )
     return session
 
@@ -1299,6 +1315,16 @@ def _initialize_initial_question(
         return None
     result = generate_interview_reply(record, user, persist_assistant_messages=False)
     initial_question = "\n".join(result.reply_chunks).strip()
+    latency_metrics = (
+        result.metadata.get("latencyMetrics")
+        if isinstance(result.metadata, Mapping)
+        else None
+    )
+    logger.info(
+        "voice_initial_question_generation_breakdown record_id=%s latency_metrics=%s",
+        record.get("id"),
+        json.dumps(latency_metrics or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
     if not initial_question:
         return None
     logger.info(

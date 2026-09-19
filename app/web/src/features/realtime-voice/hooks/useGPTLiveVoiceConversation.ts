@@ -9,6 +9,7 @@ import {
 } from "../webrtc/gptLivePeerConnection";
 import { createLiveTranscriptCapture } from "../utils/liveTranscriptCapture";
 import { toStartErrorMessage } from "../utils/voiceErrors";
+import { logVoiceStartupEvent } from "../utils/voiceTelemetry";
 
 type UseGPTLiveVoiceConversationArgs = {
   enabled: boolean;
@@ -51,6 +52,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const sessionIdRef = useRef<string | null>(null);
   const sessionStartedRef = useRef(false);
   const initialGreetingInstructionIdRef = useRef<string | null>(null);
+  const startupStartedAtRef = useRef<number | null>(null);
   const transcriptLineSequenceRef = useRef(0);
   const captureRef = useRef<ReturnType<typeof createLiveTranscriptCapture> | null>(null);
   const currentRecordRef = useRef(recordId);
@@ -99,6 +101,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }
     setStats(EMPTY_STATS);
     setRequiresManualPlayback(false);
+    startupStartedAtRef.current = null;
   }, [remoteAudioRef]);
 
   const handleEvent = useCallback((event: GPTLiveEvent) => {
@@ -111,6 +114,19 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       event_id: typeof event.event_id === "string" ? event.event_id : undefined,
       session_id: eventSessionId,
     });
+    const startupStartedAt = startupStartedAtRef.current;
+    const markStartup = (event: string, details?: Record<string, unknown>) => {
+      if (startupStartedAt === null) {
+        return;
+      }
+      logVoiceStartupEvent({
+        event,
+        provider: "gpt_live",
+        voiceSessionId: eventSessionId ?? undefined,
+        startStartedAt: startupStartedAt,
+        details,
+      });
+    };
 
     if (eventType === "session.started") {
       sessionStartedRef.current = true;
@@ -138,6 +154,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
 
     if (eventType === "session.closed") {
       console.info("gpt_live_session_closed", { session_id: eventSessionId });
+      markStartup("session_closed");
       cleanup();
       setConnectionState("closed");
       setStatus((current) => current === "stopping" ? current : "disconnected");
@@ -148,6 +165,9 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const acknowledgedEventId = readClientEventId(event);
       const initialGreetingInstructionId = initialGreetingInstructionIdRef.current;
       if (initialGreetingInstructionId && acknowledgedEventId === initialGreetingInstructionId) {
+        markStartup("initial_response_request_started", {
+          request_type: "session.commentary.append",
+        });
         const sent = peerRef.current?.sendEvent({
           type: "session.commentary.append",
           event_id: `gpt_live_greeting_begin_${connectionGenerationRef.current}`,
@@ -162,6 +182,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         console.info("gpt_live_initial_greeting_requested", {
           session_id: eventSessionId,
         });
+        if (sent) {
+          markStartup("initial_response_request_sent", {
+            request_type: "session.commentary.append",
+          });
+        }
         initialGreetingInstructionIdRef.current = null;
       }
       return;
@@ -234,6 +259,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
     startingRef.current = true;
+    const startupStartedAt = performance.now();
+    startupStartedAtRef.current = startupStartedAt;
+    logVoiceStartupEvent({
+      event: "start_clicked",
+      provider: "gpt_live",
+      startStartedAt: startupStartedAt,
+    });
     setMessage("");
     setRequiresManualPlayback(false);
     setStats(EMPTY_STATS);
@@ -293,6 +325,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const peer = await createGPTLivePeerConnection({
         remoteAudioElement: remoteAudioRef.current,
         recordId,
+        startupStartedAt,
         onEvent: (event) => {
           if (connectionGenerationRef.current === connectionGeneration) handleEvent(event);
         },
@@ -329,12 +362,26 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       sessionIdRef.current = peer.sessionId;
       const initialGreetingEventId = `gpt_live_greeting_instructions_${connectionGeneration}`;
       initialGreetingInstructionIdRef.current = initialGreetingEventId;
+      logVoiceStartupEvent({
+        event: "initial_instructions_send_started",
+        provider: "gpt_live",
+        voiceSessionId: peer.sessionId,
+        startStartedAt: startupStartedAt,
+      });
       const initialGreetingSent = peer.sendEvent({
         type: "session.instructions.append",
         event_id: initialGreetingEventId,
         delegation_id: null,
         content: "会話を今すぐ開始してください。日本語で短く自然に挨拶し、これからインタビューを始めることを伝えてください。アプリケーションのチェックリストで最初に不足している項目について、一度に一つだけ具体的な質問をしてください。ユーザーが先に話し始めるのを待たず、その後は回答を遮らずに聞いてください。",
       });
+      if (initialGreetingSent) {
+        logVoiceStartupEvent({
+          event: "initial_instructions_sent",
+          provider: "gpt_live",
+          voiceSessionId: peer.sessionId,
+          startStartedAt: startupStartedAt,
+        });
+      }
       if (!initialGreetingSent) {
         initialGreetingInstructionIdRef.current = null;
         console.warn("gpt_live_initial_greeting_instructions_not_sent", {

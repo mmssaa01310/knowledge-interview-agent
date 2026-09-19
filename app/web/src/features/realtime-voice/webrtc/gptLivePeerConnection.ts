@@ -1,5 +1,6 @@
 import { createGPTLiveSession } from "../api/realtimeVoiceClient";
 import type { VoiceConnectionStats } from "../types";
+import { logVoiceStartupEvent } from "../utils/voiceTelemetry";
 
 export type GPTLiveEvent = {
   type?: string;
@@ -18,6 +19,7 @@ type GPTLivePeerConnectionOptions = {
   onConnectionStateChange: (state: string) => void;
   onStatsChange: (stats: VoiceConnectionStats) => void;
   signal?: AbortSignal;
+  startupStartedAt?: number;
 };
 
 export type GPTLivePeerConnectionHandle = {
@@ -40,6 +42,18 @@ export async function createGPTLivePeerConnection(
   options: GPTLivePeerConnectionOptions,
 ): Promise<GPTLivePeerConnectionHandle> {
   const peerConnection = new RTCPeerConnection();
+  const markStartup = (event: string, voiceSessionId?: string, details?: Record<string, unknown>) => {
+    if (options.startupStartedAt === undefined) {
+      return;
+    }
+    logVoiceStartupEvent({
+      event,
+      provider: "gpt_live",
+      voiceSessionId,
+      startStartedAt: options.startupStartedAt,
+      details,
+    });
+  };
   let dataChannel: RTCDataChannel | null = null;
   let microphoneStream: MediaStream | null = null;
   let remoteStream: MediaStream | null = null;
@@ -47,6 +61,9 @@ export async function createGPTLivePeerConnection(
   let sessionStartedSettled = false;
   let resolveSessionStarted: (() => void) | null = null;
   let rejectSessionStarted: ((reason?: unknown) => void) | null = null;
+  let firstResponseEventLogged = false;
+  let remoteAudioTrackReceivedAt: number | null = null;
+  let startupSessionId: string | undefined;
   const sessionStarted = new Promise<void>((resolve, reject) => {
     resolveSessionStarted = () => resolve();
     rejectSessionStarted = reject;
@@ -66,6 +83,7 @@ export async function createGPTLivePeerConnection(
     microphoneStream?.getTracks().forEach((track) => track.stop());
     if (options.remoteAudioElement) {
       options.remoteAudioElement.pause();
+      options.remoteAudioElement.onplaying = null;
       options.remoteAudioElement.srcObject = null;
     }
     peerConnection.close();
@@ -75,6 +93,7 @@ export async function createGPTLivePeerConnection(
     if (event.type === "session.started" && !sessionStartedSettled) {
       sessionStartedSettled = true;
       resolveSessionStarted?.();
+      markStartup("live_session_started", event.session?.id);
     } else if (isErrorEvent(event.type) && !sessionStartedSettled) {
       sessionStartedSettled = true;
       rejectSessionStarted?.(new Error("gpt_live_session_error_before_started"));
@@ -87,6 +106,12 @@ export async function createGPTLivePeerConnection(
       ));
     }
     if (!stopped) {
+      if (!firstResponseEventLogged && event.type === "session.output_transcript.delta") {
+        firstResponseEventLogged = true;
+        markStartup("first_response_event_received", event.session?.id, {
+          event_type: event.type,
+        });
+      }
       options.onEvent(event);
     }
     if (!stopped && (
@@ -110,6 +135,20 @@ export async function createGPTLivePeerConnection(
       if (options.remoteAudioElement) {
         options.remoteAudioElement.srcObject = remoteStream;
       }
+      remoteAudioTrackReceivedAt = performance.now();
+      markStartup("remote_audio_track_received", startupSessionId, {
+        track_id: event.track.id,
+      });
+      if (options.remoteAudioElement) {
+        options.remoteAudioElement.onplaying = () => {
+          const receivedAt = remoteAudioTrackReceivedAt;
+          markStartup("audio_playing_started", startupSessionId, {
+            remote_track_received_to_playing_ms: receivedAt === null
+              ? undefined
+              : Math.max(0, Math.round(performance.now() - receivedAt)),
+          });
+        };
+      }
       options.onStatsChange({
         microphoneTrackLive: microphoneStream?.getAudioTracks().some((track) => track.readyState === "live") ?? false,
         remoteAudioTrackReceived: true,
@@ -117,9 +156,11 @@ export async function createGPTLivePeerConnection(
     });
 
     // 3. Browser microphone capture is the WebRTC media input.
+    markStartup("get_user_media_started");
     const microphonePromise = navigator.mediaDevices.getUserMedia({ audio: true });
     const capturedMicrophoneStream = await waitForMediaStream(microphonePromise, options.signal);
     microphoneStream = capturedMicrophoneStream;
+    markStartup("get_user_media_ready");
     if (stopped || options.signal?.aborted) {
       capturedMicrophoneStream.getTracks().forEach((track) => track.stop());
       throw createAbortError();
@@ -133,9 +174,11 @@ export async function createGPTLivePeerConnection(
     capturedMicrophoneStream.getAudioTracks().forEach((track) => {
       peerConnection.addTrack(track, capturedMicrophoneStream);
     });
+    markStartup("microphone_track_added");
 
     // 5-6. The Live DataChannel carries JSON events only, never audio bytes.
     dataChannel = peerConnection.createDataChannel("oai-events");
+    markStartup("data_channel_created");
     dataChannel.addEventListener("message", (messageEvent) => {
       const event = parseDataChannelEvent(messageEvent.data);
       if (event) {
@@ -144,6 +187,7 @@ export async function createGPTLivePeerConnection(
     });
     dataChannel.addEventListener("open", () => {
       console.info("gpt_live_data_channel_open", { label: dataChannel?.label });
+      markStartup("data_channel_open", startupSessionId);
     });
     dataChannel.addEventListener("close", () => {
       console.info("gpt_live_data_channel_closed");
@@ -175,19 +219,24 @@ export async function createGPTLivePeerConnection(
 
     // 9. Wait for the fully gathered offer SDP.
     await waitForIceGatheringComplete(peerConnection, ICE_GATHERING_TIMEOUT_MS, options.signal);
+    markStartup("browser_offer_ready");
     const offerSdp = peerConnection.localDescription?.sdp;
     if (!offerSdp) {
       throw new Error("webrtc_offer_sdp_missing");
     }
 
     // 10. FastAPI creates the Live session; the API key never reaches this code.
+    markStartup("backend_session_request_started");
     const liveSession = await createGPTLiveSession(offerSdp, options.recordId, options.signal);
+    startupSessionId = liveSession.session.id;
+    markStartup("backend_session_ready", liveSession.session.id);
 
     // 11. Apply the SDP answer returned by FastAPI.
     await peerConnection.setRemoteDescription({
       type: "answer",
       sdp: liveSession.transport.sdp,
     });
+    markStartup("remote_description_set", liveSession.session.id);
 
     // Live sessions are already started by the HTTP create call. The
     // DataChannel event is still the application-level readiness signal.

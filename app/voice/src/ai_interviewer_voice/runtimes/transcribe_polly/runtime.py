@@ -74,6 +74,7 @@ from ai_interviewer_voice.services.interview_bridge import (
     InterviewBridgeStreamStarted,
     InterviewBridgeTextDelta,
 )
+from ai_interviewer_voice.startup_timing import log_voice_startup_stage
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ class TranscribePollyRuntime:
         self._interrupt_emitted_for: set[str] = set()
         self._backchannel_metadata: dict[str, tuple[OutputKind, str]] = {}
         self._pipeline_timings: dict[str, dict[str, Any]] = {}
+        self._startup_first_tts_chunk_logged = False
         self._pending_listening_state: Literal[
             "ANSWER_LISTENING",
             "CONFIRMATION_LISTENING",
@@ -238,11 +240,17 @@ class TranscribePollyRuntime:
             return
         started_at = monotonic()
         self._context = context
+        self._startup_first_tts_chunk_logged = False
         self._closed = False
         self._input_available = True
         self._input_gate_reason = None
         self._silence_keepalive_logged = False
         self._transcribe_unavailable = False
+        self._startup_stage(
+            "runtime_session_initialization_started",
+            state_load_parallel=self._interview_bridge is not None,
+        )
+        self._startup_stage("external_service_connect_started", service="transcribe")
         transcribe_start_task = asyncio.create_task(self._transcribe.start(
             on_result=self._on_transcribe_result,
             on_reconnecting=self._on_transcribe_reconnecting,
@@ -257,6 +265,7 @@ class TranscribePollyRuntime:
         )
         try:
             await transcribe_start_task
+            self._startup_stage("external_service_ready", service="transcribe")
             if state_load_task is not None:
                 snapshot = await state_load_task
                 self._apply_voice_session_snapshot(snapshot)
@@ -286,6 +295,10 @@ class TranscribePollyRuntime:
             "transcribe_polly_runtime_ready voice_session_id=%s startup_ms=%s",
             context.voice_session_id,
             round((monotonic() - started_at) * 1000),
+        )
+        self._startup_stage(
+            "runtime_ready_emitted",
+            startup_ms=round((monotonic() - started_at) * 1000, 1),
         )
         await self._emit(RuntimeReady())
         await self._emit_input_state("ANSWER_LISTENING")
@@ -1555,6 +1568,9 @@ class TranscribePollyRuntime:
         response_id: str | None = None,
     ) -> AsyncIterator[bytes]:
         timing = self._pipeline_timings.get(response_id) if response_id else None
+        is_initial_response = bool(response_id and response_id.startswith("initial-response-"))
+        if is_initial_response and not self._startup_first_tts_chunk_logged:
+            self._startup_stage("tts_generation_started", response_id=response_id)
         if timing is not None and "polly_started_at" not in timing:
             timing["polly_started_at"] = monotonic()
             timing["polly_started_at_ms"] = int(time() * 1000)
@@ -1593,6 +1609,13 @@ class TranscribePollyRuntime:
                         response_id,
                         round((timing["polly_first_chunk_ready_at"] - timing["polly_started_at"]) * 1000, 1),
                     )
+                if is_initial_response and index == 0 and not self._startup_first_tts_chunk_logged:
+                    self._startup_first_tts_chunk_logged = True
+                    self._startup_stage(
+                        "first_tts_chunk_ready",
+                        response_id=response_id,
+                        bytes=len(pcm),
+                    )
                 yield pcm
                 if next_to_schedule < len(chunks):
                     chunk = chunks[next_to_schedule]
@@ -1610,6 +1633,15 @@ class TranscribePollyRuntime:
         if prepared is not None:
             return prepared
         return asyncio.create_task(self._polly.synthesize(chunk))
+
+    def _startup_stage(self, stage: str, **details: object) -> None:
+        log_voice_startup_stage(
+            logger,
+            voice_session_id=self._context.voice_session_id if self._context else None,
+            provider=self._config.provider_name,
+            stage=stage,
+            **details,
+        )
 
     async def _emit_output_frame(
         self,

@@ -84,6 +84,7 @@ from ai_interviewer_voice.schemas.events import (
 )
 from ai_interviewer_voice.schemas.sessions import AssistantReply, VoiceRuntimeContext
 from ai_interviewer_voice.services.interview_bridge import InterviewBridge
+from ai_interviewer_voice.startup_timing import log_voice_startup_stage
 
 
 logger = logging.getLogger(__name__)
@@ -388,25 +389,38 @@ class NovaSonicRuntime:
         self._protocol_dispatcher.configure(self._config)
         self._reset_state(context)
         try:
+            self._startup_stage("runtime_session_initialization_started")
+            self._startup_stage("voice_session_state_load_started")
             await self._load_voice_session_state()
+            self._startup_stage("voice_session_state_ready")
             logger.info(
                 "nova_runtime_starting nova_model_id=%s nova_voice_id=%s",
                 self._config.model_id,
                 self._config.voice_id,
             )
-            client = self._sdk_client or create_bedrock_runtime_client(self._config.aws_region)
+            if self._sdk_client is None:
+                self._startup_stage("external_client_initialization_started", service="bedrock")
+                client = create_bedrock_runtime_client(self._config.aws_region)
+                self._startup_stage("external_client_initialized", service="bedrock")
+            else:
+                client = self._sdk_client
             self._sdk_client = client
+            self._startup_stage("external_service_connect_started", service="nova_sonic")
             self._record_input_stage("invoke_model_with_bidirectional_stream")
             self._stream = await open_bidirectional_stream(
                 client,
                 model_id=self._config.model_id,
                 timeout_seconds=self._config.invoke_timeout_seconds,
             )
+            self._startup_stage("external_service_ready", service="nova_sonic")
             self._session_context.runtime_open = True
+            self._startup_stage("session_initialization_started", service="nova_sonic")
             await self._send_initial_events()
+            self._startup_stage("session_initialization_sent", service="nova_sonic")
             self._receive_task = asyncio.create_task(self._receive_output_loop())
             self._record_input_stage("output_receiver_started")
             self._started = True
+            self._startup_stage("runtime_ready_emitted")
             await self._event_queue.put(RuntimeReady())
         except Exception as exc:
             await self._cleanup_after_failed_start()
@@ -421,6 +435,7 @@ class NovaSonicRuntime:
         self._audio_input_frame_count = 0
         self._audio_input_bytes_sent = 0
         self._last_audio_input_flow_log_at = 0.0
+        self._startup_stage("audio_input_start_started")
         await self._send_sequence(
             build_audio_start_sequence(
                 prompt_name=self._prompt_name,
@@ -433,6 +448,7 @@ class NovaSonicRuntime:
             self._audio_content_name,
             self._stream is not None and not self._closed,
         )
+        self._startup_stage("audio_input_ready")
 
     async def end_audio_input(self) -> None:
         if not self._started or self._stream is None or self._audio_content_name is None:
@@ -587,7 +603,15 @@ class NovaSonicRuntime:
         )
         self._observed_output.planned_reply_text = reply_text
         self._observed_output.planned_reply_length = len(reply_text)
+        self._startup_stage(
+            "initial_control_sequence_started",
+            question_id=question_id,
+        )
         await self._send_initial_control_sequence()
+        self._startup_stage(
+            "initial_control_sequence_sent",
+            question_id=question_id,
+        )
 
     async def queue_initial_followup_reply(
         self,
@@ -964,6 +988,15 @@ class NovaSonicRuntime:
 
     def _set_failed_stage(self, stage: str) -> None:
         self._observability.set_failed_stage(stage)
+
+    def _startup_stage(self, stage: str, **details: object) -> None:
+        log_voice_startup_stage(
+            logger,
+            voice_session_id=self._context.voice_session_id if self._context else None,
+            provider=self._config.provider_name,
+            stage=stage,
+            **details,
+        )
 
     def _log_audio_input_flow_if_due(self) -> None:
         now = monotonic()
