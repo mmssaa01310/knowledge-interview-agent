@@ -68,6 +68,9 @@ class Settings:
     voice_endpoint_silence_ms: int = int(
         os.getenv("VOICE_ENDPOINT_SILENCE_MS", "600")
     )
+    voice_hard_endpoint_ms: int = int(
+        os.getenv("VOICE_HARD_ENDPOINT_MS", "1000")
+    )
     voice_final_result_settle_ms: int = int(
         os.getenv("VOICE_FINAL_RESULT_SETTLE_MS", "150")
     )
@@ -111,17 +114,11 @@ class Settings:
     webrtc_audio_input_queue_max_frames: int = int(
         os.getenv("VOICE_WEBRTC_AUDIO_INPUT_QUEUE_MAX_FRAMES", "12")
     )
-    webrtc_playback_buffer_target_ms: float = float(
-        os.getenv("VOICE_WEBRTC_PLAYBACK_BUFFER_TARGET_MS", "100")
-    )
     webrtc_playback_buffer_retention_max_ms: float = float(
         os.getenv("VOICE_WEBRTC_PLAYBACK_BUFFER_RETENTION_MAX_MS", "60000")
     )
     webrtc_playback_preroll_ms: float = float(
         os.getenv("VOICE_WEBRTC_PLAYBACK_PREROLL_MS", "80")
-    )
-    webrtc_playback_short_underrun_ms: float = float(
-        os.getenv("VOICE_WEBRTC_PLAYBACK_SHORT_UNDERRUN_MS", "40")
     )
     webrtc_playback_drain_timeout_seconds: float = float(
         os.getenv("VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS", "5")

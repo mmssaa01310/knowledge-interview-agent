@@ -57,7 +57,7 @@ async def test_audio_output_track_reuses_last_samples_on_short_underrun() -> Non
         authorized=True,
     )
     await buffer.enqueue(partial, current_generation=1)
-    track = AudioOutputTrack(buffer, preroll_ms=0.0, short_underrun_ms=40.0)
+    track = AudioOutputTrack(buffer, preroll_ms=0.0)
     frame = await track.recv()
     pcm = bytes(frame.planes[0])
     assert any(byte != 0 for byte in pcm)
@@ -71,11 +71,9 @@ async def test_preroll_does_not_strand_the_last_sixty_ms() -> None:
         pcm=b"\x01\x02" * 2400, authorized=True,
     ), current_generation=1)
     track = AudioOutputTrack(buffer, preroll_ms=80.0)
-    started_at = monotonic()
     for _ in range(5):
         await track.recv()
     remaining_ms = await buffer.depth_ms()
-    print(f"audio_tail_probe elapsed_ms={(monotonic() - started_at) * 1000:.1f} remaining_ms={remaining_ms}")
     assert remaining_ms == 0
 
 
@@ -94,7 +92,7 @@ async def test_finished_short_segment_bypasses_initial_preroll() -> None:
 
 @pytest.mark.anyio
 async def test_audio_output_track_requires_preroll_before_playback() -> None:
-    buffer = PlaybackBuffer(target_depth_ms=100.0, retention_max_ms=5000.0)
+    buffer = PlaybackBuffer(retention_max_ms=5000.0)
     chunk = AssistantAudioChunk(
         response_id="r1",
         completion_id="c1",
@@ -112,7 +110,7 @@ async def test_audio_output_track_requires_preroll_before_playback() -> None:
 
 @pytest.mark.anyio
 async def test_audio_output_track_keeps_roughly_twenty_millisecond_pacing() -> None:
-    buffer = PlaybackBuffer(target_depth_ms=100.0, retention_max_ms=5000.0)
+    buffer = PlaybackBuffer(retention_max_ms=5000.0)
     chunk = AssistantAudioChunk(
         response_id="r1",
         completion_id="c1",
@@ -136,7 +134,7 @@ async def test_audio_output_track_keeps_roughly_twenty_millisecond_pacing() -> N
 
 @pytest.mark.anyio
 async def test_audio_output_track_preserves_five_second_assistant_duration_under_burst_enqueue() -> None:
-    buffer = PlaybackBuffer(target_depth_ms=100.0, retention_max_ms=10000.0)
+    buffer = PlaybackBuffer(retention_max_ms=10000.0)
     chunk = AssistantAudioChunk(
         response_id="r1",
         completion_id="c1",

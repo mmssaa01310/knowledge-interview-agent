@@ -1025,17 +1025,17 @@ Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20ms�
 発話途中の相槌と処理中通知は、意図しない音声の割り込みを防ぐため既定で無効とする。
 `VOICE_ENABLE_BACKCHANNELS=true`を明示した場合だけ、次のタイミングで有効になる。
 
-* 350ms: soft endpoint
 * 500ms: 条件を満たす場合だけLISTEN_ACK
-* 600ms: Transcribe確定結果または完結表現で通常確定
-* 1,000ms: hard endpoint。確定結果を最大300ms待って安定部分で確定
+* 600ms: Transcribe確定結果を受信したターンの通常endpoint
+* 1,000ms: hard endpoint。FINALが届かない場合は部分Transcriptを保存せず、警告イベントを出して入力を再開
 * 1,300ms: ターン確定後のPROCESSING_ACK
 * 3,000ms: 1ターン1回の長時間処理通知
 
 正式応答はInterview APIの`AssistantReply`を正本とし、句読点と文字数で分割してPolly
-`SynthesizeSpeech`へ最大2件先行要求する。音声は16kHz PCMとして受け、`audio_sequence`順に
-WebRTCへ渡す。相槌・処理中通知を有効にした場合も、メモリキャッシュ済み音声だけを使い、
-正式会話履歴には保存しない。
+`SynthesizeSpeech`へ最大2件先行要求する。最初のPolly `AudioStream`は読み取り可能なPCMフラグメント
+単位で直ちに再生へ渡し、全文音声の生成完了を待たない。音声は16kHz PCMとして受け、
+`audio_sequence`順にWebRTCへ渡す。初回発話は固定挨拶と初回質問を1つの正式応答へまとめる。
+相槌・処理中通知を有効にした場合も、メモリキャッシュ済み音声だけを使い、正式会話履歴には保存しない。
 
 正式回答、PROCESSING_ACK、LISTEN_ACK、長時間処理通知は単一の`AudioOutputCoordinator`へ渡す。
 優先度は順に100、50、40、30とし、高優先度出力は低優先度の生成・再生を即時キャンセルする。
@@ -1047,13 +1047,14 @@ PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信�
 切り捨てず、未知の場合だけ`VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS`を復旧待機時間に使う。
 
 回答の確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、マイクPCMを
-VAD・Transcribeへ渡さない。WebRTC frameが継続して届いている間は、AWS Transcribeの無音timeoutを
-避けるため、マイクPCMを同じ長さのゼロPCMへ置換して100ms単位でTranscribe streamへ送る。ゲート中は
-VADを実行せず、Transcript callbackもTurnを開始しない。入力再開時には未送信bufferを破棄してから
-マイクPCMの転送を再開する。`assistant_playback_drained`を受けた後にだけ次の入力を受け付けるため、
-このRuntimeでは正式応答中のbarge-inを行わない。古いLLM応答、未再生Polly音声、遅延通知はgeneration
-照合で破棄する。Transcribeは最大2回再接続し、その間の音声を最大3秒保持する。Pollyは指数
-バックオフ付きで1回再試行し、失敗時も正式応答テキストを表示して会話を継続する。
+VAD・Transcribeへそのまま渡さない。WebRTC frameが継続して届いている間は、AWS Transcribeの無音timeoutを
+避けるため、マイクPCMを同じ長さのゼロPCMへ置換して100ms単位でTranscribe streamへ送る。一方、ゲート中も
+ローカルVADは割り込み判定のために監視し、120ms以上の連続音声で正式応答を中断して入力を再開する。
+割り込み成立後のフレームからマイクPCMをTranscribeへ転送する。通常の無音や短いノイズではゲートを開けず、
+入力再開時には未送信bufferを破棄する。古いLLM応答、未再生Polly音声、遅延通知はgeneration照合で破棄する。
+Transcribeは最大2回再接続し、その間の音声を最大3秒保持する。再接続用キューが満杯の場合は古い音声を破棄し、
+破棄量を`transcribe_audio_queue_drop`で記録する。Pollyは指数バックオフ付きで1回再試行し、最初のPCM送出後は
+重複再生を避けるため再試行しない。失敗時も正式応答テキストを表示して会話を継続する。
 
 `generation`はVoice Runtime内の音声生成・再生を無効化する識別子であり、InterviewStateの
 排他制御には使用しない。確定turnには`clientTurnId`と`expectedStateVersion`を付与し、
@@ -1063,8 +1064,8 @@ APIは重複ID、古いversion、非active Sessionを拒否する。
 
 * `OUTPUT_INTERRUPT`: 割り込みを許可するRuntimeでBarge-inが成立した場合、または明示的な割り込み操作を
   受けた場合に、Polly生成、PCM再生、相槌、通知、未再生Assistant responseを中断し、`generation`を更新する。
-  APIのUser Turnは変更しない。Transcribe + Polly Runtimeの通常の正式応答中は入力ゲートを閉じるため、
-  Barge-inは成立しない。
+  APIのUser Turnは変更しない。Transcribe + Polly Runtimeでは正式応答中もローカルVADだけを監視し、
+  120ms以上の音声を検出した場合にこの操作を実行する。
 * `PENDING_TURN_CANCEL`: API応答待ちのUser Turnが`RECEIVED`または`EVALUATING`の場合だけ、
   新しいユーザー発話の開始に伴って明示的に実行する。cancel tombstoneを作成し、遅延commitを拒否する。
 * `COMMITTED_TURN_REVERT`: 通常のBarge-inでは実行しない。明示的な訂正を新しいUser Turnとして

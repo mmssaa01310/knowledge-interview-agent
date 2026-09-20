@@ -23,6 +23,7 @@ from ai_interviewer_voice.transports.webrtc.peer_connection import (
     VoicePeerConnection,
     _extract_initial_greeting_text,
     _extract_initial_question_text,
+    _join_initial_greeting_and_question,
 )
 from ai_interviewer_voice.transports.webrtc.registry import DuplicatePeerConnectionError, PeerConnectionRegistry
 
@@ -93,6 +94,11 @@ def test_initial_reply_is_split_using_selected_interview_locale() -> None:
         "We are about to start the interview."
     )
     assert _extract_initial_question_text(initial_reply, "en-US") == "Please tell me about 現象."
+    assert _join_initial_greeting_and_question(
+        "We are about to start the interview.",
+        "Please tell me about 現象.",
+        "en-US",
+    ) == "We are about to start the interview. Please tell me about 現象."
 
 
 class BurstAudioTrack(MediaStreamTrack):
@@ -273,8 +279,8 @@ async def test_playback_buffer_normal_clear_does_not_count_as_drop() -> None:
 
 
 @pytest.mark.anyio
-async def test_playback_buffer_keeps_pcm_when_preroll_target_is_exceeded() -> None:
-    buffer = PlaybackBuffer(target_depth_ms=80.0, retention_max_ms=5000.0)
+async def test_playback_buffer_keeps_pcm_when_preroll_depth_is_exceeded() -> None:
+    buffer = PlaybackBuffer(retention_max_ms=5000.0)
     chunk = AssistantAudioChunk(
         response_id="r1",
         completion_id="c1",
@@ -374,6 +380,67 @@ async def test_initial_reply_is_not_sent_before_claim_completes() -> None:
 
 
 @pytest.mark.anyio
+async def test_transcribe_polly_initial_reply_is_one_audio_request() -> None:
+    runtime = StubRuntime()
+    events: list[tuple[str, str | None]] = []
+
+    class StubInitialReplyService:
+        async def claim_initial_reply(self, voice_session_id: str, *, timeout_seconds: float = 5.0) -> InitialReplyClaim:
+            return InitialReplyClaim(
+                claimed=True,
+                initial_reply_text=f"{INITIAL_VOICE_GREETING}あなたの名前は？",
+                initial_question_id="q-001",
+            )
+
+        async def mark_initial_reply_sent(self, voice_session_id: str, *, timeout_seconds: float = 5.0) -> None:
+            events.append(("sent", voice_session_id))
+
+        async def mark_initial_reply_failed(self, voice_session_id: str, *, timeout_seconds: float = 5.0) -> None:
+            events.append(("failed", voice_session_id))
+
+        async def create_connection_event(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            return None
+
+    peer = VoicePeerConnection(
+        session=AuthorizedVoiceSession(
+            voice_session_id="vs-transcribe-polly-initial",
+            record_id="record-1",
+            owner_user_id="user-1",
+            provider="transcribe_polly",
+            status="active",
+            current_question_id="q-001",
+            state_version=1,
+            interview_status="active",
+            initial_reply_text=f"{INITIAL_VOICE_GREETING}あなたの名前は？",
+            initial_question_id="q-001",
+            initial_reply_status="pending",
+        ),
+        bearer_token="dev-manager",
+        runtime_factory=lambda provider, locale: runtime,
+        ice_servers=(),
+        voice_session_service=StubInitialReplyService(),  # type: ignore[arg-type]
+        on_closed=lambda _: asyncio.sleep(0),
+        ice_gathering_timeout_seconds=1.0,
+        peer_disconnected_grace_seconds=1.0,
+    )
+    peer._runtime_started = True
+
+    await peer._send_initial_reply_if_pending()
+
+    assert runtime.calls == [
+        (
+            "send_reply",
+            {
+                "text": "これからインタビューを開始します。あなたの名前は？",
+                "question_id": "q-001",
+            },
+        )
+    ]
+    assert events == [("sent", "vs-transcribe-polly-initial")]
+    await peer.close()
+
+
+@pytest.mark.anyio
 async def test_peer_close_logs_explicit_reason_and_runtime_state(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -467,7 +534,7 @@ async def test_peer_playback_watchdog_reopens_runtime_when_browser_drain_is_miss
 
 @pytest.mark.anyio
 async def test_playback_buffer_raises_when_retention_cap_is_exceeded() -> None:
-    buffer = PlaybackBuffer(target_depth_ms=80.0, retention_max_ms=100.0)
+    buffer = PlaybackBuffer(retention_max_ms=100.0)
     chunk = AssistantAudioChunk(
         response_id="r1",
         completion_id="c1",

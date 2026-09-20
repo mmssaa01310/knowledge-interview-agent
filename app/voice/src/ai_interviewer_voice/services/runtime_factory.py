@@ -80,6 +80,7 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
                 reconnect_audio_buffer_ms=settings.transcribe_reconnect_audio_buffer_ms,
                 vad_rms_threshold=settings.transcribe_vad_rms_threshold,
                 normal_endpoint_ms=settings.voice_endpoint_silence_ms,
+                hard_endpoint_ms=settings.voice_hard_endpoint_ms,
                 final_result_settle_ms=settings.voice_final_result_settle_ms,
                 polly_voice_id=(
                     settings.polly_voice_id

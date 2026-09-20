@@ -37,7 +37,6 @@ class AudioOutputTrack(MediaStreamTrack):
         provider: str | None = None,
         input_rate_hz: int = 24000,
         preroll_ms: float = 80.0,
-        short_underrun_ms: float = 40.0,
         on_frame_emitted: Callable[[OutputFrameMetrics], None] | None = None,
     ) -> None:
         super().__init__()
@@ -48,7 +47,6 @@ class AudioOutputTrack(MediaStreamTrack):
         self._primed = False
         self._draining = False
         self._next_pts = 0
-        self._short_underrun_ms = short_underrun_ms
         self._input_rate_hz = input_rate_hz
         self._input_samples_per_frame = int(input_rate_hz * OUTPUT_FRAME_DURATION_SECONDS)
         self._input_bytes_per_frame = self._input_samples_per_frame * 2

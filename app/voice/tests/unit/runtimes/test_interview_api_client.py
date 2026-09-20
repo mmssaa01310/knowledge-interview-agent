@@ -216,3 +216,33 @@ def test_interview_api_client_reads_question_stream_events() -> None:
     events = asyncio.run(run())
     assert [event["type"] for event in events] == ["started", "delta", "complete"]
     assert events[1]["text"] == "次の質問です。"
+
+
+def test_interview_api_client_rejects_incomplete_question_stream() -> None:
+    async def run() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            body = '{"type":"started","responseId":"resp-1"}\n{"type":"delta","text":"途中"}\n'
+            return httpx.Response(
+                200,
+                content=body.encode("utf-8"),
+                headers={"content-type": "application/x-ndjson"},
+            )
+
+        client = InterviewApiClient(
+            "http://test",
+            "internal-token",
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="http://test",
+            ),
+        )
+
+        with pytest.raises(InterviewApiError) as exc_info:
+            [
+                event
+                async for event in client.process_turn_stream("session-1", "turn-1")
+            ]
+        assert exc_info.value.code == "turn_stream_incomplete"
+        assert exc_info.value.category == "NETWORK_ERROR"
+
+    asyncio.run(run())

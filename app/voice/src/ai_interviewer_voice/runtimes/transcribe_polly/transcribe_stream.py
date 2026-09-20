@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Protocol
 
 import boto3
@@ -73,6 +74,9 @@ class AwsTranscribeStreamingPort:
         self._connected = asyncio.Event()
         self._initial_error: Exception | None = None
         self._closed = False
+        self.audio_queue_drop_count = 0
+        self.audio_queue_dropped_ms = 0.0
+        self._last_drop_log_at = 0.0
 
     async def start(
         self,
@@ -85,6 +89,8 @@ class AwsTranscribeStreamingPort:
         self._on_reconnecting = on_reconnecting
         self._on_fatal_error = on_fatal_error
         self._closed = False
+        self._connected.clear()
+        self._initial_error = None
         self._task = asyncio.create_task(self._run())
         connected_wait = asyncio.create_task(self._connected.wait())
         done, _ = await asyncio.wait(
@@ -93,6 +99,7 @@ class AwsTranscribeStreamingPort:
         )
         if connected_wait not in done:
             connected_wait.cancel()
+        await asyncio.gather(connected_wait, return_exceptions=True)
         if self._initial_error is not None:
             raise self._initial_error
         if self._task.done():
@@ -105,8 +112,29 @@ class AwsTranscribeStreamingPort:
             return
         while self._audio_queue.full():
             try:
-                self._audio_queue.get_nowait()
+                dropped = self._audio_queue.get_nowait()
                 self._audio_queue.task_done()
+                self.audio_queue_drop_count += 1
+                dropped_ms = (
+                    len(dropped)
+                    / 2
+                    / self._config.input_sample_rate_hz
+                    * 1000
+                )
+                self.audio_queue_dropped_ms += dropped_ms
+                now = monotonic()
+                if (
+                    self.audio_queue_drop_count == 1
+                    or now - self._last_drop_log_at >= 1.0
+                ):
+                    self._last_drop_log_at = now
+                    logger.warning(
+                        "transcribe_audio_queue_drop dropped_count=%s dropped_ms=%.1f total_dropped_ms=%.1f queue_size=%s",
+                        self.audio_queue_drop_count,
+                        dropped_ms,
+                        self.audio_queue_dropped_ms,
+                        self._audio_queue.maxsize,
+                    )
             except asyncio.QueueEmpty:
                 break
         self._audio_queue.put_nowait(pcm)

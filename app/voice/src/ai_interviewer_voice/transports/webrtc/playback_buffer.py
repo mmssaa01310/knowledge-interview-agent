@@ -26,7 +26,6 @@ class PlaybackBuffer:
         self,
         *,
         sample_rate_hz: int = 24000,
-        target_depth_ms: float = 100.0,
         retention_max_ms: float = 60000.0,
     ) -> None:
         if sample_rate_hz <= 0:
@@ -34,7 +33,6 @@ class PlaybackBuffer:
         self._buffer = bytearray()
         self._lock = asyncio.Lock()
         self._sample_rate_hz = sample_rate_hz
-        self._target_depth_ms = target_depth_ms
         self._retention_max_ms = retention_max_ms
         self.drop_count = 0
         self.enqueue_count = 0
@@ -42,10 +40,6 @@ class PlaybackBuffer:
         self.underrun_count = 0
         self.silence_inserted_ms = 0.0
         self.peak_depth_ms = 0.0
-
-    @property
-    def target_depth_ms(self) -> float:
-        return self._target_depth_ms
 
     @property
     def retention_max_ms(self) -> float:
@@ -116,10 +110,6 @@ class PlaybackBuffer:
         async with self._lock:
             return not self._buffer
 
-    async def has_preroll(self, preroll_ms: float) -> bool:
-        async with self._lock:
-            return self._buffer_depth_ms(len(self._buffer)) >= preroll_ms
-
     async def record_silence_inserted(self, duration_ms: float) -> None:
         async with self._lock:
             self.silence_inserted_ms += duration_ms
@@ -136,10 +126,6 @@ class PlaybackBuffer:
 
     def _buffer_depth_ms(self, size_bytes: int) -> float:
         return (size_bytes / self.BYTES_PER_SAMPLE / self._sample_rate_hz) * 1000.0
-
-    def _depth_bytes_for_ms(self, depth_ms: float) -> int:
-        samples = int((depth_ms / 1000.0) * self._sample_rate_hz)
-        return samples * self.BYTES_PER_SAMPLE
 
     @classmethod
     def _is_valid_pcm(cls, pcm: bytes) -> bool:

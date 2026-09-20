@@ -90,6 +90,8 @@ PCM output -> Browser audio
 ```
 
 Transcribe側は、partialをUIに出すが、Backend Turnを作るのはendpointで `_finalize_user_turn()` が作る処理タスクだけである。Transcribe final自体はRAGを開始しない（`runtime.py:604-635`）。
+通常endpointまでにFINALが届かない場合は、hard endpointで部分TranscriptをBackendへ送らず、
+`transcribe_final_timeout`を通知して入力を再開する。これにより欠落したFINALを推測で正式回答へ変換しない。
 
 ### 2.3 `nova_sonic`
 

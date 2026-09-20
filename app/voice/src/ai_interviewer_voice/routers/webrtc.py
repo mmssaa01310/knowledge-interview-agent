@@ -153,10 +153,8 @@ async def post_offer(
         ice_gathering_timeout_seconds=settings.webrtc_ice_gathering_timeout_seconds,
         peer_disconnected_grace_seconds=settings.webrtc_peer_disconnected_grace_seconds,
         audio_input_queue_max_frames=settings.webrtc_audio_input_queue_max_frames,
-        playback_buffer_target_ms=settings.webrtc_playback_buffer_target_ms,
         playback_buffer_retention_max_ms=settings.webrtc_playback_buffer_retention_max_ms,
         playback_preroll_ms=settings.webrtc_playback_preroll_ms,
-        playback_short_underrun_ms=settings.webrtc_playback_short_underrun_ms,
         playback_drain_timeout_seconds=settings.webrtc_playback_drain_timeout_seconds,
     )
     try:

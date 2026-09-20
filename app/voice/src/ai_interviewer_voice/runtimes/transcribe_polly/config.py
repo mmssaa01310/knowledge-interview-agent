@@ -13,7 +13,6 @@ class TranscribePollyRuntimeConfig:
     transcribe_reconnect_attempts: int = 2
     reconnect_audio_buffer_ms: int = 3000
     vad_rms_threshold: int = 600
-    vad_soft_endpoint_ms: int = 350
     listen_ack_silence_ms: int = 500
     normal_endpoint_ms: int = 600
     hard_endpoint_ms: int = 1000

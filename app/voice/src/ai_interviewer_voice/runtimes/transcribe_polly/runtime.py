@@ -365,7 +365,11 @@ class TranscribePollyRuntime:
             or frame.channels != 1
         ):
             raise ValueError("TranscribePollyRuntime requires 16kHz mono PCM")
-        if self._input_available:
+        monitor_barge_in = (
+            self._formal_response_id is not None
+            and self._interview_status not in {"completed", "stopped"}
+        )
+        if self._input_available or monitor_barge_in:
             vad = self._vad.inspect(frame.pcm)
             await self._handle_vad(vad.voiced, vad.duration_ms)
 
@@ -585,7 +589,10 @@ class TranscribePollyRuntime:
     async def _handle_vad(self, voiced: bool, duration_ms: int) -> None:
         now = monotonic()
         if voiced:
-            if self._assistant_speaking and not self._turn_active:
+            if (
+                (self._assistant_speaking or self._formal_response_id is not None)
+                and not self._turn_active
+            ):
                 self._barge_in_voiced_ms += duration_ms
                 if self._barge_in_voiced_ms < self._config.barge_in_voice_ms:
                     return
@@ -739,6 +746,11 @@ class TranscribePollyRuntime:
             ):
                 await self._finalize_user_turn(final)
                 continue
+            if (
+                not self._has_final_transcript
+                and silence_ms >= self._hard_endpoint_ms()
+            ):
+                await self._recover_from_missing_final_transcript()
 
     async def _maybe_play_listen_ack(self, stable: str) -> None:
         if not self._config.backchannel_enabled:
@@ -797,6 +809,33 @@ class TranscribePollyRuntime:
             )
         )
 
+    async def _recover_from_missing_final_transcript(self) -> None:
+        """Leave a bounded STT turn instead of remaining in listening forever."""
+
+        if not self._turn_active:
+            return
+        logger.warning(
+            "transcribe_final_timeout voice_session_id=%s silence_ms=%s partial_chars=%s stable_chars=%s",
+            self._context.voice_session_id if self._context else None,
+            int((monotonic() - (self._silence_started_at or monotonic())) * 1000),
+            len(self._latest_partial_text),
+            len(self._combined_stable_text()),
+        )
+        self._close_input_gate(reason="transcribe_final_timeout")
+        await self._emit(UserSpeechEnded())
+        await self._emit(
+            RuntimeError(
+                message="transcribe_final_timeout",
+                detail={"fallback": "retry_input"},
+                fatal=False,
+            )
+        )
+        self._reset_transcription_turn_state()
+        await self._resume_input_after_formal_reply(
+            "ANSWER_LISTENING",
+            reason="transcribe_final_timeout",
+        )
+
     async def _process_interview_turn(
         self,
         *,
@@ -847,6 +886,8 @@ class TranscribePollyRuntime:
         stream_queue: asyncio.Queue[tuple[str, Any]] | None = None
         stream_play_task: asyncio.Task[None] | None = None
         streamed_response_id: str | None = None
+        result: InterviewBridgeResult | None = None
+        cancel_stream_play_task = False
         # Show the final STT text immediately.  Its content and target are
         # already known at this point; waiting for answer evaluation made the
         # UI appear frozen for the entire API/LLM pipeline.
@@ -908,6 +949,12 @@ class TranscribePollyRuntime:
                                 timing["api_completed_at"] = monotonic()
                             await stream_queue.put(("complete", result))
                         break
+                if not result_received:
+                    raise InterviewApiError(
+                        "turn_stream_incomplete",
+                        "interview turn stream ended before completion",
+                        category="NETWORK_ERROR",
+                    )
             else:
                 result = await self._interview_bridge.process_turn(
                     voice_session_id=self._context.voice_session_id,
@@ -920,6 +967,7 @@ class TranscribePollyRuntime:
                 )
                 result_received = True
         except asyncio.CancelledError:
+            cancel_stream_play_task = True
             raise
         except InterviewApiError as exc:
             if exc.code in {
@@ -964,6 +1012,22 @@ class TranscribePollyRuntime:
         finally:
             if stream_queue is not None and not result_received:
                 await stream_queue.put(("error", None))
+            if stream_play_task is not None and not result_received:
+                if cancel_stream_play_task and not stream_play_task.done():
+                    stream_play_task.cancel()
+                stream_results = await asyncio.gather(
+                    stream_play_task,
+                    return_exceptions=True,
+                )
+                stream_error = stream_results[0]
+                if isinstance(stream_error, BaseException) and not isinstance(
+                    stream_error, asyncio.CancelledError
+                ):
+                    logger.warning(
+                        "transcribe_polly_stream_playback_cleanup_failed response_id=%s error_type=%s",
+                        streamed_response_id,
+                        stream_error.__class__.__name__,
+                    )
             await self._cancel_notice_tasks()
             if not result_received and not processing_may_continue:
                 self._clear_active_client_turn(client_turn_id)
@@ -977,6 +1041,9 @@ class TranscribePollyRuntime:
                     "ANSWER_LISTENING",
                     reason="stale_turn_generation",
                 )
+            return
+        if result is None:
+            self._clear_active_client_turn(client_turn_id)
             return
         self._apply_bridge_result(result)
         api_completed_at = monotonic()
@@ -1008,7 +1075,19 @@ class TranscribePollyRuntime:
         )
         self._clear_active_client_turn(client_turn_id)
         if stream_play_task is not None and stream_queue is not None:
-            await stream_play_task
+            stream_results = await asyncio.gather(
+                stream_play_task,
+                return_exceptions=True,
+            )
+            stream_error = stream_results[0]
+            if isinstance(stream_error, BaseException) and not isinstance(
+                stream_error, asyncio.CancelledError
+            ):
+                logger.warning(
+                    "transcribe_polly_stream_playback_failed response_id=%s error_type=%s",
+                    result.response_id,
+                    stream_error.__class__.__name__,
+                )
         else:
             await self.send_reply(
                 AssistantReply(
@@ -1046,7 +1125,7 @@ class TranscribePollyRuntime:
             # backend turn before any replacement turn starts.
             await self._emit_input_state("ANSWER_PROCESSING")
             return True
-        if self._interview_status == "active":
+        if self._interview_status == "active" and self._formal_response_id is None:
             await self._resume_input_after_formal_reply(
                 "ANSWER_LISTENING",
                 reason=f"interview_failure:{category.lower()}",
@@ -1323,7 +1402,7 @@ class TranscribePollyRuntime:
         self._assistant_response_states[response_id] = AssistantResponseState.SYNTHESIZING
         try:
             result = await self._output.play(request)
-        except PollySynthesisError as exc:
+        except Exception as exc:  # noqa: BLE001 - stream playback must recover the input gate
             self._pipeline_timings.pop(response_id, None)
             self._assistant_speaking = False
             self._formal_response_id = None
@@ -1384,7 +1463,9 @@ class TranscribePollyRuntime:
         text_queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue(
             maxsize=max(2, self._config.polly_max_parallel_requests * 2)
         )
-        pcm_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue()
+        pcm_streams: asyncio.Queue[
+            tuple[int, asyncio.Queue[tuple[bytes | None, BaseException | None]]] | None
+        ] = asyncio.Queue()
         chunker = PollyTextChunker(config)
         producer_error: BaseException | None = None
         worker_error: BaseException | None = None
@@ -1419,10 +1500,16 @@ class TranscribePollyRuntime:
                             final_text = result.reply_text
                         elif result.reply_text.startswith(streamed_text):
                             final_text = result.reply_text[len(streamed_text) :]
+                        elif result.reply_text.startswith(streamed_text.rstrip()):
+                            final_text = result.reply_text[len(streamed_text.rstrip()) :]
                         else:
-                            # The safe streaming path is expected to produce the
-                            # same question text.  Do not repeat the already
-                            # spoken prefix if a backend sanitizer changed it.
+                            # The already-spoken stream cannot be replaced. Do
+                            # not append a rewritten full answer and duplicate
+                            # content when the final API text diverges.
+                            logger.warning(
+                                "voice_turn_stream_reply_rewrite_ignored response_id=%s",
+                                response_id,
+                            )
                             final_text = ""
                         for chunk in chunker.push(final_text, final=True):
                             await text_queue.put((index, chunk))
@@ -1442,17 +1529,27 @@ class TranscribePollyRuntime:
             while True:
                 item = await text_queue.get()
                 if item is None:
-                    await pcm_queue.put(None)
+                    await pcm_streams.put(None)
                     return
                 index, text = item
-                task = self._take_or_schedule_polly_task(text)
+                output_queue: asyncio.Queue[
+                    tuple[bytes | None, BaseException | None]
+                ] = asyncio.Queue(maxsize=8)
+                await pcm_streams.put((index, output_queue))
+                stream_error: BaseException | None = None
                 try:
-                    await pcm_queue.put((index, await task))
+                    async for pcm in self._synthesize_polly_chunk(text):
+                        if pcm:
+                            await output_queue.put((pcm, None))
+                except asyncio.CancelledError:
+                    raise
                 except BaseException as exc:
                     worker_error = exc
-                    if not task.done():
-                        task.cancel()
-                    await pcm_queue.put(None)
+                    stream_error = exc
+                finally:
+                    await output_queue.put((None, stream_error))
+                if stream_error is not None:
+                    await pcm_streams.put(None)
                     return
 
         producer_task = asyncio.create_task(produce())
@@ -1460,32 +1557,39 @@ class TranscribePollyRuntime:
             asyncio.create_task(synthesize())
             for _ in range(max(1, self._config.polly_max_parallel_requests))
         ]
-        pending: dict[int, bytes] = {}
+        pending: dict[
+            int,
+            asyncio.Queue[tuple[bytes | None, BaseException | None]],
+        ] = {}
         next_index = 0
         completed_workers = 0
         try:
             while completed_workers < len(workers):
-                item = await pcm_queue.get()
+                item = await pcm_streams.get()
                 if item is None:
                     completed_workers += 1
                     continue
-                index, pcm = item
-                pending[index] = pcm
+                index, output_queue = item
+                pending[index] = output_queue
                 while next_index in pending:
-                    ready = pending.pop(next_index)
-                    if generation != self._generation or self._closed:
-                        return
-                    if timing is not None and next_index == 0:
-                        timing["polly_first_chunk_ready_at"] = monotonic()
-                        timing["polly_first_chunk_ready_at_ms"] = int(time() * 1000)
-                        timing["polly_first_end_ms"] = timing["polly_first_chunk_ready_at_ms"]
-                        logger.info(
-                            "voice_turn_polly_first_end response_id=%s polly_first_end=%s",
-                            response_id,
-                            timing["polly_first_end_ms"],
-                        )
-                    next_index += 1
-                    yield ready
+                    current_queue = pending[next_index]
+                    while True:
+                        pcm, stream_error = await current_queue.get()
+                        if pcm is None:
+                            pending.pop(next_index, None)
+                            if stream_error is not None:
+                                if isinstance(stream_error, PollySynthesisError):
+                                    raise stream_error
+                                raise PollySynthesisError(
+                                    "polly synthesis failed"
+                                ) from stream_error
+                            next_index += 1
+                            break
+                        if generation != self._generation or self._closed:
+                            return
+                        if timing is not None and next_index == 0 and "polly_first_chunk_ready_at" not in timing:
+                            self._mark_first_polly_chunk(timing, response_id)
+                        yield pcm
             await producer_task
             if producer_error is not None:
                 if isinstance(producer_error, PollySynthesisError):
@@ -1502,6 +1606,18 @@ class TranscribePollyRuntime:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(producer_task, *workers, return_exceptions=True)
+
+    async def _synthesize_polly_chunk(self, text: str) -> AsyncIterator[bytes]:
+        prepared = self._prepared_polly_tasks.pop(text, None)
+        stream_method = getattr(self._polly, "synthesize_stream", None)
+        if callable(stream_method):
+            async for pcm in stream_method(text):
+                yield pcm
+            return
+        if prepared is not None:
+            yield await prepared
+            return
+        yield await self._polly.synthesize(text)
 
     async def _resume_input_after_formal_reply(
         self,
@@ -1590,32 +1706,37 @@ class TranscribePollyRuntime:
         )
         parallel = max(1, self._config.polly_max_parallel_requests)
         tasks: dict[int, asyncio.Task[bytes]] = {}
-        next_to_schedule = 0
+        if not chunks:
+            return
+        next_to_schedule = 1
         try:
             while next_to_schedule < min(parallel, len(chunks)):
-                chunk = chunks[next_to_schedule]
-                tasks[next_to_schedule] = self._take_or_schedule_polly_task(chunk)
+                tasks[next_to_schedule] = self._take_or_schedule_polly_task(
+                    chunks[next_to_schedule]
+                )
                 next_to_schedule += 1
-            for index in range(len(chunks)):
+            first_chunk_started = False
+            async for pcm in self._synthesize_polly_chunk(chunks[0]):
+                if generation != self._generation or self._closed:
+                    return
+                if not first_chunk_started:
+                    first_chunk_started = True
+                    if timing is not None:
+                        self._mark_first_polly_chunk(timing, response_id)
+                    if is_initial_response and not self._startup_first_tts_chunk_logged:
+                        self._startup_first_tts_chunk_logged = True
+                        self._startup_stage(
+                            "first_tts_chunk_ready",
+                            response_id=response_id,
+                            bytes=len(pcm),
+                        )
+                yield pcm
+            for index in range(1, len(chunks)):
+                if index not in tasks:
+                    tasks[index] = self._take_or_schedule_polly_task(chunks[index])
                 pcm = await tasks.pop(index)
                 if generation != self._generation or self._closed:
                     return
-                if timing is not None and index == 0:
-                    timing["polly_first_chunk_ready_at"] = monotonic()
-                    timing["polly_first_chunk_ready_at_ms"] = int(time() * 1000)
-                    timing["polly_first_end_ms"] = timing["polly_first_chunk_ready_at_ms"]
-                    logger.info(
-                        "voice_turn_polly_first_chunk_ready response_id=%s polly_first_chunk_ms=%s",
-                        response_id,
-                        round((timing["polly_first_chunk_ready_at"] - timing["polly_started_at"]) * 1000, 1),
-                    )
-                if is_initial_response and index == 0 and not self._startup_first_tts_chunk_logged:
-                    self._startup_first_tts_chunk_logged = True
-                    self._startup_stage(
-                        "first_tts_chunk_ready",
-                        response_id=response_id,
-                        bytes=len(pcm),
-                    )
                 yield pcm
                 if next_to_schedule < len(chunks):
                     chunk = chunks[next_to_schedule]
@@ -1627,6 +1748,21 @@ class TranscribePollyRuntime:
                     task.cancel()
             if tasks:
                 await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+    def _mark_first_polly_chunk(
+        self,
+        timing: dict[str, Any],
+        response_id: str | None,
+    ) -> None:
+        first_at = monotonic()
+        timing["polly_first_chunk_ready_at"] = first_at
+        timing["polly_first_chunk_ready_at_ms"] = int(time() * 1000)
+        timing["polly_first_end_ms"] = timing["polly_first_chunk_ready_at_ms"]
+        logger.info(
+            "voice_turn_polly_first_chunk_ready response_id=%s polly_first_chunk_ms=%s",
+            response_id,
+            round((first_at - timing.get("polly_started_at", first_at)) * 1000, 1),
+        )
 
     def _take_or_schedule_polly_task(self, chunk: str) -> asyncio.Task[bytes]:
         prepared = self._prepared_polly_tasks.pop(chunk, None)
@@ -1857,9 +1993,12 @@ class TranscribePollyRuntime:
         old_generation = self._generation
         self._generation += 1
         await self._cancel_notice_tasks()
-        response_id = await self._output.cancel_current()
+        response_id = self._output.active_response_id or self._formal_response_id
         if response_id is not None:
             self._interrupt_emitted_for.add(response_id)
+        cancelled_response_id = await self._output.cancel_current()
+        if cancelled_response_id is not None:
+            response_id = cancelled_response_id
         if response_id is not None or self._assistant_speaking:
             await self._emit(
                 AssistantInterrupted(
@@ -1867,6 +2006,21 @@ class TranscribePollyRuntime:
                     generation=self._generation,
                 )
             )
+        if response_id == self._formal_response_id:
+            next_input_state = self._pending_listening_state
+            self._formal_response_id = None
+            self._formal_generation = None
+            self._release_formal_playback_waiter()
+            self._pending_listening_state = None
+            self._assistant_response_states[response_id] = AssistantResponseState.INTERRUPTED
+            if (
+                next_input_state is not None
+                and next_input_state != "INTERVIEW_COMPLETED"
+            ):
+                await self._resume_input_after_formal_reply(
+                    next_input_state,
+                    reason="formal_reply_interrupted",
+                )
         if (
             self._active_client_turn_id is None
             and self._processing_task is not None
@@ -2224,6 +2378,12 @@ class TranscribePollyRuntime:
                     self._config.hard_endpoint_ms - self._config.final_result_wait_ms,
                 ),
             ),
+        )
+
+    def _hard_endpoint_ms(self) -> int:
+        return max(
+            self._config.hard_endpoint_ms,
+            self._endpoint_silence_ms() + self._config.final_result_wait_ms,
         )
 
     def _transcript_quiet_ms(self) -> int:

@@ -168,3 +168,26 @@ async def test_aws_transcribe_port_uses_selected_portuguese_language() -> None:
 
     assert client.inputs[0].language_code.value == "pt-BR"
     await port.close()
+
+
+@pytest.mark.anyio
+async def test_aws_transcribe_port_records_oldest_audio_drops_when_queue_is_full() -> None:
+    stream = FakeDuplexStream()
+    port = AwsTranscribeStreamingPort(
+        TranscribePollyRuntimeConfig(reconnect_audio_buffer_ms=100),
+        client=FakeClient(stream),
+    )
+    await port.start(
+        on_result=lambda result: asyncio.sleep(0),
+        on_reconnecting=lambda attempt: asyncio.sleep(0),
+        on_fatal_error=lambda exc: asyncio.sleep(0),
+    )
+    await port._audio_queue.put(bytes(3200))
+
+    await port.send_audio(bytes(3200))
+
+    assert port.audio_queue_drop_count == 1
+    assert port.audio_queue_dropped_ms == pytest.approx(100.0)
+    assert await port._audio_queue.get() == bytes(3200)
+    port._audio_queue.task_done()
+    await port.close()

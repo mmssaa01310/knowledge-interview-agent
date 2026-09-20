@@ -232,6 +232,13 @@ class StreamingBridge(FakeBridge):
         yield InterviewBridgeStreamCompleted(result=result)
 
 
+class IncompleteStreamingBridge(FakeBridge):
+    async def process_turn_stream(self, **kwargs):
+        self.process_calls.append(kwargs)
+        yield InterviewBridgeStreamStarted(response_id="response-incomplete")
+        yield InterviewBridgeTextDelta(text="途中の応答")
+
+
 class BlockingBridge(FakeBridge):
     def __init__(self) -> None:
         super().__init__()
@@ -954,7 +961,7 @@ async def test_empty_polly_output_reopens_input_after_formal_text() -> None:
 
 
 @pytest.mark.anyio
-async def test_formal_reply_does_not_allow_barge_in_before_playback_drain() -> None:
+async def test_formal_reply_allows_barge_in_after_voiced_threshold() -> None:
     bridge = FakeBridge()
     runtime = TranscribePollyRuntime(
         config=_config(),
@@ -988,22 +995,18 @@ async def test_formal_reply_does_not_allow_barge_in_before_playback_drain() -> N
 
     for _ in range(6):
         await runtime.push_audio(_frame(1200))
-    assert runtime._generation == generation_before
-    assert runtime._turn_active is False
-    assert bridge.process_calls == []
-    await runtime.notify_assistant_playback_drained(
-        response_id="formal-barge",
-        generation=runtime._generation,
-    )
+    assert runtime._generation == generation_before + 1
+    assert runtime._turn_active is True
     assert runtime._input_available is True
+    assert bridge.process_calls == []
     events = []
     while not runtime._events.empty():
         events.append(runtime._events.get_nowait())
     assert (
         runtime._assistant_response_states["formal-barge"]
-        == AssistantResponseState.PLAYED
+        == AssistantResponseState.INTERRUPTED
     )
-    assert not any(isinstance(event, AssistantInterrupted) for event in events)
+    assert any(isinstance(event, AssistantInterrupted) for event in events)
     await runtime.close()
 
 
@@ -1386,7 +1389,8 @@ async def test_formal_reply_reopens_after_drain_and_uses_current_question() -> N
     )
     await reply_task
     assert runtime._input_available is False
-    for _ in range(6):
+    # A short 40ms utterance is below the formal-reply barge-in threshold.
+    for _ in range(2):
         await runtime.push_audio(_frame(1200))
     assert runtime._turn_active is False
 
@@ -1559,6 +1563,41 @@ async def test_question_stream_starts_audio_before_api_commit_and_next_delta() -
 
 
 @pytest.mark.anyio
+async def test_incomplete_question_stream_reopens_input_without_committing_reply() -> None:
+    bridge = IncompleteStreamingBridge()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+
+    await runtime._process_interview_turn(
+        transcript="回答です。",
+        generation=runtime._generation,
+        expected_state_version=runtime._state_version,
+        client_turn_id="client-incomplete-1",
+    )
+
+    assert runtime._input_available is True
+    assert runtime._formal_response_id is None
+    events = list(runtime._events._queue)
+    assert any(
+        isinstance(event, RuntimeError)
+        and event.message == "interview_process_network_error"
+        for event in events
+    )
+    await runtime.close()
+
+
+@pytest.mark.anyio
 async def test_generation_change_cancels_unfinished_polly_tasks() -> None:
     polly = StreamingPolly()
     runtime = TranscribePollyRuntime(
@@ -1661,7 +1700,7 @@ async def test_normal_endpoint_finalizes_transcribe_final_for_backend_assessment
 
 
 @pytest.mark.anyio
-async def test_partial_stable_transcript_never_finalizes_without_a_final_result() -> None:
+async def test_missing_final_transcript_recovers_without_submitting_partial_text() -> None:
     bridge = FakeBridge()
     transcribe = FakeTranscribe()
     runtime = TranscribePollyRuntime(
@@ -1690,10 +1729,19 @@ async def test_partial_stable_transcript_never_finalizes_without_a_final_result(
     assert bridge.process_calls == []
     await asyncio.sleep(0.25)
     assert bridge.process_calls == []
+    events = []
+    while not runtime._events.empty():
+        events.append(runtime._events.get_nowait())
+    assert any(
+        isinstance(event, RuntimeError) and event.message == "transcribe_final_timeout"
+        for event in events
+    )
+    assert runtime._input_available is True
+    assert runtime._turn_active is False
 
     await transcribe.result("設備を担当しています。", is_partial=False)
     await asyncio.sleep(0.06)
-    assert len(bridge.process_calls) == 1
+    assert bridge.process_calls == []
     await runtime.close()
 
 

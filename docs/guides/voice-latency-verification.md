@@ -58,9 +58,9 @@ SDP、音声本文、認証情報はログに出さない。
 | T8〜T10 | `initial_instructions_sent`、`initial_response_request_sent` | `initial_response_request_dispatched`、`first_response_event`、`first_audio_chunk_received`、`first_tts_chunk_ready` |
 | T11〜T13 | `remote_audio_track_received`、`audio_playing_started` | `first_audio_frame_sent_to_browser` |
 
-Transcribe + PollyはPollyのレスポンスを1チャンク分読み切ってからPCMを出力するため、
-`first_tts_chunk_ready`は「Pollyの最初のチャンクが全量取得できた時刻」であり、
-音声生成開始時刻とは異なる。Nova SonicはBedrockの音声イベントを受信した時点を
+Transcribe + PollyはPollyの`AudioStream`を読みながらPCMフラグメントを出力する。
+`first_tts_chunk_ready`は「最初のPCMフラグメントを受信した時刻」であり、音声生成完了時刻ではない。
+キャッシュ済み音声はキャッシュ読み出し時刻として記録される。Nova SonicはBedrockの音声イベントを受信した時点を
 `first_audio_chunk_received`で記録する。GPT-Liveは音声データをDataChannelへ流さず、
 Remote MediaTrackの`onplaying`をT13として記録する。
 

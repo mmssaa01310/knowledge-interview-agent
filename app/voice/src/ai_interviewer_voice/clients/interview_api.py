@@ -311,6 +311,7 @@ class InterviewApiClient:
 
         async with self._client() as client:
             try:
+                completed = False
                 async with client.stream(
                     "POST",
                     f"/internal/voice-sessions/{voice_session_id}/turns/{turn_id}/process-stream",
@@ -336,7 +337,15 @@ class InterviewApiClient:
                             )
                         if payload.get("type") == "error":
                             await _raise_stream_event_error(payload)
+                        if payload.get("type") == "complete":
+                            completed = True
                         yield payload
+                if not completed:
+                    raise InterviewApiError(
+                        "turn_stream_incomplete",
+                        "interview turn stream ended before completion",
+                        category="NETWORK_ERROR",
+                    )
             except InterviewApiError:
                 raise
             except httpx.TimeoutException as exc:
