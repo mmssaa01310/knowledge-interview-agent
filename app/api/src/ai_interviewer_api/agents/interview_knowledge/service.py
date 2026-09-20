@@ -98,6 +98,7 @@ from ai_interviewer_api.services.interview_state_transition import (
     commit_foreground_provisional_state,
     commit_interview_state,
 )
+from ai_interviewer_api.services.prior_knowledge import build_prior_knowledge_context
 
 
 STRUCTURED_PROFILES: frozenset[str] = frozenset({"fixed_form", "business_process", "system_requirement"})
@@ -476,6 +477,7 @@ def start_fast_interview_turn(
         current_question=fast_question,
         latest_answer=latest_user_message,
         messages=messages,
+        prior_knowledge=build_prior_knowledge_context(knowledge, user),
     )
     structured_provider = _get_structured_provider(provider, model_id=model_id)
     selected_fast_provider = fast_provider or BedrockFastInterpreterProvider()
@@ -1358,6 +1360,7 @@ def _generate_structured_interview_result(
             interpreter_context = _build_interpreter_context(
                 record=record,
                 knowledge=knowledge,
+                user=user,
                 fields=fields,
                 state=state,
                 messages=messages,
@@ -2419,6 +2422,7 @@ def _build_interpreter_context(
     *,
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
+    user: UserContext,
     fields: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
@@ -2434,6 +2438,7 @@ def _build_interpreter_context(
             "targetBusiness": knowledge.get("targetBusiness"),
             "systemPrompt": knowledge.get("systemPrompt"),
         },
+        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
         "record": {
             "id": record.get("id"),
             "title": record.get("title"),
@@ -3230,6 +3235,10 @@ def _generate_question_text(
         "tentativeCandidates": question_state["tentativeCandidates"],
         "answerAssessment": question_state["answerAssessment"],
         "activeProbe": question_state["activeProbe"],
+        # Registered facts and glossary entries are configuration context,
+        # not optional lexical RAG. They remain available when retrievalPolicy
+        # is "never" and are never treated as the participant's answer.
+        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
         "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
     question_generation_started_at = monotonic()

@@ -104,8 +104,10 @@ def _seed_interview_context(
 class _CapturingStructuredProvider:
     def __init__(self) -> None:
         self.question_context: Mapping[str, object] | None = None
+        self.interpreter_context: Mapping[str, object] | None = None
 
-    def interpret(self, **_: object) -> StructuredInterviewOutput:
+    def interpret(self, *, context: Mapping[str, object], **_: object) -> StructuredInterviewOutput:
+        self.interpreter_context = context
         return StructuredInterviewOutput()
 
     def generate_question(
@@ -179,6 +181,73 @@ def test_structured_question_generation_receives_document_context() -> None:
     assert "暖機前" in retrieved[0]["content"]
     assert result["question"]["retrievedSources"][0]["sourceId"] == "document-context-chunk"
     assert result["retrievalExecuted"] is True
+
+
+def test_direct_prior_knowledge_reaches_question_and_answer_interpretation() -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record, knowledge, _ = _seed_interview_context(
+        user,
+        profile="business_process",
+        retrieval_policy="never",
+    )
+    prior_document = {
+        "id": "prior-knowledge-document",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "sourceType": "prior_knowledge",
+        "title": "承認の前提",
+        "fileName": "承認の前提",
+        "contentType": "text/markdown",
+        "contentFormat": "markdown",
+        "knowledgeType": "known_fact",
+        "content": "承認は製品Aの現場責任者が行う。略称はPLMと呼ぶ。",
+        "ingestionStatus": "indexed",
+        "progressPercent": 100,
+    }
+    store.upsert("documents", prior_document)
+    store.upsert(
+        "document_chunks",
+        {
+            "id": "prior-knowledge-document:chunk:1",
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge["id"],
+            "documentId": prior_document["id"],
+            "status": "indexed",
+            "title": prior_document["title"],
+            "content": prior_document["content"],
+        },
+    )
+    provider = _CapturingStructuredProvider()
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert provider.question_context is not None
+    prior_context = provider.question_context["prior_knowledge"]
+    assert isinstance(prior_context, list)
+    assert prior_context[0]["content"].startswith("承認は製品A")
+    assert provider.question_context["retrieved_knowledge"] == []
+
+    question_id = first["question"]["questionId"]
+    store.upsert(
+        "messages",
+        {
+            "id": "prior-knowledge-answer",
+            "tenantId": user.tenant_id,
+            "recordId": record["id"],
+            "role": "user",
+            "content": "PLMを使っています。",
+            "isActualUtterance": True,
+            "answerToQuestionId": question_id,
+            "createdAt": "2026-09-20T00:00:00+00:00",
+        },
+    )
+    generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert provider.interpreter_context is not None
+    interpreted_prior_context = provider.interpreter_context["prior_knowledge"]
+    assert isinstance(interpreted_prior_context, list)
+    assert interpreted_prior_context[0]["knowledge_type"] == "known_fact"
+    assert "PLM" in interpreted_prior_context[0]["content"]
 
 
 class _DocumentCandidateProvider:

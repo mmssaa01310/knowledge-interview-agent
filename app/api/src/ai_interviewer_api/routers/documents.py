@@ -1,11 +1,12 @@
 import logging
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 
 from ai_interviewer_api.auth.deps import UserContext, get_current_user
-from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.permissions import require_management_role
 from ai_interviewer_api.models.domain import Document, DocumentReadStatus
+from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.repositories.document_knowledge import (
     INDEXED_STATUSES,
     DocumentKnowledgeBackendError,
@@ -13,14 +14,14 @@ from ai_interviewer_api.repositories.document_knowledge import (
 )
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.routers.common import get_scoped_item
-from ai_interviewer_api.schemas.requests import DocumentCreate, ReadStatusUpdate
-from ai_interviewer_api.services.document_ingestion_dispatcher import queue_document
+from ai_interviewer_api.schemas.requests import (
+    PriorKnowledgeCreate,
+    PriorKnowledgeUpdate,
+    ReadStatusUpdate,
+)
 from ai_interviewer_api.services.document_ingestion import (
     DocumentIngestionError,
-    document_content_type,
-    ingest_document,
-    safe_document_file_name,
-    UnsupportedDocumentTypeError,
+    ingest_text_document,
 )
 from ai_interviewer_api.services.audit import write_audit_log
 
@@ -28,80 +29,125 @@ router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 
 
-@router.post("/knowledges/{knowledge_id}/documents")
-def create_document(
+def _prior_knowledge_document(
+    *,
     knowledge_id: str,
-    payload: DocumentCreate,
-    user: UserContext = Depends(get_current_user),
+    user: UserContext,
+    payload: PriorKnowledgeCreate,
 ) -> dict:
-    require_management_role(user)
-    get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+    title = payload.title.strip()
+    content = payload.content
+    if not title:
+        raise HTTPException(status_code=422, detail="prior_knowledge_title_required")
+    if not content.strip():
+        raise HTTPException(status_code=422, detail="prior_knowledge_content_required")
     item = Document(
+        id=str(uuid4()),
         tenantId=user.tenant_id,
         createdByUserId=user.user_id,
         updatedByUserId=user.user_id,
         knowledgeId=knowledge_id,
-        **payload.model_dump(),
+        fileName=title,
+        contentType="text/plain",
+        sourceType="prior_knowledge",
+        title=title,
+        knowledgeType=payload.knowledgeType,
+        contentFormat=None,
+        content=content,
+        ingestionStatus="processing",
+        progressPercent=20,
     )
-    store.upsert("documents", item.model_dump())
-    queue_document(item.id)
-    return _document_summary(store.get("documents", item.id) or item.model_dump())
+    return item.model_dump()
 
 
-@router.post("/knowledges/{knowledge_id}/documents/upload")
-async def upload_document(
-    knowledge_id: str,
-    file: UploadFile = File(...),
-    user: UserContext = Depends(get_current_user),
-) -> dict:
-    """Upload a document, extract its text, and index searchable chunks."""
+def _require_prior_knowledge(document: dict) -> None:
+    if document.get("sourceType") != "prior_knowledge":
+        raise HTTPException(status_code=404, detail="prior_knowledge_not_found")
 
-    require_management_role(user)
-    get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+
+def _index_prior_knowledge(item: dict, *, content: str) -> dict:
     try:
-        file_name = safe_document_file_name(file.filename)
-    except DocumentIngestionError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-
-    try:
-        raw_bytes = await file.read(settings.document_max_upload_bytes + 1)
-    except Exception as error:  # noqa: BLE001 - keep file read errors user-safe
-        raise HTTPException(status_code=400, detail="document_read_failed") from error
-    if len(raw_bytes) > settings.document_max_upload_bytes:
-        raise HTTPException(status_code=413, detail="document_size_limit_exceeded")
-
-    item = Document(
-        tenantId=user.tenant_id,
-        createdByUserId=user.user_id,
-        updatedByUserId=user.user_id,
-        knowledgeId=knowledge_id,
-        fileName=file_name,
-        contentType=document_content_type(file_name, file.content_type),
-        ingestionStatus="queued",
-        progressPercent=10,
-    )
-    store.upsert("documents", item.model_dump())
-    try:
-        result = ingest_document(item.model_dump(), raw_bytes)
-    except UnsupportedDocumentTypeError as error:
-        raise HTTPException(status_code=415, detail=str(error)) from error
+        result = ingest_text_document(item, content)
     except DocumentKnowledgeBackendError as error:
-        logger.exception("document_backend_unavailable document_id=%s", item.id)
+        logger.exception(
+            "prior_knowledge_backend_unavailable document_id=%s", item["id"]
+        )
         raise HTTPException(status_code=503, detail="document_backend_unavailable") from error
     except DocumentIngestionError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     return _document_summary(result.document)
 
 
-@router.get("/knowledges/{knowledge_id}/documents")
-def list_documents(knowledge_id: str, user: UserContext = Depends(get_current_user)) -> list[dict]:
+@router.post("/knowledges/{knowledge_id}/prior-knowledge")
+def create_prior_knowledge(
+    knowledge_id: str,
+    payload: PriorKnowledgeCreate,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Save one directly entered text/Markdown knowledge entry and index it."""
+
+    require_management_role(user)
+    get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
+    item = _prior_knowledge_document(
+        knowledge_id=knowledge_id,
+        user=user,
+        payload=payload,
+    )
+    store.upsert("documents", item)
+    return _index_prior_knowledge(item, content=str(item.get("content") or ""))
+
+
+@router.get("/knowledges/{knowledge_id}/prior-knowledge")
+def list_prior_knowledge(
+    knowledge_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> list[dict]:
     require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
     return [
         _document_summary(row)
         for row in store.list("documents", user.tenant_id)
-        if row["knowledgeId"] == knowledge_id
+        if row.get("knowledgeId") == knowledge_id
+        and row.get("sourceType") == "prior_knowledge"
+        and row.get("deletedAt") is None
     ]
+
+
+@router.patch("/prior-knowledge/{document_id}")
+def update_prior_knowledge(
+    document_id: str,
+    payload: PriorKnowledgeUpdate,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    require_management_role(user)
+    item = get_scoped_item(
+        "documents",
+        document_id,
+        user,
+        "prior_knowledge_not_found",
+    )
+    _require_prior_knowledge(item)
+    if not payload.title.strip():
+        raise HTTPException(status_code=422, detail="prior_knowledge_title_required")
+    if not payload.content.strip():
+        raise HTTPException(status_code=422, detail="prior_knowledge_content_required")
+    item.update(
+        {
+            "updatedByUserId": user.user_id,
+            "updatedAt": utc_now(),
+            "title": payload.title.strip(),
+            "fileName": payload.title.strip(),
+            "knowledgeType": payload.knowledgeType,
+            "contentFormat": None,
+            "contentType": "text/plain",
+            "content": payload.content,
+            "ingestionStatus": "processing",
+            "progressPercent": 20,
+            "errorMessage": None,
+        }
+    )
+    store.upsert("documents", item)
+    return _index_prior_knowledge(item, content=str(item.get("content") or ""))
 
 
 @router.get("/documents/{document_id}/content")

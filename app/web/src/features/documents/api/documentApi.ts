@@ -1,9 +1,9 @@
 export {
-  createDocument,
+  createPriorKnowledge,
   deleteDocument,
   fetchDocumentContent,
   fetchDocuments,
-  uploadDocument,
+  updatePriorKnowledge,
   type DocumentContent,
   type DocumentSummary
 } from "../../../lib/api";

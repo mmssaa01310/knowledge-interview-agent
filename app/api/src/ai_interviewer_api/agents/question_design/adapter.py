@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from ai_interviewer_api.agents.question_design.schemas import (
     ExistingQuestionField,
+    PriorKnowledgeContext,
     QuestionDesignInput,
     QuestionDesignMessage,
     QuestionDesignOutput,
@@ -36,6 +37,7 @@ def build_question_design_input(
     payload: FieldSuggestionRequest,
     *,
     knowledge_id: str | None = None,
+    prior_knowledge: list[PriorKnowledgeContext] | None = None,
     retrieved_context: list[RetrievedKnowledgeContext] | None = None,
 ) -> QuestionDesignInput:
     return QuestionDesignInput(
@@ -68,6 +70,7 @@ def build_question_design_input(
             for message in payload.recentMessages
             if message.content.strip()
         ],
+        prior_knowledge=list(prior_knowledge or []),
         retrieved_context=list(retrieved_context or []),
     )
 

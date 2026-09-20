@@ -2,12 +2,12 @@ from fastapi import APIRouter
 
 from ai_interviewer_api.routers.documents import (
     acknowledge_document,
-    create_document,
+    create_prior_knowledge,
     delete_document,
     get_document_content,
-    list_documents,
+    list_prior_knowledge,
     router as documents_router,
-    upload_document,
+    update_prior_knowledge,
     update_read_status,
 )
 from ai_interviewer_api.routers.admin_dashboard import router as admin_dashboard_router
@@ -111,10 +111,9 @@ __all__ = [
     "approve_all",
     "approve_proposal",
     "bulk_approve",
-    "create_document",
+    "create_prior_knowledge",
     "delete_document",
     "get_document_content",
-    "upload_document",
     "create_field",
     "create_internal_assistant_event",
     "create_internal_connection_event",
@@ -141,7 +140,7 @@ __all__ = [
     "health",
     "create_interview_prompt_profile",
     "delete_interview_prompt_profile",
-    "list_documents",
+    "list_prior_knowledge",
     "list_fields",
     "list_interview_prompt_profiles",
     "list_knowledge_dbs",
@@ -161,6 +160,7 @@ __all__ = [
     "update_knowledge_db",
     "update_knowledge",
     "update_knowledge_tag",
+    "update_prior_knowledge",
     "update_read_status",
     "update_record",
 ]

@@ -15,6 +15,7 @@ from ai_interviewer_api.agents.question_design.adapter import (
     adapt_question_design_output,
     build_question_design_input,
 )
+from ai_interviewer_api.agents.question_design.schemas import PriorKnowledgeContext
 from ai_interviewer_api.agents.interview_knowledge.provider import (
     StructuredInterviewProviderError,
 )
@@ -29,6 +30,7 @@ from ai_interviewer_api.schemas.requests import FieldSuggestionRequest
 from ai_interviewer_api.services.question_design_retrieval import (
     retrieve_question_design_context,
 )
+from ai_interviewer_api.services.prior_knowledge import build_prior_knowledge_context
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +64,18 @@ def suggest_fields_with_bedrock(
         if knowledge_id
         else []
     )
+    prior_knowledge = (
+        [
+            PriorKnowledgeContext.model_validate(item)
+            for item in build_prior_knowledge_context({"id": knowledge_id}, user)
+        ]
+        if knowledge_id
+        else []
+    )
     question_input = build_question_design_input(
         payload,
         knowledge_id=knowledge_id,
+        prior_knowledge=prior_knowledge,
         retrieved_context=retrieved_context,
     )
     logger.info(

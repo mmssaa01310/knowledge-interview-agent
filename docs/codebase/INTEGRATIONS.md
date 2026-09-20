@@ -9,7 +9,7 @@
 | Amazon Transcribe / Polly | 音声API | Voice Runtimeの音声認識・合成 | AWS profile / Voice設定 | Voice Runtimeに実装あり | `app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/` |
 | Kinesis Video Streams WebRTC | 音声通信 | VoiceのICE/TURN設定取得 | Voice設定 | Voice serviceに実装あり。v1のシグナリングはHTTP SDP | `app/voice/src/ai_interviewer_voice/services/ice_server_service.py`、`routers/webrtc.py` |
 | 開発用トークン | 認証 | ローカルのユーザー・ロール切替 | `Authorization` / `x-dev-token` | 開発用のみ | `auth/deps.py` |
-| SQS | Queue | 文書取り込みなどの将来の非同期処理 | `SQS_DOCUMENT_QUEUE_URL` | URL設定のみ。Worker未接続 | `app/api/src/ai_interviewer_api/core/config.py`、`app/worker/` |
+| SQS | Queue | 将来の非同期処理候補 | なし | 未接続・現行APIでは使用しない | `app/worker/` |
 
 ## 2. データストア
 

@@ -107,6 +107,10 @@ export type DocumentSummary = {
   id: string;
   fileName: string;
   contentType: string;
+  sourceType?: "file" | "prior_knowledge";
+  title?: string;
+  knowledgeType?: "known_fact" | "glossary";
+  contentFormat?: "text" | "markdown";
   ingestionStatus: string;
   progressPercent: number;
   knowledgeId: string;
@@ -120,6 +124,12 @@ export type DocumentSummary = {
 
 export type DocumentContent = {
   document: DocumentSummary;
+  content: string;
+};
+
+export type PriorKnowledgePayload = {
+  title: string;
+  knowledgeType: "known_fact" | "glossary";
   content: string;
 };
 
@@ -374,7 +384,7 @@ export async function deleteRecord(recordId: string) {
 }
 
 export async function fetchDocuments(knowledgeId: string) {
-  return apiRequest<DocumentSummary[]>(`/api/knowledges/${knowledgeId}/documents`);
+  return apiRequest<DocumentSummary[]>(`/api/knowledges/${knowledgeId}/prior-knowledge`);
 }
 
 export async function fetchDocumentContent(documentId: string) {
@@ -385,50 +395,24 @@ export async function deleteDocument(documentId: string) {
   return apiRequest<{ deleted: boolean }>(`/api/documents/${documentId}`, { method: "DELETE" });
 }
 
-export async function createDocument(
+export async function createPriorKnowledge(
   knowledgeId: string,
-  payload: { fileName: string; contentType: string }
+  payload: PriorKnowledgePayload
 ) {
-  return apiRequest<DocumentSummary>(`/api/knowledges/${knowledgeId}/documents`, {
+  return apiRequest<DocumentSummary>(`/api/knowledges/${knowledgeId}/prior-knowledge`, {
     method: "POST",
     body: payload
   });
 }
 
-export async function uploadDocument(knowledgeId: string, file: File) {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}/api/knowledges/${knowledgeId}/documents/upload`, {
-      method: "POST",
-      headers: {
-        "x-dev-token": getDevelopmentToken()
-      },
-      body: formData
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "network_error";
-    throw new ApiError(detail, { detail });
-  }
-
-  if (!response.ok) {
-    const responseText = await response.text();
-    let detail = responseText;
-    try {
-      const parsed = JSON.parse(responseText) as { detail?: unknown };
-      detail = typeof parsed.detail === "string" ? parsed.detail : responseText;
-    } catch {
-      detail = responseText;
-    }
-    throw new ApiError(
-      `${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
-      { status: response.status, detail }
-    );
-  }
-
-  return response.json() as Promise<DocumentSummary>;
+export async function updatePriorKnowledge(
+  documentId: string,
+  payload: PriorKnowledgePayload
+) {
+  return apiRequest<DocumentSummary>(`/api/prior-knowledge/${documentId}`, {
+    method: "PATCH",
+    body: payload
+  });
 }
 
 export async function fetchKnowledgeFields(knowledgeId: string) {

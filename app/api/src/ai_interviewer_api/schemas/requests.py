@@ -170,9 +170,16 @@ class ProcessModelCommand(BaseModel):
     baseStateVersion: int | None = Field(default=None, ge=0)
 
 
-class DocumentCreate(BaseModel):
-    fileName: str
-    contentType: str = "application/octet-stream"
+class PriorKnowledgeCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    knowledgeType: Literal["known_fact", "glossary"] = "known_fact"
+    content: str = Field(min_length=1, max_length=100_000)
+
+
+class PriorKnowledgeUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    knowledgeType: Literal["known_fact", "glossary"] = "known_fact"
+    content: str = Field(min_length=1, max_length=100_000)
 
 
 class ReadStatusUpdate(BaseModel):

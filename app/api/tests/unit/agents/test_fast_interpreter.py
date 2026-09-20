@@ -243,9 +243,15 @@ def test_fast_context_excludes_full_state_and_long_history() -> None:
         ],
     )
 
-    assert set(context) == {"currentQuestion", "latestUserAnswer", "previousTurns"}
+    assert set(context) == {
+        "currentQuestion",
+        "prior_knowledge",
+        "latestUserAnswer",
+        "previousTurns",
+    }
     assert "interviewState" not in context
     assert "fields" not in context
+    assert context["prior_knowledge"] == []
     assert len(context["previousTurns"]) <= 4
     assert context["latestUserAnswer"]["text"] == "社内システムの開発です。"
 
@@ -396,9 +402,11 @@ def test_fast_pass_runs_background_before_return_and_keeps_formal_update_in_back
     assert result.question["questionId"] == "q-002"
     assert fast_provider.contexts[0].keys() == {
         "currentQuestion",
+        "prior_knowledge",
         "latestUserAnswer",
         "previousTurns",
     }
+    assert fast_provider.contexts[0]["prior_knowledge"] == []
     assert background_finished.wait(2)
     stored_state = store.get("interview_states", state["id"])
     assert stored_state is not None

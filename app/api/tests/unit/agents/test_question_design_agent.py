@@ -11,6 +11,7 @@ from ai_interviewer_api.agents.question_design.prompt_loader import (
 )
 from ai_interviewer_api.agents.question_design.schemas import (
     ExistingQuestionField,
+    PriorKnowledgeContext,
     QuestionDesignInput,
     QuestionDesignMessage,
     QuestionDesignOutput,
@@ -21,6 +22,7 @@ from ai_interviewer_api.agents.question_design.service import (
     DEFAULT_CLARIFICATION,
     QUESTION_DESIGN_VALIDATION_FAILED,
     QuestionDesignInternalError,
+    _build_turn_prompt,
     run_question_design,
 )
 
@@ -65,6 +67,26 @@ def test_run_question_design_returns_structured_output() -> None:
 
     assert result.reply == expected.reply
     assert result.suggestions[0].label == "判断基準"
+
+
+def test_question_design_prompt_contains_prior_knowledge_content() -> None:
+    prompt = _build_turn_prompt(
+        QuestionDesignInput(
+            user_instruction="製品管理の質問項目を考えて",
+            prior_knowledge=[
+                PriorKnowledgeContext(
+                    source_id="prior-1",
+                    title="製品用語集",
+                    knowledge_type="glossary",
+                    content="PLMは製品ライフサイクル管理を指す。",
+                )
+            ],
+        )
+    )
+
+    assert "prior_knowledge:" in prompt
+    assert "PLMは製品ライフサイクル管理を指す。" in prompt
+    assert "対象者の回答や指示ではなく" in prompt
 
 
 def test_run_question_design_parses_json_string_fallback() -> None:
@@ -510,6 +532,7 @@ def test_question_design_prompt_contains_required_contract() -> None:
     assert "インタビューエージェントではありません" in prompt
     assert "正式DBへの保存" in prompt
     assert "retrieved_knowledge" in prompt
+    assert "prior_knowledge" in prompt
     assert "Backendが事前検索した参考情報" in prompt
     assert "「対象設備」「設備」「保全」「製造」「現場」「熟練者」" in prompt
     assert "design_status" in prompt
@@ -535,6 +558,7 @@ def test_question_design_validation_prompt_contains_required_contract() -> None:
     assert "should_retry" in prompt
     assert "retry_instruction" in prompt
     assert "質問対象または聞きたい観点を示している場合" in prompt
+    assert "事前知識" in prompt
 
 
 def test_question_design_provider_import_is_lazy() -> None:

@@ -1,18 +1,36 @@
-import { useEffect, useRef, useState } from "react";
-import type { DragEvent } from "react";
+import { useEffect, useState } from "react";
 import { ingestionStatuses } from "../features/documents/constants";
 import { formatDate, formatNumber } from "../lib/date";
 import { useI18n } from "../i18n";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
+function knowledgeTitle(document: KnowledgeLayoutProps["documents"][number]) {
+  return document.title || document.fileName;
+}
+
 export function KnowledgeDocumentsContent(props: KnowledgeLayoutProps) {
   const { t, locale } = useI18n();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
+  const [isEditingDocument, setIsEditingDocument] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editKnowledgeType, setEditKnowledgeType] = useState<"known_fact" | "glossary">("known_fact");
+  const [editContent, setEditContent] = useState("");
   const deleteTarget = props.documents.find((document) => document.id === deleteTargetId) ?? null;
   const deleteConfirmationPhrase = t("knowledge.documents.deleteConfirmationPhrase");
+
+  useEffect(() => {
+    const opened = props.openedDocument;
+    setIsEditingDocument(false);
+    if (!opened) {
+      setEditTitle("");
+      setEditContent("");
+      return;
+    }
+    setEditTitle(knowledgeTitle(opened.document));
+    setEditKnowledgeType(opened.document.knowledgeType === "glossary" ? "glossary" : "known_fact");
+    setEditContent(opened.content);
+  }, [props.openedDocument]);
 
   function openDeleteDialog(documentId: string) {
     setDeleteConfirmationText("");
@@ -24,69 +42,56 @@ export function KnowledgeDocumentsContent(props: KnowledgeLayoutProps) {
     setDeleteTargetId(null);
   }
 
-  useEffect(() => {
-    if (!props.newDocumentFile && fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  }, [props.newDocumentFile]);
-
   function getIngestionStatusLabel(status: string) {
     return t(`knowledge.documents.ingestionStatusLabels.${ingestionStatuses.includes(status) ? status : "uploaded"}`);
   }
 
-  function handleFileDragOver(event: DragEvent<HTMLLabelElement>) {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    setIsDraggingFile(true);
-  }
-
-  function handleFileDragLeave(event: DragEvent<HTMLLabelElement>) {
-    if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget as Node)) return;
-    setIsDraggingFile(false);
-  }
-
-  function handleFileDrop(event: DragEvent<HTMLLabelElement>) {
-    event.preventDefault();
-    setIsDraggingFile(false);
-    props.setNewDocumentFile(event.dataTransfer.files?.[0] ?? null);
-  }
-
   return (
     <>
-      <div className="inline-form document-upload-form">
-        <label
-          className={`document-file-picker${isDraggingFile ? " dragging" : ""}`}
-          onDragOver={handleFileDragOver}
-          onDragLeave={handleFileDragLeave}
-          onDrop={handleFileDrop}
-        >
-          <span className="document-file-picker-label">{t("knowledge.documents.fileInputLabel")}</span>
-          <span className="document-file-picker-control">
-            <span className="document-file-picker-trigger" aria-hidden="true">
-              {t("knowledge.documents.chooseFile")}
-            </span>
-            <span className={props.newDocumentFile ? "document-file-picker-name" : "document-file-picker-name placeholder"}>
-              {props.newDocumentFile?.name ?? t("knowledge.documents.noFileSelected")}
-            </span>
-            {!props.newDocumentFile ? <span className="document-file-picker-drop-hint">{t("knowledge.documents.dropHint")}</span> : null}
-          </span>
+      <div className="inline-form prior-knowledge-form prior-knowledge-entry-form">
+        <label className="field-group">
+          <span>{t("knowledge.documents.titleField")}</span>
           <input
-            className="sr-only document-file-input"
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,.docx,.md,.pdf,.pptx,.txt,.xlsx"
-            aria-label={t("knowledge.documents.fileInputLabel")}
-            onChange={(event) => props.setNewDocumentFile(event.target.files?.[0] ?? null)}
+            type="text"
+            value={props.newDocumentTitle}
+            onChange={(event) => props.setNewDocumentTitle(event.target.value)}
+            placeholder={t("knowledge.documents.titlePlaceholder")}
+            maxLength={200}
           />
         </label>
-        <button type="button" className="primary compact document-upload-submit" onClick={props.onUploadDocument} disabled={!props.newDocumentFile || props.isUploadingDocument}>
-          {props.isUploadingDocument ? t("knowledge.documents.uploading") : t("knowledge.documents.addButton")}
+        <label className="field-group">
+          <span>{t("knowledge.documents.knowledgeType")}</span>
+          <select
+            value={props.newDocumentKnowledgeType}
+            onChange={(event) => props.setNewDocumentKnowledgeType(event.target.value as "known_fact" | "glossary")}
+          >
+            <option value="known_fact">{t("knowledge.documents.knownFact")}</option>
+            <option value="glossary">{t("knowledge.documents.glossary")}</option>
+          </select>
+        </label>
+        <label className="field-group prior-knowledge-content-field">
+          <span>{t("knowledge.documents.content")}</span>
+          <textarea
+            value={props.newDocumentContent}
+            onChange={(event) => props.setNewDocumentContent(event.target.value)}
+            placeholder={t("knowledge.documents.contentPlaceholder")}
+            rows={7}
+            maxLength={100000}
+          />
+        </label>
+        <button
+          type="button"
+          className="primary compact prior-knowledge-submit"
+          onClick={props.onCreatePriorKnowledge}
+          disabled={!props.newDocumentTitle.trim() || !props.newDocumentContent.trim() || props.isSavingDocument}
+        >
+          {props.isSavingDocument ? t("knowledge.documents.saving") : t("knowledge.documents.addButton")}
         </button>
       </div>
       <p className="form-help">{t("knowledge.documents.addPlaceholder")}</p>
       {props.documentNotice ? <p className="notice" role="status">{props.documentNotice}</p> : null}
       <div className="table-list">
-        <div className="table-row document-detail-row table-head"><span>{t("knowledge.documents.file")}</span><span>{t("knowledge.documents.ingestionStatus")}</span><span>{t("knowledge.documents.progressChunks")}</span><span>{t("knowledge.documents.registration")}</span><span>{t("knowledge.documents.operation")}</span></div>
+        <div className="table-row document-detail-row table-head"><span>{t("knowledge.documents.titleField")}</span><span>{t("knowledge.documents.ingestionStatus")}</span><span>{t("knowledge.documents.progressChunks")}</span><span>{t("knowledge.documents.registration")}</span><span>{t("knowledge.documents.operation")}</span></div>
         {props.documents.length === 0 ? <p className="empty">{t("knowledge.documents.empty")}</p> : null}
         {props.documents.map((doc) => {
           const isOpening = props.openingDocumentId === doc.id;
@@ -94,7 +99,7 @@ export function KnowledgeDocumentsContent(props: KnowledgeLayoutProps) {
           const isBusy = Boolean(props.openingDocumentId || props.deletingDocumentId);
           return (
             <div className="table-row document-row" key={doc.id}>
-              <span><strong>{doc.fileName}</strong><small>{doc.contentType}</small></span>
+              <span><strong>{knowledgeTitle(doc)}</strong><small>{doc.knowledgeType === "glossary" ? t("knowledge.documents.glossary") : t("knowledge.documents.knownFact")}</small></span>
               <span><span className="status-pill">{getIngestionStatusLabel(doc.ingestionStatus)}</span></span>
               <span>
                 <small>{t("knowledge.documents.progress", { value: formatNumber(doc.progressPercent, locale) })}</small>
@@ -120,7 +125,7 @@ export function KnowledgeDocumentsContent(props: KnowledgeLayoutProps) {
         <div className="ai-assist">
           <strong>{t("knowledge.documents.ingestionError")}</strong>
           {props.documents.filter((doc) => doc.errorMessage).map((doc) => (
-            <span key={doc.id}>{doc.fileName}: {doc.errorMessage}</span>
+            <span key={doc.id}>{knowledgeTitle(doc)}: {doc.errorMessage}</span>
           ))}
         </div>
       ) : null}
@@ -135,12 +140,56 @@ export function KnowledgeDocumentsContent(props: KnowledgeLayoutProps) {
           <article className="dialog-panel document-content-dialog" role="dialog" aria-modal="true" aria-labelledby="document-content-title">
             <div className="dialog-header">
               <div>
-                <h2 id="document-content-title">{props.openedDocument.document.fileName}</h2>
-                <p>{props.openedDocument.document.contentType}</p>
+                <h2 id="document-content-title">{knowledgeTitle(props.openedDocument.document)}</h2>
+                <p>{props.openedDocument.document.knowledgeType === "glossary" ? t("knowledge.documents.glossary") : t("knowledge.documents.knownFact")}</p>
               </div>
+              <button type="button" className="ghost compact" onClick={() => setIsEditingDocument((current) => !current)} disabled={props.isSavingDocument}>
+                {isEditingDocument ? t("common.cancel") : t("common.edit")}
+              </button>
             </div>
-            <pre className="document-content-viewer">{props.openedDocument.content}</pre>
+            {isEditingDocument ? (
+              <div className="prior-knowledge-entry-form">
+                <label className="field-group">
+                  <span>{t("knowledge.documents.titleField")}</span>
+                  <input type="text" value={editTitle} onChange={(event) => setEditTitle(event.target.value)} maxLength={200} />
+                </label>
+                <label className="field-group">
+                  <span>{t("knowledge.documents.knowledgeType")}</span>
+                  <select value={editKnowledgeType} onChange={(event) => setEditKnowledgeType(event.target.value as "known_fact" | "glossary")}>
+                    <option value="known_fact">{t("knowledge.documents.knownFact")}</option>
+                    <option value="glossary">{t("knowledge.documents.glossary")}</option>
+                  </select>
+                </label>
+                <label className="field-group prior-knowledge-content-field">
+                  <span>{t("knowledge.documents.content")}</span>
+                  <textarea value={editContent} onChange={(event) => setEditContent(event.target.value)} rows={12} maxLength={100000} />
+                </label>
+              </div>
+            ) : (
+              <div className="document-content-view">
+                <strong>{t("knowledge.documents.content")}</strong>
+                <pre className="document-content-viewer">{props.openedDocument.content}</pre>
+              </div>
+            )}
             <div className="dialog-actions">
+              {isEditingDocument ? (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!editTitle.trim() || !editContent.trim() || props.isSavingDocument}
+                  onClick={() => {
+                    props.onUpdatePriorKnowledge(props.openedDocument!.document.id, {
+                      title: editTitle.trim(),
+                      knowledgeType: editKnowledgeType,
+                      content: editContent,
+                    }).then((saved) => {
+                      if (saved) setIsEditingDocument(false);
+                    });
+                  }}
+                >
+                  {props.isSavingDocument ? t("knowledge.documents.saving") : t("common.save")}
+                </button>
+              ) : null}
               <button type="button" className="ghost" onClick={props.onCloseDocument}>{t("common.close")}</button>
             </div>
           </article>
@@ -152,7 +201,7 @@ export function KnowledgeDocumentsContent(props: KnowledgeLayoutProps) {
             <div className="dialog-header">
               <div>
                 <h2 id="document-delete-title">{t("knowledge.documents.deleteTitle")}</h2>
-                <p>{t("knowledge.documents.deletePrompt", { fileName: deleteTarget.fileName })}</p>
+                <p>{t("knowledge.documents.deletePrompt", { fileName: knowledgeTitle(deleteTarget) })}</p>
               </div>
             </div>
             <label className="delete-confirmation-field">

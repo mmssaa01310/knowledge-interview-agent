@@ -11,6 +11,7 @@ from ai_interviewer_api.agents.question_design.adapter import (
     build_question_design_input,
 )
 from ai_interviewer_api.agents.question_design.schemas import (
+    PriorKnowledgeContext,
     QuestionDesignOutput,
     QuestionFieldSuggestion,
     RetrievedKnowledgeContext,
@@ -82,6 +83,23 @@ def test_build_question_design_input_includes_retrieved_context() -> None:
 
     assert interview_input.knowledge_id == "knowledge-1"
     assert interview_input.retrieved_context == [context]
+
+
+def test_build_question_design_input_includes_prior_knowledge() -> None:
+    prior = PriorKnowledgeContext(
+        source_id="prior-1",
+        title="用語集",
+        knowledge_type="glossary",
+        content="PLMは製品ライフサイクル管理を指す。",
+    )
+
+    interview_input = build_question_design_input(
+        FieldSuggestionRequest(content="製品管理の質問を考えて"),
+        knowledge_id="knowledge-1",
+        prior_knowledge=[prior],
+    )
+
+    assert interview_input.prior_knowledge == [prior]
 
 
 def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
@@ -241,6 +259,54 @@ def test_suggest_fields_with_bedrock_passes_retrieved_context_to_design_engine(m
             "score": 0.9,
         }
     ]
+
+
+def test_suggest_fields_with_bedrock_passes_prior_knowledge_to_design_engine(monkeypatch) -> None:
+    knowledge_id = "prior-knowledge-design"
+    user = DEV_TOKENS["dev-manager"]
+    store.upsert(
+        "documents",
+        {
+            "id": "prior-design-document",
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge_id,
+            "sourceType": "prior_knowledge",
+            "title": "製品用語集",
+            "knowledgeType": "glossary",
+            "contentFormat": "markdown",
+            "content": "PLMは製品ライフサイクル管理を指す。",
+            "ingestionStatus": "indexed",
+            "deletedAt": None,
+        },
+    )
+    captured_input = None
+
+    def fake_run_question_design(question_input, **kwargs):
+        nonlocal captured_input
+        captured_input = question_input
+        return QuestionDesignOutput(
+            reply="質問項目候補を提案します。",
+            design_status="ready",
+            suggestions=[
+                QuestionFieldSuggestion(
+                    label="製品管理の運用",
+                    question="PLMを使う運用について教えてください。",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(field_suggestions, "retrieve_question_design_context", lambda *args, **kwargs: [])
+    monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
+
+    field_suggestions.suggest_fields_with_bedrock(
+        FieldSuggestionRequest(content="製品管理の質問を考えて"),
+        user,
+        knowledge_id=knowledge_id,
+    )
+
+    assert captured_input is not None
+    assert captured_input.prior_knowledge[0].source_id == "prior-design-document"
+    assert "PLM" in captured_input.prior_knowledge[0].content
 
 
 def test_suggest_fields_with_bedrock_migrates_legacy_model_to_gpt_default(monkeypatch) -> None:

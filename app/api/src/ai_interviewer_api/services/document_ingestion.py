@@ -1,15 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass
-from io import BytesIO
-from pathlib import Path
-from typing import Any
-
-from docx import Document as DocxDocument
-from openpyxl import load_workbook
-from pptx import Presentation
-from pypdf import PdfReader
+from typing import Any, Literal
 
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.base import utc_now
@@ -20,24 +15,15 @@ from ai_interviewer_api.repositories.document_knowledge import (
 from ai_interviewer_api.repositories.store import store
 
 logger = logging.getLogger(__name__)
-
-SUPPORTED_DOCUMENT_EXTENSIONS = frozenset({
-    ".csv",
-    ".docx",
-    ".md",
-    ".pdf",
-    ".pptx",
-    ".txt",
-    ".xlsx",
-})
+MAX_PRIOR_KNOWLEDGE_CONTENT_CHARS = 100_000
+_MARKDOWN_PATTERN = re.compile(
+    r"(?m)^(?:\s{0,3}#{1,6}\s+\S|\s*[-*+]\s+\S|\s*\d+\.\s+\S|\s*>\s+\S|\s*```)|"
+    r"\[[^\]]+\]\([^\n)]+\)|\*\*[^*\n]+\*\*|`[^`\n]+`"
+)
 
 
 class DocumentIngestionError(ValueError):
-    """Raised when a document cannot be extracted or indexed."""
-
-
-class UnsupportedDocumentTypeError(DocumentIngestionError):
-    """Raised when a file type is not supported by the local extractor."""
+    """Raised when directly entered knowledge cannot be indexed."""
 
 
 @dataclass(frozen=True)
@@ -47,56 +33,20 @@ class DocumentIngestionResult:
     chunks: list[dict[str, Any]]
 
 
-def ingest_document(
+def ingest_text_document(
     document: dict[str, Any],
-    raw_bytes: bytes,
+    content: str,
 ) -> DocumentIngestionResult:
-    """Extract, chunk, and index one uploaded document.
+    """Chunk and index text entered in the prior-knowledge editor.
 
-    The document metadata remains in the application store. Only the
-    searchable text and chunks are delegated to the configured document
-    knowledge repository, so the same ingestion flow works with PostgreSQL
-    and Elastic Cloud.
+    Direct knowledge entry intentionally bypasses every file parser. It uses
+    the same repository contract as legacy documents so interview retrieval
+    remains tenant- and Knowledge-scoped across both backends.
     """
 
-    _update_document(document["id"], ingestionStatus="processing", progressPercent=20)
     try:
-        content = extract_document_text(
-            file_name=str(document.get("fileName") or ""),
-            content_type=str(document.get("contentType") or ""),
-            raw_bytes=raw_bytes,
-        )
-        _update_document(
-            document["id"],
-            ingestionStatus="text_extracted",
-            progressPercent=50,
-            errorMessage=None,
-        )
-        chunks = chunk_document_text(document, content)
-        _update_document(
-            document["id"],
-            ingestionStatus="chunked",
-            progressPercent=70,
-            chunkCount=len(chunks),
-        )
-        document_knowledge_repository.replace_document(
-            document,
-            content=content,
-            chunks=chunks,
-        )
-        result_document = _update_document(
-            document["id"],
-            ingestionStatus="indexed",
-            progressPercent=100,
-            chunkCount=len(chunks),
-            lastIngestedAt=utc_now(),
-            errorMessage=None,
-        )
-        return DocumentIngestionResult(
-            document=result_document,
-            content=content,
-            chunks=chunks,
-        )
+        normalized = normalize_prior_knowledge_content(content)
+        return _index_document_content(document, normalized)
     except DocumentKnowledgeBackendError:
         _update_document(
             document["id"],
@@ -111,8 +61,8 @@ def ingest_document(
             errorMessage=str(error),
         )
         raise
-    except Exception as error:  # noqa: BLE001 - keep ingestion failures user-safe
-        logger.exception("document_ingestion_failed document_id=%s", document["id"])
+    except Exception as error:  # noqa: BLE001 - keep indexing failures user-safe
+        logger.exception("text_document_ingestion_failed document_id=%s", document["id"])
         _update_document(
             document["id"],
             ingestionStatus="failed",
@@ -121,37 +71,102 @@ def ingest_document(
         raise DocumentIngestionError("document_ingestion_failed") from error
 
 
-def extract_document_text(*, file_name: str, content_type: str, raw_bytes: bytes) -> str:
-    extension = _document_extension(file_name)
-    if extension not in SUPPORTED_DOCUMENT_EXTENSIONS:
-        raise UnsupportedDocumentTypeError(
-            f"unsupported_document_type:{extension or content_type or 'unknown'}"
-        )
-    if not raw_bytes:
+def _index_document_content(
+    document: dict[str, Any],
+    content: str,
+) -> DocumentIngestionResult:
+    content_format = detect_content_format(content)
+    indexed_document = _update_document(
+        document["id"],
+        content=content,
+        contentFormat=content_format,
+        contentType="text/markdown" if content_format == "markdown" else "text/plain",
+        ingestionStatus="processing",
+        progressPercent=20,
+    )
+    chunks = chunk_document_text(indexed_document, content)
+    _update_document(
+        document["id"],
+        ingestionStatus="chunked",
+        progressPercent=70,
+        chunkCount=len(chunks),
+    )
+    document_knowledge_repository.replace_document(
+        indexed_document,
+        content=content,
+        chunks=chunks,
+    )
+    result_document = _update_document(
+        document["id"],
+        ingestionStatus="indexed",
+        progressPercent=100,
+        chunkCount=len(chunks),
+        lastIngestedAt=utc_now(),
+        errorMessage=None,
+    )
+    return DocumentIngestionResult(
+        document=result_document,
+        content=content,
+        chunks=chunks,
+    )
+
+
+def normalize_prior_knowledge_content(text: str) -> str:
+    """Canonicalize entered knowledge without changing its meaning.
+
+    Plain text and Markdown keep non-empty line indentation, line breaks, and
+    trailing spaces. Only outer blank lines, whitespace-only lines, and long
+    runs of blank lines are normalized. Valid JSON objects/arrays are formatted
+    with two-space indentation because they are structured data; malformed JSON
+    is left as text instead of being guessed or rewritten.
+    """
+
+    normalized = (
+        str(text)
+        .replace("\x00", "")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+    lines = normalized.split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    compact_lines: list[str] = []
+    blank_line_count = 0
+    for line in lines:
+        if not line.strip():
+            blank_line_count += 1
+            if blank_line_count <= 2:
+                compact_lines.append("")
+            continue
+        blank_line_count = 0
+        compact_lines.append(line)
+
+    normalized = "\n".join(compact_lines)
+    if not normalized.strip():
         raise DocumentIngestionError("document_content_empty")
+    if len(normalized) > MAX_PRIOR_KNOWLEDGE_CONTENT_CHARS:
+        raise DocumentIngestionError("document_content_too_large")
 
     try:
-        if extension in {".csv", ".md", ".txt"}:
-            text = _decode_text(raw_bytes)
-        elif extension == ".pdf":
-            text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(raw_bytes)).pages)
-        elif extension == ".docx":
-            text = _extract_docx_text(raw_bytes)
-        elif extension == ".xlsx":
-            text = _extract_xlsx_text(raw_bytes)
-        elif extension == ".pptx":
-            text = _extract_pptx_text(raw_bytes)
-        else:  # pragma: no cover - guarded by SUPPORTED_DOCUMENT_EXTENSIONS
-            raise UnsupportedDocumentTypeError(f"unsupported_document_type:{extension}")
-    except UnsupportedDocumentTypeError:
-        raise
-    except Exception as error:  # noqa: BLE001 - parser-specific errors are user-safe
-        raise DocumentIngestionError("document_text_extraction_failed") from error
+        parsed = json.loads(normalized)
+    except (json.JSONDecodeError, TypeError):
+        return normalized
+    if not isinstance(parsed, (dict, list)):
+        return normalized
 
-    normalized = "\n".join(line.strip() for line in text.replace("\x00", "").splitlines()).strip()
-    if not normalized:
-        raise DocumentIngestionError("document_content_empty")
-    return normalized
+    formatted = json.dumps(parsed, ensure_ascii=False, indent=2)
+    if len(formatted) > MAX_PRIOR_KNOWLEDGE_CONTENT_CHARS:
+        raise DocumentIngestionError("document_content_too_large")
+    return formatted
+
+
+def detect_content_format(content: str) -> Literal["text", "markdown"]:
+    """Derive display metadata; this does not change how content is interpreted."""
+
+    return "markdown" if _MARKDOWN_PATTERN.search(content) else "text"
 
 
 def chunk_document_text(
@@ -165,8 +180,8 @@ def chunk_document_text(
     chunk_number = 1
     while start < len(content):
         end = min(len(content), start + chunk_size)
-        chunk_content = content[start:end].strip()
-        if chunk_content:
+        chunk_content = content[start:end]
+        if chunk_content.strip():
             chunks.append(
                 {
                     "id": f"{document['id']}:chunk:{chunk_number}",
@@ -192,85 +207,6 @@ def chunk_document_text(
     if not chunks:
         raise DocumentIngestionError("document_chunks_empty")
     return chunks
-
-
-def document_content_type(file_name: str, content_type: str | None) -> str:
-    extension = _document_extension(file_name)
-    if extension == ".csv":
-        return "text/csv"
-    if extension == ".md":
-        return "text/markdown"
-    if extension == ".txt":
-        return "text/plain"
-    if extension == ".pdf":
-        return "application/pdf"
-    if extension == ".docx":
-        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    if extension == ".xlsx":
-        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    if extension == ".pptx":
-        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    return str(content_type or "application/octet-stream")
-
-
-def safe_document_file_name(file_name: str | None) -> str:
-    normalized = str(file_name or "").replace("\\", "/")
-    safe_name = Path(normalized).name.strip()
-    if not safe_name or safe_name in {".", ".."}:
-        raise DocumentIngestionError("document_file_name_required")
-    return safe_name
-
-
-def _document_extension(file_name: str) -> str:
-    return Path(file_name).suffix.lower()
-
-
-def _decode_text(raw_bytes: bytes) -> str:
-    try:
-        return raw_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            return raw_bytes.decode("cp932")
-        except UnicodeDecodeError as error:
-            raise DocumentIngestionError("document_text_encoding_unsupported") from error
-
-
-def _extract_docx_text(raw_bytes: bytes) -> str:
-    document = DocxDocument(BytesIO(raw_bytes))
-    parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            values = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if values:
-                parts.append(" / ".join(values))
-    return "\n".join(parts)
-
-
-def _extract_xlsx_text(raw_bytes: bytes) -> str:
-    workbook = load_workbook(BytesIO(raw_bytes), read_only=True, data_only=True)
-    try:
-        parts: list[str] = []
-        for worksheet in workbook.worksheets:
-            for row in worksheet.iter_rows(values_only=True):
-                values = [str(value).strip() for value in row if value is not None and str(value).strip()]
-                if values:
-                    parts.append(" / ".join(values))
-        return "\n".join(parts)
-    finally:
-        workbook.close()
-
-
-def _extract_pptx_text(raw_bytes: bytes) -> str:
-    presentation = Presentation(BytesIO(raw_bytes))
-    parts: list[str] = []
-    for slide in presentation.slides:
-        for shape in slide.shapes:
-            if not getattr(shape, "has_text_frame", False):
-                continue
-            text = shape.text.strip()
-            if text:
-                parts.append(text)
-    return "\n".join(parts)
 
 
 def _update_document(document_id: str, **changes: Any) -> dict[str, Any]:

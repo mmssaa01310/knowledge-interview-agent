@@ -520,87 +520,34 @@ small {
   margin-bottom: 14px;
 }
 
-.document-upload-form {
-  grid-template-columns: minmax(0, 1fr) auto;
+.prior-knowledge-form,
+.prior-knowledge-entry-form {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(180px, 1fr);
+  gap: 12px;
+}
+
+.prior-knowledge-form {
   align-items: end;
   margin-bottom: 14px;
 }
 
-.document-file-picker {
-  min-width: 0;
-  gap: 6px;
-  font-weight: 400;
-  cursor: pointer;
+.prior-knowledge-content-field,
+.prior-knowledge-submit {
+  grid-column: 1 / -1;
 }
 
-.document-file-picker-label {
-  font-size: 13px;
-  font-weight: 700;
+.prior-knowledge-form > .field-group > input,
+.prior-knowledge-form > .field-group > select,
+.prior-knowledge-entry-form > .field-group > input,
+.prior-knowledge-entry-form > .field-group > select {
+  height: 42px;
+  padding: 8px 10px;
+  font: inherit;
 }
 
-.document-file-picker-control {
-  min-width: 0;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  overflow: hidden;
-  border: 1px solid #cbd7e2;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #1f2d3d;
-}
-
-.document-file-picker:focus-within .document-file-picker-control {
-  border-color: #7da9d5;
-  box-shadow: 0 0 0 3px rgba(36, 95, 159, 0.14);
-}
-
-.document-file-picker.dragging .document-file-picker-control {
-  border-color: #245f9f;
-  border-style: dashed;
-  background: #eef6ff;
-}
-
-.document-file-picker-trigger {
-  flex: 0 0 auto;
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 12px;
-  background: #f4f7fa;
-  border-right: 1px solid #cbd7e2;
-  color: #245f9f;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.document-file-picker-name {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding-right: 10px;
-  font-size: 13px;
-}
-
-.document-file-picker-name.placeholder {
-  color: #6b7d90;
-}
-
-.document-file-picker-drop-hint {
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  padding-right: 10px;
-  color: #6b7d90;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.document-upload-submit {
+.prior-knowledge-submit {
+  justify-self: end;
   height: 38px;
   min-height: 38px;
 }
@@ -608,6 +555,11 @@ small {
 .document-content-dialog {
   width: min(780px, 100%);
   max-height: calc(100vh - 48px);
+}
+
+.document-content-view {
+  display: grid;
+  gap: 6px;
 }
 
 .document-content-viewer {
@@ -3237,7 +3189,8 @@ textarea {
 
   .field-editor,
   .inline-form,
-  .inline-form.wide {
+  .inline-form.wide,
+  .prior-knowledge-entry-form {
     grid-template-columns: 1fr;
   }
 

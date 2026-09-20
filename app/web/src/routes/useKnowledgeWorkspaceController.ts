@@ -22,9 +22,10 @@ import {
 } from "../features/knowledge/api/knowledgeApi";
 import {
   deleteDocument,
+  createPriorKnowledge,
   fetchDocumentContent,
   fetchDocuments,
-  uploadDocument,
+  updatePriorKnowledge,
   type DocumentContent,
   type DocumentSummary
 } from "../features/documents/api/documentApi";
@@ -226,9 +227,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const [publishedGuidance, setPublishedGuidance] = useState<GuidanceDraft[]>([]);
   const [selectedRecordIds, setSelectedRecordIds] = useState<string[]>([]);
   const [newRecordTitle, setNewRecordTitle] = useState("");
-  const [newDocumentFile, setNewDocumentFile] = useState<File | null>(null);
+  const [newDocumentTitle, setNewDocumentTitle] = useState("");
+  const [newDocumentKnowledgeType, setNewDocumentKnowledgeType] = useState<"known_fact" | "glossary">("known_fact");
+  const [newDocumentContent, setNewDocumentContent] = useState("");
   const [documentNotice, setDocumentNotice] = useState("");
-  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
+  const [isSavingDocument, setIsSavingDocument] = useState(false);
   const [settingsName, setSettingsName] = useState("");
   const [settingsDescription, setSettingsDescription] = useState("");
   const [settingsSystemPrompt, setSettingsSystemPrompt] = useState("");
@@ -931,29 +934,64 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     }
   }
 
-  async function handleUploadDocument() {
-    if (!selectedKnowledgeDb || !selectedKnowledge || !newDocumentFile || isUploadingDocument) return;
-    setIsUploadingDocument(true);
+  async function handleCreatePriorKnowledge() {
+    if (
+      !selectedKnowledgeDb
+      || !selectedKnowledge
+      || !newDocumentTitle.trim()
+      || !newDocumentContent.trim()
+      || isSavingDocument
+    ) return;
+    setIsSavingDocument(true);
     setDocumentNotice("");
     try {
-      const uploaded = await uploadDocument(selectedKnowledge.id, newDocumentFile);
-      setNewDocumentFile(null);
+      const saved = await createPriorKnowledge(selectedKnowledge.id, {
+        title: newDocumentTitle.trim(),
+        knowledgeType: newDocumentKnowledgeType,
+        content: newDocumentContent,
+      });
+      setNewDocumentTitle("");
+      setNewDocumentContent("");
       await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
       setDocumentNotice(
-        uploaded.ingestionStatus === "indexed"
-          ? t("knowledge.documents.uploadSuccess")
-          : t("knowledge.documents.uploadQueued")
+        saved.ingestionStatus === "indexed"
+          ? t("knowledge.documents.saveSuccess")
+          : t("knowledge.documents.saveQueued")
       );
     } catch (error) {
-      console.error("Failed to upload document", error);
+      console.error("Failed to save prior knowledge", error);
       setDocumentNotice(
         error instanceof ApiError && error.detail
-          ? `${t("knowledge.documents.uploadFailed")} (${error.detail})`
-          : t("knowledge.documents.uploadFailed")
+          ? `${t("knowledge.documents.saveFailed")} (${error.detail})`
+          : t("knowledge.documents.saveFailed")
       );
       await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
     } finally {
-      setIsUploadingDocument(false);
+      setIsSavingDocument(false);
+    }
+  }
+
+  async function handleUpdatePriorKnowledge(documentId: string, payload: Parameters<typeof updatePriorKnowledge>[1]): Promise<boolean> {
+    if (!selectedKnowledgeDb || !selectedKnowledge || isSavingDocument) return false;
+    setIsSavingDocument(true);
+    setDocumentNotice("");
+    try {
+      await updatePriorKnowledge(documentId, payload);
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      setOpenedDocument(await fetchDocumentContent(documentId));
+      setDocumentNotice(t("knowledge.documents.saveSuccess"));
+      return true;
+    } catch (error) {
+      console.error("Failed to update prior knowledge", error);
+      setDocumentNotice(
+        error instanceof ApiError && error.detail
+          ? `${t("knowledge.documents.saveFailed")} (${error.detail})`
+          : t("knowledge.documents.saveFailed")
+      );
+      await loadKnowledgeWorkspace(selectedKnowledgeDb.id, selectedKnowledge.id);
+      return false;
+    } finally {
+      setIsSavingDocument(false);
     }
   }
 
@@ -1484,10 +1522,14 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     settingsSaveScope,
     newRecordTitle,
     setNewRecordTitle,
-    newDocumentFile,
-    setNewDocumentFile,
+    newDocumentTitle,
+    setNewDocumentTitle,
+    newDocumentKnowledgeType,
+    setNewDocumentKnowledgeType,
+    newDocumentContent,
+    setNewDocumentContent,
     documentNotice,
-    isUploadingDocument,
+    isSavingDocument,
     selectedRecordIds,
     setSelectedRecordIds,
     openedDocument,
@@ -1526,7 +1568,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       setSettingsSaveState("idle");
       setSettingsSaveScope(null);
     },
-    onUploadDocument: handleUploadDocument,
+    onCreatePriorKnowledge: handleCreatePriorKnowledge,
+    onUpdatePriorKnowledge: handleUpdatePriorKnowledge,
     onOpenDocument: handleOpenDocument,
     onCloseDocument: handleCloseDocument,
     onDeleteDocument: handleDeleteDocument,

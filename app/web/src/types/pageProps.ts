@@ -1,5 +1,5 @@
 import type { InterviewLocale, InterviewRecord, Knowledge, KnowledgeDb, KnowledgeTag } from "@ai-interviewer/shared-types";
-import type { AiProposal, DocumentContent, DocumentSummary, KnowledgeField, UserProfile } from "../lib/api";
+import type { AiProposal, DocumentContent, DocumentSummary, KnowledgeField, PriorKnowledgePayload, UserProfile } from "../lib/api";
 import type { Route } from "../routes/routeTypes";
 import type {
   ChatMessage,
@@ -60,10 +60,14 @@ export type KnowledgeLayoutProps = {
   settingsSaveScope: KnowledgeSettingsSaveScope | null;
   newRecordTitle: string;
   setNewRecordTitle: (value: string) => void;
-  newDocumentFile: File | null;
-  setNewDocumentFile: (value: File | null) => void;
+  newDocumentTitle: string;
+  setNewDocumentTitle: (value: string) => void;
+  newDocumentKnowledgeType: "known_fact" | "glossary";
+  setNewDocumentKnowledgeType: (value: "known_fact" | "glossary") => void;
+  newDocumentContent: string;
+  setNewDocumentContent: (value: string) => void;
   documentNotice: string;
-  isUploadingDocument: boolean;
+  isSavingDocument: boolean;
   selectedRecordIds: string[];
   setSelectedRecordIds: (value: string[]) => void;
   openedDocument: DocumentContent | null;
@@ -104,7 +108,8 @@ export type KnowledgeLayoutProps = {
   onSaveSettings: (scope: KnowledgeSettingsSaveScope) => void;
   onClearSettingsNotice: () => void;
   onCreatePromptProfile?: (payload: { name: string; prompt: string }) => Promise<PromptProfile>;
-  onUploadDocument: () => void;
+  onCreatePriorKnowledge: () => void;
+  onUpdatePriorKnowledge: (documentId: string, payload: PriorKnowledgePayload) => Promise<boolean>;
   onOpenDocument: (documentId: string) => void;
   onCloseDocument: () => void;
   onDeleteDocument: (documentId: string) => void;

@@ -46,17 +46,11 @@ class Settings:
         "ELASTICSEARCH_DOCUMENT_CHUNK_INDEX",
         "kikiori-document-chunks-v1",
     )
-    document_max_upload_bytes: int = int(
-        os.getenv("DOCUMENT_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))
-    )
     document_chunk_size_chars: int = int(
         os.getenv("DOCUMENT_CHUNK_SIZE_CHARS", "1200")
     )
     document_chunk_overlap_chars: int = int(
         os.getenv("DOCUMENT_CHUNK_OVERLAP_CHARS", "150")
-    )
-    sqs_document_queue_url: str = os.getenv(
-        "SQS_DOCUMENT_QUEUE_URL", "memory://document-ingestion"
     )
     bedrock_enabled: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
     bedrock_aws_region: str = os.getenv("BEDROCK_AWS_REGION", "ap-northeast-1")

@@ -93,6 +93,45 @@ def test_postgres_document_repository_replaces_indexed_chunks() -> None:
     assert contexts[0].title == "保全手順.md"
 
 
+def test_postgres_document_repository_excludes_prior_knowledge_from_document_search() -> None:
+    store.tables.clear()
+    repository = PostgresDocumentKnowledgeRepository()
+    store.upsert(
+        "documents",
+        {
+            "id": "prior-document",
+            "tenantId": "tenant-demo",
+            "knowledgeId": "elastic-knowledge",
+            "sourceType": "prior_knowledge",
+            "title": "製品用語集",
+            "content": "PLMは製品ライフサイクル管理を指す。",
+            "ingestionStatus": "indexed",
+            "deletedAt": None,
+        },
+    )
+    repository.replace_document(
+        store.get("documents", "prior-document") or {},
+        content="PLMは製品ライフサイクル管理を指す。",
+        chunks=[
+            {
+                "id": "prior-document:chunk:1",
+                "tenantId": "tenant-demo",
+                "knowledgeId": "elastic-knowledge",
+                "documentId": "prior-document",
+                "status": "indexed",
+                "content": "PLMは製品ライフサイクル管理を指す。",
+            }
+        ],
+    )
+
+    assert repository.search(
+        query="PLM 製品ライフサイクル管理",
+        knowledge_id="elastic-knowledge",
+        tenant_id="tenant-demo",
+        limit=3,
+    ) == []
+
+
 def test_postgres_document_repository_reads_and_deletes_document_content() -> None:
     store.tables.clear()
     repository = PostgresDocumentKnowledgeRepository()

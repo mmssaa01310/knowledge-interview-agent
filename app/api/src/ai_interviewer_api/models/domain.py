@@ -167,6 +167,11 @@ class Document(BaseEntity):
     knowledgeId: str
     fileName: str
     contentType: str
+    sourceType: Literal["file", "prior_knowledge"] = "file"
+    title: str | None = None
+    knowledgeType: Literal["known_fact", "glossary"] | None = None
+    contentFormat: Literal["text", "markdown"] | None = None
+    content: str | None = None
     ingestionStatus: str = "uploaded"
     progressPercent: int = 0
     chunkCount: int = 0

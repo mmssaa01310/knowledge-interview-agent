@@ -16,6 +16,7 @@ from ai_interviewer_api.services.ai_interview import (
     generate_interview_reply,
     get_interview_state_snapshot,
 )
+from ai_interviewer_api.services.prior_knowledge import build_prior_knowledge_context
 
 
 _LIVE_DELEGATION_LOCKS: dict[str, RLock] = {}
@@ -98,6 +99,7 @@ def build_live_interview_context(
         "profile": state.get("interviewProfile")
         or (knowledge.get("interviewPlan") or {}).get("profile"),
         "purpose": str((knowledge.get("interviewPlan") or {}).get("purpose") or ""),
+        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
         "fields": field_summaries,
         "current": {
             "field_id": state.get("currentFieldId"),

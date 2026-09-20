@@ -11,10 +11,10 @@ from ai_interviewer_api.routers.routes import (
     approve_all,
     approve_proposal,
     bulk_approve,
-    create_document,
     create_field,
     create_knowledge,
     create_knowledge_db,
+    create_prior_knowledge,
     create_knowledge_tag,
     create_record,
     create_record_message,
@@ -37,7 +37,6 @@ from ai_interviewer_api.routers.routes import (
 from ai_interviewer_api.schemas.requests import (
     BulkApproveRequest,
     ChatMessageCreate,
-    DocumentCreate,
     FieldSuggestionRequest,
     KnowledgeDbCreate,
     KnowledgeDbUpdate,
@@ -46,6 +45,7 @@ from ai_interviewer_api.schemas.requests import (
     KnowledgeTagUpdate,
     KnowledgeFieldCreate,
     KnowledgeUpdate,
+    PriorKnowledgeCreate,
     ReadStatusUpdate,
     RecordCreate,
 )
@@ -116,12 +116,15 @@ def test_knowledge_record_proposal_and_document_flow() -> None:
     proposal = approve_proposal(proposal_id, user)
     assert proposal["status"] == "approved"
 
-    document = create_document(
+    document = create_prior_knowledge(
         knowledge["id"],
-        DocumentCreate(fileName="圧入機A_保全手順.pdf", contentType="application/pdf"),
+        PriorKnowledgeCreate(
+            title="圧入機A 保全手順",
+            content="朝一の暖機前に圧入機Aの荷重を確認する。",
+        ),
         user,
     )
-    assert document["ingestionStatus"] == "queued"
+    assert document["ingestionStatus"] == "indexed"
 
 
 def test_viewer_cannot_create_knowledge_db() -> None:
@@ -620,9 +623,12 @@ def test_cross_tenant_access_is_rejected_for_child_resources() -> None:
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="tenant scoped db"), owner)
     knowledge = create_test_knowledge(knowledge_db["id"], owner)
     record = create_record(knowledge["id"], RecordCreate(title="tenant scoped record"), owner)
-    document = create_document(
+    document = create_prior_knowledge(
         knowledge["id"],
-        DocumentCreate(fileName="manual.pdf", contentType="application/pdf"),
+        PriorKnowledgeCreate(
+            title="保全手順",
+            content="圧入機Aの点検手順。",
+        ),
         owner,
     )
 

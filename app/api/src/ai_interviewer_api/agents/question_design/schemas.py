@@ -22,6 +22,15 @@ class QuestionDesignMessage(BaseModel):
     content: str
 
 
+class PriorKnowledgeContext(BaseModel):
+    source_id: str
+    title: str
+    knowledge_type: str = "known_fact"
+    content_format: str = "text"
+    content: str
+    revision: str = ""
+
+
 class QuestionDesignInput(BaseModel):
     knowledge_id: str | None = None
     knowledge_name: str | None = None
@@ -35,6 +44,7 @@ class QuestionDesignInput(BaseModel):
     desired_count: int | None = None
     existing_fields: list[ExistingQuestionField] = Field(default_factory=list)
     recent_messages: list[QuestionDesignMessage] = Field(default_factory=list)
+    prior_knowledge: list[PriorKnowledgeContext] = Field(default_factory=list)
     retrieved_context: list[RetrievedKnowledgeContext] = Field(default_factory=list)
 
 

@@ -125,6 +125,13 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
                     "needs_confirmation": True,
                 },
             ],
+            "prior_knowledge": [
+                {
+                    "title": "製品用語集",
+                    "knowledge_type": "glossary",
+                    "content": "PLMは製品ライフサイクル管理を指す。",
+                }
+            ],
         },
     )
 
@@ -135,6 +142,8 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
     assert "not CONFIRMED" in captured["session"]["instructions"]
     assert "Never close the interview" in captured["session"]["instructions"]
     assert "Unconfirmed candidate: 候補の回答" in captured["session"]["instructions"]
+    assert "PLMは製品ライフサイクル管理を指す。" in captured["session"]["instructions"]
+    assert "glossary" in captured["session"]["instructions"]
     assert "After delegation, wait" not in captured["session"]["instructions"]
 
 

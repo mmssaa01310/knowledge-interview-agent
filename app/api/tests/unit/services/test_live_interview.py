@@ -130,6 +130,54 @@ def test_build_live_context_exposes_candidate_confirmation_state(
     assert field["needs_confirmation"] is True
 
 
+def test_build_live_context_includes_direct_prior_knowledge(
+    monkeypatch,
+    clean_interview_store,
+) -> None:
+    user = _user()
+    knowledge = {
+        "id": "knowledge-live-test",
+        "interviewPlan": {"profile": "fixed_form", "purpose": "人物インタビュー"},
+    }
+    monkeypatch.setattr(
+        live_interview_module,
+        "get_interview_state_snapshot",
+        lambda *_args, **_kwargs: _snapshot({"status": "in_progress", "fieldStates": {}}),
+    )
+    store.upsert(
+        "documents",
+        {
+            "id": "live-prior-knowledge",
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge["id"],
+            "sourceType": "prior_knowledge",
+            "title": "PLM用語",
+            "fileName": "PLM用語",
+            "contentFormat": "markdown",
+            "knowledgeType": "glossary",
+            "contentType": "text/markdown",
+            "ingestionStatus": "indexed",
+        },
+    )
+    store.upsert(
+        "document_chunks",
+        {
+            "id": "live-prior-knowledge:chunk:1",
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge["id"],
+            "documentId": "live-prior-knowledge",
+            "status": "indexed",
+            "title": "PLM用語",
+            "content": "PLMは製品ライフサイクル管理を指す。",
+        },
+    )
+
+    context = live_interview_module.build_live_interview_context(_record(), knowledge, user)
+
+    assert context["prior_knowledge"][0]["knowledge_type"] == "glossary"
+    assert "製品ライフサイクル管理" in context["prior_knowledge"][0]["content"]
+
+
 def test_process_live_delegation_is_idempotent(monkeypatch, clean_interview_store) -> None:
     user = _user()
     record = _record()

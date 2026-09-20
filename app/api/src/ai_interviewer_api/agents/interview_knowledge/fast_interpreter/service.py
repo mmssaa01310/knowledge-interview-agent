@@ -13,6 +13,7 @@ def build_fast_interpreter_context(
     current_question: Mapping[str, Any],
     latest_answer: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]] = (),
+    prior_knowledge: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Build the intentionally narrow input contract for Fast Interpreter."""
 
@@ -118,6 +119,7 @@ def build_fast_interpreter_context(
 
     return {
         "currentQuestion": current_question_context,
+        "prior_knowledge": [dict(item) for item in prior_knowledge],
         "latestUserAnswer": {
             "text": answer_text,
             "sttConfidence": latest_answer.get("sttConfidence"),

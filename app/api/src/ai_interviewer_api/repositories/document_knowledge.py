@@ -160,6 +160,10 @@ class PostgresDocumentKnowledgeRepository:
         if not _document_is_in_scope(document, document_id, knowledge_id, tenant_id):
             return None
 
+        raw_content = _raw_document_content(document)
+        if raw_content:
+            return raw_content
+
         parts = _collect_postgres_document_parts(
             document_id=document_id,
             knowledge_id=knowledge_id,
@@ -167,7 +171,7 @@ class PostgresDocumentKnowledgeRepository:
         )
         if parts:
             return _join_document_parts(parts)
-        return _raw_document_content(document)
+        return None
 
     def delete_document(
         self,
@@ -377,6 +381,7 @@ class ElasticsearchDocumentKnowledgeRepository:
             if document.get("knowledgeId") == knowledge_id
             and document.get("ingestionStatus") in INDEXED_STATUSES
             and document.get("deletedAt") is None
+            and document.get("sourceType") != "prior_knowledge"
             and document.get("id")
         }
         if not indexed_document_ids:
@@ -598,10 +603,16 @@ def _collect_postgres_candidates(
         if document.get("knowledgeId") == knowledge_id
         and document.get("deletedAt") is None
     }
+    prior_knowledge_document_ids = {
+        document_id
+        for document_id, document in all_documents.items()
+        if document.get("sourceType") == "prior_knowledge"
+    }
     documents = {
         document_id: document
         for document_id, document in all_documents.items()
         if document.get("ingestionStatus") in INDEXED_STATUSES
+        and document_id not in prior_knowledge_document_ids
     }
     candidates: list[_DocumentCandidate] = []
 
@@ -616,6 +627,8 @@ def _collect_postgres_candidates(
                 continue
             document_id = str(chunk.get("documentId") or "").strip()
             if document_id:
+                if document_id in prior_knowledge_document_ids:
+                    continue
                 parent_document = all_documents.get(document_id)
                 if (
                     parent_document is not None
@@ -729,8 +742,10 @@ def _raw_document_content(row: Mapping[str, Any] | None) -> str | None:
         value = row.get(key)
         if value is None:
             continue
-        content = str(value).replace("\x00", "").strip()
-        if content:
+        content = str(value).replace("\x00", "")
+        if row.get("sourceType") != "prior_knowledge":
+            content = content.strip()
+        if content.strip():
             return content
     return None
 

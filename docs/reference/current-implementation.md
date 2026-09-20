@@ -21,7 +21,7 @@
   * 画面ページは`React.lazy`によるルート単位の遅延読み込みを使用し、インタビュー画面のReact Flow・音声機能を初期バンドルへ含めない。
 * `app/api`: FastAPI API
 * `app/voice`: 音声セッション用FastAPIサービス
-* `app/worker`: ドキュメント取り込み状態を返す最小Worker（サンプル。SQS接続は未実装）
+* `app/worker`: 将来の非同期処理を検討するための最小Workerサンプル（現行の事前知識登録経路では使用しない）
 * `packages/shared-types`: FrontendとBackendの共有型
 * `infra/docker-compose.yml`: ローカル開発用Compose
 
@@ -161,7 +161,7 @@ deletedAt?
 | `VoiceSession` | Recordの音声セッション | `InterviewRecord`に属する |
 | `VoiceTurn` | 音声セッション内の発話 | `VoiceSession`とRecordに属する |
 | `AiProposal` | AIが作成した未承認候補 | Recordに属する |
-| `Document` | ナレッジに紐づく文書メタデータ | `Knowledge`に属する |
+| `Document` | ナレッジに紐づく事前知識メタデータ | `Knowledge`に属し、`sourceType=prior_knowledge`ではタイトル・種別・正規化済み本文と内部判定形式を持つ |
 | `AuditLog` | 作成・更新・削除・承認、教育支援案の生成・公開の監査情報 | 操作対象を参照する |
 | `GuidanceDraft` | 教育目標ごとの学習案内・指導案の下書きと公開状態 | `InterviewRecord`、`Knowledge`に属する |
 | `LearningAnalysisDraft` | 同一ナレッジの複数記録を横断した学習支援分析、全体傾向、回答者別アドバイスの下書きと確認状態 | `Knowledge`に属し、対象記録IDをスコープへ保持する |
@@ -181,7 +181,7 @@ deletedAt?
 
 設定画面の初期選択はLunaとする。記録を作成・開始するには、選択したモデルを`interviewPlan.modelId`へ保存しなければならない。画像生成モデルは使用しない。
 
-設定画面には「基本設定」タブを置かず、ナレッジ名と説明を「ナレッジ情報」としてタブの上に表示する。タブは「質問項目」「実行設定」「事前知識」の3つとし、事前知識タブでは管理者が登録した参照文書の本文表示・削除・取り込み状態を管理する。設定保存操作はナレッジ情報、質問項目、実行設定をまとめて保存し、文書追加・本文表示・削除は各操作時に反映する。
+設定画面には「基本設定」タブを置かず、ナレッジ名と説明を「ナレッジ情報」としてタブの上に表示する。タブは「質問項目」「実行設定」「事前知識」の3つとし、事前知識タブでは管理者がタイトル・知識の種類・本文を入力して、既知情報・専門用語を追加・編集・表示・削除する。本文はテキスト／Markdownをそのまま入力でき、形式選択は表示しない。保存・検索反映状態も表示する。設定保存操作はナレッジ情報、質問項目、実行設定をまとめて保存し、事前知識の追加・編集・本文表示・削除は各操作時に反映する。ファイル選択は表示しない。
 
 記録を作成・開始するには、`interviewPlan`へ有効な`profile`と`modelId`を保存済みであることが必要である。設定未完了の場合、Backendは`409 interview_configuration_required`を返す。
 
@@ -234,9 +234,9 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 * `PATCH /api/interview-prompt-profiles/{profile_id}`
 * `DELETE /api/interview-prompt-profiles/{profile_id}`
 
-`field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用する。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
+`field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡し、直接登録した事前知識は検索結果の有無にかかわらず`prior_knowledge`として同じ入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用する。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
 
-通常の固定項目インタビューと構造化インタビューの次質問生成も、`interview_document_retrieval`の共通検索を利用する。`indexed`または既存Workerの取り込み完了状態にある同一テナント・同一Knowledgeの文書・チャンクだけを質問コンテキストへ渡し、質問には`retrievedSources`を記録する。音声インタビューは`app/api`が生成した質問と出典を再利用する。文書アップロードはBackendで本文抽出・チャンク化を行い、設定された文書Repositoryへ保存する。
+通常の固定項目インタビューと構造化インタビューの次質問生成は、`interview_document_retrieval`と`services/prior_knowledge.py`の共通経路を利用する。追加検索の結果は`retrieved_knowledge`、直接登録した事前知識は`prior_knowledge`として、同じテナント・同じKnowledgeの有効な本文だけを質問コンテキストへ渡す。直接登録した事前知識は追加文書検索から除外し、文書由来の確認候補と混同しない。`retrievalPolicy=never`でも設定済み事前知識は渡し、追加検索は行わない。回答解釈・高速音声判定にも同じ`prior_knowledge`を渡し、事前知識だけで回答を確定しない。GPT-Liveは初期セッション指示へ事前知識を渡し、音声経路は`app/api`の共通整理を再利用する。
 
 質問対象の値が取り込み済み文書に明示されている場合、共通の`QuestionGenerationOutput`が`documentCandidateValue`と`documentCandidateSourceIds`を返す。Backendは検索結果への値の出現と出典IDを検証したうえで、`candidateSource=document_reference`、`answerState/status=AWAITING_CONFIRMATION`の仮候補として保存する。初回質問は「文書では○○となっています。この内容で合っていますか？」という確認事項になり、明示承認後だけ正式回答へ移る。値が文書にない場合、文書の取り込みが完了していない場合、または`retrievalPolicy=never`の場合は通常質問へ戻る。通常、構造化、音声のすべてでこの状態と出典を共有し、音声はAPIが生成した確認質問をそのまま再生する。
 
@@ -278,13 +278,13 @@ AI提案は`draft`または`needs_review`で保存し、人の操作なしに`ap
 
 ### 5.8 文書
 
-* `GET /api/knowledges/{knowledge_id}/documents`
-* `POST /api/knowledges/{knowledge_id}/documents`
-* `POST /api/knowledges/{knowledge_id}/documents/upload`
+* `POST /api/knowledges/{knowledge_id}/prior-knowledge`
+* `GET /api/knowledges/{knowledge_id}/prior-knowledge`
+* `PATCH /api/prior-knowledge/{document_id}`
 * `GET /api/documents/{document_id}/content`
 * `DELETE /api/documents/{document_id}`
 
-JSON形式の文書登録は後続Worker向けのメタデータ登録として残し、ファイル本体を取り込む場合は`documents/upload`を利用する。アップロード経路は同期的に本文抽出・チャンク化・検索Repositoryへの保存まで行い、取り込み状態を`indexed`または`failed`へ更新する。本文表示と削除は同じテナントの管理者だけが実行でき、削除時は検索Repositoryの本文・チャンクも併せて削除する。
+事前知識APIはタイトル、`knowledgeType`（`known_fact`／`glossary`）、本文を受け取り、本文を正規化してからチャンク化・検索Repositoryへ同期反映する。`contentFormat`は入力項目ではなく、Backendが本文から内部メタデータとして判定する。改行コードをLFへ統一し、外側の空行と空白だけの行を整理し、連続空行は最大2行までにする。非空行の字下げ・改行・末尾空白は保持し、有効なJSONオブジェクト／配列だけは2スペースで整形する。不正なJSONは推測で書き換えない。管理者権限、同一テナント・Knowledgeのスコープ、空本文、サイズ上限をBackendで検証する。本文表示・編集・削除も同じ権限で行い、更新時は古いチャンクを置き換える。ファイルアップロードや本文抽出のAPIは提供しない。
 
 ### 5.9 音声セッション
 
@@ -415,7 +415,7 @@ Composeを使用しない場合の詳細は、リポジトリ直下の`README.md
 
 ## 8. 未実装・制限
 
-事前知識のテキスト／Markdown直接入力への変更は仕様策定済み・未実装である。[プロダクト仕様](../spec.md)の4章・7.3.3と[移行計画](../plans/interview-prior-knowledge-text.md)を参照する。現行コードは以下のファイルアップロード方式であり、直接編集、設定コンテキストとしての用語参照、全音声経路への共通適用は対応完了していない。
+事前知識のテキスト／Markdown直接入力は実装済みである。[プロダクト仕様](../spec.md)の4章・7.3.3を参照する。PDF / DOCX / XLSX / PPTX / CSVのファイル入力は対応しない。本文は直接入力・貼り付けで登録する。
 
 次の項目はプロダクト仕様上の将来または本番対応であり、現在のローカル実装には含まれない。
 
@@ -424,6 +424,6 @@ Composeを使用しない場合の詳細は、リポジトリ直下の`README.md
 * 承認済み項目値を正式ナレッジへ反映する永続モデル
 * 本番向けの監視、負荷対策、マルチテナント運用
 
-文書ファイルは`POST /api/knowledges/{knowledge_id}/documents/upload`で受信し、PDF、DOCX、XLSX、PPTX、CSV、Markdown、TXTから本文を抽出してチャンク化する。文書メタデータと取り込み状態はPostgreSQLに保存し、本文・チャンクは`DOCUMENT_KNOWLEDGE_BACKEND`に応じてPostgreSQLまたはElastic Cloudへ保存する。Elastic Cloudでは起動時に設定済みインデックスの存在と接続を確認する。既存文書の切替先への移行は、別途再インデックス操作が必要である。
+事前知識の本文・チャンクは`DOCUMENT_KNOWLEDGE_BACKEND`に応じてPostgreSQLまたはElastic Cloudへ保存する。既存の検索Repositoryに残る旧文書データは読み取り互換の対象だが、新規登録はテキスト／Markdown直接入力だけで行う。
 
 未実装項目を実装した場合は、恒久的な仕様を`docs/spec.md`または該当する`docs/architecture/`・`docs/reference/`へ反映し、この文書の実装状況も更新する。
