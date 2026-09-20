@@ -104,6 +104,42 @@ def test_interview_api_client_classifies_turn_intent() -> None:
     assert body["expectedStateVersion"] == 2
 
 
+def test_interview_api_client_starts_non_committing_speculative_turn() -> None:
+    async def run() -> tuple[str, bool, dict]:
+        request_body: dict = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/internal/voice-sessions/session-1/turns/speculative"
+            request_body.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={"speculativeId": "spec-1", "accepted": True},
+            )
+
+        client = InterviewApiClient(
+            "http://test",
+            "internal-token",
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="http://test",
+            ),
+        )
+        result = await client.start_speculative_turn(
+            "session-1",
+            speculative_id="spec-1",
+            transcript="山田です製造部の",
+            answer_to_question_id="q-1",
+            expected_state_version=2,
+        )
+        return result.speculative_id, result.accepted, request_body
+
+    speculative_id, accepted, body = asyncio.run(run())
+    assert speculative_id == "spec-1"
+    assert accepted is True
+    assert body["transcript"] == "山田です製造部の"
+    assert body["expectedStateVersion"] == 2
+
+
 def test_interview_api_client_maps_unauthorized() -> None:
     async def run() -> None:
         async def handler(request: httpx.Request) -> httpx.Response:

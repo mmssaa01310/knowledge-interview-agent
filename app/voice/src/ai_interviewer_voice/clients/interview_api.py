@@ -51,6 +51,12 @@ class VoiceTurnSaveResult:
 
 
 @dataclass(frozen=True)
+class SpeculativeTurnStartResult:
+    speculative_id: str
+    accepted: bool
+
+
+@dataclass(frozen=True)
 class VoiceTurnIntentResult:
     turn_type: str
 
@@ -187,6 +193,7 @@ class InterviewApiClient:
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
         stt_confidence: float | None = None,
+        speculative_id: str | None = None,
         timeout_seconds: float = 5.0,
     ) -> VoiceTurnSaveResult:
         payload = {
@@ -197,6 +204,7 @@ class InterviewApiClient:
             "startedAtMs": started_at_ms,
             "endedAtMs": ended_at_ms,
             "sttConfidence": stt_confidence,
+            "speculativeId": speculative_id,
         }
         if turn_type is not None:
             payload["turnType"] = turn_type
@@ -214,6 +222,38 @@ class InterviewApiClient:
             turn_id=str(payload["id"]),
             processing_status=str(payload.get("processingStatus") or "pending"),
             processing_mode=str(payload.get("processingMode") or "structured_interpretation"),
+        )
+
+    async def start_speculative_turn(
+        self,
+        voice_session_id: str,
+        *,
+        speculative_id: str,
+        transcript: str,
+        answer_to_question_id: str | None,
+        expected_state_version: int | None = None,
+        stt_confidence: float | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> SpeculativeTurnStartResult:
+        async with self._client() as client:
+            response = await self._request(
+                client,
+                "POST",
+                f"/internal/voice-sessions/{voice_session_id}/turns/speculative",
+                json={
+                    "speculativeId": speculative_id,
+                    "transcript": transcript,
+                    "answerToQuestionId": answer_to_question_id,
+                    "expectedStateVersion": expected_state_version,
+                    "sttConfidence": stt_confidence,
+                },
+                timeout_seconds=timeout_seconds,
+                failure_code="speculative_turn_start_failed",
+            )
+        payload = response.json()
+        return SpeculativeTurnStartResult(
+            speculative_id=str(payload.get("speculativeId") or speculative_id),
+            accepted=bool(payload.get("accepted", False)),
         )
 
     async def classify_voice_turn_intent(

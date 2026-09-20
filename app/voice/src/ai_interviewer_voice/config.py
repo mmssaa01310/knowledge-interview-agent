@@ -74,6 +74,12 @@ class Settings:
     voice_final_result_settle_ms: int = int(
         os.getenv("VOICE_FINAL_RESULT_SETTLE_MS", "150")
     )
+    voice_transcript_settle_ms: int = int(
+        os.getenv("VOICE_TRANSCRIPT_SETTLE_MS", "300")
+    )
+    voice_hard_timeout_ms: int = int(
+        os.getenv("VOICE_HARD_TIMEOUT_MS", "1500")
+    )
     polly_voice_id: str = os.getenv("POLLY_VOICE_ID", "Kazuha")
     polly_engine: str = os.getenv("POLLY_ENGINE", "neural")
     polly_max_parallel_requests: int = int(

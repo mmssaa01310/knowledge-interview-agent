@@ -296,6 +296,7 @@ def _serialize_latency_metrics(metrics: Mapping[str, float]) -> dict[str, float 
         "speculative_retrieval_wait_ms",
         "retrieval_reused",
         "retrieval_fallbacks",
+        "interpreter_reused",
     ):
         value = metrics.get(name)
         if value is not None:
@@ -316,6 +317,7 @@ def generate_structured_interview_result(
     on_question_delta: Callable[[str], None] | None = None,
     persist_state: bool = True,
     state_override: Mapping[str, Any] | None = None,
+    interpreter_output: StructuredInterviewOutput | None = None,
 ) -> dict[str, Any]:
     """Run one record's Structured Interview turn serially.
 
@@ -340,6 +342,7 @@ def generate_structured_interview_result(
             defer_question_generation=False,
             persist_state=persist_state,
             state_override=state_override,
+            interpreter_output=interpreter_output,
         )
 
 
@@ -362,6 +365,7 @@ def _generate_structured_interview_result_locked(
     defer_question_generation: bool,
     persist_state: bool = True,
     state_override: Mapping[str, Any] | None = None,
+    interpreter_output: StructuredInterviewOutput | None = None,
 ) -> dict[str, Any]:
     started_at = monotonic()
     latency_metrics = _new_latency_metrics()
@@ -379,6 +383,7 @@ def _generate_structured_interview_result_locked(
         defer_question_generation=defer_question_generation,
         persist_state=persist_state,
         state_override=state_override,
+        interpreter_output=interpreter_output,
     )
     structured_total_ms = _elapsed_ms(started_at)
     # The coordinator portion includes state reads/writes, validation,
@@ -1255,6 +1260,7 @@ def _generate_structured_interview_result(
     defer_question_generation: bool = False,
     persist_state: bool = True,
     state_override: Mapping[str, Any] | None = None,
+    interpreter_output: StructuredInterviewOutput | None = None,
 ) -> dict[str, Any]:
     latency_metrics = latency_metrics if latency_metrics is not None else _new_latency_metrics()
     fields = _list_interview_fields(knowledge, user)
@@ -1384,31 +1390,57 @@ def _generate_structured_interview_result(
             else:
                 interpreter_started_at = monotonic()
                 latency_metrics["interpreter_start_ms"] = int(time() * 1000)
-                output = structured_provider.interpret(
-                    profile=profile,
-                    context=interpreter_context,
-                    reasoning_effort=initial_reasoning_effort,
-                )
-                latency_metrics["interpreter_ms"] += _elapsed_ms(interpreter_started_at)
-                latency_metrics["interpreter_calls"] += 1
-                latency_metrics["interpreter_end_ms"] = int(time() * 1000)
-                if (
-                    initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
-                    and _requires_medium_reasoning(state, output)
-                ):
-                    medium_context = {
-                        **interpreter_context,
-                        "preliminaryOutput": output.model_dump(),
-                    }
-                    medium_retry_started_at = monotonic()
+                if interpreter_output is not None:
+                    # This output was generated against the same transcript,
+                    # question, and state version at the soft endpoint. It is
+                    # still passed through all backend validation and commit
+                    # logic below; only the expensive initial interpretation
+                    # call is reused.
+                    output = interpreter_output.model_copy(deep=True)
+                    latency_metrics["interpreter_reused"] = 1.0
+                    if (
+                        initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
+                        and _requires_medium_reasoning(state, output)
+                    ):
+                        medium_context = {
+                            **interpreter_context,
+                            "preliminaryOutput": output.model_dump(),
+                        }
+                        medium_retry_started_at = monotonic()
+                        output = structured_provider.interpret(
+                            profile=profile,
+                            context=medium_context,
+                            reasoning_effort=settings.structured_interview_medium_reasoning_effort,
+                        )
+                        latency_metrics["medium_retry_ms"] += _elapsed_ms(medium_retry_started_at)
+                        latency_metrics["medium_retry_calls"] += 1
+                        selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
+                else:
                     output = structured_provider.interpret(
                         profile=profile,
-                        context=medium_context,
-                        reasoning_effort=settings.structured_interview_medium_reasoning_effort,
+                        context=interpreter_context,
+                        reasoning_effort=initial_reasoning_effort,
                     )
-                    latency_metrics["medium_retry_ms"] += _elapsed_ms(medium_retry_started_at)
-                    latency_metrics["medium_retry_calls"] += 1
-                    selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
+                    latency_metrics["interpreter_ms"] += _elapsed_ms(interpreter_started_at)
+                    latency_metrics["interpreter_calls"] += 1
+                    latency_metrics["interpreter_end_ms"] = int(time() * 1000)
+                    if (
+                        initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
+                        and _requires_medium_reasoning(state, output)
+                    ):
+                        medium_context = {
+                            **interpreter_context,
+                            "preliminaryOutput": output.model_dump(),
+                        }
+                        medium_retry_started_at = monotonic()
+                        output = structured_provider.interpret(
+                            profile=profile,
+                            context=medium_context,
+                            reasoning_effort=settings.structured_interview_medium_reasoning_effort,
+                        )
+                        latency_metrics["medium_retry_ms"] += _elapsed_ms(medium_retry_started_at)
+                        latency_metrics["medium_retry_calls"] += 1
+                        selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
             valid_evidence_ids = {
                 str(message.get("id"))
                 for message in messages
@@ -2262,6 +2294,106 @@ def get_structured_interview_state_snapshot(
         "messages": messages,
         "structuredDraft": _build_structured_draft(state, fields),
     }
+
+
+def preview_structured_interview_output(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    *,
+    transcript: str,
+    answer_to_question_id: str | None,
+    stt_confidence: float | None = None,
+    source_message_id: str | None = None,
+    current_question_override: Mapping[str, Any] | None = None,
+) -> StructuredInterviewOutput:
+    """Interpret a candidate answer without writing messages or state.
+
+    This is intentionally narrower than the foreground coordinator.  It
+    provides the expensive semantic interpretation for the Transcribe soft
+    endpoint; the formal path still owns validation, target selection, state
+    transition, question generation, and persistence.
+    """
+
+    fields = _list_interview_fields(knowledge, user)
+    state = load_structured_interview_state(
+        record,
+        knowledge,
+        user,
+        fields=fields,
+        persist=False,
+    )
+    current_question = (
+        dict(current_question_override)
+        if current_question_override is not None
+        else _get_current_question(state)
+    )
+    if answer_to_question_id:
+        requested_question = next(
+            (
+                question
+                for question in state.get("askedQuestions", [])
+                if question.get("questionId") == answer_to_question_id
+            ),
+            None,
+        )
+        if requested_question is not None:
+            current_question = requested_question
+    if current_question is None:
+        raise ValueError("speculative_preview_question_not_found")
+    synthetic_message = {
+        "id": source_message_id or f"speculative-message-{uuid4().hex[:16]}",
+        "recordId": record.get("id"),
+        "role": "user",
+        "content": transcript.strip(),
+        "rawTranscript": transcript.strip(),
+        "normalizedTranscript": None,
+        "correctionStatus": "NONE",
+        "sttConfidence": stt_confidence,
+        "isActualUtterance": True,
+        "turnType": "ANSWER",
+        "answerToQuestionId": current_question.get("questionId"),
+    }
+    messages = _list_record_messages(record, user)
+    messages.append(synthetic_message)
+    provider = _get_structured_provider(
+        None,
+        model_id=resolve_structured_model_id(knowledge),
+    )
+    context = _build_interpreter_context(
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        fields=fields,
+        state=state,
+        messages=messages,
+        current_question=current_question,
+    )
+    return provider.interpret(
+        profile=_effective_profile(state, resolve_profile(knowledge)),
+        context=context,
+        reasoning_effort=_select_reasoning_effort(state),
+    )
+
+
+def remap_interpreter_output_evidence(
+    output: StructuredInterviewOutput,
+    *,
+    source_message_id: str,
+    target_message_id: str,
+) -> StructuredInterviewOutput:
+    """Replace a speculative synthetic message id before formal validation."""
+
+    def replace(value: Any) -> Any:
+        if isinstance(value, str):
+            return target_message_id if value == source_message_id else value
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        return value
+
+    return StructuredInterviewOutput.model_validate(replace(output.model_dump()))
 
 
 def load_structured_interview_state(

@@ -15,9 +15,14 @@ class TranscribePollyRuntimeConfig:
     vad_rms_threshold: int = 600
     listen_ack_silence_ms: int = 500
     normal_endpoint_ms: int = 600
+    # ``hard_endpoint_ms`` and ``final_result_settle_ms`` remain as legacy
+    # constructor inputs for tests/older callers.  Production wiring passes
+    # the explicit soft/settle/hard values below.
     hard_endpoint_ms: int = 1000
     final_result_wait_ms: int = 300
     final_result_settle_ms: int = 150
+    transcript_settle_ms: int | None = None
+    hard_timeout_ms: int | None = None
     long_form_speech_ms: int = 2500
     long_form_endpoint_ms: int = 850
     listen_ack_min_speech_ms: int = 800

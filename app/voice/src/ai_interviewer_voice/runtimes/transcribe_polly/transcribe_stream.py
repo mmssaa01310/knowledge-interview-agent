@@ -36,6 +36,8 @@ class TranscribeResult:
     is_partial: bool
     result_id: str | None = None
     confidence: float | None = None
+    start_time: float | None = None
+    end_time: float | None = None
 
 
 class TranscribeCredentialsResolutionError(RuntimeError):
@@ -245,19 +247,34 @@ class AwsTranscribeStreamingPort:
                             is_partial=bool(result.is_partial),
                             result_id=result.result_id,
                             confidence=confidence,
+                            start_time=_optional_float(getattr(result, "start_time", None)),
+                            end_time=_optional_float(getattr(result, "end_time", None)),
                         )
                     )
 
 
 def _stable_text(items: list[Any], *, fallback: str) -> str:
-    stable_items = [
-        str(item.content or "")
-        for item in items
-        if item.stable is True and item.content
-    ]
-    if not stable_items:
-        return fallback
-    return "".join(stable_items).strip()
+    """Return only the contiguous stable prefix of a partial result.
+
+    Transcribe's ``Stable`` flag belongs to each item, not to the complete
+    Result.  An unstable item therefore terminates the prefix; stable items
+    after it must not be pulled into speculative processing.
+    """
+
+    stable_items: list[str] = []
+    for item in items:
+        if item.stable is not True:
+            break
+        if item.content:
+            stable_items.append(str(item.content))
+    return "".join(stable_items).strip() or fallback
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _transcript_confidence(alternative: Any) -> float | None:

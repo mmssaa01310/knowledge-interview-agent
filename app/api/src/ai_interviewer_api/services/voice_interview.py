@@ -28,8 +28,11 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
+    preview_structured_interview_output,
+    remap_interpreter_output_evidence,
     start_speculative_retrieval_for_interview_turn,
 )
+from ai_interviewer_api.agents.interview_knowledge.schemas import StructuredInterviewOutput
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_configuration import require_interview_configuration
@@ -56,6 +59,7 @@ from ai_interviewer_api.schemas.voice import (
     VoiceTurnCreate,
     VoiceTurnIntentCreate,
     VoiceSessionCreate,
+    SpeculativeTurnCreate,
 )
 from ai_interviewer_api.services.ai_interview import (
     generate_interview_reply,
@@ -77,6 +81,20 @@ from ai_interviewer_api.services.voice_transcript_feedback import (
 logger = logging.getLogger(__name__)
 _VOICE_TURN_LOCKS: dict[str, Any] = {}
 _VOICE_TURN_LOCKS_GUARD = Lock()
+_SPECULATIVE_PREVIEWS: dict[str, "_SpeculativePreview"] = {}
+_SPECULATIVE_PREVIEWS_GUARD = RLock()
+_SPECULATIVE_PREVIEW_TTL_SECONDS = 20.0
+_SPECULATIVE_PREVIEW_MAX = 128
+
+
+@dataclass(frozen=True)
+class _SpeculativePreview:
+    voice_session_id: str
+    transcript: str
+    answer_to_question_id: str | None
+    expected_state_version: int
+    output: StructuredInterviewOutput
+    created_at: float
 
 
 @dataclass(frozen=True)
@@ -226,6 +244,187 @@ def classify_voice_turn_intent(
         current_target=current_target,
     )
     return {"turnType": "CONTROL" if action == "HANDLE_CONTROL" else "ANSWER"}
+
+
+def start_speculative_voice_turn(
+    voice_session_id: str,
+    payload: SpeculativeTurnCreate,
+) -> dict:
+    """Start semantic interpretation without creating a turn or changing state."""
+
+    session = _get_voice_session_for_internal_use(voice_session_id)
+    _ensure_session_accepts_turns(session)
+    transcript = payload.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=422, detail="turn_transcript_required")
+    interview_state = _canonical_interview_state(session)
+    expected_state_version = _interview_state_version(interview_state, session)
+    if (
+        payload.expectedStateVersion is not None
+        and expected_state_version != payload.expectedStateVersion
+    ):
+        raise HTTPException(status_code=409, detail="turn_state_conflict")
+    question_id = payload.answerToQuestionId or interview_state.get("currentQuestionId")
+    provisional_question = session.get("provisionalQuestion")
+    question_exists = question_id and _find_question_by_id(interview_state, question_id)
+    provisional_matches = (
+        isinstance(provisional_question, Mapping)
+        and provisional_question.get("questionId") == question_id
+    )
+    if not question_id or (question_exists is None and not provisional_matches):
+        raise HTTPException(status_code=409, detail="voice_turn_missing_target_field")
+    speculative_id = payload.speculativeId.strip()
+    if not speculative_id:
+        raise HTTPException(status_code=422, detail="speculative_id_required")
+    user = _build_user_context_from_session(session)
+    record = get_scoped_item("records", session["recordId"], user, "record_not_found")
+    knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
+    preview_question_override = deepcopy(provisional_question) if provisional_matches else None
+    with _SPECULATIVE_PREVIEWS_GUARD:
+        _prune_speculative_previews()
+        _SPECULATIVE_PREVIEWS.pop(speculative_id, None)
+    Thread(
+        target=_run_speculative_voice_turn,
+        kwargs={
+            "speculative_id": speculative_id,
+            "voice_session_id": voice_session_id,
+            "record": deepcopy(record),
+            "knowledge": deepcopy(knowledge),
+            "user": user,
+            "transcript": transcript,
+            "answer_to_question_id": question_id,
+            "current_question_override": preview_question_override,
+            "expected_state_version": expected_state_version,
+            "stt_confidence": payload.sttConfidence,
+        },
+        daemon=True,
+        name="voice-speculative-interpreter",
+    ).start()
+    logger.info(
+        "speculative_llm_accepted session_id=%s turn_id=%s result_id=%s transcript=%r state_version=%s",
+        voice_session_id,
+        speculative_id,
+        speculative_id,
+        transcript,
+        expected_state_version,
+    )
+    return {
+        "speculativeId": speculative_id,
+        "accepted": True,
+        "stateVersion": expected_state_version,
+    }
+
+
+def _run_speculative_voice_turn(
+    *,
+    speculative_id: str,
+    voice_session_id: str,
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    transcript: str,
+    answer_to_question_id: str | None,
+    current_question_override: Mapping[str, Any] | None,
+    expected_state_version: int,
+    stt_confidence: float | None,
+) -> None:
+    started_at = monotonic()
+    try:
+        output = preview_structured_interview_output(
+            record,
+            knowledge,
+            user,
+            transcript=transcript,
+            answer_to_question_id=answer_to_question_id,
+            stt_confidence=stt_confidence,
+            source_message_id=speculative_id,
+            current_question_override=current_question_override,
+        )
+        with _SPECULATIVE_PREVIEWS_GUARD:
+            _prune_speculative_previews()
+            if len(_SPECULATIVE_PREVIEWS) >= _SPECULATIVE_PREVIEW_MAX:
+                oldest_id = min(
+                    _SPECULATIVE_PREVIEWS,
+                    key=lambda key: _SPECULATIVE_PREVIEWS[key].created_at,
+                )
+                _SPECULATIVE_PREVIEWS.pop(oldest_id, None)
+            _SPECULATIVE_PREVIEWS[speculative_id] = _SpeculativePreview(
+                voice_session_id=voice_session_id,
+                transcript=transcript,
+                answer_to_question_id=answer_to_question_id,
+                expected_state_version=expected_state_version,
+                output=output,
+                created_at=monotonic(),
+            )
+        logger.info(
+            "speculative_llm_ready session_id=%s turn_id=%s result_id=%s elapsed_ms=%s",
+            voice_session_id,
+            speculative_id,
+            speculative_id,
+            round((monotonic() - started_at) * 1000, 1),
+        )
+    except Exception as exc:  # noqa: BLE001 - speculative work never commits
+        logger.warning(
+            "speculative_llm_failed session_id=%s turn_id=%s error_type=%s elapsed_ms=%s",
+            voice_session_id,
+            speculative_id,
+            exc.__class__.__name__,
+            round((monotonic() - started_at) * 1000, 1),
+        )
+
+
+def _prune_speculative_previews() -> None:
+    now = monotonic()
+    expired = [
+        speculative_id
+        for speculative_id, preview in _SPECULATIVE_PREVIEWS.items()
+        if now - preview.created_at > _SPECULATIVE_PREVIEW_TTL_SECONDS
+    ]
+    for speculative_id in expired:
+        _SPECULATIVE_PREVIEWS.pop(speculative_id, None)
+
+
+def _consume_speculative_preview(
+    *,
+    voice_session_id: str,
+    speculative_id: str,
+    transcript: str,
+    answer_to_question_id: str | None,
+    expected_state_version: int,
+) -> tuple[StructuredInterviewOutput | None, str]:
+    with _SPECULATIVE_PREVIEWS_GUARD:
+        _prune_speculative_previews()
+        preview = _SPECULATIVE_PREVIEWS.pop(speculative_id, None)
+    if preview is None:
+        return None, "not_ready_or_expired"
+    if (
+        preview.voice_session_id != voice_session_id
+        or preview.transcript != transcript
+        or preview.answer_to_question_id != answer_to_question_id
+        or preview.expected_state_version != expected_state_version
+    ):
+        return None, "input_or_state_changed"
+    return preview.output, "matched"
+
+
+def _discard_speculative_preview(
+    speculative_id: str,
+    *,
+    session_id: str | None,
+    turn_id: str | None,
+    transcript: str | None,
+    reason: str,
+) -> None:
+    with _SPECULATIVE_PREVIEWS_GUARD:
+        _SPECULATIVE_PREVIEWS.pop(speculative_id, None)
+    logger.info(
+        "speculative_llm_discarded session_id=%s turn_id=%s result_id=%s transcript=%r detail=%s",
+        session_id,
+        turn_id,
+        speculative_id,
+        transcript,
+        reason,
+    )
 
 
 def stop_voice_session(voice_session_id: str, user: UserContext) -> dict:
@@ -389,6 +588,7 @@ def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
         answerToQuestionId=question_id,
         answerToFieldId=field_id,
         processingMode=processing_mode,
+        speculativeId=payload.speculativeId,
         startedAtMs=payload.startedAtMs,
         endedAtMs=payload.endedAtMs,
     ).model_dump()
@@ -730,6 +930,15 @@ def _process_voice_turn(
         voice_turn_repository.save(turn)
         user_message = _save_voice_user_message(record, turn, user)
         if canonical_action == "HANDLE_CONTROL":
+            speculative_id = str(turn.get("speculativeId") or "").strip()
+            if speculative_id:
+                _discard_speculative_preview(
+                    speculative_id,
+                    session_id=str(session.get("id") or ""),
+                    turn_id=str(turn.get("id") or ""),
+                    transcript=str(turn.get("transcript") or ""),
+                    reason="canonical_control_turn",
+                )
             return _commit_control_turn(
                 session=session,
                 turn=turn,
@@ -840,6 +1049,7 @@ def _process_structured_voice_turn(
     """Send one answer through the same semantic engine as text."""
 
     speculative_retrieval = None
+    speculative_output: StructuredInterviewOutput | None = None
     response_id = f"voice-response-{uuid4().hex[:12]}"
     try:
         knowledge = store.get("knowledges", record.get("knowledgeId")) or {}
@@ -876,6 +1086,41 @@ def _process_structured_voice_turn(
                 turn.get("id"),
                 (current_question or {}).get("questionId"),
             )
+        speculative_id = str(turn.get("speculativeId") or "").strip()
+        if speculative_id:
+            speculative_output, speculative_reason = _consume_speculative_preview(
+                voice_session_id=str(session.get("id") or ""),
+                speculative_id=speculative_id,
+                transcript=str(turn.get("transcript") or "").strip(),
+                answer_to_question_id=str(turn.get("answerToQuestionId") or "") or None,
+                expected_state_version=_interview_state_version(interview_state, session),
+            )
+            if speculative_output is not None:
+                speculative_output = remap_interpreter_output_evidence(
+                    speculative_output,
+                    source_message_id=speculative_id,
+                    target_message_id=str(user_message.get("id") or ""),
+                )
+                logger.info(
+                    "speculative_llm_reused session_id=%s turn_id=%s result_id=%s "
+                    "transcript=%r elapsed_ms=%s",
+                    session.get("id"),
+                    turn.get("id"),
+                    speculative_id,
+                    turn.get("transcript"),
+                    round((monotonic() - api_started_at) * 1000, 1),
+                )
+            else:
+                logger.info(
+                    "speculative_llm_discarded session_id=%s turn_id=%s result_id=%s "
+                    "transcript=%r elapsed_ms=%s detail=%s",
+                    session.get("id"),
+                    turn.get("id"),
+                    speculative_id,
+                    turn.get("transcript"),
+                    round((monotonic() - api_started_at) * 1000, 1),
+                    speculative_reason,
+                )
         speculative_retrieval = start_speculative_retrieval_for_interview_turn(
             record,
             knowledge,
@@ -890,6 +1135,7 @@ def _process_structured_voice_turn(
             canonical_intent=canonical_intent.dialogueAct,
             canonical_action=canonical_action,
             on_question_delta=on_question_delta,
+            interpreter_output=speculative_output,
         )
         latency_metrics = {
             str(name): value

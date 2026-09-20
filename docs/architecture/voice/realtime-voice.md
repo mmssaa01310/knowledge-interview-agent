@@ -298,7 +298,9 @@ POST /internal/voice-sessions/{voice_session_id}/connection-events
 
 ### 6.3.1 音声ターンの低遅延判定
 
-Transcribe + Pollyの確定Transcriptは、音声サービスで先行意図分類せず、`app/api`へ1回だけ送る。
+Transcribe + Pollyは音声サービスで意図分類を行わない。soft endpointでは確定前の候補を
+`/turns/speculative`へ送り、DB/Interview Stateを変更しない先行解釈だけを開始する。正式な
+確定Transcriptは通常のTurn APIへ1回だけ送る。
 通常ターンでは、`turnType`、Dialogue Act、回答評価を同一のAI判定へ統合する。回答評価は`answerResolution`を返し、確認質問は`CONFIRM_REQUIRED`の例外に限定する。`CONFIRM_REQUIRED`のターンでは、`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返す専用判定を1回だけ行う。
 
 この処理は`app/api`の`BedrockResponsesStructuredProvider`がStructured Outputとして受け取り、
@@ -1020,14 +1022,17 @@ local preface playback drained AND evaluation_reply_ready
 
 Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20msフレームとしてVADへ渡し、
 5フレームを100msにまとめてTranscribe Streamingへ送る。部分結果安定化は`medium`を既定とし、
-部分TranscriptはUI通知だけに使い、確定したTranscriptだけをInterview APIへ渡す。
+`ResultId`ごとに最新のpartial/final Resultを保持する。`IsPartial=false`は自然発話セグメントの
+確定であり、ユーザーターン全体の確定ではない。final Resultは`StartTime`順に再構成し、partialは
+`Items[].Stable=true`の連続prefixだけを先行処理へ渡す。
 
 発話途中の相槌と処理中通知は、意図しない音声の割り込みを防ぐため既定で無効とする。
 `VOICE_ENABLE_BACKCHANNELS=true`を明示した場合だけ、次のタイミングで有効になる。
 
 * 500ms: 条件を満たす場合だけLISTEN_ACK
-* 600ms: Transcribe確定結果を受信したターンの通常endpoint
-* 1,000ms: hard endpoint。FINALが届かない場合は部分Transcriptを保存せず、警告イベントを出して入力を再開
+* 600ms: VADの無音soft endpoint。入力ゲートを閉じず、final segment + stable prefixで非コミットLLM先行処理を開始
+* transcript更新停止300ms: 正式確定。final Resultを全文再構成し、正式Turn/Interview State/DB処理へ進む
+* soft endpoint後1,500ms: hard timeout。正式確定できない場合に限り、その時点の最善のTranscriptで強制確定
 * 1,300ms: ターン確定後のPROCESSING_ACK
 * 3,000ms: 1ターン1回の長時間処理通知
 
@@ -1046,7 +1051,7 @@ PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信�
 既知の音声長に1,000msの再生ガードを加えてdrainを通知する。既知の音声長は固定の5秒上限で
 切り捨てず、未知の場合だけ`VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS`を復旧待機時間に使う。
 
-回答の確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、マイクPCMを
+正式確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、マイクPCMを
 VAD・Transcribeへそのまま渡さない。WebRTC frameが継続して届いている間は、AWS Transcribeの無音timeoutを
 避けるため、マイクPCMを同じ長さのゼロPCMへ置換して100ms単位でTranscribe streamへ送る。一方、ゲート中も
 ローカルVADは割り込み判定のために監視し、120ms以上の連続音声で正式応答を中断して入力を再開する。

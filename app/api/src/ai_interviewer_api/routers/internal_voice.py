@@ -5,6 +5,7 @@ from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.schemas.voice import (
     AssistantEventCreate,
     ConnectionEventCreate,
+    SpeculativeTurnCreate,
     VoiceTurnIntentCreate,
     VoiceTurnCancel,
     VoiceTurnCreate,
@@ -19,6 +20,7 @@ from ai_interviewer_api.services.voice_interview import (
     mark_initial_reply_failed,
     mark_initial_reply_sent,
     process_voice_turn,
+    start_speculative_voice_turn,
     stream_process_voice_turn,
 )
 from ai_interviewer_api.services.voice_interview import (
@@ -40,6 +42,15 @@ def create_internal_voice_turn(
     _: None = Depends(require_internal_api_token),
 ) -> dict:
     return create_voice_turn(voice_session_id, payload)
+
+
+@router.post("/internal/voice-sessions/{voice_session_id}/turns/speculative")
+def start_internal_speculative_voice_turn(
+    voice_session_id: str,
+    payload: SpeculativeTurnCreate,
+    _: None = Depends(require_internal_api_token),
+) -> dict:
+    return start_speculative_voice_turn(voice_session_id, payload)
 
 
 @router.post("/internal/voice-sessions/{voice_session_id}/turn-intent")

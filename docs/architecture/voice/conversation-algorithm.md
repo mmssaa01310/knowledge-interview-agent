@@ -68,8 +68,10 @@ Browser WebRTC audio track
 独自VAD + 100ms単位のTranscribe送信
   ↓ _on_transcribe_result():604-635
 partial/final transcript保持
-  ↓ _endpoint_loop():661-683
-endpoint silence + final settle
+  ↓ _endpoint_loop()
+600ms VAD soft endpoint + ResultId/StartTime再構成 + transcript settle
+  ↓ soft endpoint: start_speculative_turn()（非コミット）
+  ↓ formal settle / hard timeout
   ↓ _finalize_user_turn():711-739
 UserSpeechEnded / ANSWER_PROCESSING
   ↓ asyncio.create_task(_process_interview_turn())
@@ -89,9 +91,15 @@ PollyTextChunker + Polly worker pool
 PCM output -> Browser audio
 ```
 
-Transcribe側は、partialをUIに出すが、Backend Turnを作るのはendpointで `_finalize_user_turn()` が作る処理タスクだけである。Transcribe final自体はRAGを開始しない（`runtime.py:604-635`）。
-通常endpointまでにFINALが届かない場合は、hard endpointで部分TranscriptをBackendへ送らず、
-`transcribe_final_timeout`を通知して入力を再開する。これにより欠落したFINALを推測で正式回答へ変換しない。
+Transcribe側は`ResultId`ごとに最新Resultを保持し、`IsPartial=false`を自然発話セグメントの
+確定として扱う。final segmentは`StartTime`順に再構成し、partialの`Stable=true`連続prefixは
+UIとsoft endpointの先行入力に利用する。600msのsoft endpointでは入力ゲートを閉じず、
+`start_speculative_turn()`で非コミットのStructured Interpreterを開始する。
+
+正式Turnを作成するのは`transcript_settle_ms=300`の更新停止後、またはsoft endpoint後の
+`hard_timeout_ms=1500`安全装置到達時だけである。正式確定前にDB/Interview Stateは更新しない。
+正式Transcriptが先行入力と一致した場合のみ先行解釈を再利用し、異なる場合・未完了の場合は
+先行結果を破棄して正式Transcriptで実行する。
 
 ### 2.3 `nova_sonic`
 

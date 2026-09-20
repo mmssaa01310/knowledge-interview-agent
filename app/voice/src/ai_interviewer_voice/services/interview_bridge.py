@@ -8,6 +8,7 @@ from ai_interviewer_voice.clients.interview_api import (
     InitialReplyClaimResult,
     InterviewApiClient,
     InterviewApiError,
+    SpeculativeTurnStartResult,
     VoiceSessionSnapshot,
     VoiceTurnIntentResult,
     VoiceTurnProcessResult,
@@ -125,6 +126,7 @@ class InterviewBridge:
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
         stt_confidence: float | None = None,
+        speculative_id: str | None = None,
     ) -> InterviewBridgeResult:
         save_result = await self.save_turn(
             voice_session_id,
@@ -136,6 +138,7 @@ class InterviewBridge:
             started_at_ms=started_at_ms,
             ended_at_ms=ended_at_ms,
             stt_confidence=stt_confidence,
+            speculative_id=speculative_id,
         )
         return await self.process_saved_turn(
             voice_session_id=voice_session_id,
@@ -154,6 +157,7 @@ class InterviewBridge:
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
         stt_confidence: float | None = None,
+        speculative_id: str | None = None,
     ) -> VoiceTurnSaveResult:
         return await self._client.save_turn(
             voice_session_id,
@@ -164,6 +168,27 @@ class InterviewBridge:
             client_turn_id=client_turn_id,
             started_at_ms=started_at_ms,
             ended_at_ms=ended_at_ms,
+            stt_confidence=stt_confidence,
+            speculative_id=speculative_id,
+            timeout_seconds=self._turn_save_timeout_seconds,
+        )
+
+    async def start_speculative_turn(
+        self,
+        *,
+        voice_session_id: str,
+        speculative_id: str,
+        transcript: str,
+        answer_to_question_id: str | None,
+        expected_state_version: int | None = None,
+        stt_confidence: float | None = None,
+    ) -> SpeculativeTurnStartResult:
+        return await self._client.start_speculative_turn(
+            voice_session_id,
+            speculative_id=speculative_id,
+            transcript=transcript,
+            answer_to_question_id=answer_to_question_id,
+            expected_state_version=expected_state_version,
             stt_confidence=stt_confidence,
             timeout_seconds=self._turn_save_timeout_seconds,
         )
@@ -180,6 +205,7 @@ class InterviewBridge:
         started_at_ms: int | None = None,
         ended_at_ms: int | None = None,
         stt_confidence: float | None = None,
+        speculative_id: str | None = None,
     ) -> AsyncIterator[
         InterviewBridgeStreamStarted
         | InterviewBridgeTextDelta
@@ -195,6 +221,7 @@ class InterviewBridge:
             started_at_ms=started_at_ms,
             ended_at_ms=ended_at_ms,
             stt_confidence=stt_confidence,
+            speculative_id=speculative_id,
         )
         async for event in self._client.process_turn_stream(
             voice_session_id,

@@ -80,6 +80,8 @@ class FakeTranscribe:
         is_partial: bool = True,
         result_id: str = "result-1",
         confidence: float | None = None,
+        start_time: float | None = None,
+        end_time: float | None = None,
     ) -> None:
         assert self.on_result is not None
         await self.on_result(
@@ -89,6 +91,8 @@ class FakeTranscribe:
                 is_partial=is_partial,
                 result_id=result_id,
                 confidence=confidence,
+                start_time=start_time,
+                end_time=end_time,
             )
         )
 
@@ -168,6 +172,7 @@ class StreamingPolly(FakePolly):
 class FakeBridge:
     def __init__(self) -> None:
         self.process_calls: list[dict] = []
+        self.speculative_calls: list[dict] = []
         self.cancel_calls: list[dict] = []
         self.assistant_events: list[dict] = []
         self.intent_calls: list[dict] = []
@@ -175,6 +180,10 @@ class FakeBridge:
         self.current_question_id = "q-1"
         self.interview_status = "active"
         self.load_calls = 0
+
+    async def start_speculative_turn(self, **kwargs):
+        self.speculative_calls.append(kwargs)
+        return SimpleNamespace(speculative_id=kwargs["speculative_id"], accepted=True)
 
     async def load_voice_session(self, voice_session_id: str):
         self.load_calls += 1
@@ -1700,7 +1709,139 @@ async def test_normal_endpoint_finalizes_transcribe_final_for_backend_assessment
 
 
 @pytest.mark.anyio
-async def test_missing_final_transcript_recovers_without_submitting_partial_text() -> None:
+async def test_soft_endpoint_uses_only_stable_partial_prefix_without_closing_input() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=40,
+            transcript_settle_ms=500,
+            hard_timeout_ms=1000,
+            backchannel_enabled=False,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result(
+        "山田です",
+        stable_text="",
+        is_partial=False,
+        result_id="segment-1",
+        start_time=0.0,
+    )
+    await transcribe.result(
+        "製造部の課長",
+        stable_text="製造部の",
+        is_partial=True,
+        result_id="segment-2",
+        start_time=1.0,
+    )
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.06)
+    await asyncio.sleep(0)
+
+    assert runtime._turn_active is True
+    assert runtime._input_available is True
+    assert bridge.process_calls == []
+    assert bridge.speculative_calls
+    assert bridge.speculative_calls[-1]["transcript"] == "山田です製造部の"
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_final_result_rebuild_includes_later_segment_before_formal_commit() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=30,
+            transcript_settle_ms=40,
+            hard_timeout_ms=300,
+            backchannel_enabled=False,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("山田です", is_partial=False, result_id="segment-1", start_time=0.0)
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.05)
+    assert bridge.process_calls == []
+    await transcribe.result(
+        "製造部の課長です",
+        is_partial=False,
+        result_id="segment-2",
+        start_time=1.0,
+    )
+    await asyncio.sleep(0.07)
+
+    assert bridge.process_calls
+    assert bridge.process_calls[-1]["transcript"] == "山田です製造部の課長です"
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_final_segments_are_reconstructed_by_transcribe_start_time() -> None:
+    runtime = TranscribePollyRuntime(
+        config=replace(_config(), backchannel_enabled=False),
+        interview_bridge=FakeBridge(),  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await runtime._on_transcribe_result(
+        TranscribeResult(
+            text="製造部です",
+            stable_text="製造部です",
+            is_partial=False,
+            result_id="segment-2",
+            start_time=1.0,
+        )
+    )
+    await runtime._on_transcribe_result(
+        TranscribeResult(
+            text="山田です",
+            stable_text="山田です",
+            is_partial=False,
+            result_id="segment-1",
+            start_time=0.0,
+        )
+    )
+    assert runtime._combined_final_text() == "山田です製造部です"
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_hard_timeout_submits_best_available_transcript(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
     bridge = FakeBridge()
     transcribe = FakeTranscribe()
     runtime = TranscribePollyRuntime(
@@ -1726,22 +1867,52 @@ async def test_missing_final_transcript_recovers_without_submitting_partial_text
     await runtime.push_audio(_frame(0))
     await asyncio.sleep(0.08)
 
-    assert bridge.process_calls == []
     await asyncio.sleep(0.25)
-    assert bridge.process_calls == []
-    events = []
-    while not runtime._events.empty():
-        events.append(runtime._events.get_nowait())
-    assert any(
-        isinstance(event, RuntimeError) and event.message == "transcribe_final_timeout"
-        for event in events
-    )
-    assert runtime._input_available is True
-    assert runtime._turn_active is False
+    assert len(bridge.process_calls) == 1
+    assert bridge.process_calls[0]["transcript"] == "設備を担当して"
+    assert runtime._hard_timeout_count == 1
+    assert "hard_timeout_triggered" in caplog.text
+    await runtime.close()
 
-    await transcribe.result("設備を担当しています。", is_partial=False)
-    await asyncio.sleep(0.06)
-    assert bridge.process_calls == []
+
+@pytest.mark.anyio
+async def test_speech_after_soft_endpoint_resets_settle_and_stays_in_same_turn() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=30,
+            transcript_settle_ms=100,
+            hard_timeout_ms=300,
+            backchannel_enabled=False,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("山田です", is_partial=False, result_id="segment-1")
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.05)
+    assert runtime._soft_endpoint_triggered is True
+
+    await runtime.push_audio(_frame(1200))
+    assert runtime._turn_active is True
+    assert runtime._input_available is True
+    await transcribe.result("山田です製造部の課長です", is_partial=False, result_id="segment-2")
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.14)
+
+    assert bridge.process_calls
+    assert bridge.process_calls[-1]["transcript"] == "山田です製造部の課長です"
     await runtime.close()
 
 

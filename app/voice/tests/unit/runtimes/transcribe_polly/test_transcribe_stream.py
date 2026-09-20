@@ -119,6 +119,8 @@ async def test_aws_transcribe_port_uses_stabilized_ja_jp_and_maps_results() -> N
                         Result(
                             result_id="r-1",
                             is_partial=True,
+                            start_time=1.25,
+                            end_time=1.9,
                             alternatives=[
                                 Alternative(
                                     transcript="設備が停止",
@@ -144,6 +146,8 @@ async def test_aws_transcribe_port_uses_stabilized_ja_jp_and_maps_results() -> N
     assert results[0].stable_text == "設備が"
     assert results[0].is_partial is True
     assert results[0].confidence == pytest.approx(0.7)
+    assert results[0].start_time == pytest.approx(1.25)
+    assert results[0].end_time == pytest.approx(1.9)
     await port.close()
     assert stream.closed is True
 

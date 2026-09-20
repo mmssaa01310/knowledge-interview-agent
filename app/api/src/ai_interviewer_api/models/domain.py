@@ -149,6 +149,7 @@ class VoiceTurn(BaseEntity):
     clarificationEnqueued: bool = False
     startedAtMs: int | None = None
     endedAtMs: int | None = None
+    speculativeId: str | None = None
 
 
 class AiProposal(BaseEntity):

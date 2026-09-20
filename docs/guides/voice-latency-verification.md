@@ -64,6 +64,24 @@ Transcribe + PollyはPollyの`AudioStream`を読みながらPCMフラグメン�
 `first_audio_chunk_received`で記録する。GPT-Liveは音声データをDataChannelへ流さず、
 Remote MediaTrackの`onplaying`をT13として記録する。
 
+Transcribeのターン確定を調べる場合は、次の`transcribe_turn_event`を同じ
+`session_id`/`turn_id`で追う。`soft_endpoint_triggered`は入力ゲートを閉じず、
+`speculative_llm_started`は非コミット先行処理の開始である。`transcript_settle_started`後
+300msの更新停止で`transcript_finalized`になり、`hard_timeout_triggered`は通常条件で確定できない
+場合だけ発生する。`speculative_llm_reused`または`speculative_llm_discarded`で、先行結果が
+正式入力に採用されたかを確認する。
+
+```text
+transcript_partial_updated
+transcript_stable_prefix
+soft_endpoint_triggered
+speculative_llm_started
+transcript_segment_final / transcript_settle_reset
+transcript_settle_started
+transcript_finalized
+speculative_llm_reused または speculative_llm_discarded
+```
+
 実測時は以下のようにログを保存し、`voice_session_id`ごとに隣接イベントの差分を計算する。
 
 ```bash
