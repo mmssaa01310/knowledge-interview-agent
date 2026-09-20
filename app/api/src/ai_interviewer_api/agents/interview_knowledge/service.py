@@ -52,6 +52,7 @@ from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.service impo
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     InterviewProfile,
     ProcessPatch,
+    QuestionHelpOutput,
     StructuredDialogueAct,
     StructuredInterviewOutput,
 )
@@ -67,7 +68,7 @@ from ai_interviewer_api.core.interview_locale import (
     localized_interview_incomplete_prompt,
     localized_interview_fallbacks,
     localized_interview_proposal_question,
-    localized_interview_question_help,
+    localized_interview_question_guidance,
     localized_interview_transcript_confirmation_question,
     localized_interview_transcript_retry,
     localized_interview_unanswerable_prompt,
@@ -123,6 +124,7 @@ _LATENCY_METRIC_NAMES = (
     "state_transition_ms",
     "retrieval_ms",
     "question_generation_ms",
+    "question_explanation_ms",
 )
 _LATENCY_CALL_METRIC_NAMES = (
     "interpreter_calls",
@@ -130,6 +132,7 @@ _LATENCY_CALL_METRIC_NAMES = (
     "patch_repair_calls",
     "retrieval_calls",
     "question_generation_calls",
+    "question_explanation_calls",
 )
 _LATENCY_EVENT_METRIC_NAMES = (
     "interpreter_start_ms",
@@ -1541,6 +1544,12 @@ def _generate_structured_interview_result(
                             current_question=current_question,
                             fields=fields,
                             locale=interview_locale,
+                            knowledge=knowledge,
+                            user=user,
+                            profile=profile,
+                            provider=structured_provider,
+                            reasoning_effort=settings.structured_interview_question_reasoning_effort,
+                            latency_metrics=latency_metrics,
                         )
                     elif canonical_intent == "CONFIRMATION":
                         reply = localized_interview_confirmation_clarification_prompt(
@@ -1612,6 +1621,12 @@ def _generate_structured_interview_result(
                         current_question=current_question,
                         fields=fields,
                         locale=interview_locale,
+                        knowledge=knowledge,
+                        user=user,
+                        profile=profile,
+                        provider=structured_provider,
+                        reasoning_effort=settings.structured_interview_question_reasoning_effort,
+                        latency_metrics=latency_metrics,
                     ),
                 )
             if output.dialogueAct in {"HESITATION", "BACKCHANNEL", "OTHER"}:
@@ -2862,39 +2877,182 @@ def _render_question_explanation(
     current_question: Mapping[str, Any],
     fields: Sequence[Mapping[str, Any]],
     locale: InterviewLocale,
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    profile: str,
+    provider: StructuredInterviewProvider,
+    reasoning_effort: str,
+    latency_metrics: dict[str, float],
 ) -> str:
-    """Render an explanation without a state/definition write path."""
+    """Generate actionable question guidance without mutating its definition."""
 
     definition_before = _question_definition_for_question(current_question, fields)
     hash_before = _question_definition_hash(definition_before)
-    reply = localized_interview_question_help(
+    target = _target_from_question(current_question) or {
+        "targetType": "field",
+        "targetId": str(current_question.get("questionId") or "current-question"),
+        "label": str(current_question.get("targetLabel") or "この項目"),
+    }
+    target["questionDefinition"] = deepcopy(definition_before)
+    current_field = _field_for_target(target, fields)
+    help_context = {
+        "knowledgeName": knowledge.get("name"),
+        "recordTitle": knowledge.get("title"),
+        "interviewLocale": locale,
+        "languageInstruction": interview_language_instruction(locale),
+        "currentQuestion": {
+            "questionId": current_question.get("questionId"),
+            "targetType": target.get("targetType"),
+            "targetId": target.get("targetId"),
+            "targetLabel": target.get("label"),
+            "renderedQuestionText": current_question.get("text"),
+        },
+        "questionDefinition": definition_before,
+        "questionProgress": _question_progress_context(target),
+        "fields": [_question_generator_field_context(current_field)]
+        if current_field is not None
+        else [],
+        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
+    }
+    generated_help: QuestionHelpOutput | None = None
+    help_started_at = monotonic()
+    help_method = getattr(provider, "generate_question_help", None)
+    if callable(help_method):
+        latency_metrics["question_explanation_calls"] = (
+            latency_metrics.get("question_explanation_calls", 0.0) + 1.0
+        )
+        try:
+            candidate = help_method(
+                profile=profile,
+                context=help_context,
+                target=target,
+                reasoning_effort=reasoning_effort,
+            )
+            generated_help = (
+                candidate
+                if isinstance(candidate, QuestionHelpOutput)
+                else QuestionHelpOutput.model_validate(candidate)
+            )
+            if _question_help_repeats_definition(generated_help, definition_before):
+                raise ValueError("question_help_repeats_question_definition")
+        except Exception as exc:  # noqa: BLE001 - guidance must not break the turn
+            logger.warning(
+                "question_help_generation_failed record_id=%s question_id=%s error_type=%s",
+                record_id,
+                current_question.get("questionId"),
+                exc.__class__.__name__,
+            )
+    else:
+        logger.warning(
+            "question_help_generation_unavailable record_id=%s question_id=%s provider=%s",
+            record_id,
+            current_question.get("questionId"),
+            provider.__class__.__name__,
+        )
+    latency_metrics["question_explanation_ms"] = (
+        latency_metrics.get("question_explanation_ms", 0.0)
+        + _elapsed_ms(help_started_at)
+    )
+    if generated_help is None:
+        generated_help = _fallback_question_help(
+            definition=definition_before,
+            target_label=str(target.get("label") or definition_before.get("title") or "この項目"),
+        )
+        logger.warning(
+            "question_help_fallback_used record_id=%s question_id=%s",
+            record_id,
+            current_question.get("questionId"),
+        )
+    reply = localized_interview_question_guidance(
         locale,
-        str(
-            current_question.get("targetLabel")
-            or current_question.get("label")
-            or definition_before.get("title")
-            or "この項目"
-        ),
-        question_text=definition_before.get("originalQuestion"),
-        description=definition_before.get("description"),
-        required_items=definition_before.get("requiredItems") or [],
+        topic=generated_help.topic,
+        examples=generated_help.examples,
+        perspectives=generated_help.perspectives,
     )
     definition_after = _question_definition_for_question(current_question, fields)
     hash_after = _question_definition_hash(definition_after)
     logger.info(
         "question_explanation_rendered record_id=%s question_id=%s "
         "question_definition_hash_before=%s question_definition_hash_after=%s "
-        "current_target=%s rendered_explanation=%s",
+        "current_target=%s guidance_topic=%s guidance_examples=%s guidance_perspectives=%s rendered_explanation=%s",
         record_id,
         current_question.get("questionId"),
         hash_before,
         hash_after,
         current_question.get("targetId"),
+        generated_help.topic,
+        generated_help.examples,
+        generated_help.perspectives,
         reply,
     )
     if definition_before != definition_after:
         raise RuntimeError("question_definition_mutated_during_explanation")
     return reply
+
+
+def _question_help_repeats_definition(
+    help_output: QuestionHelpOutput,
+    definition: Mapping[str, Any],
+) -> bool:
+    """Reject guidance that simply reads the configured question back."""
+
+    generated = _normalize_question_help_text(
+        " ".join(
+            [
+                help_output.topic,
+                *help_output.examples,
+                *help_output.perspectives,
+            ]
+        )
+    )
+    for key in ("originalQuestion", "canonicalQuestion", "description"):
+        source = _normalize_question_help_text(str(definition.get(key) or ""))
+        if len(source) >= 8 and source in generated:
+            return True
+    return False
+
+
+def _normalize_question_help_text(value: str) -> str:
+    return re.sub(r"[\s「」『』\"'。、，！？!?.,:：；;]", "", value).casefold()
+
+
+def _fallback_question_help(
+    *,
+    definition: Mapping[str, Any],
+    target_label: str,
+) -> QuestionHelpOutput:
+    """Provide a safe non-repeating fallback for test/custom providers."""
+
+    labels: list[str] = []
+    for key in ("requiredItems", "optionalItems"):
+        items = definition.get(key)
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            label = str(item.get("label") or item.get("description") or "").strip()
+            if label and label not in labels:
+                labels.append(label)
+    examples = [f"{label}に関する具体的な状況や出来事" for label in labels[:3]]
+    generic_examples = [
+        f"{target_label}に関して印象に残っている経験",
+        f"{target_label}が現在の仕事に影響したこと",
+    ]
+    for example in generic_examples:
+        if len(examples) >= 3:
+            break
+        if example not in examples:
+            examples.append(example)
+    return QuestionHelpOutput(
+        topic=target_label.strip() or "このテーマ",
+        examples=examples[:3],
+        perspectives=[
+            "いつ・どのような状況だったか",
+            "何をしたか、何が変わったか",
+            "現在の仕事にどう影響しているか",
+        ],
+    )
 
 
 def _select_reasoning_effort(state: Mapping[str, Any]) -> str:

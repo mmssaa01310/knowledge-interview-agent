@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     AnswerAssessment,
     FieldUpdate,
+    QuestionHelpOutput,
     QuestionGenerationOutput,
     StructuredInterviewOutput,
     TranscriptAssessment,
@@ -28,6 +29,32 @@ class FakeStructuredProvider:
     def __init__(self) -> None:
         self.interpret_calls: list[dict[str, object]] = []
         self.question_calls: list[dict[str, object]] = []
+        self.question_help_calls: list[dict[str, object]] = []
+
+    def generate_question_help(
+        self,
+        *,
+        target: Mapping[str, object],
+        context: Mapping[str, object],
+        **_: object,
+    ) -> QuestionHelpOutput:
+        self.question_help_calls.append(
+            {"target": dict(target), "context": dict(context)}
+        )
+        label = str(target.get("label") or "現在のテーマ")
+        return QuestionHelpOutput(
+            topic=f"{label}に関係する実際の経験や担当内容",
+            examples=[
+                "具体的な出来事と、その後に変わったこと",
+                "日々の担当内容と仕事上の工夫",
+                "今の仕事に影響した学びや転機",
+            ],
+            perspectives=[
+                "いつ、どのような状況だったか",
+                "何を考えてどう行動したか",
+                "現在の仕事にどう生かされているか",
+            ],
+        )
 
     def generate_question(
         self,

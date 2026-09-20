@@ -111,27 +111,31 @@ docker compose --env-file .env -f infra/docker-compose.yml up --build
 
 ```bash
 cd app/api
-uv run pytest
-```
-
-### 同期を避けたい場合
-
-`uv run` は実行前に lock / sync を伴うため、ネットワーク不安定時や依存同期が不要な検証では余計な失敗要因になる。
-
-その場合は `uv run --no-sync` を優先する。
-
-```bash
-cd app/api
+uv sync --locked
 uv run --no-sync pytest
 ```
 
-表現は「uv が使えない」ではなく、「uv run の同期がネットワーク依存になるため、今回は同期を避けた」とする。
+`uv run pytest`だけでも、依存関係が未同期の場合はuvが同期してから実行します。初回セットアップや`pyproject.toml` / `uv.lock`変更後は、同期結果を明示的に確認できる上記の2段階を使います。
+
+### `--no-sync`を使う場合
+
+`--no-sync`は、同じプロジェクトで`uv sync --locked`が成功した後の反復実行にだけ使います。未同期の環境で先に使うと、`pytest`や`botocore`などの依存が見つからず、テスト収集前に失敗します。
+
+依存関係のImportErrorやModuleNotFoundErrorが出た場合は、`--no-sync`を外して実行するのではなく、まず同期をやり直します。
+
+```bash
+cd app/api
+uv sync --locked
+uv run --no-sync pytest
+```
+
+ネットワークが利用できず同期できない場合は、依存不足のままテストを成功扱いにせず、同期不能として報告します。
 
 ### `.venv` 直接実行の扱い
 
 既存の `.venv` 直接実行はフォールバック扱いとする。
 
-`uv run --no-sync` でも実行できない場合のみ、既存の `app/api/.venv/bin/python` を使ってよい。
+同期済みの`uv run --no-sync`でも実行できない場合のみ、既存の`app/api/.venv/bin/python`を使ってよい。
 
 ```bash
 app/api/.venv/bin/python -m pytest app/api/tests/integration/api/test_mvp_flow.py

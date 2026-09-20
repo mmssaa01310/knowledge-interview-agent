@@ -33,25 +33,27 @@ node --test tests/*.test.mjs
 
 ```bash
 cd app/api
-uv run pytest
-uv run pytest tests/unit
-uv run pytest tests/integration
-uv run pytest tests/e2e
+uv sync --locked
+uv run --no-sync pytest
+uv run --no-sync pytest tests/unit
+uv run --no-sync pytest tests/integration
+uv run --no-sync pytest tests/e2e
 # CI can use either paths or markers:
-uv run pytest -m unit
-uv run pytest -m integration
-uv run pytest -m e2e
+uv run --no-sync pytest -m unit
+uv run --no-sync pytest -m integration
+uv run --no-sync pytest -m e2e
 ```
 
 Voice runtime tests are run from `app/voice` with the same level markers:
 
 ```bash
 cd app/voice
-uv run pytest
-uv run pytest tests/unit
-uv run pytest tests/integration
-uv run pytest -m unit
-uv run pytest -m integration
+uv sync --locked
+uv run --no-sync pytest
+uv run --no-sync pytest tests/unit
+uv run --no-sync pytest tests/integration
+uv run --no-sync pytest -m unit
+uv run --no-sync pytest -m integration
 ```
 
 Development should run `unit`; pull requests should run `unit` and

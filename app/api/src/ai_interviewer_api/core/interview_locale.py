@@ -135,81 +135,59 @@ def localized_interview_transcript_retry(locale: InterviewLocale) -> str:
     }[locale]
 
 
-def localized_interview_question_help(
+def localized_interview_question_guidance(
     locale: InterviewLocale,
-    target_label: str,
     *,
-    question_text: str | None = None,
-    description: str | None = None,
-    required_items: Sequence[Mapping[str, object]] = (),
+    topic: str,
+    examples: Sequence[str],
+    perspectives: Sequence[str],
 ) -> str:
-    """Explain the current question using its configured definition.
+    """Turn LLM-generated guidance into a natural, concise spoken reply."""
 
-    The fallback deliberately stays generic.  It must not invent example
-    subtopics when a configured question definition is unavailable.
-    """
-
-    label = target_label.strip() or {
-        "ja-JP": "この項目",
-        "en-US": "this item",
-        "zh-CN": "这一项",
-        "pt-BR": "este item",
+    normalized_topic = topic.strip() or {
+        "ja-JP": "このテーマ",
+        "en-US": "this topic",
+        "zh-CN": "这个主题",
+        "pt-BR": "este tema",
     }[locale]
-    normalized_question = question_text.strip() if isinstance(question_text, str) else ""
-    normalized_description = description.strip() if isinstance(description, str) else ""
-    item_labels = [
-        str(item.get("label") or "").strip()
-        for item in required_items
-        if isinstance(item, Mapping) and str(item.get("label") or "").strip()
-    ]
-    item_summary = {
-        "ja-JP": "、".join(item_labels),
-        "en-US": ", ".join(item_labels),
-        "zh-CN": "、".join(item_labels),
-        "pt-BR": ", ".join(item_labels),
+    normalized_examples = [item.strip() for item in examples if item.strip()][:3]
+    normalized_perspectives = [item.strip() for item in perspectives if item.strip()][:3]
+    examples_text = {
+        "ja-JP": "、".join(normalized_examples),
+        "en-US": ", ".join(normalized_examples),
+        "zh-CN": "、".join(normalized_examples),
+        "pt-BR": ", ".join(normalized_examples),
+    }[locale]
+    perspectives_text = {
+        "ja-JP": "、".join(normalized_perspectives),
+        "en-US": ", ".join(normalized_perspectives),
+        "zh-CN": "、".join(normalized_perspectives),
+        "pt-BR": ", ".join(normalized_perspectives),
     }[locale]
 
     if locale == "ja-JP":
-        if item_summary:
-            reply = f"この質問では、{item_summary}についてお聞きしています。"
-        else:
-            reply = f"この質問では、{label}についてお聞きしています。"
-        if normalized_description:
-            reply += f"項目の説明は「{normalized_description}」です。"
-        if normalized_question:
-            reply += f"元の質問は「{normalized_question}」です。"
-        if not normalized_description and not normalized_question:
-            reply += f"たとえば、{item_summary or label}について答えられる範囲でお話しください。"
-        return reply
-
+        return (
+            f"お聞きしたいのは、{normalized_topic}です。"
+            f"例えば、{examples_text}などが考えられます。"
+            f"回答するときは、{perspectives_text}といった点を意識して、話せる範囲で教えてください。"
+        )
     if locale == "en-US":
-        reply = f"This question asks about {item_summary or label}."
-        if normalized_description:
-            reply += f" The item description is: “{normalized_description}”."
-        if normalized_question:
-            reply += f" The original question is: “{normalized_question}”."
-        if not normalized_description and not normalized_question:
-            reply += f" For example, share what you can about {item_summary or label}."
-        return reply
-
+        return (
+            f"I would like to hear about {normalized_topic}. "
+            f"For example, you could talk about {examples_text}. "
+            f"As you answer, consider {perspectives_text}."
+        )
     if locale == "zh-CN":
-        reply = f"这个问题想了解{item_summary or label}。"
-        if normalized_description:
-            reply += f"项目说明是“{normalized_description}”。"
-        if normalized_question:
-            reply += f"原问题是“{normalized_question}”。"
-        if not normalized_description and not normalized_question:
-            reply += f"例如，可以说说您知道的{item_summary or label}。"
-        return reply
-
-    reply = f"Esta pergunta trata de {item_summary or label}."
-    if normalized_description:
-        reply += f" A descrição do item é: “{normalized_description}”."
-    if normalized_question:
-        reply += f" A pergunta original é: “{normalized_question}”."
-    if not normalized_description and not normalized_question:
-        reply += f" Por exemplo, compartilhe o que puder sobre {item_summary or label}."
-    return reply
+        return (
+            f"我想了解的是{normalized_topic}。"
+            f"例如，可以谈谈{examples_text}。"
+            f"回答时可以从{perspectives_text}这些方面来说明。"
+        )
+    return (
+        f"Gostaria de saber sobre {normalized_topic}. "
+        f"Por exemplo, você pode falar sobre {examples_text}. "
+        f"Ao responder, considere {perspectives_text}."
+    )
 
 
 def localized_interview_hesitation_prompt(locale: InterviewLocale) -> str:

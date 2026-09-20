@@ -10,21 +10,21 @@ pnpm --dir app/web build
 node --test app/web/tests/*.test.mjs
 
 # API / Voice / Worker
-cd app/api && uv run pytest
-cd app/voice && uv run pytest
-cd app/worker && uv run pytest
+cd app/api && uv sync --locked && uv run --no-sync pytest
+cd app/voice && uv sync --locked && uv run --no-sync pytest
+cd app/worker && uv sync --locked && uv run --no-sync pytest
 
 # API test levels
-cd app/api && uv run pytest tests/unit
-cd app/api && uv run pytest tests/integration
-cd app/api && uv run pytest tests/e2e
+cd app/api && uv sync --locked && uv run --no-sync pytest tests/unit
+cd app/api && uv sync --locked && uv run --no-sync pytest tests/integration
+cd app/api && uv sync --locked && uv run --no-sync pytest tests/e2e
 
 # Voice test levels (the cross-package voice/API E2E is under app/api)
-cd app/voice && uv run pytest tests/unit
-cd app/voice && uv run pytest tests/integration
+cd app/voice && uv sync --locked && uv run --no-sync pytest tests/unit
+cd app/voice && uv sync --locked && uv run --no-sync pytest tests/integration
 
 # PostgreSQL Store integration (only with an explicit database)
-cd app/api && TEST_DATABASE_URL=postgresql://... uv run pytest tests/integration/persistence/test_postgres_store.py
+cd app/api && uv sync --locked && TEST_DATABASE_URL=postgresql://... uv run --no-sync pytest tests/integration/persistence/test_postgres_store.py
 
 # Documentation
 uv run --group dev mkdocs build --strict

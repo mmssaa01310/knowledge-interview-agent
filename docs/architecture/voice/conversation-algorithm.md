@@ -345,9 +345,9 @@ Turn 2: 大丈夫です。
 
 ### 5.3 Case B: 質問の意味を聞き返す
 
-Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、`service.py:1396-1425` が `questionDefinition` を作り、`localized_interview_question_help()` を返し、`_keep_current_question()` へ入る。したがってtargetを進めず、現在質問の説明へ進むコードは存在する。
+Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、現在の不変な`questionDefinition`を元に `provider.generate_question_help()` を呼ぶ。LLMは「何について話すか」「具体的な回答例2〜3個」「回答時の観点」を返し、Backendが自然な補足文へ整形して `_keep_current_question()` へ渡す。元の質問文や項目説明の再掲は禁止し、targetと質問IDは維持する。
 
-一方Fast経路では、Fast schemaは `needsQuestionExplanation` を持つが、dialogueActそのものを持たない（`fast_interpreter/schemas.py:6-19`）。`start_fast_interview_turn()` は `can_proceed(assessment) and not needs_question_explanation` で進行可否を決める（`service.py:512-523`）。Falseの場合の説明文は `question_definition` のoriginal question、description、required itemsを使う（同:534-573）。よってFastで「質問の意味」を拾えるかは、Boolean `needsQuestionExplanation` のモデル出力に依存し、Full StructuredのdialogueAct分類とは別契約である。
+一方Fast経路では、Fast schemaの `needsQuestionExplanation` は互換用に残っているが、dialogueActの代替分類や補足文生成には使わない（`fast_interpreter/schemas.py:6-19`）。音声APIの質問補足はCanonical Intentで `EXPLAIN_CURRENT_QUESTION` に振り分けられ、共通Structured経路のLLM生成ガイダンスを使用する。これによりTranscribe + Polly、Nova Sonic、GPT-Live、テキストの補足内容を同じ契約で揃える。
 
 ### 5.4 Case C: 「すでに回答している」
 

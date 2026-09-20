@@ -27,6 +27,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     ProcessNode,
     ProcessParticipant,
     ProcessPatch,
+    QuestionHelpOutput,
     QuestionGenerationOutput,
     RequirementUpdate,
     StructuredInterviewOutput,
@@ -50,6 +51,7 @@ class FakeStructuredProvider:
         self.outputs = iter(outputs)
         self.interpret_calls: list[dict[str, object]] = []
         self.question_calls: list[dict[str, object]] = []
+        self.question_help_calls: list[dict[str, object]] = []
 
     def interpret(self, **kwargs: object) -> StructuredInterviewOutput:
         self.interpret_calls.append(kwargs)
@@ -58,6 +60,31 @@ class FakeStructuredProvider:
     def generate_question(self, *, target: Mapping[str, object], **_: object) -> QuestionGenerationOutput:
         self.question_calls.append(dict(target))
         return QuestionGenerationOutput(questionText=f"{target['label']}を教えてください。")
+
+    def generate_question_help(
+        self,
+        *,
+        target: Mapping[str, object],
+        context: Mapping[str, object],
+        **_: object,
+    ) -> QuestionHelpOutput:
+        self.question_help_calls.append(
+            {"target": dict(target), "context": dict(context)}
+        )
+        label = str(target.get("label") or "現在のテーマ")
+        return QuestionHelpOutput(
+            topic=f"{label}に関係する実際の経験や担当内容",
+            examples=[
+                "具体的な出来事と、その後に変わったこと",
+                "日々の担当内容と仕事上の工夫",
+                "今の仕事に影響した学びや転機",
+            ],
+            perspectives=[
+                "いつ、どのような状況だったか",
+                "何を考えてどう行動したか",
+                "現在の仕事にどう生かされているか",
+            ],
+        )
 
 
 class FakeBedrockSession:
@@ -267,6 +294,50 @@ def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
     assert request_body["max_output_tokens"] == 600
     assert request_body["text"]["format"]["type"] == "json_schema"
     assert request_body["text"]["format"]["strict"] is True
+
+
+def test_bedrock_responses_provider_generates_question_help_from_structured_contract() -> None:
+    captured: list[dict[str, object]] = []
+    provider = BedrockResponsesStructuredProvider(
+        model_id="global.openai.gpt-5.6-luna",
+        region_name="us-east-1",
+        session=FakeBedrockSession(),
+        http_client_factory=SequenceHttpClientFactory(
+            [
+                SequenceHttpResponse(
+                    {
+                        "output_text": json.dumps(
+                            {
+                                "topic": "仕事の進め方に影響した転機",
+                                "examples": [
+                                    "大きなトラブルを経験して進め方が変わったこと",
+                                    "先輩から教わった方法が今の仕事の基本になったこと",
+                                ],
+                                "perspectives": [
+                                    "いつ何が起きたか",
+                                    "今の仕事にどう影響しているか",
+                                ],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                )
+            ],
+            captured,
+        ),
+    )
+
+    result = provider.generate_question_help(
+        profile="fixed_form",
+        context={"interviewLocale": "ja-JP"},
+        target={"targetType": "field", "targetId": "experience", "label": "転機"},
+        reasoning_effort="low",
+    )
+
+    assert result.examples[0].startswith("大きなトラブル")
+    assert len(result.examples) == 2
+    assert captured[0]["text"]["format"]["name"] == "interview_question_help"
+    assert captured[0]["text"]["format"]["strict"] is True
 
 
 def test_bedrock_responses_provider_streams_question_deltas() -> None:
@@ -2651,7 +2722,7 @@ def test_GEN_005_question_clarification_is_not_reframed_as_an_stt_retry() -> Non
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert result["interviewState"]["fieldStates"]["field-role"]["answerState"] == "UNANSWERED"
     assert "聞き取" not in result["reply"]
-    assert "たとえば" in result["reply"]
+    assert "例えば" in result["reply"]
     assert result["interviewState"]["lastStructuredOutput"]["dialogueAct"] == "CLARIFICATION_REQUEST"
     assert len(provider.question_calls) == 1
 
@@ -3609,7 +3680,13 @@ def test_user_question_explains_the_current_target_without_answering_or_advancin
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert len(result["interviewState"]["askedQuestions"]) == 1
     assert result["interviewState"]["fieldStates"]["field-role"]["answerState"] == "UNANSWERED"
-    assert "この質問では" in result["reply"]
+    assert "例えば" in result["reply"]
+    assert "具体的な出来事と、その後に変わったこと" in result["reply"]
+    assert first["question"]["questionDefinition"]["originalQuestion"] not in result["reply"]
+    assert len(provider.question_help_calls) == 1
+    help_context = provider.question_help_calls[0]["context"]
+    assert isinstance(help_context, dict)
+    assert help_context["questionDefinition"] == definition_before
     assert result["question"]["questionDefinition"] == definition_before
     assert result["question"]["questionDefinitionHash"] == definition_hash_before
     assert result["question"]["text"] == first["question"]["text"]

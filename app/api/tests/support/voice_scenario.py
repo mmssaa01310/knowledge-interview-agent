@@ -54,6 +54,7 @@ from ai_interviewer_api.agents.interview_knowledge import service as structured_
 from ai_interviewer_api.agents.interview_knowledge.schemas import (  # noqa: E402
     AnswerAssessment,
     FieldUpdate,
+    QuestionHelpOutput,
     QuestionGenerationOutput,
     StructuredInterviewOutput,
     TranscriptAssessment,
@@ -153,6 +154,27 @@ class DeterministicInterviewProvider:
                     questionText=f"{', '.join(labels)}について教えてください。"
                 )
         return QuestionGenerationOutput(questionText=PROFILE_QUESTION)
+
+    def generate_question_help(
+        self,
+        *,
+        target: dict[str, Any],
+        context: dict[str, Any],
+        **_: Any,
+    ) -> QuestionHelpOutput:
+        del context
+        label = str(target.get("label") or "現在のテーマ")
+        return QuestionHelpOutput(
+            topic=f"{label}に関係する実際の経験や担当内容",
+            examples=[
+                "具体的な出来事と、その後に変わったこと",
+                "日々の担当内容と仕事上の工夫",
+            ],
+            perspectives=[
+                "いつ、どのような状況だったか",
+                "現在の仕事にどう影響しているか",
+            ],
+        )
 
     def interpret(self, *, context: dict[str, Any], **_: Any) -> StructuredInterviewOutput:
         import threading

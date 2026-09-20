@@ -13,6 +13,7 @@ from botocore.exceptions import BotoCoreError
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     ProcessModelEditOutput,
+    QuestionHelpOutput,
     QuestionGenerationOutput,
     StructuredInterviewOutput,
     LiveObservationOutput,
@@ -49,6 +50,15 @@ class StructuredInterviewProvider(Protocol):
         target: Mapping[str, Any],
         reasoning_effort: str,
     ) -> QuestionGenerationOutput: ...
+
+    def generate_question_help(
+        self,
+        *,
+        profile: str,
+        context: Mapping[str, Any],
+        target: Mapping[str, Any],
+        reasoning_effort: str,
+    ) -> QuestionHelpOutput: ...
 
 
 class ProcessModelEditProvider(Protocol):
@@ -160,6 +170,39 @@ class BedrockResponsesStructuredProvider:
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
         raise StructuredInterviewProviderError("question output validation failed after retry") from error
+
+    def generate_question_help(
+        self,
+        *,
+        profile: str,
+        context: Mapping[str, Any],
+        target: Mapping[str, Any],
+        reasoning_effort: str,
+    ) -> QuestionHelpOutput:
+        error: Exception | None = None
+        for _ in range(2):
+            try:
+                payload = self._request(
+                    model=self.model_id,
+                    reasoning_effort=reasoning_effort,
+                    schema_name="interview_question_help",
+                    schema=QuestionHelpOutput.model_json_schema(),
+                    system_prompt=_question_help_system_prompt(
+                        profile,
+                        normalize_interview_locale(context.get("interviewLocale")) or "ja-JP",
+                    ),
+                    user_payload={"context": context, "target": target},
+                    max_output_tokens=settings.structured_interview_question_max_output_tokens,
+                )
+                output = QuestionHelpOutput.model_validate(payload)
+                if not all(item.strip() for item in output.examples + output.perspectives):
+                    raise StructuredInterviewProviderError("question help contains empty guidance")
+                return output
+            except (StructuredInterviewProviderError, ValueError) as exc:
+                error = exc
+        raise StructuredInterviewProviderError(
+            "question help output validation failed after retry"
+        ) from error
 
     def generate_question_stream(
         self,
@@ -663,6 +706,24 @@ prior_knowledgeはBackendが設定として渡した既知情報・専門用語�
 documentCandidateValueを返した場合は、questionTextでもその候補を文書由来として確認する質問にしてください。Backendが候補値と根拠を検証し、確認待ち状態を作成します。candidateSourceがassistant_proposalの場合は、候補値だけを説明し、確認文の定型化とOKボタン表示はBackend/UIが行います。answerResolutionがTENTATIVEの候補は確認せず、候補を自然に含めて次の質問へつなげてください。
 applicability対象には、存在するか、存在しないかを明示的に回答できる質問にしてください。
 ProcessModelや図のコードは生成しないでください。
+""".strip()
+
+
+def _question_help_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") -> str:
+    return f"""あなたは{profile}用途のインタビューで、利用者が回答を始められるように質問を補足するアシスタントです。
+{interview_language_instruction(locale)}
+Backendが選択した現在の質問とquestionDefinitionだけを根拠に、質問の補足を生成してください。
+返却は指定されたJSON Schemaだけに従い、JSON以外を返さないでください。
+
+必須ルール:
+- topicは、利用者が何について話せばよいかを短く具体的にまとめてください。
+- examplesは、現在の質問に応じた回答内容の具体例を2〜3個作ってください。単なる項目名や質問文ではなく、利用者が話し始められる状況・出来事・経験の例にしてください。
+- perspectivesは、回答するときに意識すると話しやすい観点を1〜3個作ってください。質問に合わない観点を一般化して追加しないでください。
+- 元の質問文（originalQuestion/canonicalQuestion）やdescriptionをそのまま再掲・引用しないでください。topic、examples、perspectivesのどこにも全文をコピーしてはいけません。
+- 「この質問では〜を聞いています」だけの抽象的な説明にせず、必ずexamplesとperspectivesを現在の質問に合わせて具体化してください。
+- examplesは対象者の事実を推測した回答ではなく、回答のきっかけになる一般的な例として書いてください。
+- requiredItems、optionalItems、completionCriteria、questionProgressがある場合は、それらの意味と未回答の観点を優先してください。prior_knowledgeがある場合は、登録済みの専門用語の意味を参照してください。
+- 返却内容に質問文、項目説明、長い前置き、次の質問、回答の断定を含めないでください。
 """.strip()
 
 

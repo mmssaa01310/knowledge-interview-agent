@@ -389,6 +389,7 @@ def test_canonical_rejection_rejects_candidate_without_running_fast_check(
 
 def test_canonical_clarification_keeps_target_and_skips_fast_check(
     monkeypatch: pytest.MonkeyPatch,
+    stub_structured_provider: object,
 ) -> None:
     user = DEV_TOKENS["dev-manager"]
     record = _create_record_with_field(user)
@@ -417,4 +418,6 @@ def test_canonical_clarification_keeps_target_and_skips_fast_check(
     assert result["voiceTurn"]["canonicalAction"] == "EXPLAIN_CURRENT_QUESTION"
     assert result["voiceTurn"]["fastCheckExecuted"] is False
     assert result["questionId"] == before["currentQuestionId"]
-    assert "この質問では" in result["text"]
+    assert "例えば" in result["text"]
+    assert "具体的な出来事と、その後に変わったこと" in result["text"]
+    assert getattr(stub_structured_provider, "question_help_calls")

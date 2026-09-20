@@ -204,6 +204,14 @@ class AnswerAssessment(StrictModel):
     probeType: ProbeType = "NONE"
 
 
+class QuestionHelpOutput(StrictModel):
+    """LLM-generated guidance that lets the user start answering immediately."""
+
+    topic: str = Field(min_length=1, max_length=300)
+    examples: list[str] = Field(min_length=2, max_length=3)
+    perspectives: list[str] = Field(min_length=1, max_length=3)
+
+
 class StructuredInterviewOutput(StrictModel):
     """Meaning extraction contract. It contains no generated question or layout."""
 
