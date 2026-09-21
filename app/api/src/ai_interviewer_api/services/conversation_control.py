@@ -43,6 +43,7 @@ def normalize_conversation_output(
     ``INCOMPLETE_UTTERANCE``.
     """
 
+    output = _normalize_aspect_coverage(output)
     evaluation = derive_answer_evaluation(output)
     if (
         evaluation == "ANSWERED"
@@ -69,6 +70,7 @@ def normalize_conversation_output(
             update={
                 "answerEvaluation": evaluation,
                 "answerStatus": "NOT_ANSWERED",
+                "clarificationKind": "NONE",
                 "probeDecision": "NONE",
                 "probeDimension": None,
                 "probeReason": None,
@@ -104,6 +106,11 @@ def normalize_conversation_output(
     updates: dict[str, Any] = {
         "answerEvaluation": evaluation,
         "answerStatus": answer_status,
+        "clarificationKind": (
+            output.clarificationKind
+            if evaluation == "CLARIFICATION_REQUEST"
+            else "NONE"
+        ),
         "probeDecision": probe_decision,
     }
     if probe_decision != "PROBE":
@@ -190,10 +197,11 @@ def derive_answer_evaluation(output: StructuredInterviewOutput) -> AnswerEvaluat
         return "REPEAT_REQUEST"
 
     recognition = output.transcriptAssessment.recognitionStatus
-    if (
-        recognition in {"PARTIAL", "MISSING", "AMBIGUOUS"}
-        or output.transcriptAssessment.correctionStatus == "UNCERTAIN"
-    ):
+    if recognition in {"PARTIAL", "MISSING"}:
+        return "NOT_HEARD"
+    if recognition == "AMBIGUOUS" and _has_actionable_asr_ambiguity(output):
+        return "NOT_HEARD"
+    if output.transcriptAssessment.correctionStatus == "UNCERTAIN":
         return "NOT_HEARD"
     if dialogue_act == "CORRECTION":
         return "CORRECTION"
@@ -204,6 +212,87 @@ def derive_answer_evaluation(output: StructuredInterviewOutput) -> AnswerEvaluat
     if output.answerAssessment.sufficiency in _PARTIAL_SUFFICIENCIES:
         return "PARTIALLY_ANSWERED"
     return "ANSWERED"
+
+
+def _has_actionable_asr_ambiguity(output: StructuredInterviewOutput) -> bool:
+    """Return whether an ambiguous span is important enough to interrupt.
+
+    ``recognitionStatus=AMBIGUOUS`` can describe a harmless word in an
+    otherwise usable answer.  Only an explicitly important span, or a legacy
+    ambiguity without span metadata, is an audio retry condition.
+    """
+
+    spans = output.transcriptAssessment.ambiguousSpans
+    if not spans:
+        return True
+    return any(span.important for span in spans)
+
+
+def _normalize_aspect_coverage(
+    output: StructuredInterviewOutput,
+) -> StructuredInterviewOutput:
+    """Keep missing-information labels aligned with per-aspect decisions.
+
+    The interpreter is still responsible for semantic judgement.  This is a
+    small backend guard against asking for an aspect that the same response
+    marked as answered, and against losing a required missing aspect when the
+    model only returned the structured coverage list.
+    """
+
+    if not output.aspectAssessments:
+        return output
+
+    def key(value: object) -> str:
+        return "".join(str(value or "").casefold().split())
+
+    def matches(left: str, right: str) -> bool:
+        return bool(left and right and left == right)
+
+    assessed_aspects = {
+        candidate: aspect
+        for aspect in output.aspectAssessments
+        for candidate in (key(aspect.aspectId), key(aspect.label))
+        if candidate
+    }
+    missing_aspects = [
+        aspect
+        for aspect in output.aspectAssessments
+        if aspect.required and aspect.status in {"MISSING", "UNCERTAIN"}
+    ]
+    missing_information: list[str] = []
+    for item in output.missingInformation:
+        normalized = key(item)
+        aspect = assessed_aspects.get(normalized)
+        if aspect is None:
+            # Preserve an unmodeled item for auditability; the interpreter
+            # prompt still requires missingInformation to use configured
+            # aspects, but dropping it here would hide a provider defect.
+            if normalized:
+                missing_information.append(item)
+            continue
+        if aspect.required and aspect.status in {"MISSING", "UNCERTAIN"}:
+            missing_information.append(item)
+    for aspect in missing_aspects:
+        if not any(
+            matches(key(aspect.aspectId), key(item))
+            or matches(key(aspect.label), key(item))
+            for item in missing_information
+        ):
+            missing_information.append(aspect.label)
+    missing_information = list(dict.fromkeys(missing_information))[:12]
+
+    required_gap = bool(missing_aspects)
+    updates: dict[str, Any] = {}
+    if missing_information != list(output.missingInformation):
+        updates["missingInformation"] = missing_information
+    if required_gap:
+        if output.answerStatus == "ANSWERED":
+            updates["answerStatus"] = "PARTIAL"
+        if output.answerAssessment.sufficiency == "SUFFICIENT":
+            updates["answerAssessment"] = output.answerAssessment.model_copy(
+                update={"sufficiency": "PARTIAL", "probeType": "CLARIFY"}
+            )
+    return output.model_copy(update=updates) if updates else output
 
 
 def _contains_assistant_proposal(output: StructuredInterviewOutput) -> bool:
@@ -317,6 +406,9 @@ def llm_input_summary(context: dict[str, Any]) -> dict[str, Any]:
         "preferredProbeDimensions": context.get("preferredProbeDimensions", []),
         "acquiredInformation": context.get("acquiredInformation", []),
         "missingInformation": context.get("missingInformation", []),
+        "aspectAssessments": context.get("aspectAssessments", []),
+        "clarificationTarget": context.get("clarificationTarget"),
+        "clarificationKind": context.get("clarificationKind", "NONE"),
         "previousAnswerEvaluation": context.get("answerEvaluation"),
         "answerStatus": context.get("answerStatus"),
         "probeDecision": context.get("probeDecision"),
@@ -339,6 +431,7 @@ def llm_output_summary(output: StructuredInterviewOutput) -> dict[str, Any]:
         "dialogueAct": output.dialogueAct,
         "answerEvaluation": output.answerEvaluation,
         "answerStatus": output.answerStatus,
+        "clarificationKind": output.clarificationKind,
         "probeDecision": output.probeDecision,
         "probeDimension": output.probeDimension,
         "probeReason": output.probeReason,
@@ -346,8 +439,14 @@ def llm_output_summary(output: StructuredInterviewOutput) -> dict[str, Any]:
         "utteranceCompleteness": output.utteranceCompleteness,
         "transcriptRecognitionStatus": output.transcriptAssessment.recognitionStatus,
         "transcriptCorrectionStatus": output.transcriptAssessment.correctionStatus,
+        "ambiguousSpans": [
+            span.model_dump() for span in output.transcriptAssessment.ambiguousSpans
+        ],
         "answerSufficiency": output.answerAssessment.sufficiency,
         "probeType": output.answerAssessment.probeType,
+        "aspectAssessments": [
+            aspect.model_dump() for aspect in output.aspectAssessments
+        ],
         "missingInformation": list(output.missingInformation),
         "extractedFields": extracted_update_summary(output),
     }
@@ -408,10 +507,23 @@ def build_conversation_trace(
         "dialogueAct": output.dialogueAct,
         "answerEvaluation": output.answerEvaluation,
         "answerStatus": output.answerStatus,
+        "clarificationKind": output.clarificationKind,
         "probeDecision": output.probeDecision,
         "probeDimension": output.probeDimension,
         "probeReason": output.probeReason,
         "probeQuestion": output.probeQuestion,
+        "aspectAssessments": [
+            aspect.model_dump() for aspect in output.aspectAssessments
+        ],
+        "clarificationTarget": (
+            dict(state.get("lastClarificationTarget"))
+            if isinstance(state, Mapping)
+            and isinstance(state.get("lastClarificationTarget"), Mapping)
+            else None
+        ),
+        "ambiguousSpans": [
+            span.model_dump() for span in transcript.ambiguousSpans
+        ],
         "extractedFields": extracted_update_summary(output),
         "fieldStates": field_state_summary(state),
         "missingInformation": list(output.missingInformation),

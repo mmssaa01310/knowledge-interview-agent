@@ -12,7 +12,10 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ai_interviewer_api.core.interview_locale import InterviewLocale
+from ai_interviewer_api.core.interview_locale import (
+    InterviewLocale,
+    localized_interview_ambiguous_part_prompt,
+)
 
 
 _MAX_SPOKEN_VALUE_LENGTH = 64
@@ -72,6 +75,10 @@ def build_transcribe_polly_transcript_feedback(
     if status != "UNCERTAIN" and answer_evaluation != "NOT_HEARD":
         return None
 
+    clarification_target = _as_mapping(
+        state.get("lastClarificationTarget")
+        or result.get("clarificationTarget")
+    )
     latest_message_ids = _latest_message_ids(state, turn)
     reliable_updates = _reliable_field_updates(
         output,
@@ -79,6 +86,37 @@ def build_transcribe_polly_transcript_feedback(
         field_labels=field_labels,
         correction_candidates=correction_candidates,
     )
+    understood = _understood_phrase(reliable_updates, field_labels, locale)
+    if clarification_target:
+        target_type = _clean_text(clarification_target.get("type")).upper()
+        if target_type == "ASR_AMBIGUOUS" and _clean_text(
+            clarification_target.get("semanticRole")
+        ):
+            return localized_interview_ambiguous_part_prompt(
+                locale,
+                _clean_text(clarification_target.get("semanticRole")) or None,
+                understood,
+            )
+
+    # A persisted turn from before clarificationTarget was introduced may
+    # still carry the span metadata on the transcript assessment itself.
+    ambiguous_spans = assessment.get("ambiguousSpans")
+    if isinstance(ambiguous_spans, list):
+        important_span = next(
+            (
+                _as_mapping(item)
+                for item in ambiguous_spans
+                if _as_mapping(item).get("important", True)
+            ),
+            None,
+        )
+        if important_span:
+            return localized_interview_ambiguous_part_prompt(
+                locale,
+                _clean_text(important_span.get("semanticRole")) or None,
+                understood,
+            )
+
     unclear_labels = _unclear_labels(
         state,
         question,
@@ -86,8 +124,6 @@ def build_transcribe_polly_transcript_feedback(
         known_field_ids=set(reliable_updates),
         locale=locale,
     )
-    understood = _understood_phrase(reliable_updates, field_labels, locale)
-
     if understood and unclear_labels:
         unclear = _join_labels(unclear_labels, locale)
         if locale == "en-US":
@@ -115,6 +151,8 @@ def build_transcribe_polly_transcript_feedback(
         locale,
         prefer_broad=not bool(understood),
     )
+    if _is_broad_target(subject):
+        return localized_interview_ambiguous_part_prompt(locale)
     if understood and not unclear_labels:
         return _repeat_unclear_part_message(locale, understood, subject)
     if understood:

@@ -170,6 +170,146 @@ def localized_interview_not_heard_prompt(
     return f"音声を正しく認識できませんでした。{normalized_subject or '先ほどの質問'}について、もう一度お願いします。"
 
 
+def _localized_clarification_role(
+    locale: InterviewLocale,
+    semantic_role: str | None,
+) -> str:
+    """Turn a structured ASR role into a short user-facing label."""
+
+    role = (semantic_role or "").strip()
+    compact = role.casefold().replace(" ", "_")
+    if locale == "ja-JP":
+        for tokens, label in (
+            (("technology", "tech", "技術"), "技術名"),
+            (("person", "人名", "氏名", "name"), "人名"),
+            (("department", "所属", "部署"), "所属"),
+            (("organization", "company", "組織", "会社", "所属"), "組織名"),
+            (("number", "数字", "件数", "金額"), "数字"),
+            (("date", "時期", "日付", "年月"), "時期"),
+            (("location", "場所", "地域", "拠点"), "場所"),
+        ):
+            if any(token in compact or token in role for token in tokens):
+                return label
+        return role or "回答の不明瞭な部分"
+    if locale == "en-US":
+        for tokens, label in (
+            (("technology", "tech"), "the technology name"),
+            (("person", "name"), "the person's name"),
+            (("organization", "company"), "the organization name"),
+            (("number",), "the number"),
+            (("date",), "the time or date"),
+            (("location",), "the location"),
+        ):
+            if any(token in compact for token in tokens):
+                return label
+        return role or "the unclear part of your answer"
+    if locale == "zh-CN":
+        for tokens, label in (
+            (("technology", "tech"), "技术名称"),
+            (("person", "name"), "人名"),
+            (("organization", "company"), "组织名称"),
+            (("number",), "数字"),
+            (("date",), "时间"),
+            (("location",), "地点"),
+        ):
+            if any(token in compact for token in tokens):
+                return label
+        return role or "回答中没有听清的部分"
+    for tokens, label in (
+        (("technology", "tech"), "o nome da tecnologia"),
+        (("person", "name"), "o nome da pessoa"),
+        (("organization", "company"), "o nome da organização"),
+        (("number",), "o número"),
+        (("date",), "a data ou período"),
+        (("location",), "o local"),
+    ):
+        if any(token in compact for token in tokens):
+            return label
+    return role or "a parte pouco clara da resposta"
+
+
+def localized_interview_ambiguous_part_prompt(
+    locale: InterviewLocale,
+    semantic_role: str | None = None,
+    understood: str | None = None,
+) -> str:
+    """Ask for only an important, ambiguous ASR span."""
+
+    normalized_understood = (understood or "").strip()
+    if not (semantic_role or "").strip():
+        return {
+            "ja-JP": "音声を正しく認識できませんでした。回答がうまく聞き取れませんでしたが、聞き取れなかった部分だけ、もう一度お願いします。",
+            "en-US": "I could not recognize part of the audio. Please repeat only the unclear part.",
+            "zh-CN": "有一部分语音没有听清。请只重复没有听清的部分。",
+            "pt-BR": "Não consegui reconhecer uma parte do áudio. Repita apenas a parte pouco clara, por favor.",
+        }[locale]
+    label = _localized_clarification_role(locale, semantic_role)
+    if normalized_understood:
+        if locale == "en-US":
+            return f"I understood {normalized_understood}. Please repeat only {label}."
+        if locale == "zh-CN":
+            return f"我听懂了{normalized_understood}。请只重复{label}。"
+        if locale == "pt-BR":
+            return f"Entendi {normalized_understood}. Repita apenas {label}, por favor."
+        return f"{normalized_understood}は分かりました。{label}だけもう一度お願いします。"
+    if locale == "en-US":
+        return f"Please repeat only {label}."
+    if locale == "zh-CN":
+        return f"请只重复{label}。"
+    if locale == "pt-BR":
+        return f"Repita apenas {label}, por favor."
+    return f"{label}の部分だけ、もう一度教えてください。"
+
+
+def localized_interview_clarification_target_reply(
+    locale: InterviewLocale,
+    target_type: str,
+    label: str | None = None,
+    semantic_role: str | None = None,
+) -> str:
+    """Explain the last clarification target without restating the question."""
+
+    if target_type == "ASR_AMBIGUOUS":
+        target_label = _localized_clarification_role(locale, semantic_role)
+        if locale == "en-US":
+            return f"The unclear part was {target_label}."
+        if locale == "zh-CN":
+            return f"是{target_label}的部分。"
+        if locale == "pt-BR":
+            return f"Foi {target_label}."
+        return f"{target_label}の部分です。"
+
+    normalized_label = (label or "").strip()
+    if locale == "en-US":
+        return f"The missing part is {normalized_label or 'one specific aspect'}."
+    if locale == "zh-CN":
+        return f"不足的是{normalized_label or '其中一个具体方面'}。"
+    if locale == "pt-BR":
+        return f"Faltou {normalized_label or 'um aspecto específico'}."
+    return f"不足的是「{normalized_label or '具体的一个方面'}」的部分。"
+
+
+def localized_interview_missing_information_prompt(
+    locale: InterviewLocale,
+    label: str,
+) -> str:
+    """Ask one concise question about one missing semantic aspect."""
+
+    normalized_label = label.strip() or {
+        "ja-JP": "不足している点",
+        "en-US": "the missing point",
+        "zh-CN": "缺少的部分",
+        "pt-BR": "o ponto que falta",
+    }[locale]
+    if locale == "en-US":
+        return f"Could you tell me a little more about {normalized_label}?"
+    if locale == "zh-CN":
+        return f"请只再说明一下{normalized_label}。"
+    if locale == "pt-BR":
+        return f"Você poderia falar um pouco mais sobre {normalized_label}?"
+    return f"{normalized_label}についてだけ、もう少し教えてください。"
+
+
 def localized_interview_off_target_prompt(
     locale: InterviewLocale,
     target_label: str,
@@ -198,7 +338,13 @@ def localized_interview_question_guidance(
     perspectives: Sequence[str],
     example_mode: str = "single",
 ) -> str:
-    """Turn LLM-generated guidance into a natural, concise spoken reply."""
+    """Render one focused question clarification in at most two sentences.
+
+    ``perspectives`` remains accepted for compatibility with older providers,
+    but a question clarification must not become a long answer guide.  An
+    example is optional and is always limited to one item, including when an
+    older provider still returns ``exampleMode=additional``.
+    """
 
     normalized_topic = topic.strip() or {
         "ja-JP": "このテーマ",
@@ -206,48 +352,30 @@ def localized_interview_question_guidance(
         "zh-CN": "这个主题",
         "pt-BR": "este tema",
     }[locale]
-    normalized_examples = [item.strip() for item in examples if item.strip()]
-    if example_mode != "additional":
-        normalized_examples = normalized_examples[:1]
-    else:
-        normalized_examples = normalized_examples[:3]
-    normalized_perspectives = [item.strip() for item in perspectives if item.strip()][:3]
-    examples_text = {
-        "ja-JP": "、".join(normalized_examples),
-        "en-US": ", ".join(normalized_examples),
-        "zh-CN": "、".join(normalized_examples),
-        "pt-BR": ", ".join(normalized_examples),
-    }[locale]
-    perspectives_text = {
-        "ja-JP": "、".join(normalized_perspectives),
-        "en-US": ", ".join(normalized_perspectives),
-        "zh-CN": "、".join(normalized_perspectives),
-        "pt-BR": ", ".join(normalized_perspectives),
-    }[locale]
+    normalized_examples = [item.strip() for item in examples if item.strip()][:1]
+    # ``none`` is the default.  A provider may still return ``single`` for a
+    # useful example, but never more than one is spoken to the user.
+    example_text = normalized_examples[0].rstrip("。.!！") if normalized_examples else ""
 
     if locale == "ja-JP":
-        return (
-            f"お聞きしたいのは、{normalized_topic}です。"
-            f"例えば、{examples_text}などが考えられます。"
-            f"回答するときは、{perspectives_text}といった点を意識して、話せる範囲で教えてください。"
-        )
+        reply = f"{normalized_topic}について、何か一つ教えてください。"
+        if example_mode != "none" and example_text:
+            reply += f"例えば、{example_text}といった経験です。"
+        return reply
     if locale == "en-US":
-        return (
-            f"I would like to hear about {normalized_topic}. "
-            f"For example, you could talk about {examples_text}. "
-            f"As you answer, consider {perspectives_text}."
-        )
+        reply = f"Please tell me about {normalized_topic}, focusing on one example."
+        if example_mode != "none" and example_text:
+            reply += f" For example, {example_text}."
+        return reply
     if locale == "zh-CN":
-        return (
-            f"我想了解的是{normalized_topic}。"
-            f"例如，可以谈谈{examples_text}。"
-            f"回答时可以从{perspectives_text}这些方面来说明。"
-        )
-    return (
-        f"Gostaria de saber sobre {normalized_topic}. "
-        f"Por exemplo, você pode falar sobre {examples_text}. "
-        f"Ao responder, considere {perspectives_text}."
-    )
+        reply = f"请只说一个关于{normalized_topic}的例子。"
+        if example_mode != "none" and example_text:
+            reply += f"例如，{example_text}。"
+        return reply
+    reply = f"Fale sobre {normalized_topic}, com apenas um exemplo."
+    if example_mode != "none" and example_text:
+        reply += f" Por exemplo, {example_text}."
+    return reply
 
 
 def localized_interview_hesitation_prompt(locale: InterviewLocale) -> str:

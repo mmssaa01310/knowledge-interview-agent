@@ -181,10 +181,13 @@ def build_initial_structured_state(
         "lastProbeDecision": None,
         "lastProbeDimension": None,
         "lastProbeReason": None,
+        "lastClarificationKind": "NONE",
+        "lastAspectAssessments": [],
         "lastMissingInformation": [],
         "lastExtractedFields": [],
         "lastNextAction": None,
         "lastConversationTrace": None,
+        "lastClarificationTarget": None,
         "activeProbeTarget": None,
         "pendingTranscriptConfirmation": None,
         "nextQuestionTarget": None,
@@ -365,6 +368,10 @@ def record_interpretation_assessment(
     state["lastProbeDecision"] = output.probeDecision
     state["lastProbeDimension"] = output.probeDimension
     state["lastProbeReason"] = output.probeReason
+    state["lastClarificationKind"] = output.clarificationKind
+    state["lastAspectAssessments"] = [
+        aspect.model_dump() for aspect in output.aspectAssessments
+    ]
     state["lastMissingInformation"] = list(output.missingInformation)
     state["lastExtractedFields"] = extracted_update_summary(output)
     state["lastProcessedUserMessageId"] = latest_message_id

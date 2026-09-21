@@ -240,6 +240,7 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
   "dialogueAct": "ANSWER",
   "answerEvaluation": "ANSWERED",
   "answerStatus": "ANSWERED",
+  "clarificationKind": "NONE",
   "probeDecision": "NONE",
   "probeDimension": null,
   "probeReason": null,
@@ -253,12 +254,14 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
     "recognitionStatus": "CLEAR",
     "recognitionEvidence": [],
     "correctionCandidates": [],
-    "correctionReason": null
+    "correctionReason": null,
+    "ambiguousSpans": []
   },
   "answerAssessment": {
     "sufficiency": "SUFFICIENT",
     "probeType": "NONE"
   },
+  "aspectAssessments": [],
   "missingInformation": [],
   "fieldUpdates": [],
   "requirementUpdates": [],
@@ -296,7 +299,24 @@ Schemaは`additionalProperties=false`を設定し、定義済みの全プロパ�
 
 `recognitionStatus`は、文字起こしが内容を保持している場合は`CLEAR`、認識結果の途中欠落が確認できる場合は`PARTIAL`、確定・部分文字起こしが存在しない場合は`MISSING`、音声上の候補を一意に区別できない場合は`AMBIGUOUS`とする。回答の意味が不足しているだけの場合は`CLEAR`のままとし、`NOT_HEARD`へ変換してはならない。`recognitionEvidence`には、空の確定文字起こし、認識結果の欠落、音声上の候補衝突など、実際に認識品質を示す根拠だけを記録する。
 
+`ambiguousSpans`は、認識結果の中で候補を一意に区別できない語句と、その語句が質問内で担う`semanticRole`を保持する。`important=true`の語句が質問目的に必要な場合だけ、Backendはその語句の役割だけを聞き返す。重要でない曖昧語は回答を止めず、認識できた情報を通常どおり評価する。音声が理解できているが質問の観点が不足している場合は、`ambiguousSpans`を追加せず`aspectAssessments`で不足を表す。
+
 `UNCERTAIN`または補正候補が空の`CORRECTED`は、認識品質の根拠がある場合に限り再発話を依頼する。補正確認中は`pendingTranscriptConfirmation`を保持し、次のProfile対象へ進めない。補正候補を対象者が否定した場合は候補を破棄し、元の質問へ戻す。
+
+### 7.1.1.1 質問観点ごとの評価と聞き返し
+
+複数の観点を含む質問では、`aspectAssessments`に設定済みの観点ごとの状態を保存する。`status=ANSWERED`は必要な意味情報が得られた状態、`MISSING`は音声自体は理解できるが必要情報がまだない状態、`NOT_APPLICABLE`は「不要」「該当なし」などの明示的な回答、`UNCERTAIN`は意味を確定できない状態を表す。たとえば支援について「現時点では特に必要ない」と回答した場合は有効な回答であり、`MISSING`にしてはならない。条件付きで利用したい資料や支援も同じ観点のEvidenceとして保持する。
+
+`missingInformation`には、回答済みの観点を含めず、必要な不足観点だけを列挙する。次の質問はこの一覧から1観点だけを聞き、元質問全体を再掲しない。`clarificationKind`は次の値を取る。
+
+| 値 | 用途 | 応答 |
+|---|---|---|
+| `NONE` | 通常回答 | 通常の回答評価・次質問処理 |
+| `QUESTION_MEANING` | 質問の意味、答え方、具体例の要求 | `expectedInformation`から問い合わせ対象を1観点だけ選び、1〜2文で短く説明。例は必要な場合だけ1個 |
+| `ASR_TARGET` | 直前の音声認識で何が不明だったかの確認 | 保存済み`clarificationTarget`の役割だけを短く説明 |
+| `MISSING_INFORMATION_TARGET` | どの観点が不足しているかの確認 | 保存済みの不足観点だけを短く説明 |
+
+`ASR_TARGET`や`MISSING_INFORMATION_TARGET`は、特定言語の語句一致で判定してはならない。Interpreterが発話の目的を構造化分類し、Backendは`clarificationKind`と保存済みの対象だけで応答を選択する。質問全体の説明を許可するのは`QUESTION_MEANING`の場合だけである。`QUESTION_MEANING`でも、`expectedInformation`のうちユーザーが尋ねた対象だけを選び、`capturedItemIds`にある回答済み観点は説明・再質問しない。説明は原則1文、長くても2文までとし、長い回答ガイドや複数例を読み上げない。Transcribe + Polly、テキスト、GPT Live / Realtimeは同じ分類結果と`clarificationTarget`を利用する。
 
 ### 7.1.2 回答充足性とProbe
 
@@ -358,7 +378,7 @@ OTHER
 
 Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistant発話、会話履歴を使用して行う。文字列一致や固定挨拶辞書で判定してはならない。
 
-`HESITATION`、`BACKCHANNEL`、`OTHER`は回答候補として適用せず、現在の質問と`questionId`を維持して短い促しだけを返す。このときQuestion Generator、検索、次質問対象の選択は実行しない。質問の意味が分からない発話は`CLARIFICATION_REQUEST`として、現在の質問に応じた「何について話すか」「具体例1個」「回答時の観点」をLLMで生成して説明し、元の質問文や項目説明をそのまま読み上げない。利用者が「具体的には」「例えば」「回答例」など追加の具体例を明示的に求めた場合だけ、具体例を2〜3個まで追加する。STT補正の`UNCERTAIN`と意味不足を混同してはならない。`UNANSWERABLE`または`REFUSAL`は一度だけ別角度の具体的な促しを返す。聞き取り失敗の応答は、`recognitionStatus`が`PARTIAL`、`MISSING`、`AMBIGUOUS`であるなど、認識品質の根拠がある場合だけ使用する。`REPEAT_REQUEST`では現在の質問文をそのまま再提示し、回答評価や状態を進めない。
+`HESITATION`、`BACKCHANNEL`、`OTHER`は回答候補として適用せず、現在の質問と`questionId`を維持して短い促しだけを返す。このときQuestion Generator、検索、次質問対象の選択は実行しない。質問の意味が分からない発話は`CLARIFICATION_REQUEST`として、現在の`expectedInformation`からユーザーが尋ねた対象を1つだけ選び、その対象だけを1〜2文で短く説明する。`capturedItemIds`にある回答済み観点は説明・再質問しない。例は必要な場合だけ1個までとし、「回答するときは〜を意識してください」のような複数観点の回答ガイドや元質問全文の読み上げは禁止する。STT補正の`UNCERTAIN`と意味不足を混同してはならない。`UNANSWERABLE`または`REFUSAL`は一度だけ別角度の具体的な促しを返す。聞き取り失敗の応答は、`recognitionStatus`が`PARTIAL`、`MISSING`、`AMBIGUOUS`であるなど、認識品質の根拠がある場合だけ使用する。`REPEAT_REQUEST`では現在の質問文をそのまま再提示し、回答評価や状態を進めない。
 
 確認待ち候補に対する`CONFIRMATION`は、訂正・留保・追加条件を含まない明確な肯定の場合だけ確定できる。混在した確認発話は候補を確定せず、差分または訂正内容を確認する。
 

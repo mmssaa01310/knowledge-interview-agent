@@ -4,6 +4,8 @@ import pytest
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     AnswerAssessment,
+    AnswerAspectAssessment,
+    ASRAmbiguousSpan,
     FieldUpdate,
     StructuredInterviewOutput,
     TranscriptAssessment,
@@ -209,6 +211,93 @@ def test_missing_information_overrides_contradictory_sufficient_label() -> None:
 
     assert normalized.answerEvaluation == "PARTIALLY_ANSWERED"
     assert normalized.answerAssessment.sufficiency == "PARTIAL"
+
+
+def test_aspect_assessments_keep_answered_support_and_only_add_missing_skill() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            aspectAssessments=[
+                AnswerAspectAssessment(
+                    aspectId="theme",
+                    label="挑戦したいテーマ",
+                    status="ANSWERED",
+                    evidence="新しい技術を活用したテーマを立ち上げたい",
+                ),
+                AnswerAspectAssessment(
+                    aspectId="skill",
+                    label="身につけたい能力",
+                    status="MISSING",
+                ),
+                AnswerAspectAssessment(
+                    aspectId="support",
+                    label="必要な支援",
+                    status="ANSWERED",
+                    evidence="今は特に必要ないが、セミナーや記事は利用したい",
+                ),
+            ],
+            missingInformation=["必要な支援", "身につけたい能力"],
+        )
+    )
+
+    assert normalized.answerEvaluation == "PARTIALLY_ANSWERED"
+    assert normalized.answerStatus == "PARTIAL"
+    assert normalized.missingInformation == ["身につけたい能力"]
+
+
+def test_optional_missing_aspect_does_not_turn_answer_into_partial() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            aspectAssessments=[
+                AnswerAspectAssessment(
+                    aspectId="theme",
+                    label="挑戦したいテーマ",
+                    status="ANSWERED",
+                ),
+                AnswerAspectAssessment(
+                    aspectId="example",
+                    label="具体例",
+                    status="MISSING",
+                    required=False,
+                ),
+            ],
+            missingInformation=["具体例"],
+        )
+    )
+
+    assert normalized.answerEvaluation == "ANSWERED"
+    assert normalized.answerStatus == "ANSWERED"
+    assert normalized.missingInformation == []
+
+
+def test_nonessential_asr_ambiguity_does_not_become_not_heard() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            transcriptAssessment=TranscriptAssessment(
+                recognitionStatus="AMBIGUOUS",
+                ambiguousSpans=[
+                    ASRAmbiguousSpan(
+                        span="えっと",
+                        semanticRole="hesitation",
+                        important=False,
+                    )
+                ],
+            )
+        )
+    )
+
+    assert normalized.answerEvaluation == "ANSWERED"
+
+
+def test_clarification_kind_is_preserved_for_target_questions() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            dialogueAct="CLARIFICATION_REQUEST",
+            clarificationKind="ASR_TARGET",
+        )
+    )
+
+    assert normalized.answerEvaluation == "CLARIFICATION_REQUEST"
+    assert normalized.clarificationKind == "ASR_TARGET"
 
 
 def test_proposal_request_with_a_generated_candidate_is_not_question_help() -> None:

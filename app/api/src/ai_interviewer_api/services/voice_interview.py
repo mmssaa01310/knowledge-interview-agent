@@ -1162,8 +1162,19 @@ def _process_structured_voice_turn(
         turn["dialogueAct"] = result.get("structuredDialogueAct")
         turn["answerEvaluation"] = result.get("answerEvaluation")
         turn["answerStatus"] = result.get("answerStatus")
+        turn["clarificationKind"] = result.get("clarificationKind")
         turn["probeDecision"] = result.get("probeDecision")
         turn["probeDimension"] = result.get("probeDimension")
+        turn["aspectAssessments"] = [
+            dict(item)
+            for item in (result.get("aspectAssessments") or [])
+            if isinstance(item, Mapping)
+        ]
+        turn["clarificationTarget"] = (
+            dict(result.get("clarificationTarget"))
+            if isinstance(result.get("clarificationTarget"), Mapping)
+            else None
+        )
         turn["currentTurnType"] = result.get("currentTurnType")
         turn["missingInformation"] = list(result.get("missingInformation") or [])
         turn["extractedFields"] = [

@@ -13,6 +13,7 @@ CandidateSource = Literal["user_statement", "assistant_proposal", "document_refe
 UtteranceCompleteness = Literal["COMPLETE", "INCOMPLETE", "UNCERTAIN"]
 TranscriptCorrectionStatus = Literal["NONE", "CORRECTED", "UNCERTAIN"]
 TranscriptRecognitionStatus = Literal["CLEAR", "PARTIAL", "MISSING", "AMBIGUOUS"]
+AnswerAspectStatus = Literal["ANSWERED", "MISSING", "NOT_APPLICABLE", "UNCERTAIN"]
 AnswerEvaluation = Literal[
     "ANSWERED",
     "PARTIALLY_ANSWERED",
@@ -24,6 +25,12 @@ AnswerEvaluation = Literal[
     "REPEAT_REQUEST",
 ]
 AnswerStatus = Literal["ANSWERED", "PARTIAL", "NOT_ANSWERED"]
+ClarificationKind = Literal[
+    "NONE",
+    "QUESTION_MEANING",
+    "ASR_TARGET",
+    "MISSING_INFORMATION_TARGET",
+]
 ProbeDecision = Literal["NONE", "PROBE"]
 ProbeDimension = Literal[
     "CONTEXT",
@@ -224,6 +231,14 @@ class OpenIssue(StrictModel):
     evidenceTranscriptIds: list[str] = Field(default_factory=list)
 
 
+class ASRAmbiguousSpan(StrictModel):
+    """A transcript span whose recognition is ambiguous for this question."""
+
+    span: str = Field(min_length=1, max_length=160)
+    semanticRole: str = Field(min_length=1, max_length=120)
+    important: bool = True
+
+
 class TranscriptAssessment(StrictModel):
     """Assessment of the STT text before it can become a formal answer."""
 
@@ -234,6 +249,20 @@ class TranscriptAssessment(StrictModel):
     recognitionEvidence: list[str] = Field(default_factory=list, max_length=5)
     correctionCandidates: list[str] = Field(default_factory=list, max_length=3)
     correctionReason: str | None = None
+    # Keep the uncertain span separate from semantic answer sufficiency.  A
+    # provider may understand the rest of a sentence while one name, number,
+    # or technical term remains ambiguous.
+    ambiguousSpans: list[ASRAmbiguousSpan] = Field(default_factory=list, max_length=5)
+
+
+class AnswerAspectAssessment(StrictModel):
+    """Per-aspect answer coverage for a multi-part interview question."""
+
+    aspectId: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=200)
+    status: AnswerAspectStatus = "UNCERTAIN"
+    required: bool = True
+    evidence: str | None = Field(default=None, max_length=600)
 
 
 class AnswerAssessment(StrictModel):
@@ -246,10 +275,16 @@ class AnswerAssessment(StrictModel):
 class QuestionHelpOutput(StrictModel):
     """LLM-generated guidance that lets the user start answering immediately."""
 
+    # The interpreter must select one expected-information item instead of
+    # explaining the whole question.  The backend validates this id against
+    # the immutable question definition and the current captured-item state.
+    targetAspectId: str | None = Field(default=None, max_length=120)
     topic: str = Field(min_length=1, max_length=300)
-    examples: list[str] = Field(min_length=1, max_length=3)
-    exampleMode: Literal["single", "additional"] = "single"
-    perspectives: list[str] = Field(min_length=1, max_length=3)
+    examples: list[str] = Field(default_factory=list, max_length=1)
+    exampleMode: Literal["none", "single", "additional"] = "none"
+    # Kept in the structured contract for compatibility with older providers,
+    # but not read aloud as a multi-point answer guide.
+    perspectives: list[str] = Field(default_factory=list, max_length=1)
 
 
 class StructuredInterviewOutput(StrictModel):
@@ -261,6 +296,7 @@ class StructuredInterviewOutput(StrictModel):
     # and clarification failures).  These two fields describe the answer to
     # the current basic question and the independent value of one probe.
     answerStatus: AnswerStatus = "ANSWERED"
+    clarificationKind: ClarificationKind = "NONE"
     probeDecision: ProbeDecision = "NONE"
     probeDimension: ProbeDimension | None = None
     probeReason: str | None = Field(default=None, max_length=500)
@@ -269,6 +305,10 @@ class StructuredInterviewOutput(StrictModel):
     utteranceCompleteness: UtteranceCompleteness = "COMPLETE"
     transcriptAssessment: TranscriptAssessment = Field(default_factory=TranscriptAssessment)
     answerAssessment: AnswerAssessment = Field(default_factory=AnswerAssessment)
+    aspectAssessments: list[AnswerAspectAssessment] = Field(
+        default_factory=list,
+        max_length=12,
+    )
     missingInformation: list[str] = Field(default_factory=list, max_length=12)
     fieldUpdates: list[FieldUpdate] = Field(default_factory=list)
     requirementUpdates: list[RequirementUpdate] = Field(default_factory=list)

@@ -20,6 +20,8 @@ from ai_interviewer_api.agents.interview_knowledge.provider import (
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     AnswerAssessment,
+    AnswerAspectAssessment,
+    ASRAmbiguousSpan,
     ApplicabilityUpdate,
     FieldUpdate,
     ProcessEdge,
@@ -48,8 +50,13 @@ from ai_interviewer_api.repositories.store import store
 
 
 class FakeStructuredProvider:
-    def __init__(self, outputs: list[StructuredInterviewOutput]) -> None:
+    def __init__(
+        self,
+        outputs: list[StructuredInterviewOutput],
+        question_help_output: QuestionHelpOutput | None = None,
+    ) -> None:
         self.outputs = iter(outputs)
+        self.question_help_output = question_help_output
         self.interpret_calls: list[dict[str, object]] = []
         self.question_calls: list[dict[str, object]] = []
         self.question_help_calls: list[dict[str, object]] = []
@@ -72,19 +79,19 @@ class FakeStructuredProvider:
         self.question_help_calls.append(
             {"target": dict(target), "context": dict(context)}
         )
+        if self.question_help_output is not None:
+            return self.question_help_output
         label = str(target.get("label") or "現在のテーマ")
         return QuestionHelpOutput(
+            targetAspectId=str(target.get("targetId") or "") or None,
             topic=f"{label}に関係する実際の経験や担当内容",
             examples=[
                 "具体的な出来事と、その後に変わったこと",
-                "日々の担当内容と仕事上の工夫",
-                "今の仕事に影響した学びや転機",
             ],
             perspectives=[
                 "いつ、どのような状況だったか",
-                "何を考えてどう行動したか",
-                "現在の仕事にどう生かされているか",
             ],
+            exampleMode="single",
         )
 
 
@@ -269,9 +276,12 @@ def test_interpreter_prompt_separates_question_help_from_answer_unavailability()
     assert "単に「よく分からない」とだけ言われた場合" in prompt
     assert "STTが不確実でない限りUNCERTAINにはしません" in prompt
     assert "補正対象とは独立して明確に聞き取れた別の項目" in prompt
+    assert "aspectAssessments" in prompt
+    assert "clarificationKind" in prompt
+    assert "ambiguousSpans" in prompt
 
 
-def test_question_help_uses_one_example_unless_additional_examples_are_requested() -> None:
+def test_question_help_uses_at_most_one_example_and_never_reads_answer_guides() -> None:
     examples = ["最初の例", "追加の例1", "追加の例2"]
     perspectives = ["時期や状況"]
 
@@ -292,8 +302,11 @@ def test_question_help_uses_one_example_unless_additional_examples_are_requested
     assert "最初の例" in default_reply
     assert "追加の例1" not in default_reply
     assert "追加の例2" not in default_reply
-    assert "追加の例1" in additional_reply
-    assert "追加の例2" in additional_reply
+    assert "最初の例" in additional_reply
+    assert "追加の例1" not in additional_reply
+    assert "追加の例2" not in additional_reply
+    assert "回答するときは" not in default_reply
+    assert "時期や状況" not in default_reply
 
 
 def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
@@ -338,11 +351,9 @@ def test_bedrock_responses_provider_generates_question_help_from_structured_cont
                                 "topic": "仕事の進め方に影響した転機",
                                 "examples": [
                                     "大きなトラブルを経験して進め方が変わったこと",
-                                    "先輩から教わった方法が今の仕事の基本になったこと",
                                 ],
                                 "perspectives": [
                                     "いつ何が起きたか",
-                                    "今の仕事にどう影響しているか",
                                 ],
                             },
                             ensure_ascii=False,
@@ -362,7 +373,7 @@ def test_bedrock_responses_provider_generates_question_help_from_structured_cont
     )
 
     assert result.examples[0].startswith("大きなトラブル")
-    assert len(result.examples) == 2
+    assert len(result.examples) == 1
     assert captured[0]["text"]["format"]["name"] == "interview_question_help"
     assert captured[0]["text"]["format"]["strict"] is True
 
@@ -2874,6 +2885,244 @@ def test_GEN_005_question_clarification_is_not_reframed_as_an_stt_retry() -> Non
     assert "例えば" in result["reply"]
     assert result["interviewState"]["lastStructuredOutput"]["dialogueAct"] == "CLARIFICATION_REQUEST"
     assert len(provider.question_calls) == 1
+
+
+def test_asr_clarification_uses_only_the_ambiguous_semantic_role() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-asr-clarification-target",
+        (("field-role", "担当領域"), ("field-department", "部署")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                transcriptAssessment=TranscriptAssessment(
+                    recognitionStatus="AMBIGUOUS",
+                    ambiguousSpans=[
+                        ASRAmbiguousSpan(
+                            span="ジブ",
+                            semanticRole="technology_name",
+                            important=True,
+                        )
+                    ],
+                )
+            ),
+            StructuredInterviewOutput(
+                dialogueAct="CLARIFICATION_REQUEST",
+                clarificationKind="ASR_TARGET",
+            ),
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="asr-ambiguous-answer",
+        question=first["question"],
+        content="新しいジブという技術を活用したいです。",
+    )
+
+    retry = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert retry["reply"] == "技術名の部分だけ、もう一度教えてください。"
+    assert "プロフィール" not in retry["reply"]
+    assert retry["clarificationTarget"]["type"] == "ASR_AMBIGUOUS"
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="asr-target-question",
+        question=retry["question"],
+        content="どこが聞き取れなかったですか？",
+    )
+    target_reply = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=provider,
+    )
+
+    assert target_reply["reply"] == "技術名の部分です。"
+    assert len(provider.question_help_calls) == 0
+
+
+def test_missing_aspect_is_asked_without_repeating_answered_aspects() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-aspect-missing-follow-up",
+        (("field-goal", "今後取り組みたいこと"), ("field-next", "次の項目")),
+    )
+    field = store.get("knowledge_fields", "field-goal")
+    assert field is not None
+    field["questionPlan"] = InterviewQuestionPlan(
+        requiredItems=[
+            InterviewPlanItem(itemId="theme", label="挑戦したいテーマ"),
+            InterviewPlanItem(itemId="skill", label="身につけたい能力"),
+            InterviewPlanItem(itemId="support", label="必要な支援"),
+        ]
+    ).model_dump()
+    store.upsert("knowledge_fields", field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                aspectAssessments=[
+                    AnswerAspectAssessment(
+                        aspectId="theme",
+                        label="挑戦したいテーマ",
+                        status="ANSWERED",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="skill",
+                        label="身につけたい能力",
+                        status="MISSING",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="support",
+                        label="必要な支援",
+                        status="ANSWERED",
+                    ),
+                ],
+                missingInformation=["挑戦したいテーマ", "身につけたい能力", "必要な支援"],
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-goal",
+                        itemId="theme",
+                        value="新しい技術を活用したテーマに取り組みたい",
+                        evidenceTranscriptIds=["aspect-missing-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                    FieldUpdate(
+                        fieldId="field-goal",
+                        itemId="support",
+                        value="今は特に必要ない",
+                        evidenceTranscriptIds=["aspect-missing-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                ],
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="aspect-missing-answer",
+        question=first["question"],
+        content="新しい技術を活用したテーマに取り組みたいです。支援は今は特に必要ありません。",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["missingInformation"] == ["身につけたい能力"]
+    assert "身につけたい能力" in result["reply"]
+    assert "挑戦したいテーマ" not in result["reply"]
+    assert "必要な支援" not in result["reply"]
+
+
+def test_question_clarification_focuses_only_on_the_requested_unanswered_aspect() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-question-clarification-aspect",
+        (("field-goal", "今後取り組みたいこと"), ("field-next", "次の項目")),
+    )
+    field = store.get("knowledge_fields", "field-goal")
+    assert field is not None
+    field["questionPlan"] = InterviewQuestionPlan(
+        requiredItems=[
+            InterviewPlanItem(itemId="theme", label="挑戦したいテーマ"),
+            InterviewPlanItem(itemId="skill", label="身につけたい能力"),
+            InterviewPlanItem(itemId="support", label="必要な支援"),
+        ]
+    ).model_dump()
+    store.upsert("knowledge_fields", field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                aspectAssessments=[
+                    AnswerAspectAssessment(
+                        aspectId="theme",
+                        label="挑戦したいテーマ",
+                        status="ANSWERED",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="skill",
+                        label="身につけたい能力",
+                        status="MISSING",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="support",
+                        label="必要な支援",
+                        status="ANSWERED",
+                    ),
+                ],
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-goal",
+                        itemId="theme",
+                        value="新しい技術を活用したテーマに取り組みたい",
+                        evidenceTranscriptIds=["clarification-aspect-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                    FieldUpdate(
+                        fieldId="field-goal",
+                        itemId="support",
+                        value="今は特に必要ない",
+                        evidenceTranscriptIds=["clarification-aspect-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                ],
+            ),
+            StructuredInterviewOutput(
+                dialogueAct="CLARIFICATION_REQUEST",
+                clarificationKind="QUESTION_MEANING",
+            ),
+        ],
+        question_help_output=QuestionHelpOutput(
+            targetAspectId="skill",
+            topic="身につけたい能力",
+            examples=[],
+            exampleMode="none",
+            perspectives=["時期や状況"],
+        ),
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="clarification-aspect-answer",
+        question=first["question"],
+        content="新しい技術を活用したテーマに取り組みたいです。支援は今は特に必要ありません。",
+    )
+    partial = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="clarification-aspect-question",
+        question=partial["question"],
+        content="身につけたい能力ってどういうことですか？",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["reply"] == "身につけたい能力について、何か一つ教えてください。"
+    assert "挑戦したいテーマ" not in result["reply"]
+    assert "必要な支援" not in result["reply"]
+    assert "回答するときは" not in result["reply"]
+    help_context = provider.question_help_calls[-1]["context"]
+    expected_information = help_context["expectedInformation"]
+    assert [item for item in expected_information if item["status"] == "ANSWERED"] == [
+        {
+            "itemId": "theme",
+            "label": "挑戦したいテーマ",
+            "description": None,
+            "required": True,
+            "status": "ANSWERED",
+        },
+        {
+            "itemId": "support",
+            "label": "必要な支援",
+            "description": None,
+            "required": True,
+            "status": "ANSWERED",
+        },
+    ]
 
 
 @pytest.mark.parametrize(

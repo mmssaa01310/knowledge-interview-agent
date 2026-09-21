@@ -257,6 +257,8 @@ def _canonical_intent_system_prompt() -> str:
         "- 「おーい」「こんにちは」は回答ではなく呼びかけ・会話開始なのでCONVERSATION_REQUESTです。\n"
         "- 「えーっと」「少し考えます」はHESITATIONです。\n"
         "- 「もう一度質問を言って」「質問を繰り返して」はREPEAT_REQUESTです。\n"
+        "- 直前の聞き返しで何が不明だったか、またはどの不足観点を答えればよいかを尋ねる発話は、言語や表現にかかわらずCLARIFICATION_REQUESTです。質問の意味を尋ねる発話とは区別してください。\n"
+        "- ユーザー発話は日本語に限りません。外国語、複数言語の混在、くだけた表現、言いよどみや短い発話も、特定の語句の一覧や文字列一致ではなく、直前のassistant発話と現在の質問に対する発話の目的で判定してください。\n"
         "CLARIFICATION_REQUESTとQUESTION_TO_ASSISTANTが迷わしい場合、現在の質問の意味・範囲・答え方を聞いているならCLARIFICATION_REQUEST、AIやインタビューの進行・目的・表示を聞いているならQUESTION_TO_ASSISTANTです。\n"
         "迷う場合は発話の目的を優先し、内容の十分性を推測してANSWERにしないでください。\n"
         "指定されたJSON Schemaだけを返してください。"

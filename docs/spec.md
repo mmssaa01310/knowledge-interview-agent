@@ -94,6 +94,8 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 
 インタビューは固定質問を順番に消化するだけでなく、半構造化方式で回答の成立と深掘り価値を分けて判断する。基本質問への回答が成立していても、専門性、判断、行動、暗黙知を理解するために重要な情報が不足している場合だけ、同じ基本質問へ最大1問のProbeを紐付ける。Probeは質問マスターや質問一覧の独立項目にせず、基本質問の回答Evidenceとして保存し、統合回答へ反映する。回答未成立、質問の説明要求、文字起こし欠落、発話途中はProbeと区別して処理する。
 
+複数観点の回答は観点ごとに評価し、取得済みの観点を聞き直してはならない。「不要」「特に必要ない」「該当しない」は有効な回答として扱う。音声認識の曖昧さ（`ASR_AMBIGUOUS`）と、認識できた回答の情報不足（`MISSING_INFORMATION`）を分離し、前者は重要な曖昧語句だけ、後者は不足観点だけを1問で確認する。質問全体の再説明は、利用者が質問の意味や答え方を明示的に尋ねた場合に限る。質問の意味確認でも、`expectedInformation`から問い合わせ対象を1観点だけ選び、1〜2文で短く説明する。例は必要な場合だけ1個までとし、回答済み観点の説明・再質問や複数観点の回答ガイドを行わない。判定は日本語の固定語句に依存せず、テキスト・音声Runtimeで共通の構造化会話制御を使用する。
+
 質問単位では、基本回答の`originalAnswer`、採用中の統合`answer`、`probes[]`、`answerSource`、回答成立状態、Probe回数を保持する。手動編集では統合`answer`だけを変更し、会話から取得した`originalAnswer`と`probes[]`は保持する。詳細な状態契約とRuntime共通化は[AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)および[Conversation Algorithm](architecture/voice/conversation-algorithm.md)に従う。
 
 ### 2.3 インタビュー実行画面

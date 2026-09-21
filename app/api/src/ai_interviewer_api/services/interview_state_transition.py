@@ -72,10 +72,13 @@ _BACKGROUND_LATEST_FIELDS: tuple[str, ...] = (
     "lastProbeDecision",
     "lastProbeDimension",
     "lastProbeReason",
+    "lastClarificationKind",
+    "lastAspectAssessments",
     "lastMissingInformation",
     "lastExtractedFields",
     "lastNextAction",
     "lastConversationTrace",
+    "lastClarificationTarget",
     "lastConfirmationApplied",
 )
 

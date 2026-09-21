@@ -96,7 +96,8 @@ def test_almost_unheard_profile_requests_the_profile_again() -> None:
     reply = _feedback(_uncertain_result([]))
 
     assert "回答がうまく聞き取れませんでした" in reply
-    assert "プロフィール" in reply
+    assert "聞き取れなかった部分だけ" in reply
+    assert "プロフィール" not in reply
     assert "この部分をもう一度お願いします" not in reply
 
 

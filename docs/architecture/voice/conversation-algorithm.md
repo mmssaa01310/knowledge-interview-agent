@@ -249,7 +249,7 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 | 任意target | `HESITATION` / `BACKCHANNEL` / `OTHER` | current target維持、再開促進文 | `service.py:1427-1445` -> `_keep_current_question()` |
 | 任意target | `recognitionStatus=PARTIAL/MISSING/AMBIGUOUS` または根拠のある `NOT_HEARD` | current target維持、再発話依頼 | `conversation_control.py`、`service.py` -> `_keep_current_question()` |
 | 任意target | `INCOMPLETE_UTTERANCE` | current target維持、発話の続きを促す | `service.py` -> `_keep_current_question()` |
-| 任意target | `CLARIFICATION_REQUEST` / `REPEAT_REQUEST` | current target維持、動的説明または質問再提示 | `conversation_policy.py`、`service.py` |
+| 任意target | `CLARIFICATION_REQUEST` / `REPEAT_REQUEST` | current target維持。`QUESTION_MEANING`は動的説明、`ASR_TARGET`/`MISSING_INFORMATION_TARGET`は対象だけを説明、`REPEAT_REQUEST`は質問再提示 | `conversation_policy.py`、`service.py` |
 | 任意target | `OFF_TARGET` | current target維持、現在の不足対象へ戻す | `conversation_control.py`、`service.py` |
 | valid answer | `PARTIALLY_ANSWERED` / semantic不足 | current/active probeまたはfollow-up target | `service.py`、`coordinator.py` |
 | valid answer | sufficient | next target selection | `service.py:1550-1825`、`coordinator.py:700-879` |
@@ -261,6 +261,8 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 Text、Transcribe + Polly、GPT Liveの確定transcriptは、同じStructured Interpreterと共通会話制御へ渡す。各ターンは`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`のいずれかに整理し、`nextAction`を決定する。
 
 `PARTIALLY_ANSWERED`は認識済みだが必要な観点が不足している状態、`NOT_HEARD`は文字起こしの欠落・空文字・音声上の曖昧さを示す根拠がある状態、`INCOMPLETE_UTTERANCE`は発話が途中で終わった状態である。前者を「聞き取れなかった」や「続き」と表現してはならない。`missingInformation`に不足観点を記録し、Question Generatorには現在質問、目的、必要観点、今回の回答、取得済み情報、不足情報、直前評価、同一targetの質問履歴を渡す。
+
+複数観点の質問では`aspectAssessments`で観点ごとの取得状況を評価し、回答済みの観点や「不要」「該当なし」を不足情報へ戻さない。`transcriptAssessment.ambiguousSpans`が示す重要な音声曖昧さ（`ASR_TARGET`）と、音声は理解できたが不足している観点（`MISSING_INFORMATION_TARGET`）は分離する。直前の聞き返しで対象を尋ねられた場合は、保存済み`clarificationTarget`だけを短く説明し、`QUESTION_MEANING`の場合だけ動的な質問補足を生成する。これらの分類は発話言語や特定の言い回しに依存しない。
 
 背景観測であっても、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`REPEAT_REQUEST`の抽出値は回答として適用しない。意味不足の抽出値は`TENTATIVE`に留め、前景Coordinatorが不足情報を確認する。
 
@@ -366,7 +368,7 @@ Turn 2: 大丈夫です。
 
 ### 5.3 Case B: 質問の意味を聞き返す
 
-Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、現在の不変な`questionDefinition`を元に `provider.generate_question_help()` を呼ぶ。LLMは「何について話すか」「具体的な回答例1個」「回答時の観点」を返し、Backendが自然な補足文へ整形して `_keep_current_question()` へ渡す。利用者が追加の具体例を明示的に求めた場合だけ、`exampleMode=additional`として回答例を最大3個まで返す。元の質問文や項目説明の再掲は禁止し、targetと質問IDは維持する。
+Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、現在の不変な`questionDefinition`と`expectedInformation`を元に `provider.generate_question_help()` を呼ぶ。LLMは問い合わせ対象の`targetAspectId`を1つ選び、その観点だけの短い`topic`を返す。例は必要な場合だけ1個まで許可し、`perspectives`を回答ガイドとして読み上げない。Backendは`capturedItemIds`にある回答済み観点を除外し、1〜2文の補足へ整形して `_keep_current_question()` へ渡す。元の質問文や項目説明の再掲は禁止し、targetと質問IDは維持する。
 
 一方Fast経路では、Fast schemaの `needsQuestionExplanation` は互換用に残っているが、dialogueActの代替分類や補足文生成には使わない（`fast_interpreter/schemas.py:6-19`）。音声APIの質問補足はCanonical Intentで `EXPLAIN_CURRENT_QUESTION` に振り分けられ、共通Structured経路のLLM生成ガイダンスを使用する。これによりTranscribe + Polly、Nova Sonic、GPT-Live、テキストの補足内容を同じ契約で揃える。
 
@@ -398,7 +400,7 @@ OpenAIの起動状態はTransportとConversationで分離する。sideband接続
 |---|---|---|---|---|---|---|
 | A normal answer | current profile target | Fullは `ANSWER`。FastはBooleanのみ | profile required items、candidate/auto-confirmの実値 | profile candidateの有無 | field stateの適用、必要ならawaiting/confirmed | `select_next_question_target()`の結果とQG文 |
 | A confirmation | confirmation target | Canonical Routerは `CONFIRMATION`。Full validationは別に観測 | 通常のfield updateではなく `_confirm_target()` | candidate -> confirmed | `AWAITING_CONFIRMATION` -> `CONFIRMED` | 次field/target |
-| B clarification | current question | Canonical Routerは `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`。Fastは呼ばない | 通常updateなし | 維持 | `_keep_current_question()` | current targetのdefinitionに基づく説明 |
+| B clarification | current question | Canonical Routerは `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`。Fastは呼ばない | 通常updateなし | 維持 | `_keep_current_question()` | `QUESTION_MEANING`は質問定義に基づく説明、対象確認は`clarificationTarget`のみ |
 | C already answered | current question | Canonical Routerで分類し、FullのdialogueActは検証として採取 | correction/answer updateの有無 | 維持または更新 | correctionStatus / Stateの変化 | currentまたはnext target |
 | D rejection | confirmation target | Full `REJECTION`。Fast schemaには専用値なし | candidate rejection | candidate破棄 | `_reject_target()`で未確定側へ | 再回答用target |
 | E hesitation | current question | Canonical Routerは `HESITATION` / `BACKCHANNEL`。Fastは呼ばない | 通常updateなし | 維持 | current target維持 | retry / current question |

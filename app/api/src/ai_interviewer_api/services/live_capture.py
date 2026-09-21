@@ -276,6 +276,11 @@ def process_live_capture(
                             "runtime": "gpt_live",
                             "dialogueAct": output.dialogueAct,
                             "answerEvaluation": output.answerEvaluation,
+                            "clarificationKind": output.clarificationKind,
+                            "aspectAssessments": [
+                                aspect.model_dump()
+                                for aspect in output.aspectAssessments
+                            ],
                             "missingInformation": list(output.missingInformation),
                             "extractedFields": list(conversation_trace.get("extractedFields") or []),
                             "fieldStates": dict(conversation_trace.get("fieldStates") or {}),
@@ -392,6 +397,19 @@ def _response(
         "structuredDraft": snapshot["structuredDraft"],
         "checklist": checklist,
         "answerEvaluation": conversation_control.get("answerEvaluation") or state.get("lastAnswerEvaluation"),
+        "clarificationKind": (
+            conversation_control.get("clarificationKind")
+            or state.get("lastClarificationKind", "NONE")
+        ),
+        "clarificationTarget": (
+            conversation_control.get("clarificationTarget")
+            or state.get("lastClarificationTarget")
+        ),
+        "aspectAssessments": list(
+            conversation_control.get("aspectAssessments")
+            or state.get("lastAspectAssessments")
+            or []
+        ),
         "missingInformation": list(
             conversation_control.get("missingInformation")
             or state.get("lastMissingInformation")
