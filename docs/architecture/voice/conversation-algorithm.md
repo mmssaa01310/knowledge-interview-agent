@@ -10,7 +10,7 @@ Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの�
 
 ## 1. 監査結果の要約
 
-`app/api` のText/Voice処理には、既存 `StructuredDialogueAct` を型として再利用する `Canonical Intent -> Canonical Action` Policyが実装されている。Provider側の入力境界にはまだ粗いtransport `turnType` が残るが、Voiceの会話処理開始時にはBackendのCanonical Policyを再評価する。
+`app/api` のText/Voice処理には、`userIntent -> conversationAction`を中心とし、既存`StructuredDialogueAct`を互換値として併記する共通Policyが実装されている。Provider側の入力境界にはまだ粗いtransport `turnType` が残るが、Voiceの会話処理開始時にはBackendのCanonical Policyを再評価する。
 
 最も近い「Stateの正本」は `app/api` の `interview_state` と `VoiceTurn` である。しかし、会話制御の判断は次の実装に分散している。
 
@@ -18,8 +18,9 @@ Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの�
 |---|---|---|
 | User Turnの受領・重複排除 | OpenAI sideband、Voice API、Transcribe runtime、Nova tool coordinator | OpenAIは`openai-{item_id}`、Novaは`nova-{tool_use_idまたはcompletion_id}`、Transcribeは受理したAWS Transcribeの`ResultId`（複数なら順序付きhash）を`clientTurnId`へ変換し、APIとDBのDurable契約で再利用する。ResultIdを提供しない旧/代替ストリームだけはruntime生成IDとなる |
 | Turn Type | `InterviewBridge.process_turn()` の既定値、Voice intent API、OpenAI coordinator | OpenAI transportには粗い `ANSWER` が残るが、Backend側でCanonical Intentを再評価するため、transport値は会話Policyの正本ではない |
-| dialogueAct / Canonical Intent | `services/conversation_policy.py:resolve_canonical_intent()` | 既存 `StructuredDialogueAct` を再利用。Routerは副作用なしで意図だけを返す |
-| Canonical Action | `services/conversation_policy.py:resolve_canonical_action()` | Intentとpending confirmation等から1つのActionへ変換 |
+| User Intent / Dialogue Act | `services/conversation_policy.py:resolve_canonical_intent()` | 現在質問、直前発話、clarification/probe対象、取得済み/不足情報から意味的に分類。既存`StructuredDialogueAct`は互換値 |
+| Conversation Action | `services/conversation_policy.py:resolve_conversation_action()` | User Intentから応答・回答評価・再発話・Probe等の次動作へ変換。通常回答は回答評価後に`ACCEPT_AND_NEXT`等へ確定 |
+| Legacy Canonical Action | `services/conversation_policy.py:resolve_canonical_action()` | 既存のVoice/Text境界との互換用。新しい意味分類の正本ではない |
 | Fast判定 | `start_fast_interview_turn()` | `minimumInformationPresent`等のBooleanだけで、dialogueActを分類しない |
 | State更新 | `services/interview_state_transition.py:commit_interview_state()` | 永続化入口は1系統。回答Stateの保存後にのみ通常質問を進行する。Background proposalは`analysisVersion`だけを進め、ユーザーTurn用`stateVersion`を変えない。旧Fast PathはVoice APIでfail-closed |
 | 次target | `select_next_question_target()` | Backend coordinatorが決める。Question Generatorはtargetを決めない |
@@ -30,7 +31,7 @@ Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの�
 したがって、会話処理では次の契約を正本として扱う。
 
 1. Provider固有IDを、`voice_session_id + clientTurnId`で永続的に追跡できるCanonical User Turnへ一度だけ変換すること。
-2. 1つのUser Turnから1つの会話分類、1つのCanonical Action、1つのState transitionだけを生成すること。
+2. 1つのUser Turnから1つの意味分類、1つのConversation Action、1つのState transitionだけを生成すること。
 3. Interview Plan / Knowledge由来のCanonical Question Definitionを不変とし、質問文・説明文は一時的なrendered outputとして扱うこと。
 
 Canonical Intent/Actionは `conversation_policy.py`、永続StateのcommitとBackground mergeは `interview_state_transition.py` が担当する。VoiceTurnのDurable Dedupと処理claimは`voice_turn_repository.py`および`voice_turn_session_client_id_unique_idx`が担当する。
@@ -258,13 +259,13 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 
 ### 4.2.1 共通の回答評価
 
-Text、Transcribe + Polly、GPT Liveの確定transcriptは、同じStructured Interpreterと共通会話制御へ渡す。各ターンは`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`のいずれかに整理し、`nextAction`を決定する。
+Text、Transcribe + Polly、GPT Liveの確定transcriptは、同じ意味ルーター、Structured Interpreter、共通会話制御へ渡す。各ターンは`userIntent`（通常回答、質問意図確認、ASR対象確認、メタ質問等）を先に判定し、その後`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`の評価と`conversationAction`を決定する。ユーザーからAssistantへ向けた質問はインタビュー回答として評価しない。
 
 `PARTIALLY_ANSWERED`は認識済みだが必要な観点が不足している状態、`NOT_HEARD`は文字起こしの欠落・空文字・音声上の曖昧さを示す根拠がある状態、`INCOMPLETE_UTTERANCE`は発話が途中で終わった状態である。前者を「聞き取れなかった」や「続き」と表現してはならない。`missingInformation`に不足観点を記録し、Question Generatorには現在質問、目的、必要観点、今回の回答、取得済み情報、不足情報、直前評価、同一targetの質問履歴を渡す。
 
 複数観点の質問では`aspectAssessments`で観点ごとの取得状況を評価し、回答済みの観点や「不要」「該当なし」を不足情報へ戻さない。`transcriptAssessment.ambiguousSpans`が示す重要な音声曖昧さ（`ASR_TARGET`）と、音声は理解できたが不足している観点（`MISSING_INFORMATION_TARGET`）は分離する。直前の聞き返しで対象を尋ねられた場合は、保存済み`clarificationTarget`だけを短く説明し、`QUESTION_MEANING`の場合だけ動的な質問補足を生成する。これらの分類は発話言語や特定の言い回しに依存しない。
 
-背景観測であっても、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`REPEAT_REQUEST`の抽出値は回答として適用しない。意味不足の抽出値は`TENTATIVE`に留め、前景Coordinatorが不足情報を確認する。
+背景観測であっても、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`REPEAT_REQUEST`の抽出値は回答として適用しない。`INCOMPLETE_UTTERANCE`でも、発話内に`aspectAssessments.status=ANSWERED`または`NOT_APPLICABLE`の観点がある場合は、その観点に根拠のある更新を保持し、残りの不足情報だけを前景Coordinatorが確認する。完結した観点がない発話途中だけは更新を適用せず、現在の質問を維持する。意味不足の抽出値は`TENTATIVE`に留め、前景Coordinatorが不足情報を確認する。
 
 ### 4.2.2 半構造化インタビューのProbe
 

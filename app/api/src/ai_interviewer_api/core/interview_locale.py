@@ -378,6 +378,72 @@ def localized_interview_question_guidance(
     return reply
 
 
+def localized_interview_intent_confirmation(
+    locale: InterviewLocale,
+    match: str,
+    correction: str | None = None,
+) -> str:
+    """Answer a user's proposed interpretation without replaying the question."""
+
+    normalized = (correction or "").strip().rstrip("。.!！")[:120]
+    if locale == "en-US":
+        if match == "MATCH":
+            return "Yes, that is the right understanding."
+        if match == "PARTIAL_MATCH":
+            return f"Yes, that is close. The focus is {normalized or 'the specific part you mentioned'}."
+        return f"Not quite. The focus is {normalized or 'the intended aspect of the question'}."
+    if locale == "zh-CN":
+        if match == "MATCH":
+            return "是的，您的理解是对的。"
+        if match == "PARTIAL_MATCH":
+            return f"大致是这样，重点是{normalized or '您提到的具体部分'}。"
+        return f"不完全是，重点是{normalized or '问题所指的那个方面'}。"
+    if locale == "pt-BR":
+        if match == "MATCH":
+            return "Sim, esse entendimento está correto."
+        if match == "PARTIAL_MATCH":
+            return f"É bem próximo. O foco é {normalized or 'o aspecto específico mencionado'}."
+        return f"Não exatamente. O foco é {normalized or 'o aspecto indicado pela pergunta'}."
+    if match == "MATCH":
+        return "はい、その理解で合っています。"
+    if match == "PARTIAL_MATCH":
+        return f"はい、近いです。焦点は{normalized or '今お尋ねの観点'}です。"
+    return f"少し違います。焦点は{normalized or '質問で確認したい観点'}です。"
+
+
+def localized_interview_meta_question_reply(
+    locale: InterviewLocale,
+    *,
+    purpose: str | None = None,
+) -> str:
+    """Explain the interview context briefly when the user asks about the flow."""
+
+    normalized = (purpose or "").strip().rstrip("。.!！")
+    if locale == "en-US":
+        return (
+            f"I am asking this to organize the interview information about {normalized}."
+            if normalized
+            else "I am asking this to organize the information relevant to the interview."
+        ) + " Please answer the current question in the way that is easiest for you."
+    if locale == "zh-CN":
+        return (
+            f"我会通过这个问题整理与{normalized}有关的信息。"
+            if normalized
+            else "我会通过这个问题整理访谈所需的信息。"
+        ) + "请按您方便的方式回答当前问题。"
+    if locale == "pt-BR":
+        return (
+            f"Faço esta pergunta para organizar as informações da entrevista sobre {normalized}."
+            if normalized
+            else "Faço esta pergunta para organizar as informações relevantes da entrevista."
+        ) + " Responda à pergunta atual da forma que for mais fácil para você."
+    return (
+        f"このインタビューでは、{normalized}に関する情報を整理するために伺っています。"
+        if normalized
+        else "このインタビューでは、必要な情報を整理するために伺っています。"
+    ) + "今の質問について、話しやすいところから教えてください。"
+
+
 def localized_interview_hesitation_prompt(locale: InterviewLocale) -> str:
     """Respond briefly to a filler without replacing the current question."""
 

@@ -200,7 +200,7 @@ class AssistantReply:
 
 ### 4.1 回答確認と次質問
 
-音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは発話完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で、認識品質を`recognitionStatus=CLEAR/PARTIAL/MISSING/AMBIGUOUS`で、質問への意味的成立性を`answerEvaluation`と`answerAssessment`で評価する。`PARTIALLY_ANSWERED`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`は別の評価であり、認識できたが情報が不足している回答を`NOT_HEARD`に変換してはならない。Backendは、未完了なら現在質問を維持し、認識品質の根拠がある`NOT_HEARD`だけ再発話を要求し、意味不足なら`missingInformation`に基づいて不足部分だけを質問する。`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから正式回答を更新する。`UNCERTAIN`でも補正対象とは独立して明確な項目だけは`TENTATIVE`候補として保持できるが、確認前に確定・次質問へ進めない。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
+音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは発話完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で、認識品質を`recognitionStatus=CLEAR/PARTIAL/MISSING/AMBIGUOUS`で、質問への意味的成立性を`answerEvaluation`と`answerAssessment`で評価する。`PARTIALLY_ANSWERED`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`は別の評価であり、認識できたが情報が不足している回答を`NOT_HEARD`に変換してはならない。Backendは、未完了の発話に完結した回答観点が含まれる場合はその観点の根拠を保持して不足部分だけを質問し、完結した観点がない場合だけ現在質問を維持して続行を促す。認識品質の根拠がある`NOT_HEARD`だけ再発話を要求し、意味不足なら`missingInformation`に基づいて不足部分だけを質問する。`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから正式回答を更新する。`UNCERTAIN`でも補正対象とは独立して明確な項目だけは`TENTATIVE`候補として保持できるが、確認前に確定・次質問へ進めない。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
 
 回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。`TENTATIVE`の候補は次質問本文に自然に織り込む。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 

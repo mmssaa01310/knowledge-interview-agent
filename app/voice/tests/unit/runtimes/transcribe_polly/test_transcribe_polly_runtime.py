@@ -1940,7 +1940,10 @@ async def test_speech_after_soft_endpoint_resets_settle_and_stays_in_same_turn()
     await runtime.push_audio(_frame(1200))
     await transcribe.result("山田です", is_partial=False, result_id="segment-1")
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.05)
+    for _ in range(20):
+        if runtime._soft_endpoint_triggered:
+            break
+        await asyncio.sleep(0.01)
     assert runtime._soft_endpoint_triggered is True
 
     await runtime.push_audio(_frame(1200))
@@ -1948,7 +1951,10 @@ async def test_speech_after_soft_endpoint_resets_settle_and_stays_in_same_turn()
     assert runtime._input_available is True
     await transcribe.result("山田です製造部の課長です", is_partial=False, result_id="segment-2")
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.14)
+    for _ in range(40):
+        if bridge.process_calls:
+            break
+        await asyncio.sleep(0.01)
 
     assert bridge.process_calls
     assert bridge.process_calls[-1]["transcript"] == "山田です製造部の課長です"

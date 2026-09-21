@@ -16,6 +16,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     AnswerEvaluation,
     AnswerStatus,
     ConversationNextAction,
+    ProcessPatch,
     StructuredInterviewOutput,
 )
 
@@ -39,11 +40,39 @@ def normalize_conversation_output(
 
     The model owns the semantic decision.  The backend only prevents an
     internally contradictory combination such as ``recognitionStatus=CLEAR``
-    with ``answerEvaluation=NOT_HEARD`` or a complete utterance labelled as
-    ``INCOMPLETE_UTTERANCE``.
+    with ``answerEvaluation=NOT_HEARD``.  It does not infer utterance
+    completeness from transcript spelling or punctuation.
     """
 
     output = _normalize_aspect_coverage(output)
+    if output.userIntent in {
+        "QUESTION_CLARIFICATION",
+        "QUESTION_INTENT_CONFIRMATION",
+        "ASR_CLARIFICATION_REQUEST",
+        "META_QUESTION",
+    }:
+        return output.model_copy(
+            update={
+                "answerEvaluation": "CLARIFICATION_REQUEST",
+                "answerStatus": "NOT_ANSWERED",
+                "clarificationKind": (
+                    "ASR_TARGET"
+                    if output.userIntent == "ASR_CLARIFICATION_REQUEST"
+                    else "QUESTION_MEANING"
+                ),
+                "probeDecision": "NONE",
+                "probeDimension": None,
+                "probeReason": None,
+                "probeQuestion": None,
+                "fieldUpdates": [],
+                "requirementUpdates": [],
+                "processPatch": ProcessPatch(),
+                "applicability": [],
+                "contradictions": [],
+                "resolvedContradictionIds": [],
+                "openIssues": [],
+            }
+        )
     evaluation = derive_answer_evaluation(output)
     if (
         evaluation == "ANSWERED"
@@ -207,11 +236,44 @@ def derive_answer_evaluation(output: StructuredInterviewOutput) -> AnswerEvaluat
         return "CORRECTION"
     if dialogue_act == "IRRELEVANT":
         return "OFF_TARGET"
-    if output.utteranceCompleteness == "INCOMPLETE":
+    if (
+        output.utteranceCompleteness == "INCOMPLETE"
+        and not has_evaluable_answer_content(output)
+    ):
         return "INCOMPLETE_UTTERANCE"
     if output.answerAssessment.sufficiency in _PARTIAL_SUFFICIENCIES:
         return "PARTIALLY_ANSWERED"
     return "ANSWERED"
+
+
+def has_evaluable_answer_content(output: StructuredInterviewOutput) -> bool:
+    """Return whether an incomplete transcript still contains answer evidence.
+
+    A user can finish one semantic part of an answer and pause before starting
+    another part.  The utterance is syntactically incomplete, but treating the
+    whole turn as unanswerable would discard the grounded part and produce the
+    generic continuation prompt.  This decision intentionally uses the
+    interpreter's structured coverage/sufficiency fields rather than matching
+    words in the transcript.
+    """
+
+    if any(
+        aspect.status in {"ANSWERED", "NOT_APPLICABLE"}
+        for aspect in output.aspectAssessments
+    ):
+        return True
+    if not output.missingInformation:
+        return False
+    has_partial_semantics = (
+        output.answerStatus == "PARTIAL"
+        or output.answerAssessment.sufficiency in _PARTIAL_SUFFICIENCIES
+    )
+    return has_partial_semantics and bool(
+        output.fieldUpdates
+        or output.requirementUpdates
+        or output.applicability
+        or output.processPatch.model_dump(exclude_defaults=True)
+    )
 
 
 def _has_actionable_asr_ambiguity(output: StructuredInterviewOutput) -> bool:
@@ -415,6 +477,11 @@ def llm_input_summary(context: dict[str, Any]) -> dict[str, Any]:
         "questionAnswer": context.get("questionAnswer"),
         "sameQuestionAskedBefore": context.get("sameQuestionAskedBefore", False),
         "currentTurnType": context.get("currentTurnType"),
+        "previousAssistantMessage": context.get("previousAssistantMessage"),
+        "previousUserAnswer": context.get("previousUserAnswer"),
+        "knownFacts": context.get("knownFacts", []),
+        "coveredInformation": context.get("coveredInformation", []),
+        "currentQuestionSlots": context.get("currentQuestionSlots", []),
         "latestMessageId": latest.get("messageId"),
         "latestTranscriptChars": len(str(latest.get("rawTranscript") or "")),
         "currentAnswer": {
@@ -429,6 +496,11 @@ def llm_output_summary(output: StructuredInterviewOutput) -> dict[str, Any]:
 
     return {
         "dialogueAct": output.dialogueAct,
+        "userIntent": output.userIntent,
+        "interpretationMatch": output.interpretationMatch,
+        "userInterpretation": output.userInterpretation,
+        "originalQuestionIntent": output.originalQuestionIntent,
+        "resumeCurrentQuestion": output.resumeCurrentQuestion,
         "answerEvaluation": output.answerEvaluation,
         "answerStatus": output.answerStatus,
         "clarificationKind": output.clarificationKind,
@@ -450,6 +522,33 @@ def llm_output_summary(output: StructuredInterviewOutput) -> dict[str, Any]:
         "missingInformation": list(output.missingInformation),
         "extractedFields": extracted_update_summary(output),
     }
+
+
+def _conversation_action_for_output(output: StructuredInterviewOutput) -> str:
+    """Fallback action for direct Structured Interview calls without a router."""
+
+    if output.userIntent in {
+        "QUESTION_CLARIFICATION",
+        "QUESTION_INTENT_CONFIRMATION",
+        "ASR_CLARIFICATION_REQUEST",
+        "META_QUESTION",
+    }:
+        return "ANSWER_USER_CLARIFICATION"
+    if output.userIntent == "DECLINE_OR_SKIP":
+        return "SKIP_AND_NEXT"
+    if output.userIntent == "ANSWER_CLARIFICATION" and output.dialogueAct == "CORRECTION":
+        return "APPLY_CORRECTION"
+    if output.answerEvaluation == "NOT_HEARD":
+        return "ASK_ASR_RETRY"
+    if output.answerEvaluation == "INCOMPLETE_UTTERANCE":
+        return "KEEP_CURRENT_QUESTION"
+    if output.probeDecision == "PROBE":
+        return "ASK_PROBE"
+    if output.answerEvaluation == "PARTIALLY_ANSWERED" or output.answerStatus == "PARTIAL":
+        return "ASK_FOR_MISSING_INFORMATION"
+    if output.answerStatus == "ANSWERED":
+        return "ACCEPT_AND_NEXT"
+    return "KEEP_CURRENT_QUESTION"
 
 
 def field_state_summary(state: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -500,11 +599,27 @@ def build_conversation_trace(
         latest_utterance.get("rawTranscript") or ""
     ).strip()
     final_transcript = transcript.normalizedTranscript or raw_transcript
+    user_intent = (
+        state.get("lastUserIntent")
+        if isinstance(state, Mapping) and state.get("lastUserIntent")
+        else output.userIntent
+    )
+    conversation_action = (
+        state.get("lastConversationAction")
+        if isinstance(state, Mapping) and state.get("lastConversationAction")
+        else _conversation_action_for_output(output)
+    )
     return {
         "runtime": runtime,
         "rawTranscript": raw_transcript,
         "finalTranscript": final_transcript,
         "dialogueAct": output.dialogueAct,
+        "userIntent": user_intent,
+        "interpretationMatch": output.interpretationMatch,
+        "userInterpretation": output.userInterpretation,
+        "originalQuestionIntent": output.originalQuestionIntent,
+        "conversationAction": conversation_action,
+        "resumeCurrentQuestion": output.resumeCurrentQuestion,
         "answerEvaluation": output.answerEvaluation,
         "answerStatus": output.answerStatus,
         "clarificationKind": output.clarificationKind,

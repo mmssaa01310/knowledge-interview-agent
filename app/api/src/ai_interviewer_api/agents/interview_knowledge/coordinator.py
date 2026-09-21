@@ -18,6 +18,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
 )
 from ai_interviewer_api.services.conversation_control import (
     extracted_update_summary,
+    has_evaluable_answer_content,
     normalize_conversation_output,
 )
 from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
@@ -187,6 +188,12 @@ def build_initial_structured_state(
         "lastExtractedFields": [],
         "lastNextAction": None,
         "lastConversationTrace": None,
+        "lastUserIntent": None,
+        "lastConversationAction": None,
+        "lastInterpretationMatch": "NONE",
+        "lastUserInterpretation": None,
+        "lastOriginalQuestionIntent": None,
+        "lastResumeCurrentQuestion": True,
         "lastClarificationTarget": None,
         "activeProbeTarget": None,
         "pendingTranscriptConfirmation": None,
@@ -341,6 +348,12 @@ def record_interpretation_assessment(
     *,
     latest_message_id: str,
     raw_transcript: str | None = None,
+    user_intent: str | None = None,
+    conversation_action: str | None = None,
+    interpretation_match: str | None = None,
+    user_interpretation: str | None = None,
+    original_question_intent: str | None = None,
+    resume_current_question: bool | None = None,
 ) -> None:
     """Persist the model's safety decisions without promoting an answer.
 
@@ -374,6 +387,19 @@ def record_interpretation_assessment(
     ]
     state["lastMissingInformation"] = list(output.missingInformation)
     state["lastExtractedFields"] = extracted_update_summary(output)
+    state["lastUserIntent"] = user_intent or output.userIntent
+    if conversation_action is not None:
+        state["lastConversationAction"] = conversation_action
+    state["lastInterpretationMatch"] = interpretation_match or output.interpretationMatch
+    state["lastUserInterpretation"] = user_interpretation or output.userInterpretation
+    state["lastOriginalQuestionIntent"] = (
+        original_question_intent or output.originalQuestionIntent
+    )
+    state["lastResumeCurrentQuestion"] = (
+        resume_current_question
+        if resume_current_question is not None
+        else output.resumeCurrentQuestion
+    )
     state["lastProcessedUserMessageId"] = latest_message_id
 
 
@@ -522,11 +548,15 @@ def apply_structured_output(
         latest_message_id=latest_message_id,
         raw_transcript=raw_transcript,
     )
-    if output.utteranceCompleteness != "COMPLETE":
+    if (
+        output.utteranceCompleteness != "COMPLETE"
+        and not has_evaluable_answer_content(output)
+    ):
         # A genuinely incomplete utterance is still only a candidate. A
         # complete utterance with insufficient semantic coverage is different:
         # its grounded portion may be applied while the coordinator keeps the
-        # missing aspects open for a targeted follow-up.
+        # missing aspects open for a targeted follow-up. The same applies when
+        # one semantic aspect is complete but the next clause is unfinished.
         return []
 
     changed_topics: list[str] = []
@@ -757,7 +787,6 @@ def apply_background_structured_output(
         "OFF_TARGET",
         "CLARIFICATION_REQUEST",
         "NOT_HEARD",
-        "INCOMPLETE_UTTERANCE",
         "REPEAT_REQUEST",
     }:
         safe_output = safe_output.model_copy(

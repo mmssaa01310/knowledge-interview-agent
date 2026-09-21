@@ -238,6 +238,11 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
 ```json
 {
   "dialogueAct": "ANSWER",
+  "userIntent": "USER_RESPONSE",
+  "interpretationMatch": "NONE",
+  "userInterpretation": null,
+  "originalQuestionIntent": null,
+  "resumeCurrentQuestion": true,
   "answerEvaluation": "ANSWERED",
   "answerStatus": "ANSWERED",
   "clarificationKind": "NONE",
@@ -289,9 +294,29 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
 
 Schemaは`additionalProperties=false`を設定し、定義済みの全プロパティを必須とする。値がない文字列は`null`、値がない配列は`[]`で返す。必須プロパティの省略、未知のプロパティ、列挙値以外の値はSchema違反として扱う。
 
+### 7.1.0 発話意図と会話Action
+
+`dialogueAct`は互換性のための発話分類であり、最新発話の向きを制御する正本は`userIntent`である。`userIntent`は次の値を取る。
+
+| `userIntent` | 意味 |
+|---|---|
+| `USER_RESPONSE` | 現在の質問への通常回答 |
+| `QUESTION_CLARIFICATION` | 質問の意味、対象、答え方の理解支援の要求 |
+| `QUESTION_INTENT_CONFIRMATION` | ユーザーが示した解釈と質問意図の一致確認 |
+| `ASR_CLARIFICATION_REQUEST` | 直前に示された音声認識上の不明箇所の対象確認 |
+| `ANSWER_CLARIFICATION` | 直前の自分の回答の補足または訂正 |
+| `META_QUESTION` | インタビューの目的、進行、AIの処理についての質問 |
+| `DECLINE_OR_SKIP` | 回答を控える、回答不能、スキップの要求 |
+
+意図判定は最新発話の文字列だけでなく、現在の基本質問、`currentTurnType`、直前のAssistant発話、直前のユーザー回答、`clarificationTarget`、`probeTarget`、取得済み情報、不足情報を入力にする。外国語、混在言語、未知の言い回しも同じ意味判定へ渡し、発話・単語・質問IDの一致分岐を実装してはならない。
+
+`QUESTION_CLARIFICATION`、`QUESTION_INTENT_CONFIRMATION`、`ASR_CLARIFICATION_REQUEST`、`META_QUESTION`はインタビュー回答ではない。Backendはこれらを回答更新へ適用せず、`resumeCurrentQuestion=true`で同じ基本質問を維持する。`QUESTION_INTENT_CONFIRMATION`では`userInterpretation`と`originalQuestionIntent`を意味比較し、`interpretationMatch`（`MATCH`、`PARTIAL_MATCH`、`MISMATCH`）に応じて、元質問全文を再掲せず直接応答する。
+
+意図判定後、Backendは別段階で次の`conversationAction`を決める。通常回答は回答評価へ渡すため`PROCESS_USER_RESPONSE`、質問への応答は`ANSWER_USER_CLARIFICATION`、不足情報は`ASK_FOR_MISSING_INFORMATION`、重要情報の深掘りは`ASK_PROBE`、認識根拠のある聞き返しは`ASK_ASR_RETRY`、十分回答済みは`ACCEPT_AND_NEXT`とする。`conversationAction`を発話中の具体的な語句から直接決めてはならない。
+
 ### 7.1.1 発話完結性とTranscript評価
 
-`utteranceCompleteness`は`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`のいずれかとする。文法的に途中で切れている発話、続きが明らかな発話は`INCOMPLETE`または`UNCERTAIN`とする。回答の情報量が不足しているだけの完結した文は`INCOMPLETE`にしない。`INCOMPLETE`のときBackendは`fieldUpdates`、`requirementUpdates`、`processPatch`を正式候補へ進めず、現在の質問を維持して短く続行を依頼する。
+`utteranceCompleteness`は`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`のいずれかとする。文法的に途中で切れている発話、続きが明らかな発話は`INCOMPLETE`または`UNCERTAIN`とする。回答の情報量が不足しているだけの完結した文は`INCOMPLETE`にしない。`INCOMPLETE`でも、発話内に独立して評価できる完結した回答観点がある場合は、`aspectAssessments`でその観点を示し、Backendは根拠のある部分だけを候補として保持して不足観点を尋ねる。発話全体が評価不能で完結した観点もない場合だけ、`fieldUpdates`、`requirementUpdates`、`processPatch`を適用せず現在の質問を維持して短く続行を依頼する。発話末尾の単語や特定の言い回しをBackendの文字列一致で`INCOMPLETE`へ変更してはならない。
 
 `transcriptAssessment.rawTranscript`はBackendが受け取ったTranscribe結果を記録する。句読点・空白・明らかな表記揺れだけの補正は`correctionStatus=NONE`とし、意味を変える単語の補正は`CORRECTED`として`normalizedTranscript`と候補を返す。候補が一意でない場合は`UNCERTAIN`とし、補正前の文字列も補正候補も正式回答へ確定しない。`CORRECTED`の場合も、Backendが自然な補正候補を確認質問として提示し、対象者が肯定するまで状態を確定しない。
 
@@ -666,7 +691,8 @@ Backendは質問を発行するとき、`questionId`、`targetType`、`targetId`
 
 * `runtime`
 * `rawTranscript`、`finalTranscript`
-* `dialogueAct`、`answerEvaluation`
+* `userIntent`、`dialogueAct`、`interpretationMatch`、`conversationAction`
+* `answerEvaluation`
 * `answerStatus`、`probeDecision`、`probeDimension`、`currentTurnType`
 * `extractedFields`
 * Fieldごとの`answerState`、`answerResolution`、取得済みitem、不足item

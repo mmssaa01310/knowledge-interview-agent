@@ -96,6 +96,8 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 
 複数観点の回答は観点ごとに評価し、取得済みの観点を聞き直してはならない。「不要」「特に必要ない」「該当しない」は有効な回答として扱う。音声認識の曖昧さ（`ASR_AMBIGUOUS`）と、認識できた回答の情報不足（`MISSING_INFORMATION`）を分離し、前者は重要な曖昧語句だけ、後者は不足観点だけを1問で確認する。質問全体の再説明は、利用者が質問の意味や答え方を明示的に尋ねた場合に限る。質問の意味確認でも、`expectedInformation`から問い合わせ対象を1観点だけ選び、1〜2文で短く説明する。例は必要な場合だけ1個までとし、回答済み観点の説明・再質問や複数観点の回答ガイドを行わない。判定は日本語の固定語句に依存せず、テキスト・音声Runtimeで共通の構造化会話制御を使用する。
 
+最新発話は、現在の質問と会話状態を参照して`USER_RESPONSE`、`QUESTION_CLARIFICATION`、`QUESTION_INTENT_CONFIRMATION`、`ASR_CLARIFICATION_REQUEST`、`ANSWER_CLARIFICATION`、`META_QUESTION`、`DECLINE_OR_SKIP`等の意味的な`userIntent`へ分類する。ユーザーがAIへ質問している発話をインタビュー回答として評価せず、`conversationAction`を決めて短く応答した後、必要に応じて同じ基本質問へ戻る。発話・単語・質問IDの一致による個別分岐は設けない。
+
 質問単位では、基本回答の`originalAnswer`、採用中の統合`answer`、`probes[]`、`answerSource`、回答成立状態、Probe回数を保持する。手動編集では統合`answer`だけを変更し、会話から取得した`originalAnswer`と`probes[]`は保持する。詳細な状態契約とRuntime共通化は[AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)および[Conversation Algorithm](architecture/voice/conversation-algorithm.md)に従う。
 
 ### 2.3 インタビュー実行画面

@@ -51,11 +51,14 @@ from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.service impo
     can_proceed,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
+    ConversationAction,
+    InterpretationMatch,
     InterviewProfile,
     ProcessPatch,
     QuestionHelpOutput,
     StructuredDialogueAct,
     StructuredInterviewOutput,
+    UserIntent,
 )
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
@@ -64,6 +67,8 @@ from ai_interviewer_api.core.interview_locale import (
     interview_language_instruction,
     localized_interview_confirmation_clarification_prompt,
     localized_interview_hesitation_prompt,
+    localized_interview_intent_confirmation,
+    localized_interview_meta_question_reply,
     localized_interview_confirmation_question,
     localized_interview_document_confirmation_question,
     localized_interview_ambiguous_part_prompt,
@@ -94,6 +99,7 @@ from ai_interviewer_api.services.conversation_policy import CanonicalAction
 from ai_interviewer_api.services.conversation_control import (
     build_conversation_trace,
     field_state_summary,
+    has_evaluable_answer_content,
     normalize_conversation_output,
 )
 from ai_interviewer_api.services.interview_document_retrieval import (
@@ -327,6 +333,12 @@ def generate_structured_interview_result(
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
     canonical_intent: StructuredDialogueAct | None = None,
     canonical_action: CanonicalAction | None = None,
+    canonical_user_intent: UserIntent | None = None,
+    canonical_conversation_action: ConversationAction | None = None,
+    canonical_interpretation_match: InterpretationMatch | None = None,
+    canonical_user_interpretation: str | None = None,
+    canonical_original_question_intent: str | None = None,
+    canonical_resume_current_question: bool | None = None,
     on_question_delta: Callable[[str], None] | None = None,
     persist_state: bool = True,
     state_override: Mapping[str, Any] | None = None,
@@ -351,6 +363,12 @@ def generate_structured_interview_result(
             speculative_retrieval=speculative_retrieval,
             canonical_intent=canonical_intent,
             canonical_action=canonical_action,
+            canonical_user_intent=canonical_user_intent,
+            canonical_conversation_action=canonical_conversation_action,
+            canonical_interpretation_match=canonical_interpretation_match,
+            canonical_user_interpretation=canonical_user_interpretation,
+            canonical_original_question_intent=canonical_original_question_intent,
+            canonical_resume_current_question=canonical_resume_current_question,
             on_question_delta=on_question_delta,
             defer_question_generation=False,
             persist_state=persist_state,
@@ -374,6 +392,12 @@ def _generate_structured_interview_result_locked(
     speculative_retrieval: SpeculativeInterviewRetrieval | None,
     canonical_intent: StructuredDialogueAct | None = None,
     canonical_action: CanonicalAction | None = None,
+    canonical_user_intent: UserIntent | None = None,
+    canonical_conversation_action: ConversationAction | None = None,
+    canonical_interpretation_match: InterpretationMatch | None = None,
+    canonical_user_interpretation: str | None = None,
+    canonical_original_question_intent: str | None = None,
+    canonical_resume_current_question: bool | None = None,
     on_question_delta: Callable[[str], None] | None,
     defer_question_generation: bool,
     persist_state: bool = True,
@@ -392,6 +416,12 @@ def _generate_structured_interview_result_locked(
         speculative_retrieval=speculative_retrieval,
         canonical_intent=canonical_intent,
         canonical_action=canonical_action,
+        canonical_user_intent=canonical_user_intent,
+        canonical_conversation_action=canonical_conversation_action,
+        canonical_interpretation_match=canonical_interpretation_match,
+        canonical_user_interpretation=canonical_user_interpretation,
+        canonical_original_question_intent=canonical_original_question_intent,
+        canonical_resume_current_question=canonical_resume_current_question,
         on_question_delta=on_question_delta,
         defer_question_generation=defer_question_generation,
         persist_state=persist_state,
@@ -1271,6 +1301,12 @@ def _generate_structured_interview_result(
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
     canonical_intent: StructuredDialogueAct | None = None,
     canonical_action: CanonicalAction | None = None,
+    canonical_user_intent: UserIntent | None = None,
+    canonical_conversation_action: ConversationAction | None = None,
+    canonical_interpretation_match: InterpretationMatch | None = None,
+    canonical_user_interpretation: str | None = None,
+    canonical_original_question_intent: str | None = None,
+    canonical_resume_current_question: bool | None = None,
     on_question_delta: Callable[[str], None] | None = None,
     defer_question_generation: bool = False,
     persist_state: bool = True,
@@ -1494,14 +1530,13 @@ def _generate_structured_interview_result(
                 state.get("pendingTranscriptConfirmation"),
                 Mapping,
             )
-            effective_completeness = _effective_utterance_completeness(
-                output,
-                raw_transcript,
-            )
-            if effective_completeness != output.utteranceCompleteness:
-                output = output.model_copy(
-                    update={"utteranceCompleteness": effective_completeness}
-                )
+            # Utterance completeness is a semantic interpreter decision. Do
+            # not infer it from transcript suffixes here: a Japanese clause
+            # can end in a particle or hesitation while already containing a
+            # complete answer aspect. Runtime-specific endpoint timing and
+            # lexical guesses must not turn grounded content into a generic
+            # continuation request.
+            effective_completeness = output.utteranceCompleteness
             transcript_assessment_status = output.transcriptAssessment.correctionStatus
             if (
                 transcript_assessment_status == "CORRECTED"
@@ -1561,12 +1596,179 @@ def _generate_structured_interview_result(
                 # recognition-uncertain turns.
                 output = output.model_copy(update={"utteranceCompleteness": "COMPLETE"})
                 effective_completeness = "COMPLETE"
+            effective_user_intent = canonical_user_intent or output.userIntent
+            effective_interpretation_match = (
+                canonical_interpretation_match or output.interpretationMatch
+            )
+            effective_user_interpretation = (
+                canonical_user_interpretation or output.userInterpretation
+            )
+            effective_original_question_intent = (
+                canonical_original_question_intent or output.originalQuestionIntent
+            )
+            effective_resume_current_question = (
+                canonical_resume_current_question
+                if canonical_resume_current_question is not None
+                else output.resumeCurrentQuestion
+            )
+            output = output.model_copy(
+                update={
+                    "userIntent": effective_user_intent,
+                    "interpretationMatch": effective_interpretation_match,
+                    "userInterpretation": effective_user_interpretation,
+                    "originalQuestionIntent": effective_original_question_intent,
+                    "resumeCurrentQuestion": effective_resume_current_question,
+                }
+            )
+            state["lastUserIntent"] = effective_user_intent
+            state["lastInterpretationMatch"] = effective_interpretation_match
+            state["lastUserInterpretation"] = effective_user_interpretation
+            state["lastOriginalQuestionIntent"] = effective_original_question_intent
+            state["lastResumeCurrentQuestion"] = effective_resume_current_question
+            state["lastConversationAction"] = (
+                (
+                    canonical_conversation_action
+                    if canonical_conversation_action not in {None, "PROCESS_USER_RESPONSE"}
+                    else _conversation_action_for_semantic_turn(output)
+                )
+            )
             clarification_target = _remember_clarification_target(
                 state,
                 output,
                 current_question,
             )
             _set_conversation_trace(state, output, interpreter_context)
+            if effective_user_intent in {
+                "QUESTION_CLARIFICATION",
+                "QUESTION_INTENT_CONFIRMATION",
+                "ASR_CLARIFICATION_REQUEST",
+                "META_QUESTION",
+            }:
+                # A question addressed to the assistant is not an answer to
+                # the interview question.  Discard any contradictory updates
+                # proposed by the slower interpreter and keep the same basic
+                # question active.
+                output = output.model_copy(
+                    update={
+                        "answerEvaluation": "CLARIFICATION_REQUEST",
+                        "answerStatus": "NOT_ANSWERED",
+                        "clarificationKind": (
+                            "ASR_TARGET"
+                            if effective_user_intent == "ASR_CLARIFICATION_REQUEST"
+                            else "QUESTION_MEANING"
+                        ),
+                        "probeDecision": "NONE",
+                        "probeDimension": None,
+                        "probeReason": None,
+                        "probeQuestion": None,
+                        "fieldUpdates": [],
+                        "requirementUpdates": [],
+                        "processPatch": ProcessPatch(),
+                        "applicability": [],
+                        "contradictions": [],
+                        "resolvedContradictionIds": [],
+                        "openIssues": [],
+                    }
+                )
+                state["lastConversationAction"] = "ANSWER_USER_CLARIFICATION"
+                _set_conversation_trace(state, output, interpreter_context)
+                if effective_user_intent == "ASR_CLARIFICATION_REQUEST":
+                    reply = _clarification_target_description(
+                        clarification_target,
+                        interview_locale,
+                    )
+                elif effective_user_intent == "QUESTION_INTENT_CONFIRMATION":
+                    reply = localized_interview_intent_confirmation(
+                        interview_locale,
+                        effective_interpretation_match,
+                        effective_original_question_intent
+                        or str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or ""
+                        ),
+                    )
+                elif effective_user_intent == "META_QUESTION":
+                    reply = localized_interview_meta_question_reply(
+                        interview_locale,
+                        purpose=str(
+                            interpreter_context.get("questionPurpose")
+                            or current_question.get("targetLabel")
+                            or ""
+                        ),
+                    )
+                else:
+                    reply = _render_question_explanation(
+                        record_id=str(record.get("id") or ""),
+                        current_question=current_question,
+                        latest_user_message=latest_user_message,
+                        fields=fields,
+                        locale=interview_locale,
+                        knowledge=knowledge,
+                        user=user,
+                        profile=profile,
+                        provider=structured_provider,
+                        reasoning_effort=settings.structured_interview_question_reasoning_effort,
+                        latency_metrics=latency_metrics,
+                    )
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    persist_state=persist_state,
+                    reply=reply,
+                )
+            if effective_user_intent == "DECLINE_OR_SKIP":
+                # Treat a semantic skip as an explicit no-detail answer so
+                # the normal coordinator can finalize this target and select
+                # the next basic question.  No wording or question ID is
+                # inspected here.
+                current_target_for_skip = _target_from_question(current_question)
+                if (
+                    current_target_for_skip is not None
+                    and not probe_turn
+                ):
+                    follow_up_key = target_key(current_target_for_skip)
+                    state.setdefault("followUpCounts", {})[follow_up_key] = max(
+                        1,
+                        int(
+                            state.setdefault("followUpCounts", {}).get(follow_up_key, 0)
+                            or 0
+                        ),
+                    )
+                output = output.model_copy(
+                    update={
+                        "dialogueAct": "ANSWER",
+                        "answerEvaluation": "PARTIALLY_ANSWERED",
+                        "answerStatus": "PARTIAL",
+                        "answerAssessment": output.answerAssessment.model_copy(
+                            update={"sufficiency": "REFUSAL", "probeType": "NONE"}
+                        ),
+                        "clarificationKind": "NONE",
+                        "probeDecision": "NONE",
+                        "probeDimension": None,
+                        "probeReason": None,
+                        "probeQuestion": None,
+                        "fieldUpdates": [],
+                        "requirementUpdates": [],
+                        "processPatch": ProcessPatch(),
+                        "applicability": [],
+                        "contradictions": [],
+                        "resolvedContradictionIds": [],
+                        "openIssues": [],
+                    }
+                )
+                state["lastConversationAction"] = "SKIP_AND_NEXT"
+                _set_conversation_trace(state, output, interpreter_context)
             if output.answerEvaluation == "NOT_HEARD":
                 _apply_uncertain_grounded_updates(
                     state=state,
@@ -1857,7 +2059,12 @@ def _generate_structured_interview_result(
                     persist_state=persist_state,
                     reply=localized_interview_confirmation_clarification_prompt(interview_locale),
                 )
-            if effective_completeness != "COMPLETE":
+            wait_for_continuation = (
+                effective_completeness == "INCOMPLETE"
+                and output.answerEvaluation == "INCOMPLETE_UTTERANCE"
+                and not has_evaluable_answer_content(output)
+            )
+            if wait_for_continuation:
                 apply_structured_output(
                     state,
                     output,
@@ -1890,7 +2097,7 @@ def _generate_structured_interview_result(
                     fields=fields,
                     reply=(
                         localized_interview_incomplete_prompt(interview_locale)
-                        if effective_completeness == "INCOMPLETE"
+                        if wait_for_continuation
                         else localized_interview_transcript_retry(interview_locale)
                     ),
                     question=current_question,
@@ -3483,6 +3690,46 @@ def _build_interpreter_context(
         state,
         current_question,
     )
+    previous_assistant_message = next(
+        (
+            {
+                "id": message.get("id"),
+                "role": message.get("role"),
+                "content": message.get("content"),
+                "questionId": message.get("questionId"),
+            }
+            for message in reversed(messages[:-1])
+            if message.get("role") == "assistant"
+            and message.get("isActualUtterance") is not False
+        ),
+        None,
+    )
+    previous_user_answer = next(
+        (
+            {
+                "id": message.get("id"),
+                "role": message.get("role"),
+                "content": message.get("content"),
+                "rawTranscript": message.get("rawTranscript"),
+                "questionId": message.get("questionId"),
+            }
+            for message in reversed(messages[:-1])
+            if message.get("role") == "user"
+            and message.get("isActualUtterance") is not False
+        ),
+        None,
+    )
+    current_question_slots = [
+        {
+            "itemId": item.get("itemId"),
+            "label": item.get("label"),
+            "description": item.get("description"),
+            "required": required,
+        }
+        for required, key in ((True, "requiredItems"), (False, "optionalItems"))
+        for item in (question_definition.get(key) or [])
+        if isinstance(item, Mapping) and item.get("itemId")
+    ]
     return {
         "profile": state.get("interviewProfile"),
         "knowledge": {
@@ -3527,6 +3774,11 @@ def _build_interpreter_context(
         "acquiredInformation": acquired_information,
         "missingInformation": missing_information,
         "aspectAssessments": list(state.get("lastAspectAssessments") or []),
+        "previousAssistantMessage": previous_assistant_message,
+        "previousUserAnswer": previous_user_answer,
+        "knownFacts": acquired_information,
+        "coveredInformation": list(state.get("lastAspectAssessments") or []),
+        "currentQuestionSlots": current_question_slots,
         "clarificationTarget": state.get("lastClarificationTarget"),
         "clarificationKind": state.get("lastClarificationKind", "NONE"),
         "answerEvaluation": state.get("lastAnswerEvaluation"),
@@ -3750,6 +4002,15 @@ def _remember_clarification_target(
 ) -> dict[str, Any] | None:
     """Persist the latest concrete target for semantic clarification turns."""
 
+    if output.userIntent in {
+        "QUESTION_CLARIFICATION",
+        "QUESTION_INTENT_CONFIRMATION",
+        "ASR_CLARIFICATION_REQUEST",
+        "META_QUESTION",
+    }:
+        existing = state.get("lastClarificationTarget")
+        return dict(existing) if isinstance(existing, Mapping) else None
+
     if _is_clarification_target_kind(output):
         existing = state.get("lastClarificationTarget")
         return dict(existing) if isinstance(existing, Mapping) else None
@@ -3766,6 +4027,35 @@ def _remember_clarification_target(
         return None
     state["lastClarificationTarget"] = None
     return None
+
+
+def _conversation_action_for_semantic_turn(
+    output: StructuredInterviewOutput,
+) -> ConversationAction:
+    """Map evaluated semantics to an auditable common action."""
+
+    if output.userIntent in {
+        "QUESTION_CLARIFICATION",
+        "QUESTION_INTENT_CONFIRMATION",
+        "ASR_CLARIFICATION_REQUEST",
+        "META_QUESTION",
+    }:
+        return "ANSWER_USER_CLARIFICATION"
+    if output.userIntent == "DECLINE_OR_SKIP":
+        return "SKIP_AND_NEXT"
+    if output.userIntent == "ANSWER_CLARIFICATION" and output.dialogueAct == "CORRECTION":
+        return "APPLY_CORRECTION"
+    if output.answerEvaluation == "NOT_HEARD":
+        return "ASK_ASR_RETRY"
+    if output.answerEvaluation == "INCOMPLETE_UTTERANCE":
+        return "KEEP_CURRENT_QUESTION"
+    if output.probeDecision == "PROBE":
+        return "ASK_PROBE"
+    if output.answerEvaluation == "PARTIALLY_ANSWERED" or output.answerStatus == "PARTIAL":
+        return "ASK_FOR_MISSING_INFORMATION"
+    if output.answerStatus == "ANSWERED":
+        return "ACCEPT_AND_NEXT"
+    return "KEEP_CURRENT_QUESTION"
 
 
 def _clarification_target_prompt(
@@ -5289,32 +5579,6 @@ def _downgrade_current_target_update(
     )
 
 
-def _effective_utterance_completeness(
-    output: StructuredInterviewOutput,
-    transcript: str,
-) -> str:
-    """Apply a small syntactic safety floor below the model judgement.
-
-    The Structured Interpreter remains the primary decision maker. This guard
-    only catches an unmistakable trailing conjunction/verb stem when a model
-    accidentally reports COMPLETE, so endpoint timing cannot advance the
-    interview on text such as ``担当し`` or ``関わっ``.
-    """
-
-    if output.utteranceCompleteness != "COMPLETE":
-        return output.utteranceCompleteness
-    if output.transcriptAssessment.correctionStatus == "CORRECTED":
-        corrected = output.transcriptAssessment.normalizedTranscript.strip()
-        if corrected and not _looks_like_incomplete_utterance(corrected):
-            # The raw final can itself be truncated by STT. A complete,
-            # explicit correction remains confirmation-only, so accepting the
-            # correction here cannot commit or advance the interview.
-            return "COMPLETE"
-    if _looks_like_incomplete_utterance(transcript):
-        return "INCOMPLETE"
-    return "COMPLETE"
-
-
 def _has_ambiguous_correction_candidates(output: StructuredInterviewOutput) -> bool:
     candidates = {
         str(candidate).strip()
@@ -5322,24 +5586,6 @@ def _has_ambiguous_correction_candidates(output: StructuredInterviewOutput) -> b
         if str(candidate).strip()
     }
     return len(candidates) > 1
-
-
-def _looks_like_incomplete_utterance(transcript: str) -> bool:
-    value = re.sub(r"[\s。、！？!?.,…]+$", "", transcript.strip())
-    if len(value) < 2:
-        return False
-    hesitation = re.sub(r"[\s、。！？!?.,…]+", "", value)
-    if re.fullmatch(
-        r"(?:えーっと|えーと|えっと|ええと|えー|あー|あの|その|うーん|うー)+",
-        hesitation,
-    ):
-        return True
-    if re.search(
-        r"(?:し|っ|ですが|なので|けど|けれど|例えば|まず|それから|というか|担当しているのは|担当して|関わって|携わって|行って|私の場合は|と|や|も|は|が|を|に|で|の|から|まで|主に)$",
-        value,
-    ):
-        return True
-    return bool(re.search(r"(?:and|or|but|because|to|which|that|with|for)$", value.casefold()))
 
 
 def _persist_transcript_assessment(
@@ -5498,6 +5744,12 @@ def _build_result(
         "missingInformation": resolved_missing_information,
         "answerEvaluation": state.get("lastAnswerEvaluation"),
         "answerStatus": state.get("lastAnswerStatus"),
+        "userIntent": state.get("lastUserIntent"),
+        "conversationAction": state.get("lastConversationAction"),
+        "interpretationMatch": state.get("lastInterpretationMatch", "NONE"),
+        "userInterpretation": state.get("lastUserInterpretation"),
+        "originalQuestionIntent": state.get("lastOriginalQuestionIntent"),
+        "resumeCurrentQuestion": state.get("lastResumeCurrentQuestion", True),
         "clarificationKind": state.get("lastClarificationKind", "NONE"),
         "probeDecision": state.get("lastProbeDecision"),
         "probeDimension": state.get("lastProbeDimension"),

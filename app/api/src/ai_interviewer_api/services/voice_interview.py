@@ -237,13 +237,33 @@ def classify_voice_turn_intent(
         current_target=current_target,
         pending_confirmation=pending_confirmation,
         recent_conversation=recent_conversation,
+        current_turn_type=str(interview_state.get("currentTurnType") or "BASIC"),
+        clarification_target=interview_state.get("lastClarificationTarget"),
+        probe_target=interview_state.get("activeProbeTarget"),
+        interview_state=interview_state,
     )
     action = resolve_canonical_action(
         decision.dialogueAct,
         pending_confirmation=pending_confirmation,
         current_target=current_target,
     )
-    return {"turnType": "CONTROL" if action == "HANDLE_CONTROL" else "ANSWER"}
+    result = {
+        "turnType": "CONTROL" if action == "HANDLE_CONTROL" else "ANSWER",
+    }
+    if (
+        decision.user_intent != "USER_RESPONSE"
+        or decision.interpretation_match != "NONE"
+        or decision.conversation_action != "PROCESS_USER_RESPONSE"
+    ):
+        result.update(
+            {
+                "userIntent": decision.user_intent,
+                "conversationAction": decision.conversation_action,
+                "interpretationMatch": decision.interpretation_match,
+                "resumeCurrentQuestion": decision.resume_current_question,
+            }
+        )
+    return result
 
 
 def start_speculative_voice_turn(
@@ -899,6 +919,12 @@ def _process_voice_turn(
             {
                 "canonicalIntent": canonical_intent.dialogueAct,
                 "canonicalAction": canonical_action,
+                "userIntent": canonical_intent.user_intent,
+                "conversationAction": canonical_intent.conversation_action,
+                "interpretationMatch": canonical_intent.interpretation_match,
+                "userInterpretation": canonical_intent.user_interpretation,
+                "originalQuestionIntent": canonical_intent.original_question_intent,
+                "resumeCurrentQuestion": canonical_intent.resume_current_question,
                 "canonicalRouterLatencyMs": canonical_intent.latency_ms,
                 "fastCheckExecuted": False,
             }
@@ -989,6 +1015,8 @@ def _resolve_voice_turn_policy(
             dialogueAct="CONVERSATION_REQUEST",
             latency_ms=0.0,
             provider="explicit_turn_type",
+            user_intent="META_QUESTION",
+            conversation_action="HANDLE_CONTROL",
         )
         return decision, resolve_canonical_action(
             decision.dialogueAct,
@@ -1012,6 +1040,10 @@ def _resolve_voice_turn_policy(
         current_target=current_target,
         pending_confirmation=pending_confirmation,
         recent_conversation=recent_conversation,
+        current_turn_type=str(interview_state.get("currentTurnType") or "BASIC"),
+        clarification_target=interview_state.get("lastClarificationTarget"),
+        probe_target=interview_state.get("activeProbeTarget"),
+        interview_state=interview_state,
     )
     return decision, resolve_canonical_action(
         decision.dialogueAct,
@@ -1134,6 +1166,12 @@ def _process_structured_voice_turn(
             speculative_retrieval=speculative_retrieval,
             canonical_intent=canonical_intent.dialogueAct,
             canonical_action=canonical_action,
+            canonical_user_intent=canonical_intent.user_intent,
+            canonical_conversation_action=canonical_intent.conversation_action,
+            canonical_interpretation_match=canonical_intent.interpretation_match,
+            canonical_user_interpretation=canonical_intent.user_interpretation,
+            canonical_original_question_intent=canonical_intent.original_question_intent,
+            canonical_resume_current_question=canonical_intent.resume_current_question,
             on_question_delta=on_question_delta,
             interpreter_output=speculative_output,
         )
@@ -1160,6 +1198,9 @@ def _process_structured_voice_turn(
             turn["transcriptAssessment"] = dict(transcript_assessment)
         turn["runtime"] = str(session.get("provider") or "structured_interview")
         turn["dialogueAct"] = result.get("structuredDialogueAct")
+        turn["resultUserIntent"] = result.get("userIntent")
+        turn["resultConversationAction"] = result.get("conversationAction")
+        turn["interpretationMatch"] = result.get("interpretationMatch")
         turn["answerEvaluation"] = result.get("answerEvaluation")
         turn["answerStatus"] = result.get("answerStatus")
         turn["clarificationKind"] = result.get("clarificationKind")

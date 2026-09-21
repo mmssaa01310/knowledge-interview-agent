@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
 from enum import StrEnum
@@ -82,9 +81,6 @@ logger = logging.getLogger(__name__)
 LISTEN_ACK_TEXT = "はい。"
 PROCESSING_ACK_TEXT = "回答を確認しています。"
 LONG_PROCESSING_TEXT = "確認に少し時間がかかっています。"
-_SHORT_DIRECT_ANSWERS = frozenset({"はい", "いいえ"})
-
-
 class InterviewAction(StrEnum):
     ASK_FOLLOW_UP = "ASK_FOLLOW_UP"
     ASK_CONFIRMATION = "ASK_CONFIRMATION"
@@ -140,25 +136,6 @@ def _merge_transcript_parts(left: str, right: str) -> str:
         if left[-overlap:] == right[:overlap]:
             return f"{left}{right[overlap:]}".strip()
     return f"{left}{right}".strip()
-
-
-def _looks_like_continuation(text: str) -> bool:
-    """Only suppress a listening backchannel for obvious unfinished speech.
-
-    This is deliberately not the turn-completion decision. Normal completion
-    is decided after transcript settle; the hard timeout is the only bounded
-    fallback when a final Result never arrives.
-    """
-
-    value = _normalize_ending(text)
-    if len(value) < 2:
-        return False
-    if re.search(
-        r"(?:し|っ|ですが|なので|けど|けれど|例えば|まず|それから|というか|担当しているのは|私の場合は)$",
-        value,
-    ):
-        return True
-    return bool(re.search(r"(?:and|or|but|because|to|which|that|with|for)$", value.casefold()))
 
 
 class TranscribePollyRuntime:
@@ -965,8 +942,6 @@ class TranscribePollyRuntime:
         if self._voiced_duration_ms < self._config.listen_ack_min_speech_ms:
             return
         if len(stable) < self._config.listen_ack_min_stable_chars:
-            return
-        if stable in _SHORT_DIRECT_ANSWERS or _looks_like_continuation(stable):
             return
         if self._last_backchannel_at is not None:
             elapsed_ms = int((monotonic() - self._last_backchannel_at) * 1000)

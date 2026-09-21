@@ -29,6 +29,7 @@ from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 from ai_interviewer_api.services.conversation_policy import (
+    CanonicalIntentDecision,
     resolve_canonical_action,
     resolve_canonical_intent,
 )
@@ -79,8 +80,14 @@ def generate_interview_reply(
         canonical_policy = _resolve_text_turn_policy(record, knowledge, user)
         policy_kwargs = (
             {
-                "canonical_intent": canonical_policy[0],
+                "canonical_intent": canonical_policy[0].dialogueAct,
                 "canonical_action": canonical_policy[1],
+                "canonical_user_intent": canonical_policy[0].user_intent,
+                "canonical_conversation_action": canonical_policy[0].conversation_action,
+                "canonical_interpretation_match": canonical_policy[0].interpretation_match,
+                "canonical_user_interpretation": canonical_policy[0].user_interpretation,
+                "canonical_original_question_intent": canonical_policy[0].original_question_intent,
+                "canonical_resume_current_question": canonical_policy[0].resume_current_question,
             }
             if canonical_policy is not None
             else {}
@@ -114,7 +121,7 @@ def _resolve_text_turn_policy(
     record: dict,
     knowledge: dict,
     user: UserContext,
-) -> tuple[str, str] | None:
+) -> tuple[CanonicalIntentDecision, str] | None:
     """Route text turns through the same canonical policy as voice turns."""
 
     snapshot = get_structured_interview_state_snapshot(
@@ -160,6 +167,10 @@ def _resolve_text_turn_policy(
             current_question,
         ),
         recent_conversation=messages,
+        current_turn_type=str(state.get("currentTurnType") or "BASIC"),
+        clarification_target=state.get("lastClarificationTarget"),
+        probe_target=state.get("activeProbeTarget"),
+        interview_state=state,
     )
     action = resolve_canonical_action(
         decision.dialogueAct,
@@ -169,7 +180,7 @@ def _resolve_text_turn_policy(
         ),
         current_target=current_target,
     )
-    return decision.dialogueAct, action
+    return decision, action
 
 
 def get_interview_state_snapshot(

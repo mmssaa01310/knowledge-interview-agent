@@ -28,7 +28,8 @@ Do not interrupt because of a short pause.
 Listen while the user is speaking.
 If the user interrupts you, stop speaking and listen.
 Ask one question at a time.
-Avoid unnecessary confirmations."""
+Avoid unnecessary confirmations.
+If an answer contains a complete part followed by a pause or unfinished next part, retain the complete part and continue listening. Do not interrupt with a continuation prompt unless the whole utterance is genuinely unevaluable; when the user has finished, ask only for the missing aspect."""
 
 
 def build_live_instructions(interview_context: Mapping[str, Any] | None = None) -> str:
@@ -42,6 +43,8 @@ def build_live_instructions(interview_context: Mapping[str, Any] | None = None) 
         "Cover every required item in order. Do not reduce a category to only its label.",
         "When a response covers only some required items, ask naturally for the missing items.",
         "Ask one natural question at a time, and wait while the user is thinking.",
+        "A response may contain one completed answer aspect followed by a pause or unfinished next aspect. Keep the completed information, do not discard the turn, and ask only for the missing aspect when the user has finished speaking.",
+        "Do not say that you could not hear the user when the transcript contains understandable answer content. Do not ask for a continuation merely because the final clause is unfinished; use a targeted question for the missing aspect unless the entire utterance is genuinely unevaluable.",
         "Treat every field whose application answer state is not CONFIRMED as incomplete. Clarify or confirm its candidate before moving to the final additional-information question.",
         "Never close the interview while a required field is CANDIDATE_PENDING or AWAITING_CONFIRMATION, even if the user says there is nothing else to add.",
         (

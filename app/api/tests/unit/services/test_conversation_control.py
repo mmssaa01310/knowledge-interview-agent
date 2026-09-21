@@ -11,6 +11,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     TranscriptAssessment,
 )
 from ai_interviewer_api.services.conversation_control import (
+    has_evaluable_answer_content,
     llm_input_summary,
     next_action_for_evaluation,
     normalize_conversation_output,
@@ -213,6 +214,68 @@ def test_missing_information_overrides_contradictory_sufficient_label() -> None:
     assert normalized.answerAssessment.sufficiency == "PARTIAL"
 
 
+def test_incomplete_tail_keeps_a_completed_aspect_as_a_partial_answer() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            utteranceCompleteness="INCOMPLETE",
+            answerAssessment=AnswerAssessment(
+                sufficiency="PARTIAL",
+                probeType="CLARIFY",
+            ),
+            aspectAssessments=[
+                AnswerAspectAssessment(
+                    aspectId="expertise",
+                    label="現在の専門性",
+                    status="ANSWERED",
+                    evidence="システム開発",
+                ),
+                AnswerAspectAssessment(
+                    aspectId="work_style",
+                    label="仕事の進め方",
+                    status="MISSING",
+                ),
+            ],
+            missingInformation=["仕事の進め方"],
+            fieldUpdates=[
+                FieldUpdate(
+                    fieldId="field-experience",
+                    itemId="expertise",
+                    value="システム開発",
+                    evidenceTranscriptIds=["answer-1"],
+                )
+            ],
+        )
+    )
+
+    assert has_evaluable_answer_content(normalized) is True
+    assert normalized.answerEvaluation == "PARTIALLY_ANSWERED"
+    assert normalized.answerStatus == "PARTIAL"
+    assert next_action_for_evaluation(
+        normalized.answerEvaluation,
+        has_missing_information=True,
+    ) == "ASK_MISSING_INFORMATION"
+
+
+def test_unanswerable_incomplete_tail_still_waits_for_continuation() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            utteranceCompleteness="INCOMPLETE",
+            fieldUpdates=[
+                FieldUpdate(
+                    fieldId="field-experience",
+                    value="システム開発を担当し",
+                    evidenceTranscriptIds=["answer-2"],
+                )
+            ],
+        )
+    )
+
+    assert has_evaluable_answer_content(normalized) is False
+    assert normalized.answerEvaluation == "INCOMPLETE_UTTERANCE"
+    assert normalized.answerStatus == "NOT_ANSWERED"
+    assert next_action_for_evaluation(normalized.answerEvaluation) == "WAIT_FOR_CONTINUATION"
+
+
 def test_aspect_assessments_keep_answered_support_and_only_add_missing_skill() -> None:
     normalized = normalize_conversation_output(
         StructuredInterviewOutput(
@@ -343,3 +406,26 @@ def test_question_generator_trace_input_contains_semantic_context() -> None:
     assert summary["missingInformation"] == ["判断範囲"]
     assert summary["sameQuestionAskedBefore"] is True
     assert summary["latestTranscriptChars"] == len("リーダーです")
+
+
+def test_user_question_intent_cannot_become_an_answer_update() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            dialogueAct="ANSWER",
+            userIntent="QUESTION_INTENT_CONFIRMATION",
+            interpretationMatch="PARTIAL_MATCH",
+            fieldUpdates=[
+                FieldUpdate(
+                    fieldId="field-role",
+                    value="推測値",
+                    evidenceTranscriptIds=["message-1"],
+                    answerResolution="AUTO_CONFIRM",
+                )
+            ],
+        )
+    )
+
+    assert normalized.answerEvaluation == "CLARIFICATION_REQUEST"
+    assert normalized.answerStatus == "NOT_ANSWERED"
+    assert normalized.clarificationKind == "QUESTION_MEANING"
+    assert normalized.fieldUpdates == []

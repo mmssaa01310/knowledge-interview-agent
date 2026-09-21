@@ -2666,13 +2666,23 @@ def test_system_requirement_keeps_unmentioned_optional_cases_unknown_after_overv
     }
 
 
-@pytest.mark.parametrize("transcript", ["主に社内システムの開発を担当し", "要件整理から実装まで関わっ"])
-def test_incomplete_utterance_does_not_commit_or_advance(transcript: str) -> None:
+def test_explicit_incomplete_utterance_does_not_commit_or_advance() -> None:
     user, record, knowledge = _seed_fixed_form_case(
-        f"record-incomplete-{len(transcript)}",
+        "record-explicit-incomplete-no-text-guess",
         (("field-role", "役割"), ("field-department", "部署")),
     )
-    provider = FakeStructuredProvider([StructuredInterviewOutput()])
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                utteranceCompleteness="INCOMPLETE",
+                answerStatus="NOT_ANSWERED",
+                answerAssessment=AnswerAssessment(
+                    sufficiency="INCOMPLETE",
+                    probeType="CLARIFY",
+                ),
+            )
+        ]
+    )
 
     first = generate_structured_interview_result(record, knowledge, user, provider=provider)
     _add_structured_answer(
@@ -2680,7 +2690,7 @@ def test_incomplete_utterance_does_not_commit_or_advance(transcript: str) -> Non
         user,
         message_id="incomplete-answer",
         question=first["question"],
-        content=transcript,
+        content="回答の途中で止まりました",
     )
 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
@@ -2694,7 +2704,7 @@ def test_incomplete_utterance_does_not_commit_or_advance(transcript: str) -> Non
     assert result["interviewState"]["lastUtteranceCompleteness"] == "INCOMPLETE"
 
 
-def test_interpreter_can_mark_an_utterance_incomplete_without_backend_keyword_guessing() -> None:
+def test_interpreter_can_mark_an_utterance_incomplete_without_backend_text_guessing() -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-explicit-incomplete",
         (("field-role", "役割"), ("field-department", "部署")),
@@ -2728,6 +2738,113 @@ def test_interpreter_can_mark_an_utterance_incomplete_without_backend_keyword_gu
     assert result["reply"] == "続き、お願いします。"
     assert result["interviewState"]["fieldStates"]["field-role"]["answerState"] == "UNANSWERED"
     assert result["interviewState"]["lastStructuredOutput"]["utteranceCompleteness"] == "INCOMPLETE"
+
+
+def test_incomplete_tail_keeps_completed_aspect_and_asks_only_for_missing_aspect() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-mixed-incomplete-answer",
+        (("field-role", "現在の役割"), ("field-department", "部署")),
+    )
+    role_field = store.get("knowledge_fields", "field-role")
+    assert role_field is not None
+    role_field["questionPlan"] = InterviewQuestionPlan(
+        purpose="現在の役割と責任範囲を把握する",
+        questionGoal="role_and_responsibility",
+        requiredItems=[
+            InterviewPlanItem(itemId="role", label="現在の役割"),
+            InterviewPlanItem(itemId="responsibilities", label="日々の責任"),
+        ],
+    ).model_dump()
+    store.upsert("knowledge_fields", role_field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                utteranceCompleteness="INCOMPLETE",
+                answerStatus="PARTIAL",
+                answerAssessment=AnswerAssessment(
+                    sufficiency="PARTIAL",
+                    probeType="CLARIFY",
+                ),
+                aspectAssessments=[
+                    AnswerAspectAssessment(
+                        aspectId="role",
+                        label="現在の役割",
+                        status="ANSWERED",
+                        evidence="プロジェクトリーダー",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="responsibilities",
+                        label="日々の責任",
+                        status="MISSING",
+                    ),
+                ],
+                missingInformation=["日々の責任"],
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        itemId="role",
+                        value="プロジェクトリーダー",
+                        evidenceTranscriptIds=["mixed-incomplete-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            )
+        ]
+    )
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="mixed-incomplete-answer",
+        question=first["question"],
+        content="現在の役割はプロジェクトリーダーです。責任については、",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["reply"] != "続き、お願いします。"
+    assert result["answerEvaluation"] == "PARTIALLY_ANSWERED"
+    assert result["question"]["targetId"] == "field-role"
+    role_state = result["interviewState"]["fieldStates"]["field-role"]
+    assert "role" in role_state["capturedItemIds"]
+    assert "responsibilities" in role_state["missingRequiredItemIds"]
+
+
+def test_structured_complete_decision_is_not_overridden_by_transcript_suffix() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-structured-complete-no-suffix-guess",
+        (("field-role", "役割"), ("field-department", "部署")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                utteranceCompleteness="COMPLETE",
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        value="システム開発を担当しています",
+                        evidenceTranscriptIds=["complete-with-pause-shaped-ending"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            )
+        ]
+    )
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="complete-with-pause-shaped-ending",
+        question=first["question"],
+        content="システム開発を担当しています。仕事の進め方は、",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["interviewState"]["lastUtteranceCompleteness"] == "COMPLETE"
+    assert result["reply"] != "続き、お願いします。"
 
 
 def test_clear_but_uncertain_completeness_uses_semantic_follow_up() -> None:
@@ -3952,48 +4069,6 @@ def test_one_answer_can_confirm_multiple_fields_without_reasking_them() -> None:
     assert result["interviewState"]["closingState"] == "ASKING"
 
 
-@pytest.mark.parametrize(
-    "transcript",
-    [
-        "主に社内システムの開発を担当し",
-        "要件整理から実装まで関わっ",
-        "私が担当しているのは、主に",
-        "例えば",
-        "そうですね、私の場合は",
-        "開発と",
-        "それから",
-        "担当しているのは",
-        "基本的には再起動するのですが",
-        "えーっと……",
-    ],
-)
-def test_obvious_fragment_or_hesitation_never_advances_the_current_target(
-    transcript: str,
-) -> None:
-    user, record, knowledge = _seed_fixed_form_case(
-        f"record-fragment-{abs(hash(transcript))}",
-        (("field-role", "役割"), ("field-department", "部署")),
-    )
-    provider = FakeStructuredProvider([StructuredInterviewOutput()])
-    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
-    _add_structured_answer(
-        record,
-        user,
-        message_id="fragment-answer",
-        question=first["question"],
-        content=transcript,
-    )
-
-    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
-
-    assert result["question"]["questionId"] == first["question"]["questionId"]
-    assert result["question"]["targetId"] == first["question"]["targetId"]
-    assert result["interviewState"]["lastUtteranceCompleteness"] == "INCOMPLETE"
-    assert result["interviewState"]["fieldStates"]["field-role"]["answerState"] == "UNANSWERED"
-    assert result["interviewState"]["fieldStates"]["field-role"]["candidateAnswer"] is None
-    assert result["reply"] == "続き、お願いします。"
-
-
 def test_safe_transcript_normalization_keeps_raw_text_and_only_changes_formatting() -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-safe-transcript-normalization",
@@ -4321,3 +4396,113 @@ def test_all_required_targets_are_not_complete_until_one_closing_answer_is_recor
     assert finished["action"] == "finish"
     assert finished["interviewState"]["closingState"] == "CONFIRMED"
     assert finished["interviewState"]["closingAnswer"]["rawTranscript"] == "特にありません。"
+
+
+def test_question_intent_confirmation_answers_user_and_keeps_basic_question() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-question-intent-confirmation",
+        (("field-role", "現在の役割"), ("field-next", "次の項目")),
+    )
+    role_field = store.get("knowledge_fields", "field-role")
+    assert role_field is not None
+    role_field["questionPlan"] = InterviewQuestionPlan(
+        purpose="現在の役割を確認する",
+        questionGoal="role_and_scope",
+        requiredItems=[InterviewPlanItem(itemId="role", label="現在の役割")],
+    ).model_dump()
+    store.upsert("knowledge_fields", role_field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        itemId="role",
+                        value="プロジェクトリーダー",
+                        evidenceTranscriptIds=["intent-question"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ]
+            )
+        ]
+    )
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="intent-question",
+        question=first["question"],
+        content="つまり、経験ではなく現在の役割を話せばよいですか？",
+    )
+
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=provider,
+        canonical_intent="QUESTION_TO_ASSISTANT",
+        canonical_action="EXPLAIN_CURRENT_QUESTION",
+        canonical_user_intent="QUESTION_INTENT_CONFIRMATION",
+        canonical_conversation_action="ANSWER_USER_CLARIFICATION",
+        canonical_interpretation_match="MISMATCH",
+        canonical_user_interpretation="現在の役割を答えること",
+        canonical_original_question_intent="現在の役割と担当範囲を確認すること",
+        canonical_resume_current_question=True,
+    )
+
+    role_state = result["interviewState"]["fieldStates"]["field-role"]
+    assert role_state["answerState"] == "UNANSWERED"
+    assert result["question"]["questionId"] == first["question"]["questionId"]
+    assert result["interviewState"]["currentQuestionId"] == first["question"]["questionId"]
+    assert result["userIntent"] == "QUESTION_INTENT_CONFIRMATION"
+    assert result["conversationAction"] == "ANSWER_USER_CLARIFICATION"
+    assert "少し違います" in result["reply"]
+    assert provider.question_help_calls == []
+
+
+def test_decline_or_skip_uses_skip_action_without_extracting_interview_facts() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-semantic-skip",
+        (("field-role", "現在の役割"), ("field-next", "次の項目")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        itemId="role",
+                        value="推測された役割",
+                        evidenceTranscriptIds=["skip-message"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ]
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="skip-message",
+        question=first["question"],
+        content="今回は回答を控えて、次へ進みたいです。",
+    )
+
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=provider,
+        canonical_intent="ANSWER",
+        canonical_action="PROCESS_ANSWER",
+        canonical_user_intent="DECLINE_OR_SKIP",
+        canonical_conversation_action="SKIP_AND_NEXT",
+    )
+
+    role_state = result["interviewState"]["fieldStates"]["field-role"]
+    assert role_state["answerDisposition"] == "NO_DETAIL"
+    assert role_state["recordAnswer"] == "今回は回答を控えて、次へ進みたいです。"
+    assert result["conversationAction"] == "SKIP_AND_NEXT"
+    assert result["question"]["targetId"] == "field-next"

@@ -81,6 +81,32 @@ StructuredDialogueAct = Literal[
     "IRRELEVANT",
     "OTHER",
 ]
+UserIntent = Literal[
+    "USER_RESPONSE",
+    "QUESTION_CLARIFICATION",
+    "QUESTION_INTENT_CONFIRMATION",
+    "ASR_CLARIFICATION_REQUEST",
+    "ANSWER_CLARIFICATION",
+    "META_QUESTION",
+    "DECLINE_OR_SKIP",
+    "OTHER",
+]
+InterpretationMatch = Literal["NONE", "MATCH", "PARTIAL_MATCH", "MISMATCH"]
+ConversationAction = Literal[
+    "ASK_MAIN_QUESTION",
+    "PROCESS_USER_RESPONSE",
+    "ANSWER_USER_CLARIFICATION",
+    "ASK_FOR_MISSING_INFORMATION",
+    "ASK_PROBE",
+    "REPHRASE_QUESTION",
+    "ASK_ASR_RETRY",
+    "ACCEPT_AND_NEXT",
+    "SKIP_AND_NEXT",
+    "REPEAT_CURRENT_QUESTION",
+    "APPLY_CORRECTION",
+    "KEEP_CURRENT_QUESTION",
+    "HANDLE_CONTROL",
+]
 
 
 class StrictModel(BaseModel):
@@ -291,6 +317,14 @@ class StructuredInterviewOutput(StrictModel):
     """Meaning extraction contract. It contains no generated question or layout."""
 
     dialogueAct: StructuredDialogueAct = "ANSWER"
+    # These fields describe what the latest user turn is doing.  They are
+    # separate from answerEvaluation so a question to the assistant cannot be
+    # mistaken for an incomplete interview answer.
+    userIntent: UserIntent = "USER_RESPONSE"
+    interpretationMatch: InterpretationMatch = "NONE"
+    userInterpretation: str | None = Field(default=None, max_length=300)
+    originalQuestionIntent: str | None = Field(default=None, max_length=300)
+    resumeCurrentQuestion: bool = True
     answerEvaluation: AnswerEvaluation = "ANSWERED"
     # ``answerEvaluation`` describes the conversational act (including audio
     # and clarification failures).  These two fields describe the answer to
