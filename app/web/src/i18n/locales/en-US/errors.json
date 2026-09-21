@@ -67,6 +67,7 @@
   "voiceConnectFailed": "Could not connect to the voice interview.",
   "audioPlaybackFailed": "Could not play the audio.",
   "transcribeFailed": "Could not convert the audio to text.",
+  "transcribeTimeout": "We could not hear your answer. Please speak again.",
   "pollyFailed": "Could not prepare the audio.",
   "voiceErrorWithMessage": "A voice interview error occurred: {message}",
   "voiceError": "A voice interview error occurred."

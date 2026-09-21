@@ -141,6 +141,7 @@ def localized_interview_question_guidance(
     topic: str,
     examples: Sequence[str],
     perspectives: Sequence[str],
+    example_mode: str = "single",
 ) -> str:
     """Turn LLM-generated guidance into a natural, concise spoken reply."""
 
@@ -150,7 +151,11 @@ def localized_interview_question_guidance(
         "zh-CN": "这个主题",
         "pt-BR": "este tema",
     }[locale]
-    normalized_examples = [item.strip() for item in examples if item.strip()][:3]
+    normalized_examples = [item.strip() for item in examples if item.strip()]
+    if example_mode != "additional":
+        normalized_examples = normalized_examples[:1]
+    else:
+        normalized_examples = normalized_examples[:3]
     normalized_perspectives = [item.strip() for item in perspectives if item.strip()][:3]
     examples_text = {
         "ja-JP": "、".join(normalized_examples),

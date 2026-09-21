@@ -72,6 +72,8 @@ Global profileのARNはAWSアカウント・リージョンによって異なる
 
 音声インタビューでは、Transcribeが作成した確定TranscriptをVoice APIへ渡し、`STRUCTURED_INTERVIEW_MODEL_ID`でStructured InterpreterとQuestion Generatorを実行する。音声出力はPollyが担当し、`app/voice`はBedrockを直接呼び出さない。
 
+Transcribe + Pollyの環境変数、発話終了判定、Pollyの読み上げ速度などの設定は、[Transcribe + Polly設定](transcribe-polly-settings.md)にまとめている。
+
 ### profile の例
 
 `~/.aws/credentials`

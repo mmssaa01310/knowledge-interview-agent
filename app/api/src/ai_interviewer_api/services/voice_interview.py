@@ -40,7 +40,6 @@ from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     localized_interview_fallbacks,
     localized_interview_greeting,
-    localized_interview_transcript_retry,
     resolve_interview_locale,
 )
 from ai_interviewer_api.core.permissions import require_record_action
@@ -1164,10 +1163,6 @@ def _process_structured_voice_turn(
                 turn,
                 field_labels=_voice_interview_field_labels(knowledge, user),
                 locale=resolve_interview_locale(record, knowledge),
-                force_retry=reply_text
-                == localized_interview_transcript_retry(
-                    resolve_interview_locale(record, knowledge)
-                ),
             )
             if voice_feedback:
                 reply_text = voice_feedback

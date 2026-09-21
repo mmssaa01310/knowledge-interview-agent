@@ -91,6 +91,7 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
                 ),
                 polly_language_code=locale_config.polly_language_code,
                 polly_engine=settings.polly_engine,
+                polly_speech_rate=settings.polly_speech_rate,
                 polly_max_parallel_requests=settings.polly_max_parallel_requests,
                 backchannel_enabled=settings.voice_enable_backchannels,
                 listen_ack_text=runtime_texts["listen_ack"],

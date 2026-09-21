@@ -345,7 +345,7 @@ Turn 2: 大丈夫です。
 
 ### 5.3 Case B: 質問の意味を聞き返す
 
-Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、現在の不変な`questionDefinition`を元に `provider.generate_question_help()` を呼ぶ。LLMは「何について話すか」「具体的な回答例2〜3個」「回答時の観点」を返し、Backendが自然な補足文へ整形して `_keep_current_question()` へ渡す。元の質問文や項目説明の再掲は禁止し、targetと質問IDは維持する。
+Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、現在の不変な`questionDefinition`を元に `provider.generate_question_help()` を呼ぶ。LLMは「何について話すか」「具体的な回答例1個」「回答時の観点」を返し、Backendが自然な補足文へ整形して `_keep_current_question()` へ渡す。利用者が追加の具体例を明示的に求めた場合だけ、`exampleMode=additional`として回答例を最大3個まで返す。元の質問文や項目説明の再掲は禁止し、targetと質問IDは維持する。
 
 一方Fast経路では、Fast schemaの `needsQuestionExplanation` は互換用に残っているが、dialogueActの代替分類や補足文生成には使わない（`fast_interpreter/schemas.py:6-19`）。音声APIの質問補足はCanonical Intentで `EXPLAIN_CURRENT_QUESTION` に振り分けられ、共通Structured経路のLLM生成ガイダンスを使用する。これによりTranscribe + Polly、Nova Sonic、GPT-Live、テキストの補足内容を同じ契約で揃える。
 

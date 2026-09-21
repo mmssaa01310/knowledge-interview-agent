@@ -63,6 +63,62 @@ async def test_polly_synthesizer_requests_neural_16khz_and_caches() -> None:
     assert client.calls[0]["VoiceId"] == "Kazuha"
     assert client.calls[0]["OutputFormat"] == "pcm"
     assert client.calls[0]["SampleRate"] == "16000"
+    assert client.calls[0]["TextType"] == "ssml"
+    assert client.calls[0]["Text"] == (
+        '<speak><prosody rate="115%">こんにちは。</prosody></speak>'
+    )
+
+
+@pytest.mark.anyio
+async def test_polly_synthesizer_escapes_text_and_accepts_preset_speed() -> None:
+    client = StubPollyClient()
+    synthesizer = PollySynthesizer(
+        TranscribePollyRuntimeConfig(
+            polly_voice_id="fast-test",
+            polly_speech_rate="fast",
+        ),
+        client=client,
+    )
+
+    await synthesizer.synthesize('A & <B> "quoted"')
+
+    assert client.calls[0]["Text"] == (
+        '<speak><prosody rate="fast">A &amp; &lt;B&gt; "quoted"</prosody></speak>'
+    )
+
+
+def test_polly_synthesizer_rejects_invalid_speed() -> None:
+    with pytest.raises(ValueError, match="POLLY_SPEECH_RATE"):
+        PollySynthesizer(
+            TranscribePollyRuntimeConfig(polly_speech_rate="201%"),
+            client=StubPollyClient(),
+        )
+
+
+@pytest.mark.anyio
+async def test_polly_synthesizer_cache_key_includes_speech_rate() -> None:
+    fast_client = StubPollyClient()
+    slow_client = StubPollyClient()
+    fast = PollySynthesizer(
+        TranscribePollyRuntimeConfig(
+            polly_voice_id="cache-rate-test",
+            polly_speech_rate="110%",
+        ),
+        client=fast_client,
+    )
+    slow = PollySynthesizer(
+        TranscribePollyRuntimeConfig(
+            polly_voice_id="cache-rate-test",
+            polly_speech_rate="120%",
+        ),
+        client=slow_client,
+    )
+
+    await fast.synthesize("速度キャッシュを分ける")
+    await slow.synthesize("速度キャッシュを分ける")
+
+    assert len(fast_client.calls) == 1
+    assert len(slow_client.calls) == 1
 
 
 @pytest.mark.anyio

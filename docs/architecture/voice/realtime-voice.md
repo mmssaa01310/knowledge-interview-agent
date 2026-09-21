@@ -200,7 +200,7 @@ class AssistantReply:
 
 ### 4.1 回答確認と次質問
 
-音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは文としての完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で評価し、`rawTranscript`、意味を変えない`normalizedTranscript`、STT補正候補の`correctionStatus`を返す。さらに質問への意味的成立性を`answerAssessment`で評価する。Backendは、未完了なら現在質問を維持し、`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから回答状態を更新する。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
+音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは文としての完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で評価し、`rawTranscript`、意味を変えない`normalizedTranscript`、STT補正候補の`correctionStatus`を返す。さらに質問への意味的成立性を`answerAssessment`で評価する。Backendは、未完了なら現在質問を維持し、`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから正式回答を更新する。`UNCERTAIN`でも補正対象とは独立して明確な項目だけは`TENTATIVE`候補として保持できるが、確認前に確定・次質問へ進めない。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
 
 回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。`TENTATIVE`の候補は次質問本文に自然に織り込む。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 

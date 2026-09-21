@@ -29,6 +29,7 @@ def test_create_runtime_returns_transcribe_polly_runtime() -> None:
     assert runtime.provider_name == "transcribe_polly"
     assert runtime.output_sample_rate_hz == 16000
     assert runtime._interview_bridge._turn_process_timeout_seconds == 30
+    assert runtime._config.polly_speech_rate == "115%"
 
 
 def test_create_runtime_configures_brazilian_portuguese_for_transcribe_and_polly() -> None:

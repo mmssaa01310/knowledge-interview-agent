@@ -25,7 +25,6 @@ def build_transcribe_polly_transcript_feedback(
     *,
     field_labels: Mapping[str, str],
     locale: InterviewLocale,
-    force_retry: bool = False,
 ) -> str | None:
     """Build a targeted spoken retry for a Transcribe + Polly turn.
 
@@ -40,12 +39,6 @@ def build_transcribe_polly_transcript_feedback(
     question = _as_mapping(result.get("question"))
     status = _clean_text(assessment.get("correctionStatus")).upper()
     correction_candidates = _unique_texts(assessment.get("correctionCandidates"))
-    base_state = _as_mapping(turn.get("baseInterviewState"))
-    base_pending = base_state.get("pendingTranscriptConfirmation")
-    rejected_transcript_correction = (
-        _clean_text(output.get("dialogueAct")) == "REJECTION"
-        and isinstance(base_pending, Mapping)
-    )
 
     if status == "CORRECTED":
         normalized = _correction_candidate(state, assessment)
@@ -66,18 +59,19 @@ def build_transcribe_polly_transcript_feedback(
         # were a reliable candidate. Use targeted retry wording instead.
         status = "UNCERTAIN"
 
-    if status != "UNCERTAIN" and not rejected_transcript_correction and not force_retry:
+    # Only a transcript assessment marked UNCERTAIN is an audio-recognition
+    # failure. Semantic follow-ups and rejected correction candidates must
+    # keep the Structured Interview wording instead of being relabeled as
+    # "could not hear" by this presentation layer.
+    if status != "UNCERTAIN":
         return None
 
     latest_message_ids = _latest_message_ids(state, turn)
-    reliable_updates = (
-        {}
-        if correction_candidates
-        else _reliable_field_updates(
-            output,
-            latest_message_ids=latest_message_ids,
-            field_labels=field_labels,
-        )
+    reliable_updates = _reliable_field_updates(
+        output,
+        latest_message_ids=latest_message_ids,
+        field_labels=field_labels,
+        correction_candidates=correction_candidates,
     )
     unclear_labels = _unclear_labels(
         state,
@@ -115,6 +109,8 @@ def build_transcribe_polly_transcript_feedback(
         locale,
         prefer_broad=not bool(understood),
     )
+    if understood and not unclear_labels:
+        return _repeat_unclear_part_message(locale, understood, subject)
     if understood:
         if locale == "en-US":
             return f"I understood {understood}. Please repeat the part about {subject}."
@@ -123,6 +119,9 @@ def build_transcribe_polly_transcript_feedback(
         if locale == "pt-BR":
             return f"Entendi {understood}. Por favor, repita a parte sobre {subject}."
         return f"{understood}ということは分かりました。{subject}について、もう一度お願いします。"
+
+    if correction_candidates:
+        return _partial_retry_message(locale, subject)
 
     if locale == "en-US":
         return f"I couldn't hear your answer clearly. Please tell me about {subject} again."
@@ -134,6 +133,39 @@ def build_transcribe_polly_transcript_feedback(
             f"Por favor, fale novamente sobre {subject}."
         )
     return f"回答がうまく聞き取れませんでした。もう一度、{subject}についてお話しください。"
+
+
+def _partial_retry_message(locale: InterviewLocale, subject: str) -> str:
+    if locale == "en-US":
+        return (
+            f"I couldn't hear part of your answer about {subject} clearly. "
+            "Please repeat only the unclear part."
+        )
+    if locale == "zh-CN":
+        return f"关于{subject}的回答中有一部分没有听清楚。请只重复没有听清的部分。"
+    if locale == "pt-BR":
+        return (
+            f"Não consegui ouvir uma parte da sua resposta sobre {subject}. "
+            "Por favor, repita apenas essa parte."
+        )
+    return (
+        f"{subject}について、回答の一部がうまく聞き取れませんでした。"
+        "聞き取れなかった部分だけ、もう一度お願いします。"
+    )
+
+
+def _repeat_unclear_part_message(
+    locale: InterviewLocale,
+    understood: str,
+    subject: str,
+) -> str:
+    if locale == "en-US":
+        return f"I understood {understood}. Please repeat only the unclear part about {subject}."
+    if locale == "zh-CN":
+        return f"我听懂了{understood}。请只重复{subject}中没有听清的部分。"
+    if locale == "pt-BR":
+        return f"Entendi {understood}. Por favor, repita apenas a parte pouco clara sobre {subject}."
+    return f"{understood}ということは分かりました。{subject}のうち、聞き取れなかった部分だけもう一度お願いします。"
 
 
 def _as_mapping(value: object) -> Mapping[str, Any]:
@@ -176,6 +208,7 @@ def _reliable_field_updates(
     *,
     latest_message_ids: set[str],
     field_labels: Mapping[str, str],
+    correction_candidates: list[str],
 ) -> dict[str, str]:
     updates = output.get("fieldUpdates")
     if not isinstance(updates, list):
@@ -196,7 +229,9 @@ def _reliable_field_updates(
             or not _clean_text(field_labels.get(field_id))
             or not evidence_ids.intersection(latest_message_ids)
             or _clean_text(update.get("candidateSource")) == "document_reference"
-            or _clean_text(update.get("answerResolution")) != "AUTO_CONFIRM"
+            or _clean_text(update.get("answerResolution"))
+            not in {"AUTO_CONFIRM", "TENTATIVE"}
+            or value in correction_candidates
         ):
             continue
         reliable[field_id] = value

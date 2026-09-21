@@ -144,7 +144,8 @@ def test_ambiguous_correction_does_not_speak_a_guessed_candidate() -> None:
 
     reply = _feedback(result)
 
-    assert reply == "回答がうまく聞き取れませんでした。もう一度、所属についてお話しください。"
+    assert "回答の一部がうまく聞き取れませんでした" in reply
+    assert "聞き取れなかった部分だけ、もう一度お願いします" in reply
     assert "開発部" not in reply
     assert "改善部" not in reply
 
@@ -165,6 +166,42 @@ def test_ambiguous_correction_does_not_read_back_a_field_candidate() -> None:
     assert "運用まで関わっています" not in reply
     assert "輸送まで関わっています" not in reply
     assert "担当業務" in reply
+
+
+def test_clear_field_is_retained_when_another_transcript_part_is_ambiguous() -> None:
+    result = _uncertain_result(
+        [_update("field-name", "山田太郎")],
+        raw_transcript="氏名は山田太郎で、担当はフォード開発です。",
+    )
+    result["interviewState"]["lastTranscriptAssessment"]["correctionCandidates"] = [
+        "コード開発",
+        "フロント開発",
+    ]
+
+    reply = _feedback(result)
+
+    assert "山田太郎" in reply
+    assert "コード開発" not in reply
+    assert "フロント開発" not in reply
+    assert "一部" not in reply
+
+
+def test_clear_current_field_requests_only_the_unclear_part() -> None:
+    result = _uncertain_result(
+        [_update("field-responsibility", "プロジェクトリーダー")],
+        target_id="field-responsibility",
+        raw_transcript="プロジェクトリーダーで、フォード開発を担当しています。",
+    )
+    result["interviewState"]["lastTranscriptAssessment"]["correctionCandidates"] = [
+        "コード開発",
+        "フロント開発",
+    ]
+
+    reply = _feedback(result)
+
+    assert "プロジェクトリーダー" in reply
+    assert "聞き取れなかった部分だけもう一度お願いします" in reply
+    assert "担当業務について、もう一度お願いします" not in reply
 
 
 def test_long_grounded_value_is_not_read_back_as_the_whole_answer() -> None:
@@ -202,28 +239,26 @@ def test_rejected_correction_uses_the_original_item_for_voice_retry() -> None:
         },
     }
 
-    reply = build_transcribe_polly_transcript_feedback(
+    feedback = build_transcribe_polly_transcript_feedback(
         result,
         turn,
         field_labels=FIELD_LABELS,
         locale="ja-JP",
     )
 
-    assert reply is not None
-    assert "担当業務" in reply
-    assert "この部分をもう一度お願いします" not in reply
+    assert feedback is None
 
 
-def test_generic_retry_reply_is_replaced_when_voice_path_requests_a_retry() -> None:
+def test_non_transcript_retry_reply_is_not_rephrased_as_audio_failure() -> None:
     result = _uncertain_result([], target_id="field-department")
     result["interviewState"]["lastTranscriptAssessment"]["correctionStatus"] = "NONE"
+    result["reply"] = "続き、お願いします。"
 
-    reply = build_transcribe_polly_transcript_feedback(
+    feedback = build_transcribe_polly_transcript_feedback(
         result,
         {"id": "turn-1"},
         field_labels=FIELD_LABELS,
         locale="ja-JP",
-        force_retry=True,
     )
 
-    assert reply == "回答がうまく聞き取れませんでした。もう一度、所属についてお話しください。"
+    assert feedback is None

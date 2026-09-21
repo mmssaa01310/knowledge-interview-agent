@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from html import escape
 from typing import Any, ClassVar, Protocol
 
 import boto3
@@ -16,6 +18,11 @@ from ai_interviewer_voice.runtimes.transcribe_polly.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_POLLY_SPEECH_RATE_PRESETS = frozenset(
+    {"x-slow", "slow", "medium", "fast", "x-fast"}
+)
+_POLLY_SPEECH_RATE_PERCENTAGE = re.compile(r"^(\d+(?:\.\d+)?)%$")
 
 
 class PollySynthesisError(RuntimeError):
@@ -63,6 +70,7 @@ class PollySynthesizer:
         client_factory: Callable[..., Any] = boto3.client,
     ) -> None:
         self._config = config
+        self._speech_rate = _normalize_speech_rate(config.polly_speech_rate)
         self._client = client
         self._client_factory = client_factory
         self._client_init_lock = threading.Lock()
@@ -233,8 +241,13 @@ class PollySynthesizer:
             LanguageCode=self._config.polly_language_code,
             OutputFormat="pcm",
             SampleRate=str(self._config.polly_sample_rate_hz),
-            Text=text,
-            TextType="text",
+            Text=(
+                '<speak><prosody rate="'
+                f'{self._speech_rate}">'
+                f"{escape(text, quote=False)}"
+                "</prosody></speak>"
+            ),
+            TextType="ssml",
             VoiceId=self._config.polly_voice_id,
         )
 
@@ -266,7 +279,20 @@ class PollySynthesizer:
     def _cache_key(self, text: str) -> str:
         material = (
             f"{self._config.aws_region}|{self._config.polly_language_code}|{self._config.polly_engine}|"
-            f"{self._config.polly_voice_id}|"
+            f"{self._config.polly_voice_id}|{self._speech_rate}|"
             f"{self._config.polly_sample_rate_hz}|{text}"
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _normalize_speech_rate(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in _POLLY_SPEECH_RATE_PRESETS:
+        return normalized
+    match = _POLLY_SPEECH_RATE_PERCENTAGE.fullmatch(normalized)
+    if match is not None and 20 <= float(match.group(1)) <= 200:
+        return normalized
+    raise ValueError(
+        "POLLY_SPEECH_RATE must be one of x-slow, slow, medium, fast, x-fast, "
+        "or a percentage between 20% and 200%"
+    )

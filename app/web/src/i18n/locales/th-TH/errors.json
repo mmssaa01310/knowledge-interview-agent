@@ -67,6 +67,7 @@
   "voiceConnectFailed": "เชื่อมต่อการสัมภาษณ์ด้วยเสียงไม่ได้",
   "audioPlaybackFailed": "เล่นเสียงไม่ได้",
   "transcribeFailed": "แปลงเสียงเป็นข้อความไม่ได้",
+  "transcribeTimeout": "ไม่สามารถรับฟังคำตอบของคุณได้ กรุณาพูดอีกครั้ง",
   "pollyFailed": "เตรียมเสียงไม่ได้",
   "voiceErrorWithMessage": "เกิดข้อผิดพลาดในการสัมภาษณ์ด้วยเสียง: {message}",
   "voiceError": "เกิดข้อผิดพลาดในการสัมภาษณ์ด้วยเสียง"

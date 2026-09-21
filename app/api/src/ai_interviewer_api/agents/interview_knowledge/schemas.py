@@ -208,7 +208,8 @@ class QuestionHelpOutput(StrictModel):
     """LLM-generated guidance that lets the user start answering immediately."""
 
     topic: str = Field(min_length=1, max_length=300)
-    examples: list[str] = Field(min_length=2, max_length=3)
+    examples: list[str] = Field(min_length=1, max_length=3)
+    exampleMode: Literal["single", "additional"] = "single"
     perspectives: list[str] = Field(min_length=1, max_length=3)
 
 

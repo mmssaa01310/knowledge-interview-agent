@@ -26,6 +26,7 @@ nav:
   - 開発ガイド:
       - ローカルAWS開発: guides/aws-local-development.md
       - 開発ワークフロー: guides/development-workflow.md
+      - Transcribe + Polly設定: guides/transcribe-polly-settings.md
       - パッケージ管理: guides/package-management.md
       - リファクタリング: guides/refactoring.md
       - 検証: guides/verification.md

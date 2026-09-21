@@ -62,6 +62,9 @@ export function toUserFacingError(
   if (message === "transcribe_stream_failed") {
     return t("errors.transcribeFailed");
   }
+  if (message === "transcribe_final_timeout") {
+    return t("errors.transcribeTimeout");
+  }
   if (message === "polly_synthesis_failed") {
     return t("errors.pollyFailed");
   }

@@ -35,6 +35,7 @@ class TranscribePollyRuntimeConfig:
     polly_voice_id: str = "Kazuha"
     polly_language_code: str = "ja-JP"
     polly_engine: str = "neural"
+    polly_speech_rate: str = "115%"
     polly_sample_rate_hz: int = 16000
     polly_max_parallel_requests: int = 2
     polly_retry_attempts: int = 1

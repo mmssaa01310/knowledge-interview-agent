@@ -282,6 +282,8 @@ Schemaは`additionalProperties=false`を設定し、定義済みの全プロパ�
 
 `transcriptAssessment.rawTranscript`はBackendが受け取ったTranscribe結果を記録する。句読点・空白・明らかな表記揺れだけの補正は`correctionStatus=NONE`とし、意味を変える単語の補正は`CORRECTED`として`normalizedTranscript`と候補を返す。候補が一意でない場合は`UNCERTAIN`とし、補正前の文字列も補正候補も正式回答へ確定しない。`CORRECTED`の場合も、Backendが自然な補正候補を確認質問として提示し、対象者が肯定するまで状態を確定しない。
 
+`UNCERTAIN`の発話に補正対象とは独立した明確な項目が含まれる場合、その項目だけは`TENTATIVE`の候補として保持してよい。ただし、補正対象を値に含めず、現在の質問と次質問の選択は維持する。補正候補や曖昧な項目を正式回答へ進めてはならない。
+
 `UNCERTAIN`または補正候補が空の`CORRECTED`は再発話を依頼する。補正確認中は`pendingTranscriptConfirmation`を保持し、次のProfile対象へ進めない。補正候補を対象者が否定した場合は候補を破棄し、元の質問へ戻す。
 
 ### 7.1.2 回答充足性とProbe
@@ -308,7 +310,7 @@ OTHER
 
 Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistant発話、会話履歴を使用して行う。文字列一致や固定挨拶辞書で判定してはならない。
 
-`HESITATION`、`BACKCHANNEL`、`OTHER`は回答候補として適用せず、現在の質問と`questionId`を維持して短い促しだけを返す。このときQuestion Generator、検索、次質問対象の選択は実行しない。質問の意味が分からない発話は`CLARIFICATION_REQUEST`として、現在の質問に応じた「何について話すか」「具体例2〜3個」「回答時の観点」をLLMで生成して説明し、元の質問文や項目説明をそのまま読み上げない。STT補正の`UNCERTAIN`と混同してはならない。`UNANSWERABLE`または`REFUSAL`は一度だけ別角度の具体的な促しを返す。聞き取り失敗の応答は、`transcriptAssessment.correctionStatus="UNCERTAIN"`の場合だけ使用する。
+`HESITATION`、`BACKCHANNEL`、`OTHER`は回答候補として適用せず、現在の質問と`questionId`を維持して短い促しだけを返す。このときQuestion Generator、検索、次質問対象の選択は実行しない。質問の意味が分からない発話は`CLARIFICATION_REQUEST`として、現在の質問に応じた「何について話すか」「具体例1個」「回答時の観点」をLLMで生成して説明し、元の質問文や項目説明をそのまま読み上げない。利用者が追加の具体例を明示的に求めた場合だけ、具体例を最大3個まで追加する。STT補正の`UNCERTAIN`と混同してはならない。`UNANSWERABLE`または`REFUSAL`は一度だけ別角度の具体的な促しを返す。聞き取り失敗の応答は、`transcriptAssessment.correctionStatus="UNCERTAIN"`の場合だけ使用する。
 
 確認待ち候補に対する`CONFIRMATION`は、訂正・留保・追加条件を含まない明確な肯定の場合だけ確定できる。混在した確認発話は候補を確定せず、差分または訂正内容を確認する。
 

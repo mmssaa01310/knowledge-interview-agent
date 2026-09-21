@@ -82,6 +82,7 @@ class Settings:
     )
     polly_voice_id: str = os.getenv("POLLY_VOICE_ID", "Kazuha")
     polly_engine: str = os.getenv("POLLY_ENGINE", "neural")
+    polly_speech_rate: str = os.getenv("POLLY_SPEECH_RATE", "115%")
     polly_max_parallel_requests: int = int(
         os.getenv("POLLY_MAX_PARALLEL_REQUESTS", "2")
     )

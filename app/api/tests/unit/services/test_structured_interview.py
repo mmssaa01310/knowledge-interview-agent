@@ -39,6 +39,7 @@ from ai_interviewer_api.agents.interview_knowledge.service import (
     resolve_structured_model_id,
 )
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
+from ai_interviewer_api.core.interview_locale import localized_interview_question_guidance
 from ai_interviewer_api.models.interview_plan import (
     InterviewPlanItem,
     InterviewQuestionPlan,
@@ -267,6 +268,32 @@ def test_interpreter_prompt_separates_question_help_from_answer_unavailability()
     assert "UNANSWERABLE" in prompt
     assert "単に「よく分からない」とだけ言われた場合" in prompt
     assert "STTが不確実でない限りUNCERTAINにはしません" in prompt
+    assert "補正対象とは独立して明確に聞き取れた別の項目" in prompt
+
+
+def test_question_help_uses_one_example_unless_additional_examples_are_requested() -> None:
+    examples = ["最初の例", "追加の例1", "追加の例2"]
+    perspectives = ["時期や状況"]
+
+    default_reply = localized_interview_question_guidance(
+        "ja-JP",
+        topic="専門性につながった経験",
+        examples=examples,
+        perspectives=perspectives,
+    )
+    additional_reply = localized_interview_question_guidance(
+        "ja-JP",
+        topic="専門性につながった経験",
+        examples=examples,
+        perspectives=perspectives,
+        example_mode="additional",
+    )
+
+    assert "最初の例" in default_reply
+    assert "追加の例1" not in default_reply
+    assert "追加の例2" not in default_reply
+    assert "追加の例1" in additional_reply
+    assert "追加の例2" in additional_reply
 
 
 def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
@@ -3008,6 +3035,51 @@ def test_ambiguous_transcript_correction_requests_repetition_without_committing(
     assert result["interviewState"]["pendingTranscriptConfirmation"] is None
     assert result["interviewState"]["fieldStates"]["field-role"]["candidateAnswer"] is None
     assert result["interviewState"]["lastTranscriptAssessment"]["correctionStatus"] == "UNCERTAIN"
+
+
+def test_uncertain_transcript_keeps_clear_facts_as_tentative_candidates() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-uncertain-grounded-fact",
+        (("field-role", "現在の役割"), ("field-department", "部署")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                transcriptAssessment=TranscriptAssessment(
+                    correctionStatus="UNCERTAIN",
+                    correctionCandidates=["コード開発", "フロント開発"],
+                ),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        value="プロジェクトリーダー",
+                        evidenceTranscriptIds=["uncertain-grounded-answer"],
+                        answerResolution="TENTATIVE",
+                    )
+                ],
+            ),
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="uncertain-grounded-answer",
+        question=first["question"],
+        content=(
+            "現在の役割はプロジェクトリーダーです。"
+            "フォード開発やメンバーのプロジェクト管理を行っています。"
+        ),
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    field_state = result["interviewState"]["fieldStates"]["field-role"]
+    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert result["question"]["questionId"] == first["question"]["questionId"]
+    assert field_state["answerState"] == "CANDIDATE_PENDING"
+    assert field_state["candidateAnswer"] == "プロジェクトリーダー"
+    assert field_state["recordAnswer"] is None
 
 
 def test_multiple_corrected_candidates_are_not_confirmed_automatically() -> None:

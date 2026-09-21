@@ -67,6 +67,7 @@
   "voiceConnectFailed": "音声インタビューに接続できませんでした。",
   "audioPlaybackFailed": "音声を再生できませんでした。",
   "transcribeFailed": "音声を文字に変換できませんでした。",
+  "transcribeTimeout": "音声を確認できませんでした。もう一度お話しください。",
   "pollyFailed": "音声を準備できませんでした。",
   "voiceErrorWithMessage": "音声インタビューでエラーが発生しました: {message}",
   "voiceError": "音声インタビューでエラーが発生しました。"

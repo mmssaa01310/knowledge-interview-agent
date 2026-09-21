@@ -1513,6 +1513,16 @@ def _generate_structured_interview_result(
                 )
                 transcript_assessment_status = "UNCERTAIN"
             if transcript_assessment_status == "UNCERTAIN":
+                _apply_uncertain_grounded_updates(
+                    state=state,
+                    output=output,
+                    latest_message_id=latest_message_id,
+                    raw_transcript=raw_transcript,
+                    fields=fields,
+                    profile=profile,
+                    valid_evidence_ids=valid_evidence_ids,
+                    current_question=current_question,
+                )
                 return _keep_current_question(
                     record=record,
                     state=state,
@@ -1542,6 +1552,7 @@ def _generate_structured_interview_result(
                         reply = _render_question_explanation(
                             record_id=str(record.get("id") or ""),
                             current_question=current_question,
+                            latest_user_message=latest_user_message,
                             fields=fields,
                             locale=interview_locale,
                             knowledge=knowledge,
@@ -1619,6 +1630,7 @@ def _generate_structured_interview_result(
                     reply=_render_question_explanation(
                         record_id=str(record.get("id") or ""),
                         current_question=current_question,
+                        latest_user_message=latest_user_message,
                         fields=fields,
                         locale=interview_locale,
                         knowledge=knowledge,
@@ -2230,6 +2242,80 @@ def _generate_structured_interview_result(
             str(item.get("label") or item.get("targetId"))
             for item in completion["missingRequiredTargets"]
         ],
+    )
+
+
+def _apply_uncertain_grounded_updates(
+    *,
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    latest_message_id: str,
+    raw_transcript: str,
+    fields: Sequence[Mapping[str, Any]],
+    profile: InterviewProfile | None,
+    valid_evidence_ids: set[str],
+    current_question: Mapping[str, Any],
+) -> None:
+    """Keep independently clear facts as tentative while STT is uncertain.
+
+    An uncertain transcript must not advance the interview or confirm an
+    answer. It can still contain a separate, clearly grounded fact that is
+    useful on the next attempt. Store only those field/requirement updates as
+    tentative candidates; never apply process structure or applicability from
+    the same turn.
+    """
+
+    if (
+        output.utteranceCompleteness != "COMPLETE"
+        or output.answerAssessment.sufficiency
+        in {"INCOMPLETE", "UNANSWERABLE", "REFUSAL"}
+    ):
+        return
+    correction_candidates = {
+        str(candidate).strip()
+        for candidate in output.transcriptAssessment.correctionCandidates
+        if str(candidate).strip()
+    }
+    field_updates = [
+        update.model_copy(update={"answerResolution": "TENTATIVE"})
+        for update in output.fieldUpdates
+        if (
+            update.answerResolution == "TENTATIVE"
+            and update.candidateSource != "document_reference"
+            and update.value.strip() not in correction_candidates
+        )
+    ]
+    requirement_updates = [
+        update.model_copy(update={"answerResolution": "TENTATIVE"})
+        for update in output.requirementUpdates
+        if (
+            update.answerResolution == "TENTATIVE"
+            and update.candidateSource != "document_reference"
+            and update.value.strip() not in correction_candidates
+        )
+    ]
+    if not field_updates and not requirement_updates:
+        return
+    safe_output = output.model_copy(
+        update={
+            "fieldUpdates": field_updates,
+            "requirementUpdates": requirement_updates,
+            "processPatch": ProcessPatch(),
+            "applicability": [],
+            "contradictions": [],
+            "resolvedContradictionIds": [],
+            "openIssues": [],
+        }
+    )
+    apply_structured_output(
+        state,
+        safe_output,
+        latest_message_id=latest_message_id,
+        raw_transcript=raw_transcript,
+        fields=fields,
+        profile=profile,
+        valid_evidence_ids=valid_evidence_ids,
+        current_question=current_question,
     )
 
 
@@ -2875,6 +2961,7 @@ def _render_question_explanation(
     *,
     record_id: str,
     current_question: Mapping[str, Any],
+    latest_user_message: Mapping[str, Any],
     fields: Sequence[Mapping[str, Any]],
     locale: InterviewLocale,
     knowledge: Mapping[str, Any],
@@ -2900,6 +2987,11 @@ def _render_question_explanation(
         "recordTitle": knowledge.get("title"),
         "interviewLocale": locale,
         "languageInstruction": interview_language_instruction(locale),
+        "latestUserRequest": str(
+            latest_user_message.get("content")
+            or latest_user_message.get("rawTranscript")
+            or ""
+        ).strip(),
         "currentQuestion": {
             "questionId": current_question.get("questionId"),
             "targetType": target.get("targetType"),
@@ -2968,6 +3060,7 @@ def _render_question_explanation(
         topic=generated_help.topic,
         examples=generated_help.examples,
         perspectives=generated_help.perspectives,
+        example_mode=generated_help.exampleMode,
     )
     definition_after = _question_definition_for_question(current_question, fields)
     hash_after = _question_definition_hash(definition_after)
@@ -3034,19 +3127,19 @@ def _fallback_question_help(
             label = str(item.get("label") or item.get("description") or "").strip()
             if label and label not in labels:
                 labels.append(label)
-    examples = [f"{label}に関する具体的な状況や出来事" for label in labels[:3]]
+    examples = [f"{label}に関する具体的な状況や出来事" for label in labels[:1]]
     generic_examples = [
         f"{target_label}に関して印象に残っている経験",
         f"{target_label}が現在の仕事に影響したこと",
     ]
     for example in generic_examples:
-        if len(examples) >= 3:
+        if len(examples) >= 1:
             break
         if example not in examples:
             examples.append(example)
     return QuestionHelpOutput(
         topic=target_label.strip() or "このテーマ",
-        examples=examples[:3],
+        examples=examples[:1],
         perspectives=[
             "いつ・どのような状況だったか",
             "何をしたか、何が変わったか",

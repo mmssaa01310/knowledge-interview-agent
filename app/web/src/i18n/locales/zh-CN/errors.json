@@ -67,6 +67,7 @@
   "voiceConnectFailed": "无法连接语音访谈。",
   "audioPlaybackFailed": "无法播放音频。",
   "transcribeFailed": "无法将音频转换为文字。",
+  "transcribeTimeout": "未能听清您的回答，请再说一次。",
   "pollyFailed": "无法准备音频。",
   "voiceErrorWithMessage": "语音访谈发生错误：{message}",
   "voiceError": "语音访谈发生错误。"
