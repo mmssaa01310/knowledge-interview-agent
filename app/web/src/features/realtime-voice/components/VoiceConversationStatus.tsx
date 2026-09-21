@@ -16,7 +16,7 @@ export function VoiceConversationStatus(props: VoiceConversationStatusProps) {
   return (
     <div className={`voice-conversation-status ${props.status}`} role={props.status === "error" ? "alert" : "status"}>
       <span className="voice-status-icon">{statusIcon(props.status)}</span>
-      <span>{props.message || statusText(props.status, t)}</span>
+      <span className="voice-status-message">{props.message || statusText(props.status, t)}</span>
       {props.partialTranscript ? (
         <span className="voice-partial-transcript">{props.partialTranscript}</span>
       ) : null}
