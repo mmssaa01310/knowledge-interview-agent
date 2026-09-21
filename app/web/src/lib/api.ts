@@ -155,6 +155,9 @@ export type InterviewPlanItem = {
 export type InterviewQuestionPlan = {
   version?: number;
   purpose?: string | null;
+  questionGoal?: string | null;
+  preferredProbeDimensions?: string[];
+  maxProbeCount?: number;
   requiredItems: InterviewPlanItem[];
   optionalItems?: InterviewPlanItem[];
   completionCriteria?: { mode: "all_required_items" };

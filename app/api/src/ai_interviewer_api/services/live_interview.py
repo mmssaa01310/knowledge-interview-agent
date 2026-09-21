@@ -16,6 +16,7 @@ from ai_interviewer_api.services.ai_interview import (
     generate_interview_reply,
     get_interview_state_snapshot,
 )
+from ai_interviewer_api.agents.interview_knowledge.service import get_current_structured_question
 from ai_interviewer_api.services.prior_knowledge import build_prior_knowledge_context
 
 
@@ -226,17 +227,7 @@ def _delegation_client_message_id(delegation_id: str) -> str:
 
 
 def _current_question(state: Mapping[str, Any]) -> dict[str, Any] | None:
-    current_id = state.get("currentQuestionId")
-    if not current_id:
-        return None
-    return next(
-        (
-            dict(question)
-            for question in reversed(state.get("askedQuestions", []) or [])
-            if isinstance(question, Mapping) and question.get("questionId") == current_id
-        ),
-        None,
-    )
+    return get_current_structured_question(state)
 
 
 def _delegation_response(status: str, snapshot: Mapping[str, Any]) -> dict[str, Any]:

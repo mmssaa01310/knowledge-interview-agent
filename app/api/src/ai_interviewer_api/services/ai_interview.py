@@ -14,6 +14,7 @@ from typing import Any
 
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
+    get_current_structured_question,
     get_structured_interview_state_snapshot,
 )
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
@@ -125,14 +126,7 @@ def _resolve_text_turn_policy(
     state = snapshot.get("interviewState") or {}
     messages = snapshot.get("messages") or []
     current_question_id = state.get("currentQuestionId")
-    current_question = next(
-        (
-            question
-            for question in state.get("askedQuestions", [])
-            if question.get("questionId") == current_question_id
-        ),
-        None,
-    )
+    current_question = get_current_structured_question(state)
     if not isinstance(current_question, dict):
         return None
     latest_user_message = next(

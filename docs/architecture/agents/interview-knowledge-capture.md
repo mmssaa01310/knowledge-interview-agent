@@ -239,6 +239,12 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
 {
   "dialogueAct": "ANSWER",
   "answerEvaluation": "ANSWERED",
+  "answerStatus": "ANSWERED",
+  "probeDecision": "NONE",
+  "probeDimension": null,
+  "probeReason": null,
+  "probeQuestion": null,
+  "integratedAnswer": null,
   "utteranceCompleteness": "COMPLETE",
   "transcriptAssessment": {
     "rawTranscript": "",
@@ -295,6 +301,22 @@ Schemaは`additionalProperties=false`を設定し、定義済みの全プロパ�
 ### 7.1.2 回答充足性とProbe
 
 `answerAssessment.sufficiency`は`SUFFICIENT`、`PARTIAL`、`AMBIGUOUS`、`EXAMPLE_MISSING`、`REASON_MISSING`、`CRITERIA_MISSING`、`UNANSWERABLE`、`REFUSAL`、`INCOMPLETE`のいずれかとする。`SUFFICIENT`以外では`probeType`に不足部分だけを確認する方針を示す。Backendは`UNANSWERABLE`または`REFUSAL`に対して一度だけ中立的な再探索を行い、再度「特にない」などの回答があれば`NO_DETAIL`として次の対象へ進める。回答済みの部分を再質問してはならない。
+
+`answerStatus`と`probeDecision`は別の判定である。`answerEvaluation`は発話の種類や認識状態を表し、`answerStatus`は現在の基本質問への回答成立を表す。`probeDecision`は、回答が成立した後に、専門性・判断・行動・暗黙知を理解するための追加情報を1段だけ取得する価値があるかを表す。
+
+| 項目 | 値 | 意味 |
+|---|---|---|
+| `answerStatus` | `ANSWERED` | 基本質問に必要な情報が得られた。`probeDecision=PROBE`の場合だけ、同じ基本質問に子Probeを1問追加する |
+| `answerStatus` | `PARTIAL` | 関連情報は得られたが、設定された観点または必須情報が不足している。不足部分の補足を尋ねる |
+| `answerStatus` | `NOT_ANSWERED` | 質問の意味確認、聞き返し、脱線、発話途中などで回答として成立していない |
+| `probeDecision` | `NONE` | Probeを出さず、必要なら不足情報の補足後に次の基本質問へ進む |
+| `probeDecision` | `PROBE` | 回答は成立しているが、重要な判断・行動などを1問だけ深掘りする |
+
+`NOT_HEARD`は文字起こしの欠落・空文字・音声上の曖昧さという認識上の根拠がある場合だけ`answerStatus=NOT_ANSWERED`にする。認識済みの完結文の情報不足は`PARTIAL`であり、Probeや「聞き取れなかった」に変換してはならない。`INCOMPLETE_UTTERANCE`も`NOT_ANSWERED`として続きを促すが、情報量が少ないだけの完結文には使用しない。
+
+Probeを選ぶ場合は`probeDimension`に`JUDGMENT`、`ACTION`、`CONTEXT`、`RESULT`、`LEARNING`、`APPLICATION`、`PROBLEM`、`CRITERIA`、`EXCEPTION`等の観点を1つだけ設定し、`probeReason`は内部ログだけに保存する。質問文は1ターン1論点の短い文にし、「具体的に教えてください」を機械的に繰り返さない。質問の`questionPlan.questionGoal`と`preferredProbeDimensions`を優先するが、全質問をSTAR形式に固定しない。基本質問あたりのProbeはBackendで最大1件（`maxProbeCount`は0または1）に制限する。判断に迷う場合は`NONE`にする。
+
+Probeへの回答は新しいQuestion Master項目や`askedQuestions`の独立した質問として保存しない。親の`questionId`と`currentQuestionId`を維持し、状態上は`currentTurnType=PROBE`として扱う。Probe回答を受けた後に、基本回答とProbe回答を根拠に`integratedAnswer`を作成する。統合文に含めてよい事実は2つの回答に存在する内容だけで、LLMが新しい事実を補完してはならない。
 
 ### 7.1.3 共通の回答評価と次アクション
 
@@ -625,6 +647,7 @@ Backendは質問を発行するとき、`questionId`、`targetType`、`targetId`
 * `runtime`
 * `rawTranscript`、`finalTranscript`
 * `dialogueAct`、`answerEvaluation`
+* `answerStatus`、`probeDecision`、`probeDimension`、`currentTurnType`
 * `extractedFields`
 * Fieldごとの`answerState`、`answerResolution`、取得済みitem、不足item
 * `missingInformation`
@@ -633,6 +656,30 @@ Backendは質問を発行するとき、`questionId`、`targetType`、`targetId`
 * Interpreterが返した`llmOutput`の決定関連要約
 
 会話制御の`nextAction`は、`MOVE_NEXT`、`FOLLOW_UP`、`ASK_MISSING_INFORMATION`、`EXPLAIN_QUESTION`、`ASK_REPEAT`、`WAIT_FOR_CONTINUATION`、`APPLY_CORRECTION`、`REPEAT_CURRENT_QUESTION`、`KEEP_CURRENT_QUESTION`のいずれかとする。音声Runtimeはこの値を再解釈せず、音声入出力と表示へ引き継ぐ。
+
+#### 8.1.3 基本質問の回答とProbeの保存
+
+質問単位の回答整理は、既存の`InterviewState`内に次の形で保持する。別の質問マスターレコードや独立した右側カードは作成しない。
+
+```text
+questionAnswers[questionId]
+├ originalAnswer    # 基本質問への最初の回答。会話Evidence
+├ answer            # 基本回答とProbeを統合した現在の採用回答
+├ answerSource      # GENERATED または MANUAL
+├ probes[]
+│  ├ dimension
+│  ├ question
+│  ├ answer
+│  └ evidenceTranscriptIds[]
+├ answerStatus
+├ probeDecision
+├ probeCount
+└ probeStatus
+```
+
+基本回答を受けた時点で`originalAnswer`と`answer`を保存する。Probeを開始している間も`currentQuestionId`は親の基本質問IDのままとし、Probe回答を保存した後にだけ`answer`を更新する。`probeCount`は1を超えない。画面再読み込み時は`questionAnswers`、`fieldStates`、`activeProbeTarget`から同じProbe中の質問と統合回答を復元する。
+
+右側の基本質問カードには統合後の`answer`だけを通常表示し、Probeがある場合にだけ折りたたみの「深掘り 1件」を表示する。展開時はProbeの実際の質問と回答を表示する。手動編集は`answer`と`answerSource=MANUAL`だけを変更し、`originalAnswer`と`probes[]`を変更しない。後続の回答処理も手動編集済みの`answer`を自動統合で上書きしてはならない。
 
 ### 8.2 FieldState
 
@@ -830,6 +877,8 @@ Backendは、次の優先順位を上から順に評価し、最初に該当し�
 6. 同じ優先度の候補が複数ある場合も、Backendが1件に決定する。
 
 LLMは、質問対象の選択、優先順位の変更、完了判定を行ってはならない。
+
+基本質問への回答が成立していても、`probeDecision=PROBE`の場合は次の基本質問へ進む前に親の`questionId`へ紐付くProbeを1問だけ発行する。Probe中は基本質問の状態と`currentQuestionId`を変更せず、`currentTurnType=PROBE`とする。`clarification`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、不足必須項目の補足は回答成立前の会話制御であり、意味のあるProbeとして扱わない。追加情報があるだけでProbeを発行せず、専門性・判断・行動・暗黙知の理解に重要な不足がある場合だけ発行する。
 
 ### 11.2 確認回答と質問の重複防止
 
@@ -1103,6 +1152,9 @@ sequenceDiagram
 * 1発話から判定可能な情報をすべて抽出する。
 * `unknown`と`not_applicable`を区別する。
 * 候補を確定済みとして返さない。
+* `answerStatus`と`probeDecision`を別々に判定する。
+* 回答が認識できているのに不足しているだけの発話を`NOT_HEARD`にしない。
+* Probeを返す場合も、現在のQuestion Master項目を変更せず、短い1論点の質問と根拠を返す。
 * 指定されたJSON Schemaだけを返す。
 * 図コード、座標、表示情報を返さない。
 
@@ -1113,6 +1165,8 @@ Profileごとのプロンプトは、収集対象と例を指定する。
 * `fixed_form`はFieldの説明とQuestionPlanを指定する。
 * `business_process`はProcessStateの要素、Applicability、詳細項目を指定する。
 * `system_requirement`はRequirementStateを必須とし、Processの存在確認を指定する。
+
+QuestionPlanには必要に応じて`questionGoal`、`preferredProbeDimensions`、`maxProbeCount`を設定できる。`questionGoal`は質問で理解したい目的、`preferredProbeDimensions`は不足時に優先する観点、`maxProbeCount`はその基本質問に許可するProbe数を表す。Backendは上限を1に制限し、質問マスターの項目数や順序は変更しない。
 
 Profileプロンプトは、Backendの完了条件と質問優先順位を変更してはならない。
 
@@ -1150,6 +1204,10 @@ Profileプロンプトは、Backendの完了条件と質問優先順位を変更
 実装では、直近のInterpreterについて`lastStructuredModelId`と`lastStructuredReasoningEffort`、直近の質問生成について`lastQuestionModelId`と`lastQuestionReasoningEffort`を`InterviewState`に保存する。
 
 Interpreterの出力は、Backendの検証後に候補状態へ反映する。検証前の生JSONを正式状態へ保存してはならない。
+
+基本質問の回答は、`questionAnswers[questionId].originalAnswer`へEvidenceとして保存し、同じ内容を`answer`へ初期値として保存する。Probeを実施した場合は、Probeの質問・回答・根拠を`probes[]`へ追加し、元回答とProbe回答だけから`answer`を再生成する。`integratedAnswer`が入力回答にない事実を含む場合は採用せず、Backend側の保守的な統合結果を使用する。Probe回答は親の`questionId`へ紐付け、基本質問のマスターや一覧には追加しない。
+
+右側の回答を手動編集した場合は、採用回答の`answer`と`answerSource=MANUAL`だけを更新する。`originalAnswer`、`probes[]`、根拠メッセージは会話Evidenceとして変更しない。以後の自動統合では`answerSource=MANUAL`を尊重し、手動回答を上書きしない。
 
 ### 15.2 AI提案
 

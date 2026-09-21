@@ -188,5 +188,9 @@ def test_complete_answer_moves_to_another_target_without_reasking() -> None:
     assert result["answerEvaluation"] == "ANSWERED"
     assert result["nextAction"] == "MOVE_NEXT"
     assert result["interviewState"]["fieldStates"]["field-role"]["answerState"] == "CONFIRMED"
+    question_answer = result["interviewState"]["questionAnswers"][first["question"]["questionId"]]
+    assert question_answer["originalAnswer"] == "プロジェクトリーダーです。"
+    assert question_answer["answer"] == "プロジェクトリーダーです。"
+    assert question_answer["probes"] == []
     assert result["nextQuestionTarget"]["targetId"] != "field-role"
     assert "続き、お願いします" not in result["reply"]

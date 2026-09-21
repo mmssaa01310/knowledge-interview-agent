@@ -25,6 +25,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     enqueue_clarification_request,
     is_current_question_confirmation_target,
     register_probe,
+    MAX_PROBE_COUNT,
     process_patch_validation_errors,
     record_interpretation_assessment,
     resolve_profile,
@@ -703,7 +704,9 @@ def start_fast_interview_turn(
         provisional_state.setdefault("askedQuestions", []).append(question)
         provisional_state["currentFieldId"] = question.get("fieldId")
         provisional_state["currentQuestionId"] = question["questionId"]
+        provisional_state["currentTurnType"] = "BASIC"
         provisional_state["nextQuestionTarget"] = target
+        _ensure_question_answer_record(provisional_state, question)
         provisional_state = commit_foreground_provisional_state(
             provisional_state,
             user,
@@ -1325,6 +1328,14 @@ def _generate_structured_interview_result(
     if _repair_current_confirmation_question(state, locale=interview_locale):
         _persist_state(state, user, persist=persist_state)
         current_question = _get_current_question(state)
+    probe_turn = bool(
+        current_question
+        and current_question.get("turnType") == "PROBE"
+        and state.get("currentTurnType") == "PROBE"
+    )
+    active_probe_for_turn = (
+        deepcopy(state.get("activeProbeTarget")) if probe_turn else None
+    )
     latest_user_message = _latest_answer_message(messages, current_question)
     last_processed_id = state.get("lastProcessedUserMessageId")
     answer_state_before = (
@@ -1891,6 +1902,7 @@ def _generate_structured_interview_result(
 
             keep_current_question_for_unanswerable = False
             applied_topics: list[str] = []
+            probe_target: dict[str, Any] | None = None
             if output.dialogueAct in {
                 "ANSWER",
                 "CORRECTION",
@@ -1903,14 +1915,46 @@ def _generate_structured_interview_result(
                     current_target = _target_from_question(current_question)
                     answer_sufficiency = output.answerAssessment.sufficiency
                     answer_needs_follow_up = (
-                        output.answerEvaluation == "PARTIALLY_ANSWERED"
+                        output.answerStatus != "ANSWERED"
+                        or output.answerEvaluation == "PARTIALLY_ANSWERED"
                         or answer_sufficiency != "SUFFICIENT"
                     )
-                    if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                    explicit_probe_requested = (
+                        not probe_turn
+                        and output.answerStatus == "ANSWERED"
+                        and output.probeDecision == "PROBE"
+                        and _probe_limit_for_question(current_question) > 0
+                        and current_target is not None
+                    )
+                    if explicit_probe_requested:
+                        existing_answer = _ensure_question_answer_record(
+                            state,
+                            current_question,
+                        )
+                        if existing_answer is None or int(existing_answer.get("probeCount") or 0) < _probe_limit_for_question(current_question):
+                            probe_target = current_target
+                    if (
+                        not probe_turn
+                        and current_target is not None
+                        and raw_transcript
+                        and output.answerStatus != "NOT_ANSWERED"
+                        and answer_sufficiency not in {"UNANSWERABLE", "REFUSAL"}
+                    ):
+                        _record_basic_answer(
+                            state,
+                            current_question,
+                            transcript=raw_transcript,
+                            output=output,
+                        )
+                    if output.answerStatus == "NOT_ANSWERED":
                         output_to_apply = output.model_copy(
                             update={"fieldUpdates": [], "requirementUpdates": []}
                         )
-                    elif answer_needs_follow_up:
+                    elif answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                        output_to_apply = output.model_copy(
+                            update={"fieldUpdates": [], "requirementUpdates": []}
+                        )
+                    elif answer_needs_follow_up or probe_target is not None:
                         output_to_apply = _downgrade_current_target_update(
                             output,
                             current_target,
@@ -1934,7 +1978,30 @@ def _generate_structured_interview_result(
                         state,
                     ):
                         confirm_tentative_target(state, tentative_target_before)
-                    if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                    if probe_turn:
+                        # A probe is deliberately bounded. Its answer is
+                        # evidence for the parent question, never a reason to
+                        # schedule another probe for the same parent.
+                        if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                            if current_target is not None:
+                                confirm_tentative_target(state, current_target)
+                        elif current_target is not None and _field_target_is_complete(
+                            state,
+                            current_target,
+                        ):
+                            confirm_tentative_target(state, current_target)
+                        if active_probe_for_turn is not None:
+                            _record_probe_answer(
+                                state,
+                                current_question,
+                                active_probe=active_probe_for_turn,
+                                transcript=raw_transcript,
+                                message_id=latest_message_id,
+                                output=output,
+                            )
+                        clear_probe(state, current_target)
+                        state["currentTurnType"] = "BASIC"
+                    elif answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
                         if current_question.get("optionalDeepening"):
                             # Optional deepening is deliberately bounded to one
                             # attempt. A refusal or no-detail response ends the
@@ -1963,17 +2030,20 @@ def _generate_structured_interview_result(
                                     probe_type=output.answerAssessment.probeType,
                                 )
                                 keep_current_question_for_unanswerable = True
+                    elif probe_target is not None:
+                        # The child probe is registered exactly once by
+                        # _start_probe_question below. Do not also increment
+                        # the legacy missing-information counter here.
+                        pass
                     elif answer_needs_follow_up:
                         optional_target = select_optional_deepening_target(
                             state,
                             current_target,
                         )
                         if optional_target is not None:
-                            register_probe(
-                                state,
-                                target=optional_target,
-                                probe_type=output.answerAssessment.probeType,
-                            )
+                            # Legacy optionalItems are now represented by the
+                            # same child-probe record as explicit PROBE output.
+                            probe_target = optional_target
                         elif current_question.get("optionalDeepening"):
                             # Do not turn one optional probe into a loop when
                             # the answer remains vague or contains no new detail.
@@ -1995,8 +2065,11 @@ def _generate_structured_interview_result(
                             )
                     else:
                         clear_probe(state, current_target)
+                        state["currentTurnType"] = "BASIC"
                         if current_question.get("optionalDeepening"):
                             confirm_tentative_target(state, current_target)
+                    if not probe_turn:
+                        _sync_question_answer_to_target(state, current_question)
                     if persist_state:
                         _save_newly_confirmed_field_messages(
                             record=record,
@@ -2083,6 +2156,42 @@ def _generate_structured_interview_result(
             state["lastStructuredOutput"] = output.model_dump()
             state["lastStructuredModelId"] = model_id
             state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+            if (
+                probe_target is not None
+                and not probe_turn
+                and current_question.get("targetType") != "closing"
+                and _probe_limit_for_question(current_question) > 0
+            ):
+                probe_question, probe_assistant_message, probe_messages = _start_probe_question(
+                    state=state,
+                    base_question=current_question,
+                    target=probe_target,
+                    output=output,
+                    record=record,
+                    knowledge=knowledge,
+                    user=user,
+                    fields=fields,
+                    profile=profile,
+                    messages=messages,
+                    provider=structured_provider,
+                    persist_assistant_messages=persist_assistant_messages,
+                    persist_state=persist_state,
+                    latency_metrics=latency_metrics,
+                    user_record_id=str(record["id"]),
+                    on_question_delta=on_question_delta,
+                )
+                return _build_result(
+                    record=record,
+                    state=state,
+                    messages=probe_messages,
+                    fields=fields,
+                    reply=str(probe_question.get("text") or ""),
+                    question=probe_question,
+                    action="ask_follow_up",
+                    status="in_progress",
+                    assistant_message=probe_assistant_message,
+                    missing_information=list(output.missingInformation),
+                )
             if keep_current_question_for_unanswerable and current_question.get("targetType") != "closing":
                 _persist_state(state, user, persist=persist_state)
                 return _build_result(
@@ -2340,8 +2449,10 @@ def _generate_structured_interview_result(
     state.pop("questionGenerationPending", None)
     state["currentFieldId"] = question.get("fieldId")
     state["currentQuestionId"] = question["questionId"]
+    state["currentTurnType"] = "BASIC"
     state["nextQuestionTarget"] = target
     state.setdefault("askedQuestions", []).append(question)
+    _ensure_question_answer_record(state, question)
     if question.get("fieldId"):
         state.setdefault("fieldStates", {}).setdefault(
             question["fieldId"],
@@ -2580,13 +2691,17 @@ def preview_structured_interview_output(
         else _get_current_question(state)
     )
     if answer_to_question_id:
-        requested_question = next(
-            (
-                question
-                for question in state.get("askedQuestions", [])
-                if question.get("questionId") == answer_to_question_id
-            ),
-            None,
+        requested_question = (
+            get_current_structured_question(state)
+            if state.get("currentQuestionId") == answer_to_question_id
+            else next(
+                (
+                    question
+                    for question in state.get("askedQuestions", [])
+                    if question.get("questionId") == answer_to_question_id
+                ),
+                None,
+            )
         )
         if requested_question is not None:
             current_question = requested_question
@@ -2740,6 +2855,7 @@ def _backfill_state(
             applicability_states[topic] = applicability_state
             changed = True
     changed |= sync_structured_state_fields(state, fields)
+    changed |= _sync_question_answer_records(state)
     if state.get("interviewProfile") != profile:
         state["interviewProfile"] = profile
         changed = True
@@ -2774,17 +2890,521 @@ def _list_record_messages(record: Mapping[str, Any], user: UserContext) -> list[
     )
 
 
-def _get_current_question(state: Mapping[str, Any]) -> dict[str, Any] | None:
+def get_current_structured_question(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the basic question or its active child probe.
+
+    A probe deliberately keeps the parent's questionId.  Transport runtimes
+    can therefore use one answer-to-question contract while the state still
+    exposes the probe wording after a reconnect.
+    """
+
     question_id = state.get("currentQuestionId")
     if not question_id:
         return None
-    return next(
+    question = next(
         (
-            question
+            deepcopy(question)
             for question in state.get("askedQuestions", [])
             if question.get("questionId") == question_id
         ),
         None,
+    )
+    if question is None:
+        return None
+    active_probe = state.get("activeProbeTarget")
+    if (
+        state.get("currentTurnType") != "PROBE"
+        or not isinstance(active_probe, Mapping)
+        or active_probe.get("probeMode") != "PROBE"
+    ):
+        return question
+    probe_text = str(active_probe.get("probeQuestion") or "").strip()
+    if not probe_text:
+        return question
+    question.update(
+        {
+            "questionType": "follow_up",
+            "turnType": "PROBE",
+            "parentQuestionId": str(question.get("questionId") or ""),
+            "text": probe_text,
+            "renderedQuestionText": probe_text,
+            "probeDimension": active_probe.get("probeDimension"),
+            "probeReason": active_probe.get("probeReason"),
+            "probeCount": active_probe.get("probeCount", 1),
+            "probeStatus": "PENDING",
+        }
+    )
+    for key in (
+        "targetType",
+        "targetId",
+        "targetLabel",
+        "fieldId",
+        "missingItemIds",
+        "missingItems",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
+    ):
+        if key in active_probe:
+            question[key] = deepcopy(active_probe[key])
+    return question
+
+
+def _get_current_question(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the mutable persisted basic question for internal state repair.
+
+    The public helper returns a defensive copy so transport callers can render
+    a child Probe without mutating the state snapshot. Internal migration and
+    confirmation repair still need the original question mapping.
+    """
+
+    question_id = state.get("currentQuestionId")
+    if not question_id:
+        return None
+    question = next(
+        (
+            question
+            for question in state.get("askedQuestions", [])
+            if isinstance(question, dict) and question.get("questionId") == question_id
+        ),
+        None,
+    )
+    if question is None:
+        return None
+    if state.get("currentTurnType") == "PROBE":
+        return get_current_structured_question(state)
+    return question
+
+
+def _new_question_answer_record(question: Mapping[str, Any]) -> dict[str, Any]:
+    question_id = str(question.get("questionId") or "")
+    return {
+        "questionId": question_id,
+        "fieldId": question.get("fieldId"),
+        "targetType": question.get("targetType"),
+        "targetId": question.get("targetId"),
+        "originalAnswer": None,
+        "answer": None,
+        "answerSource": "GENERATED",
+        "probes": [],
+        "answerStatus": "NOT_ANSWERED",
+        "probeDecision": "NONE",
+        "probeCount": 0,
+        "probeStatus": "NONE",
+        "coveredTopics": [],
+        "askedProbeTopics": [],
+        "missingInformation": [],
+        "updatedAt": utc_now(),
+    }
+
+
+def _ensure_question_answer_record(
+    state: dict[str, Any],
+    question: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(question, Mapping):
+        return None
+    question_id = str(question.get("questionId") or "").strip()
+    if not question_id:
+        return None
+    records = state.setdefault("questionAnswers", {})
+    if not isinstance(records, dict):
+        records = {}
+        state["questionAnswers"] = records
+    record = records.setdefault(question_id, _new_question_answer_record(question))
+    if not isinstance(record, dict):
+        record = _new_question_answer_record(question)
+        records[question_id] = record
+    for key in ("fieldId", "targetType", "targetId"):
+        if record.get(key) is None and question.get(key) is not None:
+            record[key] = deepcopy(question.get(key))
+    record.setdefault("probes", [])
+    record.setdefault("askedProbeTopics", [])
+    record.setdefault("coveredTopics", [])
+    record.setdefault("missingInformation", [])
+    return record
+
+
+def _sync_question_answer_records(state: dict[str, Any]) -> bool:
+    changed = False
+    for question in state.get("askedQuestions", []) or []:
+        if not isinstance(question, Mapping):
+            continue
+        question_id = str(question.get("questionId") or "").strip()
+        records = state.setdefault("questionAnswers", {})
+        before = records.get(question_id) if isinstance(records, dict) else None
+        record = _ensure_question_answer_record(state, question)
+        if record is not None and before is None:
+            changed = True
+    return changed
+
+
+def _probe_limit_for_question(question: Mapping[str, Any] | None) -> int:
+    if not isinstance(question, Mapping):
+        return MAX_PROBE_COUNT
+    definition = question.get("questionDefinition")
+    plan = definition.get("questionPlan") if isinstance(definition, Mapping) else None
+    raw_limit = (
+        plan.get("maxProbeCount")
+        if isinstance(plan, Mapping)
+        else question.get("maxProbeCount", MAX_PROBE_COUNT)
+    )
+    try:
+        return max(0, min(int(raw_limit), MAX_PROBE_COUNT))
+    except (TypeError, ValueError):
+        return MAX_PROBE_COUNT
+
+
+def _probe_dimension_for_output(
+    output: StructuredInterviewOutput,
+    question: Mapping[str, Any] | None,
+) -> str:
+    if output.probeDimension:
+        return str(output.probeDimension)
+    assessment_to_dimension = {
+        "REASON": "JUDGMENT",
+        "CRITERIA": "JUDGMENT",
+        "EXAMPLE": "ACTION",
+        "REFRAME": "CONTEXT",
+    }
+    legacy = assessment_to_dimension.get(output.answerAssessment.probeType)
+    if legacy:
+        return legacy
+    definition = question.get("questionDefinition") if isinstance(question, Mapping) else None
+    plan = definition.get("questionPlan") if isinstance(definition, Mapping) else None
+    preferred = plan.get("preferredProbeDimensions") if isinstance(plan, Mapping) else None
+    if isinstance(preferred, Sequence) and not isinstance(preferred, (str, bytes)):
+        for value in preferred:
+            if str(value).strip():
+                return str(value).strip().upper()
+    return "OTHER"
+
+
+def _record_basic_answer(
+    state: dict[str, Any],
+    question: Mapping[str, Any],
+    *,
+    transcript: str,
+    output: StructuredInterviewOutput,
+) -> dict[str, Any] | None:
+    """Store the first answer as evidence without collapsing probe state."""
+
+    if not transcript.strip():
+        return None
+    record = _ensure_question_answer_record(state, question)
+    if record is None:
+        return None
+    if record.get("originalAnswer") is None or output.answerEvaluation == "CORRECTION":
+        record["originalAnswer"] = transcript.strip()
+    if record.get("answerSource") != "MANUAL":
+        record["answer"] = transcript.strip()
+    record["answerStatus"] = output.answerStatus
+    record["probeDecision"] = output.probeDecision
+    record["missingInformation"] = list(output.missingInformation)
+    record["updatedAt"] = utc_now()
+    field_id = str(question.get("fieldId") or "").strip()
+    if field_id:
+        field_state = state.get("fieldStates", {}).get(field_id)
+        if isinstance(field_state, dict):
+            field_state["originalAnswer"] = record.get("originalAnswer")
+            field_state["answer"] = record.get("answer")
+            field_state["answerSource"] = record.get("answerSource", "GENERATED")
+            field_state["answerStatus"] = output.answerStatus
+            field_state["probeDecision"] = output.probeDecision
+            field_state["missingInformation"] = list(output.missingInformation)
+    return record
+
+
+def _sync_question_answer_to_target(
+    state: dict[str, Any],
+    question: Mapping[str, Any],
+    *,
+    force_record_answer: bool = False,
+) -> None:
+    record = _ensure_question_answer_record(state, question)
+    if record is None:
+        return
+    target_type = str(question.get("targetType") or "")
+    target_id = str(question.get("targetId") or "")
+    if target_type == "field":
+        field_state = state.get("fieldStates", {}).get(target_id)
+        if isinstance(field_state, Mapping):
+            field_state = field_state  # type narrowing for the mutable mapping below
+            adopted = str(
+                field_state.get("recordAnswer")
+                or field_state.get("candidateAnswer")
+                or record.get("answer")
+                or ""
+            ).strip()
+            if (
+                adopted
+                and not record.get("probes")
+                and not record.get("answer")
+                and record.get("answerSource") != "MANUAL"
+            ):
+                record["answer"] = adopted
+            if adopted and (
+                force_record_answer
+                or (
+                    field_state.get("answerState") == "CONFIRMED"
+                    and not field_state.get("recordAnswer")
+                )
+            ) and record.get("answerSource") != "MANUAL":
+                field_state["recordAnswer"] = str(record.get("answer") or adopted)
+    field_state = (
+        state.get("fieldStates", {}).get(target_id)
+        if target_type == "field"
+        else None
+    )
+    if isinstance(field_state, dict):
+        field_state["originalAnswer"] = record.get("originalAnswer")
+        field_state["answer"] = record.get("answer")
+        field_state["answerSource"] = record.get("answerSource", "GENERATED")
+        field_state["probes"] = deepcopy(record.get("probes") or [])
+        field_state["answerStatus"] = record.get("answerStatus", "NOT_ANSWERED")
+        field_state["probeDecision"] = record.get("probeDecision", "NONE")
+        field_state["probeCount"] = int(record.get("probeCount") or 0)
+        field_state["probeStatus"] = record.get("probeStatus", "NONE")
+
+
+def _record_probe_answer(
+    state: dict[str, Any],
+    question: Mapping[str, Any],
+    *,
+    active_probe: Mapping[str, Any],
+    transcript: str,
+    message_id: str,
+    output: StructuredInterviewOutput,
+) -> dict[str, Any] | None:
+    record = _ensure_question_answer_record(state, question)
+    if record is None:
+        return None
+    answer = transcript.strip()
+    if not answer:
+        return record
+    probe_question = str(
+        active_probe.get("probeQuestion")
+        or question.get("text")
+        or ""
+    ).strip()
+    dimension = str(active_probe.get("probeDimension") or "OTHER")
+    probes = record.setdefault("probes", [])
+    probe = {
+        "type": "probe",
+        "dimension": dimension,
+        "question": probe_question,
+        "answer": answer,
+        "evidenceTranscriptIds": [message_id] if message_id else [],
+        "answerStatus": output.answerStatus,
+    }
+    if output.dialogueAct == "CORRECTION" and probes:
+        previous_probe = probes[-1]
+        previous_probe["answer"] = answer
+        previous_probe["answerStatus"] = output.answerStatus
+        previous_probe["evidenceTranscriptIds"] = [
+            *dict.fromkeys(
+                [
+                    *previous_probe.get("evidenceTranscriptIds", []),
+                    *probe["evidenceTranscriptIds"],
+                ]
+            )
+        ]
+    else:
+        probes.append(probe)
+    record["probeCount"] = len(probes)
+    record["probeStatus"] = "COMPLETED"
+    record["askedProbeTopics"] = [
+        *dict.fromkeys(
+            [*record.get("askedProbeTopics", []), dimension]
+        )
+    ]
+    original = str(record.get("originalAnswer") or "").strip()
+    integrated = str(output.integratedAnswer or "").strip()
+    if output.answerAssessment.sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+        integrated = original
+    elif (
+        not integrated
+        or not _integrated_answer_is_grounded(integrated, original, answer)
+    ):
+        integrated = " ".join(value for value in (original, answer) if value).strip()
+    if integrated and record.get("answerSource") != "MANUAL":
+        record["answer"] = integrated
+    record["answerStatus"] = "ANSWERED"
+    record["probeDecision"] = "NONE"
+    if record.get("answerSource") != "MANUAL":
+        record["answerSource"] = "GENERATED"
+    record["updatedAt"] = utc_now()
+    _sync_question_answer_to_target(state, question, force_record_answer=True)
+    return record
+
+
+def _integrated_answer_is_grounded(
+    integrated: str,
+    original: str,
+    probe_answer: str,
+) -> bool:
+    """Reject an integration that has no lexical evidence from either source."""
+
+    def fragments(value: str) -> list[str]:
+        compact = re.sub(r"\s+", "", value)
+        if len(compact) <= 3:
+            return [compact] if compact else []
+        return [compact[index : index + 3] for index in range(0, len(compact) - 2, 2)]
+
+    return bool(
+        any(fragment in integrated for fragment in fragments(original))
+        and any(fragment in integrated for fragment in fragments(probe_answer))
+    )
+
+
+def _probe_fallback_question(dimension: str, target: Mapping[str, Any]) -> str:
+    label = str(target.get("label") or "この内容").strip()
+    return {
+        "JUDGMENT": "そのとき、何を根拠にその判断をしましたか？",
+        "ACTION": "その中で、ご自身が工夫したことを一つ教えてください。",
+        "CONTEXT": f"その判断や対応が必要になった状況を、{label}に沿って教えてください。",
+        "RESULT": "その対応の結果、何が変わりましたか？",
+        "LEARNING": "その経験から、現在の仕事に生かしていることは何ですか？",
+        "APPLICATION": "その経験で得たことを、現在はどのように生かしていますか？",
+        "PROBLEM": "そのとき、どのような課題に直面しましたか？",
+        "CRITERIA": "その際、どのような基準で判断しましたか？",
+        "EXCEPTION": "通常と異なる点や例外はありましたか？",
+    }.get(dimension, f"{label}について、特に重要な点を一つ教えてください。")
+
+
+def _build_probe_question(
+    base_question: Mapping[str, Any],
+    active_probe: Mapping[str, Any],
+    text: str,
+) -> dict[str, Any]:
+    question = deepcopy(dict(base_question))
+    question.update(
+        {
+            "questionType": "follow_up",
+            "turnType": "PROBE",
+            "parentQuestionId": base_question.get("questionId"),
+            "text": text,
+            "renderedQuestionText": text,
+            "probeDimension": active_probe.get("probeDimension"),
+            "probeReason": active_probe.get("probeReason"),
+            "probeCount": active_probe.get("probeCount", 1),
+            "probeStatus": "PENDING",
+        }
+    )
+    for key in (
+        "targetType",
+        "targetId",
+        "targetLabel",
+        "fieldId",
+        "missingItemIds",
+        "missingItems",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
+    ):
+        if key in active_probe:
+            question[key] = deepcopy(active_probe[key])
+    return question
+
+
+def _start_probe_question(
+    *,
+    state: dict[str, Any],
+    base_question: Mapping[str, Any],
+    target: Mapping[str, Any],
+    output: StructuredInterviewOutput,
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    fields: Sequence[Mapping[str, Any]],
+    profile: InterviewProfile,
+    messages: Sequence[Mapping[str, Any]],
+    provider: StructuredInterviewProvider,
+    persist_assistant_messages: bool,
+    persist_state: bool,
+    latency_metrics: dict[str, float],
+    user_record_id: str,
+    on_question_delta: Callable[[str], None] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]]]:
+    dimension = _probe_dimension_for_output(output, base_question)
+    register_probe(
+        state,
+        target=target,
+        probe_type=output.answerAssessment.probeType,
+    )
+    active_probe = state.get("activeProbeTarget")
+    if not isinstance(active_probe, dict):
+        active_probe = dict(target)
+        active_probe["probeCount"] = 1
+        state["activeProbeTarget"] = active_probe
+    active_probe.update(
+        {
+            "probeMode": "PROBE",
+            "probeDimension": dimension,
+            "probeReason": output.probeReason,
+            "parentQuestionId": base_question.get("questionId"),
+        }
+    )
+    question_text = str(output.probeQuestion or "").strip()
+    if not question_text:
+        question_text = _probe_fallback_question(dimension, target)
+        # Let the question generator replace only the generic fallback when it
+        # can ground the wording in the configured question and answer state.
+        try:
+            generated, _, _ = _generate_question_text(
+                provider,
+                profile=profile,
+                target=target,
+                record=record,
+                knowledge=knowledge,
+                user=user,
+                fields=fields,
+                state=state,
+                messages=messages,
+                latency_metrics=latency_metrics,
+                speculative_retrieval=None,
+                on_question_delta=on_question_delta,
+            )
+            if str(generated or "").strip():
+                question_text = str(generated).strip()
+        except Exception:  # noqa: BLE001 - fallback wording keeps the turn usable
+            logger.exception("probe_question_generation_failed target=%s", target_key(target))
+    active_probe["probeQuestion"] = question_text
+    active_probe["probeCount"] = int(active_probe.get("probeCount") or 1)
+    state["currentTurnType"] = "PROBE"
+    state["currentQuestionId"] = base_question.get("questionId")
+    state["currentFieldId"] = base_question.get("fieldId")
+    state["nextQuestionTarget"] = deepcopy(dict(target))
+    question = _build_probe_question(base_question, active_probe, question_text)
+    question_answer = _ensure_question_answer_record(state, base_question)
+    if question_answer is not None:
+        question_answer["probeDecision"] = "PROBE"
+        question_answer["probeStatus"] = "PENDING"
+        question_answer["probeCount"] = int(active_probe.get("probeCount") or 1)
+        question_answer["askedProbeTopics"] = [
+            *dict.fromkeys(
+                [*question_answer.get("askedProbeTopics", []), dimension]
+            )
+        ]
+        question_answer["updatedAt"] = utc_now()
+    assistant_message = (
+        _save_assistant_message(
+            user,
+            user_record_id,
+            question_text,
+            question,
+            message_id=(
+                f"structured-probe-msg-{user_record_id}-"
+                f"{base_question.get('questionId')}-{active_probe.get('probeCount', 1)}"
+            ),
+        )
+        if persist_assistant_messages
+        else None
+    )
+    if persist_state:
+        _persist_state(state, user, persist=True, source="structured_probe_started")
+    return question, assistant_message, (
+        [*messages, assistant_message] if assistant_message else list(messages)
     )
 
 
@@ -2854,6 +3474,10 @@ def _build_interpreter_context(
         "currentQuestion": dict(current_question),
         "currentAnswer": latest_utterance,
         "questionPurpose": question_definition.get("purpose"),
+        "questionGoal": question_definition.get("questionGoal"),
+        "preferredProbeDimensions": list(
+            question_definition.get("preferredProbeDimensions") or []
+        ),
         "requiredAspects": [
             *question_definition.get("requiredItems", []),
             *question_definition.get("optionalItems", []),
@@ -2861,6 +3485,15 @@ def _build_interpreter_context(
         "acquiredInformation": acquired_information,
         "missingInformation": missing_information,
         "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "answerStatus": state.get("lastAnswerStatus"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "probeDimension": state.get("lastProbeDimension"),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
+        "questionAnswer": (
+            state.get("questionAnswers", {}).get(current_question.get("questionId"))
+            if isinstance(state.get("questionAnswers"), Mapping)
+            else None
+        ),
         "sameQuestionAskedBefore": same_question_asked_before,
         "interviewState": _compact_state(state),
         "latestUtterance": latest_utterance,
@@ -3036,10 +3669,14 @@ def _question_generator_state_context(state: Mapping[str, Any]) -> dict[str, Any
         "closingState": state.get("closingState"),
         "answerAssessment": state.get("lastAnswerAssessment"),
         "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "answerStatus": state.get("lastAnswerStatus"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
         "missingInformation": list(state.get("lastMissingInformation") or []),
         "extractedFields": list(state.get("lastExtractedFields") or []),
         "nextAction": state.get("lastNextAction"),
         "activeProbe": state.get("activeProbeTarget"),
+        "questionAnswers": state.get("questionAnswers", {}),
         "tentativeCandidates": _list_tentative_candidates(state),
     }
 
@@ -3185,6 +3822,9 @@ def _question_definition_context(
         "originalQuestion": original_question,
         "description": description,
         "purpose": plan.get("purpose"),
+        "questionGoal": plan.get("questionGoal"),
+        "preferredProbeDimensions": list(plan.get("preferredProbeDimensions") or []),
+        "maxProbeCount": plan.get("maxProbeCount", MAX_PROBE_COUNT),
         "required": required,
         "optional": optional,
         "requiredItems": required_items,
@@ -3422,13 +4062,17 @@ def _fallback_question_help(
                 labels.append(label)
     examples = [
         f"{label}について、実際に起きた状況や出来事"
-        for label in labels[:1]
+        for label in labels[:3]
     ]
     if not examples:
-        examples = [f"{target_label}について、実際に起きた状況や判断"]
+        examples = [
+            f"{target_label}について、実際に起きた状況や判断",
+            f"{target_label}に関して、ご自身が工夫したこと",
+        ]
     return QuestionHelpOutput(
         topic=target_label.strip() or "このテーマ",
-        examples=examples[:1],
+        examples=examples[:3],
+        exampleMode="additional",
         perspectives=[
             "いつ・どのような状況だったか",
             "何をしたか、どのように判断したか",
@@ -3907,6 +4551,14 @@ def _generate_question_text(
         "tentativeCandidates": question_state["tentativeCandidates"],
         "answerAssessment": question_state["answerAssessment"],
         "answerEvaluation": question_state["answerEvaluation"],
+        "answerStatus": state.get("lastAnswerStatus"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
+        "questionAnswer": (
+            state.get("questionAnswers", {}).get(str(state.get("currentQuestionId") or ""))
+            if isinstance(state.get("questionAnswers"), Mapping)
+            else None
+        ),
         "currentAnswer": _latest_utterance_context(messages, _get_current_question(state) or {}),
         "acquiredInformation": _target_acquired_information(state, target),
         "missingInformation": _target_missing_information(state, target)
@@ -4590,6 +5242,10 @@ def _build_result(
         "recordAnswer": result_field.get("recordAnswer"),
         "missingInformation": resolved_missing_information,
         "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "answerStatus": state.get("lastAnswerStatus"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "probeDimension": state.get("lastProbeDimension"),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
         "extractedFields": list(state.get("lastExtractedFields") or []),
         "fieldStates": _field_state_trace(state),
         "nextAction": state.get("lastNextAction"),
@@ -4649,13 +5305,15 @@ def _save_assistant_message(
     record_id: str,
     content: str,
     question: Mapping[str, Any],
+    *,
+    message_id: str | None = None,
 ) -> dict[str, Any]:
     question_id = str(question.get("questionId") or "")
     message = {
         # A question is a durable state transition. A deterministic message
         # ID makes retries/reconnects idempotent even when the caller did not
         # supply a client message ID.
-        "id": f"structured-question-msg-{record_id}-{question_id}",
+        "id": message_id or f"structured-question-msg-{record_id}-{question_id}",
         "tenantId": user.tenant_id,
         "recordId": record_id,
         "content": content,
@@ -4665,6 +5323,9 @@ def _save_assistant_message(
         "updatedAt": utc_now(),
         "questionId": question_id,
         "questionType": "structured",
+        "interviewTurnType": question.get("turnType") or "BASIC",
+        "parentQuestionId": question.get("parentQuestionId"),
+        "probeDimension": question.get("probeDimension"),
         "fieldId": question.get("fieldId"),
         "targetType": question.get("targetType"),
         "targetId": question.get("targetId"),
@@ -4750,6 +5411,8 @@ _STRUCTURED_ANSWER_STATE_KEYS = (
     "clarificationQueue",
     "activeClarificationRequest",
     "clarificationHistory",
+    "questionAnswers",
+    "currentTurnType",
     "deferredProposalTarget",
     "closingState",
     "closingAnswer",

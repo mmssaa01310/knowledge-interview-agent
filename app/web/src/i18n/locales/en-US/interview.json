@@ -62,6 +62,7 @@
   "savingAnswer": "Saving…",
   "deleteQuestionMemoPrompt": "Delete this item note?",
   "answer": "Answer",
+  "probes": "{count} probe(s)",
   "answerPlaceholder": "Enter an answer",
   "noQuestions": "No questions",
   "conversation": "Conversation",

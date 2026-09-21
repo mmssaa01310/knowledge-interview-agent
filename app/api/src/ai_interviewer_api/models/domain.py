@@ -110,6 +110,10 @@ class VoiceTurn(BaseEntity):
     runtime: str | None = None
     dialogueAct: str | None = None
     answerEvaluation: str | None = None
+    answerStatus: str | None = None
+    probeDecision: str | None = None
+    probeDimension: str | None = None
+    currentTurnType: str | None = None
     missingInformation: list[str] = Field(default_factory=list)
     extractedFields: list[dict] = Field(default_factory=list)
     fieldStates: dict = Field(default_factory=dict)

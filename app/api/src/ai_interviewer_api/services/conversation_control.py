@@ -14,6 +14,7 @@ from typing import Any
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     AnswerEvaluation,
+    AnswerStatus,
     ConversationNextAction,
     StructuredInterviewOutput,
 )
@@ -47,6 +48,7 @@ def normalize_conversation_output(
         evaluation == "ANSWERED"
         and output.missingInformation
         and output.answerAssessment.sufficiency == "SUFFICIENT"
+        and "answerStatus" not in output.model_fields_set
     ):
         # ``missingInformation`` is an explicit semantic claim from the
         # interpreter.  Do not let a contradictory SUFFICIENT label advance
@@ -64,9 +66,54 @@ def normalize_conversation_output(
             }
         )
         return output.model_copy(
-            update={"answerEvaluation": evaluation, "transcriptAssessment": assessment}
+            update={
+                "answerEvaluation": evaluation,
+                "answerStatus": "NOT_ANSWERED",
+                "probeDecision": "NONE",
+                "probeDimension": None,
+                "probeReason": None,
+                "probeQuestion": None,
+                "transcriptAssessment": assessment,
+            }
         )
-    updates: dict[str, Any] = {"answerEvaluation": evaluation}
+    explicit_answer_status = "answerStatus" in output.model_fields_set
+    explicit_probe_decision = "probeDecision" in output.model_fields_set
+    answer_status = (
+        output.answerStatus
+        if explicit_answer_status
+        else derive_answer_status(output, evaluation=evaluation)
+    )
+    probe_decision = (
+        output.probeDecision
+        if explicit_probe_decision
+        else derive_probe_decision(output, answer_status=answer_status)
+    )
+    if evaluation in {
+        "NOT_HEARD",
+        "CLARIFICATION_REQUEST",
+        "REPEAT_REQUEST",
+        "OFF_TARGET",
+        "INCOMPLETE_UTTERANCE",
+    }:
+        answer_status = "NOT_ANSWERED"
+    if answer_status != "ANSWERED":
+        # A clarification/retry/partial turn is not a valuable probe. This is
+        # a backend safety rule even when a provider returns contradictory
+        # fields.
+        probe_decision = "NONE"
+    updates: dict[str, Any] = {
+        "answerEvaluation": evaluation,
+        "answerStatus": answer_status,
+        "probeDecision": probe_decision,
+    }
+    if probe_decision != "PROBE":
+        updates.update(
+            {
+                "probeDimension": None,
+                "probeReason": None,
+                "probeQuestion": None,
+            }
+        )
     if (
         evaluation == "PARTIALLY_ANSWERED"
         and output.answerAssessment.sufficiency == "SUFFICIENT"
@@ -75,6 +122,60 @@ def normalize_conversation_output(
             update={"sufficiency": "PARTIAL", "probeType": "CLARIFY"}
         )
     return output.model_copy(update=updates)
+
+
+def derive_answer_status(
+    output: StructuredInterviewOutput,
+    *,
+    evaluation: AnswerEvaluation | None = None,
+) -> AnswerStatus:
+    """Classify whether the current basic answer is usable.
+
+    This deliberately does not ask whether another valuable fact exists. That
+    independent decision is ``probeDecision``.
+    """
+
+    effective_evaluation = evaluation or output.answerEvaluation
+    if effective_evaluation in {
+        "NOT_HEARD",
+        "CLARIFICATION_REQUEST",
+        "QUESTION_TO_ASSISTANT",
+        "REPEAT_REQUEST",
+        "OFF_TARGET",
+        "INCOMPLETE_UTTERANCE",
+    }:
+        return "NOT_ANSWERED"
+    if effective_evaluation == "PARTIALLY_ANSWERED" or output.answerAssessment.sufficiency in {
+        "PARTIAL",
+        "AMBIGUOUS",
+        "EXAMPLE_MISSING",
+        "REASON_MISSING",
+        "CRITERIA_MISSING",
+        "INCOMPLETE",
+        "UNANSWERABLE",
+        "REFUSAL",
+    }:
+        return "PARTIAL"
+    return "ANSWERED"
+
+
+def derive_probe_decision(
+    output: StructuredInterviewOutput,
+    *,
+    answer_status: AnswerStatus,
+) -> str:
+    """Preserve legacy optional deepening while keeping new decisions explicit."""
+
+    if answer_status != "ANSWERED":
+        return "NONE"
+    if output.probeDecision == "PROBE":
+        return "PROBE"
+    # Older providers used EXAMPLE_MISSING for the one optional deepening.
+    # Keep that compatibility path; new providers should return explicit
+    # answerStatus=ANSWERED and probeDecision=PROBE instead.
+    if output.answerAssessment.sufficiency == "EXAMPLE_MISSING":
+        return "PROBE"
+    return "NONE"
 
 
 def derive_answer_evaluation(output: StructuredInterviewOutput) -> AnswerEvaluation:
@@ -135,6 +236,7 @@ def next_action_for_evaluation(
     *,
     has_pending_confirmation: bool = False,
     has_missing_information: bool = False,
+    probe_decision: str = "NONE",
 ) -> ConversationNextAction:
     """Return the safe high-level action before target selection is applied."""
 
@@ -148,10 +250,12 @@ def next_action_for_evaluation(
         return "WAIT_FOR_CONTINUATION"
     if evaluation == "CORRECTION":
         return "APPLY_CORRECTION"
-    if evaluation == "PARTIALLY_ANSWERED" or has_missing_information:
-        return "ASK_MISSING_INFORMATION"
     if evaluation == "OFF_TARGET":
         return "KEEP_CURRENT_QUESTION"
+    if probe_decision == "PROBE":
+        return "FOLLOW_UP"
+    if evaluation == "PARTIALLY_ANSWERED" or has_missing_information:
+        return "ASK_MISSING_INFORMATION"
     if has_pending_confirmation:
         return "FOLLOW_UP"
     return "MOVE_NEXT"
@@ -209,10 +313,16 @@ def llm_input_summary(context: dict[str, Any]) -> dict[str, Any]:
         },
         "questionPurpose": context.get("questionPurpose"),
         "requiredAspects": context.get("requiredAspects", []),
+        "questionGoal": context.get("questionGoal"),
+        "preferredProbeDimensions": context.get("preferredProbeDimensions", []),
         "acquiredInformation": context.get("acquiredInformation", []),
         "missingInformation": context.get("missingInformation", []),
         "previousAnswerEvaluation": context.get("answerEvaluation"),
+        "answerStatus": context.get("answerStatus"),
+        "probeDecision": context.get("probeDecision"),
+        "questionAnswer": context.get("questionAnswer"),
         "sameQuestionAskedBefore": context.get("sameQuestionAskedBefore", False),
+        "currentTurnType": context.get("currentTurnType"),
         "latestMessageId": latest.get("messageId"),
         "latestTranscriptChars": len(str(latest.get("rawTranscript") or "")),
         "currentAnswer": {
@@ -228,6 +338,11 @@ def llm_output_summary(output: StructuredInterviewOutput) -> dict[str, Any]:
     return {
         "dialogueAct": output.dialogueAct,
         "answerEvaluation": output.answerEvaluation,
+        "answerStatus": output.answerStatus,
+        "probeDecision": output.probeDecision,
+        "probeDimension": output.probeDimension,
+        "probeReason": output.probeReason,
+        "probeQuestion": output.probeQuestion,
         "utteranceCompleteness": output.utteranceCompleteness,
         "transcriptRecognitionStatus": output.transcriptAssessment.recognitionStatus,
         "transcriptCorrectionStatus": output.transcriptAssessment.correctionStatus,
@@ -250,6 +365,13 @@ def field_state_summary(state: Mapping[str, Any] | None) -> dict[str, dict[str, 
         result[str(field_id)] = {
             "answerState": raw_state.get("answerState"),
             "answerResolution": raw_state.get("answerResolution"),
+            "answerStatus": raw_state.get("answerStatus"),
+            "probeDecision": raw_state.get("probeDecision"),
+            "probeCount": raw_state.get("probeCount", 0),
+            "probeStatus": raw_state.get("probeStatus"),
+            "originalAnswer": raw_state.get("originalAnswer"),
+            "answer": raw_state.get("answer"),
+            "probes": list(raw_state.get("probes") or []),
             "missingRequiredItemIds": list(raw_state.get("missingRequiredItemIds") or []),
             "capturedItemIds": list(raw_state.get("capturedItemIds") or []),
         }
@@ -270,6 +392,7 @@ def build_conversation_trace(
         output.answerEvaluation,
         has_pending_confirmation=has_pending_confirmation,
         has_missing_information=bool(output.missingInformation),
+        probe_decision=output.probeDecision,
     )
     transcript = output.transcriptAssessment
     latest_utterance = context.get("latestUtterance")
@@ -284,6 +407,11 @@ def build_conversation_trace(
         "finalTranscript": final_transcript,
         "dialogueAct": output.dialogueAct,
         "answerEvaluation": output.answerEvaluation,
+        "answerStatus": output.answerStatus,
+        "probeDecision": output.probeDecision,
+        "probeDimension": output.probeDimension,
+        "probeReason": output.probeReason,
+        "probeQuestion": output.probeQuestion,
         "extractedFields": extracted_update_summary(output),
         "fieldStates": field_state_summary(state),
         "missingInformation": list(output.missingInformation),

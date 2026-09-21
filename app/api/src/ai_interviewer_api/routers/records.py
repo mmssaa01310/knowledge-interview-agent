@@ -401,6 +401,22 @@ def update_record_interview_answer(
 
     field_state["recordAnswer"] = record_answer
     field_state["answerSummary"] = None
+    field_state["answer"] = record_answer
+    field_state["answerSource"] = "MANUAL"
+    # Keep conversational evidence immutable.  A management edit changes only
+    # the adopted/integrated answer in the parent question record.
+    question_answers = interview_state.get("questionAnswers")
+    if isinstance(question_answers, dict):
+        matching = [
+            value
+            for value in question_answers.values()
+            if isinstance(value, dict) and value.get("fieldId") == field_id
+        ]
+        if matching:
+            question_answer = matching[-1]
+            question_answer["answer"] = record_answer
+            question_answer["answerSource"] = "MANUAL"
+            question_answer["updatedAt"] = utc_now()
     commit_interview_state(interview_state, user, source="record_answer_update")
 
     confirmed_messages = [
@@ -422,6 +438,7 @@ def update_record_interview_answer(
         "fieldId": field_id,
         "answerState": field_state["answerState"],
         "recordAnswer": record_answer,
+        "answerSource": "MANUAL",
         "answerSummary": None,
     }
 

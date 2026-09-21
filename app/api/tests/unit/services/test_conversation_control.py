@@ -135,6 +135,70 @@ def test_related_field_is_not_confirmed_when_interpreter_marks_it_off_target() -
     assert next_action_for_evaluation(normalized.answerEvaluation) == "KEEP_CURRENT_QUESTION"
 
 
+def test_answered_probe_is_a_separate_follow_up_decision() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            answerStatus="ANSWERED",
+            probeDecision="PROBE",
+            probeDimension="JUDGMENT",
+            probeQuestion="何を根拠に判断しましたか？",
+        )
+    )
+
+    assert normalized.answerStatus == "ANSWERED"
+    assert normalized.probeDecision == "PROBE"
+    assert next_action_for_evaluation(
+        normalized.answerEvaluation,
+        probe_decision=normalized.probeDecision,
+    ) == "FOLLOW_UP"
+
+
+def test_partial_answer_status_cannot_request_a_probe() -> None:
+    normalized = normalize_conversation_output(
+        StructuredInterviewOutput(
+            answerStatus="PARTIAL",
+            probeDecision="PROBE",
+            probeDimension="JUDGMENT",
+        )
+    )
+
+    assert normalized.answerStatus == "PARTIAL"
+    assert normalized.probeDecision == "NONE"
+    assert normalized.probeDimension is None
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        StructuredInterviewOutput(
+            dialogueAct="CLARIFICATION_REQUEST",
+            answerStatus="ANSWERED",
+            probeDecision="PROBE",
+        ),
+        StructuredInterviewOutput(
+            transcriptAssessment=TranscriptAssessment(
+                recognitionStatus="MISSING",
+                recognitionEvidence=["no_final_transcript"],
+            ),
+            answerStatus="ANSWERED",
+            probeDecision="PROBE",
+        ),
+        StructuredInterviewOutput(
+            utteranceCompleteness="INCOMPLETE",
+            answerStatus="ANSWERED",
+            probeDecision="PROBE",
+        ),
+    ],
+    ids=["clarification", "not-heard", "incomplete"],
+)
+def test_unanswered_turns_never_become_probe(output: StructuredInterviewOutput) -> None:
+    normalized = normalize_conversation_output(output)
+
+    assert normalized.answerStatus == "NOT_ANSWERED"
+    assert normalized.probeDecision == "NONE"
+    assert normalized.probeQuestion is None
+
+
 def test_missing_information_overrides_contradictory_sufficient_label() -> None:
     normalized = normalize_conversation_output(
         StructuredInterviewOutput(

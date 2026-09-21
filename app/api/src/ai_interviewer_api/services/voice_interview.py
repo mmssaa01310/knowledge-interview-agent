@@ -28,6 +28,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
+    get_current_structured_question,
     preview_structured_interview_output,
     remap_interpreter_output_evidence,
     start_speculative_retrieval_for_interview_turn,
@@ -330,9 +331,9 @@ def _run_speculative_voice_turn(
     started_at = monotonic()
     try:
         output = preview_structured_interview_output(
-            record,
-            knowledge,
-            user,
+            record=record,
+            knowledge=knowledge,
+            user=user,
             transcript=transcript,
             answer_to_question_id=answer_to_question_id,
             stt_confidence=stt_confidence,
@@ -1160,6 +1161,10 @@ def _process_structured_voice_turn(
         turn["runtime"] = str(session.get("provider") or "structured_interview")
         turn["dialogueAct"] = result.get("structuredDialogueAct")
         turn["answerEvaluation"] = result.get("answerEvaluation")
+        turn["answerStatus"] = result.get("answerStatus")
+        turn["probeDecision"] = result.get("probeDecision")
+        turn["probeDimension"] = result.get("probeDimension")
+        turn["currentTurnType"] = result.get("currentTurnType")
         turn["missingInformation"] = list(result.get("missingInformation") or [])
         turn["extractedFields"] = [
             dict(item)
@@ -1611,6 +1616,10 @@ def _find_question_by_id(
 ) -> dict[str, Any] | None:
     if not question_id:
         return None
+    if interview_state.get("currentQuestionId") == question_id:
+        current = get_current_structured_question(interview_state)
+        if current is not None:
+            return current
     return next(
         (
             question

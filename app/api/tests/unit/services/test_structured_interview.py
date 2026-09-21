@@ -714,6 +714,88 @@ def test_completed_field_gets_one_useful_deepening_then_moves_on_without_persist
     assert all(call.get("optionalDeepening") is not True for call in provider.question_calls[2:])
 
 
+def test_answered_probe_is_saved_under_the_same_basic_question_and_integrated() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-explicit-probe",
+        (("field-role", "現在の役割"), ("field-next", "次の項目")),
+    )
+    role_field = store.get("knowledge_fields", "field-role")
+    assert role_field is not None
+    role_field["questionPlan"] = InterviewQuestionPlan(
+        purpose="専門性と判断を理解する",
+        questionGoal="strength_and_expertise",
+        preferredProbeDimensions=["JUDGMENT", "ACTION"],
+        requiredItems=[InterviewPlanItem(itemId="role", label="現在の役割")],
+    ).model_dump()
+    store.upsert("knowledge_fields", role_field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                answerStatus="ANSWERED",
+                probeDecision="PROBE",
+                probeDimension="JUDGMENT",
+                probeReason="役割は分かるが判断基準が分からない",
+                probeQuestion="そのとき、何を根拠に判断しましたか？",
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        itemId="role",
+                        value="プロジェクトリーダーとして進行管理を担当しています。",
+                        evidenceTranscriptIds=["explicit-probe-basic"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            ),
+            StructuredInterviewOutput(
+                integratedAnswer="プロジェクトリーダーとして進行管理を担当し、影響範囲と工数を根拠に優先順位を判断しています。",
+            ),
+        ]
+    )
+
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="explicit-probe-basic",
+        question=first["question"],
+        content="プロジェクトリーダーとして進行管理を担当しています。",
+    )
+
+    probe = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert probe["question"]["questionId"] == first["question"]["questionId"]
+    assert probe["question"]["turnType"] == "PROBE"
+    assert probe["interviewState"]["currentQuestionId"] == first["question"]["questionId"]
+    assert probe["interviewState"]["currentTurnType"] == "PROBE"
+    assert len(probe["interviewState"]["askedQuestions"]) == 1
+    assert probe["interviewState"]["followUpCounts"]["field:field-role"] == 1
+    assert probe["interviewState"]["questionAnswers"][first["question"]["questionId"]]["probes"] == []
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="explicit-probe-z-answer",
+        question=probe["question"],
+        content="影響範囲と工数を見て優先順位を判断しました。",
+    )
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    answer_record = result["interviewState"]["questionAnswers"][first["question"]["questionId"]]
+    assert answer_record["originalAnswer"] == "プロジェクトリーダーとして進行管理を担当しています。"
+    assert len(answer_record["probes"]) == 1
+    assert answer_record["probes"][0]["dimension"] == "JUDGMENT"
+    assert "影響範囲と工数" in answer_record["probes"][0]["answer"]
+    assert answer_record["answer"].startswith("プロジェクトリーダーとして進行管理")
+    assert result["interviewState"]["currentTurnType"] == "BASIC"
+    assert result["question"]["targetId"] == "field-next"
+    assert result["interviewState"]["fieldStates"]["field-role"]["recordAnswer"] == answer_record["answer"]
+    reloaded = get_structured_interview_state_snapshot(record, knowledge, user)
+    reloaded_answer = reloaded["interviewState"]["questionAnswers"][first["question"]["questionId"]]
+    assert reloaded_answer["originalAnswer"] == answer_record["originalAnswer"]
+    assert reloaded_answer["probes"] == answer_record["probes"]
+    assert reloaded_answer["answer"] == answer_record["answer"]
+
+
 def test_structured_interview_extracts_candidate_then_requires_confirmation() -> None:
     user: UserContext = DEV_TOKENS["dev-manager"]
     record = {"id": "record-1", "knowledgeId": "knowledge-1", "title": "申請"}

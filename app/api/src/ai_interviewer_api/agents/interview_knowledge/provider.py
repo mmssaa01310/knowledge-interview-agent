@@ -644,6 +644,12 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 - prior_knowledgeに対象者に関する既知情報がある場合も、必須項目を自動で確認済みにせず、必要なら短い確認質問のための候補として扱ってください。登録された用語・略称はその意味を参照し、曖昧な場合だけ確認してください。
 - fieldUpdates、requirementUpdates、processPatch、contradictions、applicability、openIssuesを使用します。
 - answerEvaluationは、最新発話が現在の質問に対してどの状態かを、ANSWERED、PARTIALLY_ANSWERED、OFF_TARGET、CLARIFICATION_REQUEST、NOT_HEARD、INCOMPLETE_UTTERANCE、CORRECTION、REPEAT_REQUESTのいずれかで返します。回答の十分性と発話の完結性を同じものとして扱ってはいけません。
+- answerStatusは、現在の基本質問への回答成立だけをANSWERED、PARTIAL、NOT_ANSWEREDで返します。answerEvaluationがCLARIFICATION_REQUEST、OFF_TARGET、NOT_HEARD、INCOMPLETE_UTTERANCE、REPEAT_REQUESTの場合はNOT_ANSWERED、必要な観点が足りない場合はPARTIALです。
+- probeDecisionはanswerStatusとは独立してNONEまたはPROBEで返します。回答が成立していても、専門性・判断・行動・暗黙知を理解するために重要な情報が不足している場合だけPROBEにしてください。追加で聞ける情報があるだけではPROBEにせず、迷ったらNONEにしてください。
+- clarification、回答不足、文字起こし欠落、発話途中をPROBEに変換してはいけません。probeDimensionはCONTEXT、ACTION、JUDGMENT、RESULT、LEARNING、APPLICATION、PROBLEM、CRITERIA、EXCEPTION、OTHERのいずれか、probeQuestionは不足している1観点だけを尋ねる短い質問にしてください。probeReasonは内部判断用で、利用者向けの返答には含めません。
+- 同じ基本質問へのPROBEは1回までです。currentTurnType=PROBEまたはquestionAnswer.probeCountが上限に達している場合はprobeDecisionをNONEにし、2回目を要求しないでください。
+- probeQuestionは「具体的に教えてください」の繰り返しにせず、元回答で分かっている内容を前置きにして不足観点を直接聞いてください。新しい事実を推測してはいけません。
+- currentTurnType=PROBEの場合は、最新発話をそのprobeへの回答として扱い、元の基本回答を上書きしないでください。integratedAnswerを返す場合は、originalAnswerとprobe回答に明示されている情報だけで統合し、事実を補完しないでください。
 - utteranceCompletenessは、最新発話が文として完結し、現在の質問への意味的な回答として成立している場合だけCOMPLETEにします。文が途中で切れている、接続助詞・動詞の語幹で終わっている、または続きが明らかな場合はINCOMPLETEにします。判断できない場合はUNCERTAINにします。
 - Transcribe由来の発話ではtranscriptAssessment.rawTranscriptに最新発話をそのまま入れ、意味を変えない句読点・空白・表記揺れだけをNONEとしてnormalizedTranscriptに反映します。単語や意味を変更する場合はCORRECTEDにし、normalizedTranscriptへ最有力の自然な候補を入れます。候補が一意でない場合はUNCERTAINにし、correctionCandidatesを列挙します。発話にない情報は追加しません。
 - transcriptAssessment.recognitionStatusは、文字起こしが内容を保持している場合はCLEARにしてください。音声認識結果が途中で欠落した根拠がある場合だけPARTIAL、文字起こし自体が空または評価不能な場合だけMISSING、語句の候補が複数あり音声上の判別不能が根拠にある場合だけAMBIGUOUSにします。回答の意味が不足しているだけの場合はCLEARのままにし、NOT_HEARDにしてはいけません。recognitionEvidenceには、入力コンテキストに実際に存在する認識上の根拠だけを入れてください。
@@ -725,14 +731,14 @@ Backendが選択した現在の質問とquestionDefinitionだけを根拠に、�
 
 必須ルール:
 - topicは、利用者が何について話せばよいかを短く具体的にまとめてください。
-- exampleModeは、利用者が追加の例を明示的に求めていない限りsingleにしてください。singleの場合、examplesは具体例を1個だけ返してください。利用者が「他にも」「別の例」「他のケース」「具体的には」「例えば」「回答例を教えて」など、複数の具体例や回答例を求めている場合だけadditionalにして、examplesを2〜3個返してください。
+- exampleModeは、利用者が「どういう意味」「何を答えればいい」「具体的には」「例えば」「回答例を教えて」など、質問の意味や答え方の具体化を求めている場合はadditionalにし、examplesを2〜3個返してください。利用者が例を1つだけ求めた場合、または追加例を求めていない単純な確認ではsingleにし、examplesを1個だけ返してください。
 - examplesは、現在の質問に応じた回答内容の具体例にしてください。単なる項目名や質問文ではなく、利用者が話し始められる状況・出来事・経験の例にしてください。
 - perspectivesは、回答するときに意識すると話しやすい観点を1〜3個作ってください。質問に合わない観点を一般化して追加しないでください。
 - 元の質問文（originalQuestion/canonicalQuestion）やdescriptionをそのまま再掲・引用しないでください。topic、examples、perspectivesのどこにも全文をコピーしてはいけません。
 - 「この質問では〜を聞いています」だけの抽象的な説明にせず、必ずexamplesとperspectivesを現在の質問に合わせて具体化してください。
 - examplesは対象者の事実を推測した回答ではなく、回答のきっかけになる一般的な例として書いてください。
 - requiredItems、optionalItems、completionCriteria、questionProgressがある場合は、それらの意味と未回答の観点を優先してください。prior_knowledgeがある場合は、登録済みの専門用語の意味を参照してください。
-- latestUserRequestがある場合は、その発話が追加の具体例や回答例を求めているかを判断してください。質問の意味だけを尋ねている場合はsingleにし、具体例を求めている場合はadditionalにしてください。
+- latestUserRequestがある場合は、その発話に応じてexampleModeを選んでください。質問の意味や答え方を尋ねる発話でも、利用者が理解しやすくなるよう原則2〜3個の例を提示し、1例だけを求められた場合だけsingleにしてください。
 - 返却内容に質問文、項目説明、長い前置き、次の質問、回答の断定を含めないでください。
 """.strip()
 
@@ -745,6 +751,9 @@ questionDefinitionに含まれるtargetId、title、description、canonicalQuest
 回答はuser-facingな質問文だけにしてください。JSON、Markdown、箇条書き、前置き、説明、相づちは返さないでください。
 target以外の項目を同時に尋ねず、questionProgress.missingItemsに示された不足観点だけを一つの質問にまとめ、回答済みの内容を繰り返さないでください。質問文や説明文をquestionDefinitionへ書き戻してはいけません。
 質問は原則として短い1文（日本語では60文字以内を目安）にしてください。
+- currentState.currentTurnType=PROBEまたはcurrentState.activeProbe.probeMode=PROBEの場合は、基本質問を再掲せず、activeProbeのprobeDimension、probeQuestion、missingItemsに沿った子質問を1問だけ生成してください。元回答にない事実を前提にせず、同じ基本質問IDに紐づく補足質問として扱ってください。
+- probeDimensionがJUDGMENTなら判断の根拠・基準、ACTIONなら本人の工夫・行動、CONTEXTなら状況・課題、RESULTなら結果を優先します。質問目的とpreferredProbeDimensionsがある場合はそれを優先し、STARの全項目を一度に尋ねないでください。
+- probeの質問は「具体的に教えてください」だけにせず、1ターン1論点の短い問いにしてください。
 """.strip()
 
     return (

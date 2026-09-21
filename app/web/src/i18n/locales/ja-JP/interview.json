@@ -62,6 +62,7 @@
   "savingAnswer": "保存中…",
   "deleteQuestionMemoPrompt": "この項目メモを削除しますか？",
   "answer": "回答",
+  "probes": "深掘り {count}件",
   "answerPlaceholder": "回答を入力",
   "noQuestions": "質問がありません",
   "conversation": "会話",

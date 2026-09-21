@@ -35,7 +35,35 @@ def _seed_answer(*, answer_state: str = "CONFIRMED") -> None:
                     "status": "completed" if answer_state == "CONFIRMED" else "asking",
                     "answerState": answer_state,
                     "answerSummary": "変更前の回答" if answer_state == "CONFIRMED" else None,
+                    "originalAnswer": "会話から取得した元回答" if answer_state == "CONFIRMED" else None,
+                    "answer": "統合済みの回答" if answer_state == "CONFIRMED" else None,
+                    "answerSource": "GENERATED",
+                    "probes": [
+                        {
+                            "type": "probe",
+                            "dimension": "JUDGMENT",
+                            "question": "判断基準は何ですか？",
+                            "answer": "影響範囲を見ました。",
+                        }
+                    ] if answer_state == "CONFIRMED" else [],
                 },
+            },
+            "questionAnswers": {
+                "question-1": {
+                    "questionId": "question-1",
+                    "fieldId": "field-1",
+                    "originalAnswer": "会話から取得した元回答",
+                    "answer": "統合済みの回答",
+                    "answerSource": "GENERATED",
+                    "probes": [
+                        {
+                            "type": "probe",
+                            "dimension": "JUDGMENT",
+                            "question": "判断基準は何ですか？",
+                            "answer": "影響範囲を見ました。",
+                        }
+                    ],
+                }
             },
         },
     )
@@ -74,6 +102,11 @@ def test_update_confirmed_interview_answer() -> None:
     assert state["fieldStates"]["field-1"]["answerSummary"] is None
     assert state["fieldStates"]["field-1"]["answerState"] == "CONFIRMED"
     assert message["content"] == "キーボードで修正した回答"
+    question_answer = state["questionAnswers"]["question-1"]
+    assert question_answer["answer"] == "キーボードで修正した回答"
+    assert question_answer["answerSource"] == "MANUAL"
+    assert question_answer["originalAnswer"] == "会話から取得した元回答"
+    assert question_answer["probes"][0]["answer"] == "影響範囲を見ました。"
 
 
 def test_update_rejects_unconfirmed_interview_answer() -> None:

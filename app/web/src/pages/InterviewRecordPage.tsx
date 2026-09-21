@@ -24,6 +24,7 @@ import { OptionPicker } from "../components/ui/OptionPicker";
 import { resetDevSystemRequirementDemo, resetDevVoiceDemo } from "../lib/api";
 import { useI18n, type Translate } from "../i18n";
 import { formatNumber } from "../lib/date";
+import type { InterviewProbe } from "../types/app";
 import type { KnowledgeLayoutProps } from "../types/pageProps";
 
 const DEV_VOICE_DEMO_RECORD_ID = "dev-voice-demo-record";
@@ -36,6 +37,7 @@ type InterviewSidebarItem = {
   label: string;
   question: string;
   answer?: string;
+  probes?: InterviewProbe[];
   status: "answered" | "active" | "pending";
 };
 
@@ -165,6 +167,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
           ? buildFieldQuestion(field, t)
           : configuredQuestion ?? buildFieldQuestion(field, t),
         answer,
+        probes: fieldState?.probes ?? [],
         status,
       };
     }),
@@ -567,6 +570,24 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                           disabled={!canAnswerRecord}
                         />
                       </div>
+                      {item.probes?.length ? (
+                        <details className="interview-probe-details">
+                          <summary>
+                            {t("interview.probes", { count: formatNumber(item.probes.length, locale) })}
+                          </summary>
+                          <div className="interview-probe-list">
+                            {item.probes.map((probe, probeIndex) => (
+                              <div className="interview-probe" key={`${item.id}-probe-${probeIndex}`}>
+                                {probe.dimension ? (
+                                  <span className="interview-probe-dimension">{probe.dimension}</span>
+                                ) : null}
+                                <p><strong>Q.</strong> {probe.question}</p>
+                                <p><strong>A.</strong> {probe.answer}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
                     </div>
                   );
                 })}

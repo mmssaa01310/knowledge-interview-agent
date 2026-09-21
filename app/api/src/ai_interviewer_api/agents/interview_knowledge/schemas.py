@@ -23,6 +23,20 @@ AnswerEvaluation = Literal[
     "CORRECTION",
     "REPEAT_REQUEST",
 ]
+AnswerStatus = Literal["ANSWERED", "PARTIAL", "NOT_ANSWERED"]
+ProbeDecision = Literal["NONE", "PROBE"]
+ProbeDimension = Literal[
+    "CONTEXT",
+    "ACTION",
+    "JUDGMENT",
+    "RESULT",
+    "LEARNING",
+    "APPLICATION",
+    "PROBLEM",
+    "CRITERIA",
+    "EXCEPTION",
+    "OTHER",
+]
 ConversationNextAction = Literal[
     "MOVE_NEXT",
     "FOLLOW_UP",
@@ -243,6 +257,15 @@ class StructuredInterviewOutput(StrictModel):
 
     dialogueAct: StructuredDialogueAct = "ANSWER"
     answerEvaluation: AnswerEvaluation = "ANSWERED"
+    # ``answerEvaluation`` describes the conversational act (including audio
+    # and clarification failures).  These two fields describe the answer to
+    # the current basic question and the independent value of one probe.
+    answerStatus: AnswerStatus = "ANSWERED"
+    probeDecision: ProbeDecision = "NONE"
+    probeDimension: ProbeDimension | None = None
+    probeReason: str | None = Field(default=None, max_length=500)
+    probeQuestion: str | None = Field(default=None, max_length=300)
+    integratedAnswer: str | None = Field(default=None, max_length=4000)
     utteranceCompleteness: UtteranceCompleteness = "COMPLETE"
     transcriptAssessment: TranscriptAssessment = Field(default_factory=TranscriptAssessment)
     answerAssessment: AnswerAssessment = Field(default_factory=AnswerAssessment)

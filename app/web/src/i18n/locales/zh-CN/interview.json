@@ -62,6 +62,7 @@
   "savingAnswer": "保存中…",
   "deleteQuestionMemoPrompt": "删除此项目备注吗？",
   "answer": "回答",
+  "probes": "深挖 {count} 项",
   "answerPlaceholder": "输入回答",
   "noQuestions": "没有问题",
   "conversation": "对话",

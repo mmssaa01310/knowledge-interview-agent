@@ -264,6 +264,16 @@ Text、Transcribe + Polly、GPT Liveの確定transcriptは、同じStructured In
 
 背景観測であっても、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`REPEAT_REQUEST`の抽出値は回答として適用しない。意味不足の抽出値は`TENTATIVE`に留め、前景Coordinatorが不足情報を確認する。
 
+### 4.2.2 半構造化インタビューのProbe
+
+共通Structured Interviewは、回答成立と追加深掘りを別に判定する。`answerStatus`は`ANSWERED`、`PARTIAL`、`NOT_ANSWERED`のいずれか、`probeDecision`は`NONE`または`PROBE`とする。`PARTIAL`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CLARIFICATION_REQUEST`は回答補足・再発話・説明の経路であり、回答成立後のProbeとは別物である。
+
+`ANSWERED + PROBE`のときだけ、現在の基本質問に対して最大1問の子Probeを生成する。Probe中も`currentQuestionId`、`targetType`、`targetId`は親の基本質問のまま、`currentTurnType=PROBE`として保持する。Probeを`askedQuestions`へ別の基本質問として追加せず、回答は`questionAnswers[questionId].probes[]`へ保存する。Probe回答後、`originalAnswer`とProbe回答から統合`answer`を作り、次の基本質問へ進む。
+
+Question Masterの`questionPlan`には、質問の目的（`questionGoal`）、Probeで優先する観点（`preferredProbeDimensions`）、最大回数（`maxProbeCount`）を設定できる。`JUDGMENT`、`ACTION`、`CONTEXT`、`RESULT`等から質問目的に合う観点を1つだけ選ぶ。追加情報が存在するだけではProbeを出さず、専門性・判断・行動・暗黙知の理解に重要な不足がある場合だけ生成する。
+
+Transcribe + Polly、GPT Live、テキストは同じ確定transcriptをこの共通判定へ渡す。Runtime側はProbeの価値判断や質問進行を行わず、確定transcriptの受け渡しと回答文の音声化だけを担当する。右側UIでは基本質問カード内に統合回答を表示し、Probeがあるときだけ折りたたみのProbe Q/Aを表示する。
+
 ### 4.3 VoiceTurn lifecycle
 
 `VoiceTurn`はAPIで `clientTurnId` を検索し、同じtranscriptとstate versionなら既存行を返す（`voice_interview.py:258-359`）。処理時は `processingStatus="processing"`、`lifecycleStatus="EVALUATING"` としてから、成功時にcommit結果を保存する（`voice_interview.py:555-617`）。既に `COMMITTED` のTurnは保存済み結果を返す（同:566-569）。

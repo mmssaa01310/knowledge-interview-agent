@@ -62,6 +62,7 @@
   "savingAnswer": "กำลังบันทึก…",
   "deleteQuestionMemoPrompt": "ลบหมายเหตุของรายการนี้หรือไม่",
   "answer": "คำตอบ",
+  "probes": "เจาะลึก {count} รายการ",
   "answerPlaceholder": "ป้อนคำตอบ",
   "noQuestions": "ไม่มีคำถาม",
   "conversation": "บทสนทนา",

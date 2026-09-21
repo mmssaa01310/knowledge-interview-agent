@@ -2588,6 +2588,46 @@ label {
   border: 1px solid #cbd7e2;
 }
 
+.interview-probe-details {
+  margin-top: 4px;
+  padding: 6px 8px 6px 12px;
+  border-left: 2px solid #cbd7e2;
+  color: #5a6d80;
+  font-size: 12px;
+}
+
+.interview-probe-details summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.interview-probe-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.interview-probe {
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(238, 246, 255, 0.72);
+}
+
+.interview-probe p {
+  margin: 3px 0 0;
+  color: #40546a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.interview-probe-dimension {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #5f8cc7;
+}
+
 .question-status {
   font-size: 12px;
   font-weight: 700;

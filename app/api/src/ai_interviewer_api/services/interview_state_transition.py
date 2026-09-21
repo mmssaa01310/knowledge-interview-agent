@@ -38,6 +38,7 @@ _STATE_WRITER_LOCKS_GUARD = RLock()
 BACKGROUND_PROTECTED_STATE_FIELDS: tuple[str, ...] = (
     "currentFieldId",
     "currentQuestionId",
+    "currentTurnType",
     "nextQuestionTarget",
     "lastCanonicalIntent",
     "lastCanonicalAction",
@@ -67,6 +68,10 @@ _BACKGROUND_LATEST_FIELDS: tuple[str, ...] = (
     "lastUtteranceCompleteness",
     "lastAnswerAssessment",
     "lastAnswerEvaluation",
+    "lastAnswerStatus",
+    "lastProbeDecision",
+    "lastProbeDimension",
+    "lastProbeReason",
     "lastMissingInformation",
     "lastExtractedFields",
     "lastNextAction",

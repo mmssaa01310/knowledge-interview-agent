@@ -105,7 +105,10 @@ PURPOSE_PROPOSAL_PREREQUISITES: tuple[tuple[str, str], ...] = (
     ("requirement.request", "要求内容"),
 )
 
-MAX_OPTIONAL_DEEPENING_PER_FIELD = 1
+# A probe is a child of the current basic question.  Keeping this limit in the
+# coordinator makes the backend guarantee independent from model output.
+MAX_PROBE_COUNT = 1
+MAX_OPTIONAL_DEEPENING_PER_FIELD = MAX_PROBE_COUNT
 
 
 def resolve_profile(knowledge: Mapping[str, Any]) -> InterviewProfile:
@@ -162,9 +165,11 @@ def build_initial_structured_state(
         "analysisVersion": 0,
         "currentFieldId": None,
         "currentQuestionId": None,
+        "currentTurnType": "BASIC",
         "completedFieldIds": [],
         "pendingFieldIds": [field_id for field_id in field_states],
         "askedQuestions": [],
+        "questionAnswers": {},
         "followUpCounts": {},
         "fieldStates": field_states,
         "lastProcessedUserMessageId": None,
@@ -172,6 +177,10 @@ def build_initial_structured_state(
         "lastTranscriptAssessment": None,
         "lastAnswerAssessment": None,
         "lastAnswerEvaluation": None,
+        "lastAnswerStatus": None,
+        "lastProbeDecision": None,
+        "lastProbeDimension": None,
+        "lastProbeReason": None,
         "lastMissingInformation": [],
         "lastExtractedFields": [],
         "lastNextAction": None,
@@ -229,6 +238,20 @@ def sync_structured_state_fields(
         if "deepeningItemIds" not in field_state:
             field_state["deepeningItemIds"] = []
             changed = True
+        defaults = {
+            "originalAnswer": None,
+            "answer": field_state.get("recordAnswer"),
+            "answerSource": "GENERATED",
+            "probes": [],
+            "answerStatus": "NOT_ANSWERED",
+            "probeDecision": "NONE",
+            "probeCount": 0,
+            "probeStatus": "NONE",
+        }
+        for key, value in defaults.items():
+            if key not in field_state:
+                field_state[key] = deepcopy(value)
+                changed = True
         changed |= _sync_field_progress(field_state)
     return changed
 
@@ -338,6 +361,10 @@ def record_interpretation_assessment(
     state["lastTranscriptAssessment"] = assessment
     state["lastAnswerAssessment"] = output.answerAssessment.model_dump()
     state["lastAnswerEvaluation"] = output.answerEvaluation
+    state["lastAnswerStatus"] = output.answerStatus
+    state["lastProbeDecision"] = output.probeDecision
+    state["lastProbeDimension"] = output.probeDimension
+    state["lastProbeReason"] = output.probeReason
     state["lastMissingInformation"] = list(output.missingInformation)
     state["lastExtractedFields"] = extracted_update_summary(output)
     state["lastProcessedUserMessageId"] = latest_message_id
@@ -1094,11 +1121,17 @@ def _active_probe_target(state: Mapping[str, Any]) -> dict[str, Any] | None:
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
+        "probeMode",
+        "probeDimension",
+        "probeReason",
+        "probeQuestion",
+        "parentQuestionId",
     ):
         if key in value:
             target[key] = deepcopy(value[key])
     target["probeType"] = str(value.get("probeType") or "CLARIFY")
     target["probeCount"] = int(value.get("probeCount") or 0)
+    target["probeMode"] = str(value.get("probeMode") or "MISSING_INFORMATION")
     return target
 
 
@@ -1183,6 +1216,11 @@ def register_probe(
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
+        "probeMode",
+        "probeDimension",
+        "probeReason",
+        "probeQuestion",
+        "parentQuestionId",
     ):
         if key in target:
             active_probe[key] = deepcopy(target[key])
@@ -1459,6 +1497,16 @@ def _new_field_state(
         "rawAnswer": None,
         "rawAnswerHistory": [],
         "recordAnswer": None,
+        # Evidence and the currently adopted answer are intentionally kept
+        # separate so a management edit never erases the interview trail.
+        "originalAnswer": None,
+        "answer": None,
+        "answerSource": "GENERATED",
+        "probes": [],
+        "answerStatus": "NOT_ANSWERED",
+        "probeDecision": "NONE",
+        "probeCount": 0,
+        "probeStatus": "NONE",
         "capturedItems": [],
         "capturedItemIds": [],
         "candidateItems": [],
@@ -1514,6 +1562,13 @@ def _normalize_question_plan(
     return {
         "version": int(plan.version or 1),
         "purpose": _clean_optional_text(plan.purpose),
+        "questionGoal": _clean_optional_text(plan.questionGoal),
+        "preferredProbeDimensions": [
+            str(value).strip().upper()
+            for value in plan.preferredProbeDimensions
+            if str(value).strip()
+        ],
+        "maxProbeCount": max(0, min(int(plan.maxProbeCount), MAX_PROBE_COUNT)),
         "requiredItems": required_items,
         "optionalItems": optional_items,
         "completionCriteria": {"mode": "all_required_items"},

@@ -92,6 +92,10 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 ユーザーは確定済み回答をキーボードで編集し、対象項目へ明示的に保存できる。
 編集操作によって未確認の回答を確定済みに変更してはいけない。
 
+インタビューは固定質問を順番に消化するだけでなく、半構造化方式で回答の成立と深掘り価値を分けて判断する。基本質問への回答が成立していても、専門性、判断、行動、暗黙知を理解するために重要な情報が不足している場合だけ、同じ基本質問へ最大1問のProbeを紐付ける。Probeは質問マスターや質問一覧の独立項目にせず、基本質問の回答Evidenceとして保存し、統合回答へ反映する。回答未成立、質問の説明要求、文字起こし欠落、発話途中はProbeと区別して処理する。
+
+質問単位では、基本回答の`originalAnswer`、採用中の統合`answer`、`probes[]`、`answerSource`、回答成立状態、Probe回数を保持する。手動編集では統合`answer`だけを変更し、会話から取得した`originalAnswer`と`probes[]`は保持する。詳細な状態契約とRuntime共通化は[AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)および[Conversation Algorithm](architecture/voice/conversation-algorithm.md)に従う。
+
 ### 2.3 インタビュー実行画面
 
 インタビュー実行画面は、利用者が「いま何を答えればよいか」「どこまで整理できたか」「図が表示されない理由」を画面内で確認できる構成とする。

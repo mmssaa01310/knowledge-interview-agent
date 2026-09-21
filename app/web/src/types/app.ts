@@ -49,6 +49,38 @@ export type InterviewQuestion = {
   targetType?: string | null;
   targetId?: string | null;
   candidateSource?: InterviewCandidateSource | null;
+  turnType?: "BASIC" | "PROBE" | "FOLLOW_UP" | "CLARIFICATION";
+  parentQuestionId?: string | null;
+  probeDimension?: string | null;
+  probeCount?: number;
+  probeStatus?: "NONE" | "PENDING" | "COMPLETED";
+};
+
+export type InterviewProbe = {
+  type: "probe" | string;
+  dimension?: string | null;
+  question: string;
+  answer: string;
+  evidenceTranscriptIds?: string[];
+  answerStatus?: "ANSWERED" | "PARTIAL" | "NOT_ANSWERED";
+};
+
+export type InterviewQuestionAnswer = {
+  questionId: string;
+  fieldId?: string | null;
+  targetType?: string | null;
+  targetId?: string | null;
+  originalAnswer?: string | null;
+  answer?: string | null;
+  answerSource?: "GENERATED" | "MANUAL" | string;
+  probes?: InterviewProbe[];
+  answerStatus?: "ANSWERED" | "PARTIAL" | "NOT_ANSWERED";
+  probeDecision?: "NONE" | "PROBE";
+  probeCount?: number;
+  probeStatus?: "NONE" | "PENDING" | "COMPLETED" | string;
+  coveredTopics?: string[];
+  askedProbeTopics?: string[];
+  missingInformation?: string[];
 };
 
 export type InterviewFieldState = {
@@ -68,6 +100,14 @@ export type InterviewFieldState = {
   rawAnswer?: string | null;
   rawAnswerHistory?: string[];
   recordAnswer?: string | null;
+  originalAnswer?: string | null;
+  answer?: string | null;
+  answerSource?: "GENERATED" | "MANUAL" | string;
+  probes?: InterviewProbe[];
+  answerStatus?: "ANSWERED" | "PARTIAL" | "NOT_ANSWERED";
+  probeDecision?: "NONE" | "PROBE";
+  probeCount?: number;
+  probeStatus?: "NONE" | "PENDING" | "COMPLETED" | string;
   capturedItems?: Array<{ itemId: string; value: string; evidenceTranscriptIds?: string[] }>;
   candidateEvidenceTranscriptIds?: string[];
   needsClarification?: boolean;
@@ -78,11 +118,13 @@ export type InterviewState = {
   status: "in_progress" | "completed";
   currentFieldId: string | null;
   currentQuestionId: string | null;
+  currentTurnType?: "BASIC" | "PROBE" | "FOLLOW_UP" | "CLARIFICATION";
   completedFieldIds: string[];
   pendingFieldIds: string[];
   askedQuestions: InterviewQuestion[];
   followUpCounts: Record<string, number>;
   fieldStates: Record<string, InterviewFieldState>;
+  questionAnswers?: Record<string, InterviewQuestionAnswer>;
   lastProcessedUserMessageId: string | null;
   interviewProfile?: "fixed_form" | "business_process" | "system_requirement";
   nextQuestionTarget?: {
@@ -127,6 +169,7 @@ export type InterviewState = {
   contradictions?: Array<Record<string, unknown>>;
   openIssues?: Array<Record<string, unknown>>;
   processVersion?: number;
+  activeProbeTarget?: Record<string, unknown> | null;
   stateVersion?: number;
 };
 
@@ -164,6 +207,9 @@ export type ChatMessage = {
   processChangeSummary?: string | null;
   processUpdatedPoints?: string[];
   processVersion?: number | null;
+  interviewTurnType?: "BASIC" | "PROBE" | "FOLLOW_UP" | "CLARIFICATION";
+  parentQuestionId?: string | null;
+  probeDimension?: string | null;
 };
 
 export type InterviewAnswerTarget = {
@@ -182,6 +228,9 @@ export type InterviewStreamMetadata = {
   completedFieldId: string | null;
   currentFieldId: string | null;
   answerSummary: string | null;
+  answerStatus?: "ANSWERED" | "PARTIAL" | "NOT_ANSWERED";
+  probeDecision?: "NONE" | "PROBE";
+  currentTurnType?: "BASIC" | "PROBE" | "FOLLOW_UP" | "CLARIFICATION";
   recordAnswer?: string | null;
   missingInformation: string[];
   used_tools: string[];
