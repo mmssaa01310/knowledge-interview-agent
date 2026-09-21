@@ -2637,6 +2637,46 @@ def test_interpreter_can_mark_an_utterance_incomplete_without_backend_keyword_gu
     assert result["interviewState"]["lastStructuredOutput"]["utteranceCompleteness"] == "INCOMPLETE"
 
 
+def test_clear_but_uncertain_completeness_uses_semantic_follow_up() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-clear-uncertain-completeness",
+        (("field-role", "役割"), ("field-department", "部署")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                utteranceCompleteness="UNCERTAIN",
+                answerAssessment=AnswerAssessment(
+                    sufficiency="REASON_MISSING",
+                    probeType="REASON",
+                ),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-role",
+                        value="プロジェクトリーダー",
+                        evidenceTranscriptIds=["clear-uncertain-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="clear-uncertain-answer",
+        question=first["question"],
+        content="プロジェクトリーダーです。",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["answerEvaluation"] == "PARTIALLY_ANSWERED"
+    assert "聞き取れ" not in result["reply"]
+    assert "この部分をもう一度" not in result["reply"]
+
+
 def test_complete_utterance_commits_and_advances_to_the_next_field() -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-complete-utterance",
@@ -3030,7 +3070,7 @@ def test_ambiguous_transcript_correction_requests_repetition_without_committing(
 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert "音声を正しく認識できませんでした" in result["reply"]
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert result["interviewState"]["pendingTranscriptConfirmation"] is None
     assert result["interviewState"]["fieldStates"]["field-role"]["candidateAnswer"] is None
@@ -3075,7 +3115,7 @@ def test_uncertain_transcript_keeps_clear_facts_as_tentative_candidates() -> Non
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert "音声を正しく認識できませんでした" in result["reply"]
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "CANDIDATE_PENDING"
     assert field_state["candidateAnswer"] == "プロジェクトリーダー"
@@ -3118,7 +3158,7 @@ def test_multiple_corrected_candidates_are_not_confirmed_automatically() -> None
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert "音声を正しく認識できませんでした" in result["reply"]
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "UNANSWERED"
     assert field_state["recordAnswer"] is None
@@ -3162,7 +3202,7 @@ def test_empty_corrected_candidate_is_treated_as_uncertain_without_committing() 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert "音声を正しく認識できませんでした" in result["reply"]
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "UNANSWERED"
     assert field_state["candidateAnswer"] is None
@@ -3295,13 +3335,13 @@ def test_question_generator_uses_target_context_and_dedicated_reasoning_effort()
     assert fields_context[0]["id"] == result["question"]["targetId"]
     current_state = provider.question_context["currentState"]
     assert isinstance(current_state, Mapping)
-    assert set(current_state) == {
+    assert {
         "status",
         "closingState",
         "answerAssessment",
         "activeProbe",
         "tentativeCandidates",
-    }
+    }.issubset(current_state)
 
 
 def test_question_generator_receives_the_configured_question_definition() -> None:

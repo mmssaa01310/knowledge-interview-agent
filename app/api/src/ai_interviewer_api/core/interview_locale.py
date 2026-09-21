@@ -135,6 +135,61 @@ def localized_interview_transcript_retry(locale: InterviewLocale) -> str:
     }[locale]
 
 
+def localized_interview_not_heard_prompt(
+    locale: InterviewLocale,
+    subject: str | None = None,
+    understood: str | None = None,
+) -> str:
+    """Ask for a repeat only when the transcript has recognition evidence."""
+
+    normalized_subject = subject.strip() if subject else ""
+    normalized_understood = understood.strip() if understood else ""
+    if locale == "en-US":
+        if normalized_understood and normalized_subject:
+            return (
+                f"I understood {normalized_understood}, but I could not hear "
+                f"{normalized_subject}. Please repeat only that part."
+            )
+        return f"I could not hear that clearly. Please repeat the part about {normalized_subject or 'the current question'}."
+    if locale == "zh-CN":
+        if normalized_understood and normalized_subject:
+            return f"我听懂了{normalized_understood}，但没有听清{normalized_subject}。请只重复这一部分。"
+        return f"这部分没有听清。请再说明{normalized_subject or '当前问题'}。"
+    if locale == "pt-BR":
+        if normalized_understood and normalized_subject:
+            return (
+                f"Entendi {normalized_understood}, mas não consegui ouvir "
+                f"{normalized_subject}. Repita apenas essa parte, por favor."
+            )
+        return f"Não consegui ouvir com clareza. Repita a parte sobre {normalized_subject or 'a pergunta atual'}, por favor."
+    if normalized_understood and normalized_subject:
+        return (
+            f"{normalized_understood}ということは分かりましたが、{normalized_subject}を認識できませんでした。"
+            f"その部分だけ、もう一度お願いします。"
+        )
+    return f"音声を正しく認識できませんでした。{normalized_subject or '先ほどの質問'}について、もう一度お願いします。"
+
+
+def localized_interview_off_target_prompt(
+    locale: InterviewLocale,
+    target_label: str,
+) -> str:
+    """Return to the current target without pretending the answer was missing from audio."""
+
+    label = target_label.strip() or {
+        "ja-JP": "現在の項目",
+        "en-US": "the current item",
+        "zh-CN": "当前项目",
+        "pt-BR": "o item atual",
+    }[locale]
+    return {
+        "ja-JP": f"その内容も確認しました。今は{label}について、話せる範囲で教えてください。",
+        "en-US": f"I noted that. For now, please tell me what you can about {label}.",
+        "zh-CN": f"我记下了这部分内容。现在请尽可能说明{label}。",
+        "pt-BR": f"Anotei esse conteúdo. Agora, fale o que puder sobre {label}.",
+    }[locale]
+
+
 def localized_interview_question_guidance(
     locale: InterviewLocale,
     *,

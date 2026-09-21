@@ -79,6 +79,55 @@ def test_partial_followup_all_fields_and_later_correction(capture):
     assert third["interviewState"]["currentQuestionId"] is None
 
 
+def test_live_capture_persists_the_common_conversation_trace(capture):
+    run, outputs, _ = capture
+    outputs.append({"fieldUpdates": [update("name", "田中")]})
+
+    result = run(1, "田中です。")
+    trace = result["conversationTrace"]
+
+    assert trace["runtime"] == "gpt_live"
+    assert trace["rawTranscript"] == "田中です。"
+    assert trace["finalTranscript"] == "田中です。"
+    assert trace["answerEvaluation"] == "ANSWERED"
+    assert trace["nextAction"] == "MOVE_NEXT"
+    assert "currentQuestionId" in trace["llmInput"]
+    assert trace["llmOutput"]["extractedFields"]
+    assert store.list("messages", "t")[0]["conversationTrace"] == trace
+
+
+def test_live_capture_does_not_confirm_a_semantically_partial_update(capture):
+    run, outputs, _ = capture
+    outputs.append(
+        {
+            "answerEvaluation": "PARTIALLY_ANSWERED",
+            "answerAssessment": {"sufficiency": "PARTIAL", "probeType": "CLARIFY"},
+            "missingInformation": ["作業の判断基準"],
+            "fieldUpdates": [update("task", "品質管理", "work")],
+        }
+    )
+
+    result = run(1, "品質管理を担当しています。")
+
+    assert result["answerEvaluation"] == "PARTIALLY_ANSWERED"
+    assert result["interviewState"]["fieldStates"]["work"]["answerState"] == "CANDIDATE_PENDING"
+
+
+def test_live_capture_does_not_apply_an_off_target_update(capture):
+    run, outputs, _ = capture
+    outputs.append(
+        {
+            "dialogueAct": "IRRELEVANT",
+            "fieldUpdates": [update("task", "無関係な話題", "work")],
+        }
+    )
+
+    result = run(1, "天気の話です。")
+
+    assert result["answerEvaluation"] == "OFF_TARGET"
+    assert result["interviewState"]["fieldStates"]["work"]["answerState"] == "UNANSWERED"
+
+
 def test_idempotency_order_and_failure_retains_raw_evidence(capture):
     run, outputs, calls = capture
     outputs.append(RuntimeError("provider unavailable"))

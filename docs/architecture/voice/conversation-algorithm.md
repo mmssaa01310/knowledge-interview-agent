@@ -247,11 +247,22 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 | `AWAITING_CONFIRMATION` | `REJECTION` | `UNANSWERED`等へ戻し候補破棄 | `coordinator.py:_reject_target()` 2056-2123 |
 | 任意target | `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`かつupdateなし | current target維持、説明文 | `service.py:1396-1425` -> `_keep_current_question()` 1914-1963 |
 | 任意target | `HESITATION` / `BACKCHANNEL` / `OTHER` | current target維持、再開促進文 | `service.py:1427-1445` -> `_keep_current_question()` |
-| 任意target | transcript `UNCERTAIN` | current target維持、transcript retry | `service.py:1380-1395` -> `_keep_current_question()` |
-| valid answer | insufficient | current/active probeまたはfollow-up target | `service.py:1469-1506`, `coordinator.py:700-879` |
+| 任意target | `recognitionStatus=PARTIAL/MISSING/AMBIGUOUS` または根拠のある `NOT_HEARD` | current target維持、再発話依頼 | `conversation_control.py`、`service.py` -> `_keep_current_question()` |
+| 任意target | `INCOMPLETE_UTTERANCE` | current target維持、発話の続きを促す | `service.py` -> `_keep_current_question()` |
+| 任意target | `CLARIFICATION_REQUEST` / `REPEAT_REQUEST` | current target維持、動的説明または質問再提示 | `conversation_policy.py`、`service.py` |
+| 任意target | `OFF_TARGET` | current target維持、現在の不足対象へ戻す | `conversation_control.py`、`service.py` |
+| valid answer | `PARTIALLY_ANSWERED` / semantic不足 | current/active probeまたはfollow-up target | `service.py`、`coordinator.py` |
 | valid answer | sufficient | next target selection | `service.py:1550-1825`、`coordinator.py:700-879` |
 | no unresolved issue | required/closing等が未完了 | next target | `coordinator.py:evaluate_completion()` 669-697, `select_next_question_target()` 700-879 |
 | all completion conditions | closing `CONFIRMED`等 | `completed` | `service.py:1764-1781`、`voice_interview.py:625-904` |
+
+### 4.2.1 共通の回答評価
+
+Text、Transcribe + Polly、GPT Liveの確定transcriptは、同じStructured Interpreterと共通会話制御へ渡す。各ターンは`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`のいずれかに整理し、`nextAction`を決定する。
+
+`PARTIALLY_ANSWERED`は認識済みだが必要な観点が不足している状態、`NOT_HEARD`は文字起こしの欠落・空文字・音声上の曖昧さを示す根拠がある状態、`INCOMPLETE_UTTERANCE`は発話が途中で終わった状態である。前者を「聞き取れなかった」や「続き」と表現してはならない。`missingInformation`に不足観点を記録し、Question Generatorには現在質問、目的、必要観点、今回の回答、取得済み情報、不足情報、直前評価、同一targetの質問履歴を渡す。
+
+背景観測であっても、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`REPEAT_REQUEST`の抽出値は回答として適用しない。意味不足の抽出値は`TENTATIVE`に留め、前景Coordinatorが不足情報を確認する。
 
 ### 4.3 VoiceTurn lifecycle
 
@@ -455,6 +466,7 @@ Fast ONが要求された場合も現在は通常経路へフォールバック�
 * `target`のid/type/label
 * selected fieldの `name`、`description`、`questionText`、`aiQuestionExamples`、`questionPlan`、required/optional
 * `questionDefinition`の `title`、`originalQuestion`、`description`、`purpose`、`requiredItems`、`optionalItems`、`completionCriteria`、missing/captured
+* `currentAnswer`、`acquiredInformation`、`missingInformation`、`answerEvaluation`、`sameQuestionAskedBefore`
 * bounded state、直近6件のconversation、answerAssessment、activeProbe、tentativeCandidates
 * retrieved knowledge（検索対象時）
 

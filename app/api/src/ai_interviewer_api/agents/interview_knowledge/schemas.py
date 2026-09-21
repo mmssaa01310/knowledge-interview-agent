@@ -12,6 +12,28 @@ ApplicabilityStatus = Literal["unknown", "present", "not_applicable"]
 CandidateSource = Literal["user_statement", "assistant_proposal", "document_reference"]
 UtteranceCompleteness = Literal["COMPLETE", "INCOMPLETE", "UNCERTAIN"]
 TranscriptCorrectionStatus = Literal["NONE", "CORRECTED", "UNCERTAIN"]
+TranscriptRecognitionStatus = Literal["CLEAR", "PARTIAL", "MISSING", "AMBIGUOUS"]
+AnswerEvaluation = Literal[
+    "ANSWERED",
+    "PARTIALLY_ANSWERED",
+    "OFF_TARGET",
+    "CLARIFICATION_REQUEST",
+    "NOT_HEARD",
+    "INCOMPLETE_UTTERANCE",
+    "CORRECTION",
+    "REPEAT_REQUEST",
+]
+ConversationNextAction = Literal[
+    "MOVE_NEXT",
+    "FOLLOW_UP",
+    "ASK_MISSING_INFORMATION",
+    "EXPLAIN_QUESTION",
+    "ASK_REPEAT",
+    "WAIT_FOR_CONTINUATION",
+    "APPLY_CORRECTION",
+    "REPEAT_CURRENT_QUESTION",
+    "KEEP_CURRENT_QUESTION",
+]
 AnswerSufficiency = Literal[
     "SUFFICIENT",
     "PARTIAL",
@@ -34,6 +56,7 @@ StructuredDialogueAct = Literal[
     "CORRECTION",
     "REJECTION",
     "CONFIRMATION",
+    "REPEAT_REQUEST",
     "IRRELEVANT",
     "OTHER",
 ]
@@ -193,6 +216,8 @@ class TranscriptAssessment(StrictModel):
     rawTranscript: str = ""
     normalizedTranscript: str = ""
     correctionStatus: TranscriptCorrectionStatus = "NONE"
+    recognitionStatus: TranscriptRecognitionStatus = "CLEAR"
+    recognitionEvidence: list[str] = Field(default_factory=list, max_length=5)
     correctionCandidates: list[str] = Field(default_factory=list, max_length=3)
     correctionReason: str | None = None
 
@@ -217,9 +242,11 @@ class StructuredInterviewOutput(StrictModel):
     """Meaning extraction contract. It contains no generated question or layout."""
 
     dialogueAct: StructuredDialogueAct = "ANSWER"
+    answerEvaluation: AnswerEvaluation = "ANSWERED"
     utteranceCompleteness: UtteranceCompleteness = "COMPLETE"
     transcriptAssessment: TranscriptAssessment = Field(default_factory=TranscriptAssessment)
     answerAssessment: AnswerAssessment = Field(default_factory=AnswerAssessment)
+    missingInformation: list[str] = Field(default_factory=list, max_length=12)
     fieldUpdates: list[FieldUpdate] = Field(default_factory=list)
     requirementUpdates: list[RequirementUpdate] = Field(default_factory=list)
     processPatch: ProcessPatch = Field(default_factory=ProcessPatch)

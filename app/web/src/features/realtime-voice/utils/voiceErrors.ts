@@ -47,6 +47,7 @@ export function toUserFacingError(
   t: Translate,
   code?: "PROCESS_TIMEOUT" | "API_ERROR" | "NETWORK_ERROR",
 ): string {
+  const normalizedMessage = message?.trim();
   if (code === "PROCESS_TIMEOUT") {
     return t("interview.voice.processingDelayed");
   }
@@ -56,20 +57,23 @@ export function toUserFacingError(
   if (code === "API_ERROR") {
     return t("interview.voice.apiError");
   }
-  if (message === "audio_playback_failed") {
+  if (normalizedMessage === "audio_playback_failed") {
     return t("errors.audioPlaybackFailed");
   }
-  if (message === "transcribe_stream_failed") {
+  if (normalizedMessage === "transcribe_stream_failed") {
     return t("errors.transcribeFailed");
   }
-  if (message === "transcribe_final_timeout") {
+  if (normalizedMessage === "transcribe_final_timeout") {
     return t("errors.transcribeTimeout");
   }
-  if (message === "polly_synthesis_failed") {
+  if (normalizedMessage === "polly_synthesis_failed") {
     return t("errors.pollyFailed");
   }
-  if (message) {
-    return t("errors.voiceErrorWithMessage", { message });
+  if (normalizedMessage?.includes("transcribe_final_timeout")) {
+    return t("errors.transcribeTimeout");
+  }
+  if (normalizedMessage) {
+    return t("errors.voiceErrorWithMessage", { message: normalizedMessage });
   }
   return t("errors.voiceError");
 }

@@ -106,6 +106,15 @@ def build_live_interview_context(
             "question_id": state.get("currentQuestionId"),
             "target": deepcopy(state.get("nextQuestionTarget")),
             "question": current_question,
+            "answer_evaluation": state.get("lastAnswerEvaluation"),
+            "missing_information": list(state.get("lastMissingInformation") or []),
+            "next_action": state.get("lastNextAction"),
+        },
+        "conversationControl": {
+            "answerEvaluation": state.get("lastAnswerEvaluation"),
+            "missingInformation": list(state.get("lastMissingInformation") or []),
+            "extractedFields": list(state.get("lastExtractedFields") or []),
+            "nextAction": state.get("lastNextAction"),
         },
     }
 

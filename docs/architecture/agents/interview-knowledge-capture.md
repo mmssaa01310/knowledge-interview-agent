@@ -238,11 +238,14 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
 ```json
 {
   "dialogueAct": "ANSWER",
+  "answerEvaluation": "ANSWERED",
   "utteranceCompleteness": "COMPLETE",
   "transcriptAssessment": {
     "rawTranscript": "",
     "normalizedTranscript": "",
     "correctionStatus": "NONE",
+    "recognitionStatus": "CLEAR",
+    "recognitionEvidence": [],
     "correctionCandidates": [],
     "correctionReason": null
   },
@@ -250,6 +253,7 @@ Interpreterは、毎回次のトップレベル項目をすべて返す。該当
     "sufficiency": "SUFFICIENT",
     "probeType": "NONE"
   },
+  "missingInformation": [],
   "fieldUpdates": [],
   "requirementUpdates": [],
   "processPatch": {
@@ -278,17 +282,38 @@ Schemaは`additionalProperties=false`を設定し、定義済みの全プロパ�
 
 ### 7.1.1 発話完結性とTranscript評価
 
-`utteranceCompleteness`は`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`のいずれかとする。文法的に途中で切れている発話、続きが明らかな発話、現在の質問への意味的回答として成立していない発話は`INCOMPLETE`または`UNCERTAIN`とする。`INCOMPLETE`のときBackendは`fieldUpdates`、`requirementUpdates`、`processPatch`を適用せず、現在の質問を維持して短く続行を依頼する。
+`utteranceCompleteness`は`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`のいずれかとする。文法的に途中で切れている発話、続きが明らかな発話は`INCOMPLETE`または`UNCERTAIN`とする。回答の情報量が不足しているだけの完結した文は`INCOMPLETE`にしない。`INCOMPLETE`のときBackendは`fieldUpdates`、`requirementUpdates`、`processPatch`を正式候補へ進めず、現在の質問を維持して短く続行を依頼する。
 
 `transcriptAssessment.rawTranscript`はBackendが受け取ったTranscribe結果を記録する。句読点・空白・明らかな表記揺れだけの補正は`correctionStatus=NONE`とし、意味を変える単語の補正は`CORRECTED`として`normalizedTranscript`と候補を返す。候補が一意でない場合は`UNCERTAIN`とし、補正前の文字列も補正候補も正式回答へ確定しない。`CORRECTED`の場合も、Backendが自然な補正候補を確認質問として提示し、対象者が肯定するまで状態を確定しない。
 
 `UNCERTAIN`の発話に補正対象とは独立した明確な項目が含まれる場合、その項目だけは`TENTATIVE`の候補として保持してよい。ただし、補正対象を値に含めず、現在の質問と次質問の選択は維持する。補正候補や曖昧な項目を正式回答へ進めてはならない。
 
-`UNCERTAIN`または補正候補が空の`CORRECTED`は再発話を依頼する。補正確認中は`pendingTranscriptConfirmation`を保持し、次のProfile対象へ進めない。補正候補を対象者が否定した場合は候補を破棄し、元の質問へ戻す。
+`recognitionStatus`は、文字起こしが内容を保持している場合は`CLEAR`、認識結果の途中欠落が確認できる場合は`PARTIAL`、確定・部分文字起こしが存在しない場合は`MISSING`、音声上の候補を一意に区別できない場合は`AMBIGUOUS`とする。回答の意味が不足しているだけの場合は`CLEAR`のままとし、`NOT_HEARD`へ変換してはならない。`recognitionEvidence`には、空の確定文字起こし、認識結果の欠落、音声上の候補衝突など、実際に認識品質を示す根拠だけを記録する。
+
+`UNCERTAIN`または補正候補が空の`CORRECTED`は、認識品質の根拠がある場合に限り再発話を依頼する。補正確認中は`pendingTranscriptConfirmation`を保持し、次のProfile対象へ進めない。補正候補を対象者が否定した場合は候補を破棄し、元の質問へ戻す。
 
 ### 7.1.2 回答充足性とProbe
 
 `answerAssessment.sufficiency`は`SUFFICIENT`、`PARTIAL`、`AMBIGUOUS`、`EXAMPLE_MISSING`、`REASON_MISSING`、`CRITERIA_MISSING`、`UNANSWERABLE`、`REFUSAL`、`INCOMPLETE`のいずれかとする。`SUFFICIENT`以外では`probeType`に不足部分だけを確認する方針を示す。Backendは`UNANSWERABLE`または`REFUSAL`に対して一度だけ中立的な再探索を行い、再度「特にない」などの回答があれば`NO_DETAIL`として次の対象へ進める。回答済みの部分を再質問してはならない。
+
+### 7.1.3 共通の回答評価と次アクション
+
+`answerEvaluation`は、最新のユーザー発話が現在の質問に対してどの状態かを表す。特定の質問文やProfileに依存せず、すべての質問で次の値を使用する。
+
+| 評価 | 意味 | Backendの基本アクション |
+|---|---|---|
+| `ANSWERED` | 必要な情報が十分に得られた | `MOVE_NEXT` |
+| `PARTIALLY_ANSWERED` | 関連する情報は得られたが観点が不足 | `ASK_MISSING_INFORMATION` |
+| `OFF_TARGET` | 質問と異なる内容 | `KEEP_CURRENT_QUESTION` |
+| `CLARIFICATION_REQUEST` | 質問の意味・答え方・具体例を求めている | `EXPLAIN_QUESTION` |
+| `NOT_HEARD` | 認識欠落・空文字・音声上の曖昧さを評価できる根拠がある | `ASK_REPEAT` |
+| `INCOMPLETE_UTTERANCE` | 文または発話が途中で切れている | `WAIT_FOR_CONTINUATION` |
+| `CORRECTION` | 直前の回答を訂正している | `APPLY_CORRECTION` |
+| `REPEAT_REQUEST` | 質問をもう一度言うよう求めている | `REPEAT_CURRENT_QUESTION` |
+
+`PARTIALLY_ANSWERED`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`は独立した評価である。認識できた完結文の情報不足を`NOT_HEARD`にしてはならず、完結したが短い回答を`INCOMPLETE_UTTERANCE`にしてはならない。「続き、お願いします」は`INCOMPLETE_UTTERANCE`だけで使用する。
+
+`missingInformation`には、設定済みのrequired item、optional item、Requirement、Process、Applicability等のうち、今回の質問でまだ取得できていない具体的な観点を列挙する。次質問は取得済み情報を前提に、この配列から原則1つだけを直接尋ねる。関連語が含まれただけで対象を`CONFIRMED`にせず、意味的に要求された情報が得られたときだけ状態を進める。
 
 ### 7.2 Dialogue Act
 
@@ -304,13 +329,14 @@ HESITATION
 CORRECTION
 REJECTION
 CONFIRMATION
+REPEAT_REQUEST
 IRRELEVANT
 OTHER
 ```
 
 Dialogue Actの判定は、現在の質問、確認中候補、直前のAssistant発話、会話履歴を使用して行う。文字列一致や固定挨拶辞書で判定してはならない。
 
-`HESITATION`、`BACKCHANNEL`、`OTHER`は回答候補として適用せず、現在の質問と`questionId`を維持して短い促しだけを返す。このときQuestion Generator、検索、次質問対象の選択は実行しない。質問の意味が分からない発話は`CLARIFICATION_REQUEST`として、現在の質問に応じた「何について話すか」「具体例1個」「回答時の観点」をLLMで生成して説明し、元の質問文や項目説明をそのまま読み上げない。利用者が追加の具体例を明示的に求めた場合だけ、具体例を最大3個まで追加する。STT補正の`UNCERTAIN`と混同してはならない。`UNANSWERABLE`または`REFUSAL`は一度だけ別角度の具体的な促しを返す。聞き取り失敗の応答は、`transcriptAssessment.correctionStatus="UNCERTAIN"`の場合だけ使用する。
+`HESITATION`、`BACKCHANNEL`、`OTHER`は回答候補として適用せず、現在の質問と`questionId`を維持して短い促しだけを返す。このときQuestion Generator、検索、次質問対象の選択は実行しない。質問の意味が分からない発話は`CLARIFICATION_REQUEST`として、現在の質問に応じた「何について話すか」「具体例1個」「回答時の観点」をLLMで生成して説明し、元の質問文や項目説明をそのまま読み上げない。利用者が「具体的には」「例えば」「回答例」など追加の具体例を明示的に求めた場合だけ、具体例を2〜3個まで追加する。STT補正の`UNCERTAIN`と意味不足を混同してはならない。`UNANSWERABLE`または`REFUSAL`は一度だけ別角度の具体的な促しを返す。聞き取り失敗の応答は、`recognitionStatus`が`PARTIAL`、`MISSING`、`AMBIGUOUS`であるなど、認識品質の根拠がある場合だけ使用する。`REPEAT_REQUEST`では現在の質問文をそのまま再提示し、回答評価や状態を進めない。
 
 確認待ち候補に対する`CONFIRMATION`は、訂正・留保・追加条件を含まない明確な肯定の場合だけ確定できる。混在した確認発話は候補を確定せず、差分または訂正内容を確認する。
 
@@ -592,6 +618,22 @@ Backendは質問を発行するとき、`questionId`、`targetType`、`targetId`
 
 `TENTATIVE`の`CANDIDATE_PENDING`対象に確認質問を発行してはならない。Backendは次質問へ候補の解釈を織り込む。その他の`CANDIDATE_PENDING`を明示確認する場合だけ、Backendは対象を`AWAITING_CONFIRMATION`へ昇格してから質問を発行する。
 
+#### 8.1.2 会話制御のターン記録
+
+各ターンは、少なくとも次の診断情報を同じ会話制御契約で保持する。`runtime`が`transcribe_polly`、`gpt_live`、テキスト等で異なっても、同じ確定transcriptに対する意味評価と次アクションの値は共通とする。
+
+* `runtime`
+* `rawTranscript`、`finalTranscript`
+* `dialogueAct`、`answerEvaluation`
+* `extractedFields`
+* Fieldごとの`answerState`、`answerResolution`、取得済みitem、不足item
+* `missingInformation`
+* `nextAction`
+* Interpreterへ渡した`llmInput`の決定関連要約
+* Interpreterが返した`llmOutput`の決定関連要約
+
+会話制御の`nextAction`は、`MOVE_NEXT`、`FOLLOW_UP`、`ASK_MISSING_INFORMATION`、`EXPLAIN_QUESTION`、`ASK_REPEAT`、`WAIT_FOR_CONTINUATION`、`APPLY_CORRECTION`、`REPEAT_CURRENT_QUESTION`、`KEEP_CURRENT_QUESTION`のいずれかとする。音声Runtimeはこの値を再解釈せず、音声入出力と表示へ引き継ぐ。
+
 ### 8.2 FieldState
 
 既存の`InterviewFieldState`を拡張して使用する。次の情報を必須で保持する。
@@ -811,6 +853,13 @@ Question Generatorへの入力には、Backendが決定した対象を必ず含�
   "targetId": "exception",
   "targetLabel": "通常と異なるケース",
   "currentState": {},
+  "currentAnswer": {},
+  "questionPurpose": "通常と異なるケースの有無を確認する",
+  "requiredAspects": [],
+  "acquiredInformation": [],
+  "missingInformation": ["発生条件"],
+  "answerEvaluation": "PARTIALLY_ANSWERED",
+  "sameQuestionAskedBefore": false,
   "recentConversation": [],
   "customPrompt": ""
 }
@@ -829,6 +878,8 @@ Question Generatorには次の制約を課す。
 * `questionText`を1件だけ返す。
 * Backendが指定した対象以外を質問しない。
 * 未確認情報を事実として表現しない。
+* `currentAnswer`、`acquiredInformation`、`missingInformation`、`answerEvaluation`、`sameQuestionAskedBefore`を参照し、取得済みの観点を聞き直さず、不足観点だけを質問する。
+* `sameQuestionAskedBefore=true`の場合は同じ質問文を繰り返さず、`missingInformation`または`activeProbe`に基づいて具体化する。
 * 入力にない業務、人物、システム、制約を追加しない。
 * 1回の質問で複数の独立した必須項目を要求しない。
 * `applicability_overview`だけは、標準のApplicability確認文を1つの質問として使用できる。
@@ -1039,6 +1090,8 @@ sequenceDiagram
 * Terraへ音声データを直接送信しない。文字起こし済みテキストを送信する。
 * 音声だけ別の回答評価、質問優先順位、完了条件を持ってはならない。
 * `app/voice`から`app/api`のPythonモジュールを直接importしてはならない。
+
+音声の責務は、音声入力、確定文字起こし、共通Interview処理への引き渡し、返却文の音声化に限定する。Transcribe + Pollyは`audio → final transcript → 共通会話制御 → reply → Polly`の順で処理し、`NOT_HEARD`を生成できるのは空文字、結果欠落、音声上の候補衝突など認識品質の根拠がある場合だけとする。認識できた回答の不足は`PARTIALLY_ANSWERED`として共通処理で不足情報を質問する。
 
 ## 14. プロンプトの責務
 

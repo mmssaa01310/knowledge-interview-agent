@@ -1157,6 +1157,25 @@ def _process_structured_voice_turn(
             turn["normalizedTranscript"] = transcript_assessment.get("normalizedTranscript")
             turn["correctionStatus"] = transcript_assessment.get("correctionStatus") or "NONE"
             turn["transcriptAssessment"] = dict(transcript_assessment)
+        turn["runtime"] = str(session.get("provider") or "structured_interview")
+        turn["dialogueAct"] = result.get("structuredDialogueAct")
+        turn["answerEvaluation"] = result.get("answerEvaluation")
+        turn["missingInformation"] = list(result.get("missingInformation") or [])
+        turn["extractedFields"] = [
+            dict(item)
+            for item in (result.get("extractedFields") or [])
+            if isinstance(item, dict)
+        ]
+        turn["fieldStates"] = dict(result.get("fieldStates") or {})
+        turn["nextAction"] = result.get("nextAction")
+        turn["llmInput"] = result.get("llmInput")
+        turn["llmOutput"] = result.get("llmOutput")
+        trace = result.get("conversationTrace")
+        turn["conversationTrace"] = (
+            {**trace, "runtime": turn["runtime"]}
+            if isinstance(trace, Mapping)
+            else trace
+        )
         if session.get("provider") == "transcribe_polly":
             voice_feedback = build_transcribe_polly_transcript_feedback(
                 result,
@@ -1206,7 +1225,7 @@ def _process_structured_voice_turn(
             "conversation_turn_trace canonical_turn_id=%s voice_session_id=%s "
             "user_utterance_chars=%s canonical_intent=%s canonical_action=%s "
             "fast_check_executed=%s structured_dialogue_act=%s dialogue_act_mismatch=%s "
-            "next_question_id=%s",
+            "answer_evaluation=%s next_action=%s next_question_id=%s",
             turn.get("id"),
             session.get("id"),
             len(str(turn.get("transcript") or "")),
@@ -1215,6 +1234,8 @@ def _process_structured_voice_turn(
             turn.get("fastCheckExecuted"),
             turn.get("structuredDialogueAct"),
             turn.get("dialogueActMismatch"),
+            turn.get("answerEvaluation"),
+            turn.get("nextAction"),
             question_id,
         )
         voice_turn_repository.save(turn)

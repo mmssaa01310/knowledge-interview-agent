@@ -107,6 +107,16 @@ class VoiceTurn(BaseEntity):
     normalizedTranscript: str | None = None
     correctionStatus: Literal["NONE", "CORRECTED", "UNCERTAIN"] = "NONE"
     transcriptAssessment: dict | None = None
+    runtime: str | None = None
+    dialogueAct: str | None = None
+    answerEvaluation: str | None = None
+    missingInformation: list[str] = Field(default_factory=list)
+    extractedFields: list[dict] = Field(default_factory=list)
+    fieldStates: dict = Field(default_factory=dict)
+    nextAction: str | None = None
+    llmInput: dict | None = None
+    llmOutput: dict | None = None
+    conversationTrace: dict | None = None
     sttConfidence: float | None = None
     turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None

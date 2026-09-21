@@ -38,6 +38,9 @@ def build_transcribe_polly_transcript_feedback(
     output = _as_mapping(state.get("lastStructuredOutput"))
     question = _as_mapping(result.get("question"))
     status = _clean_text(assessment.get("correctionStatus")).upper()
+    answer_evaluation = _clean_text(
+        output.get("answerEvaluation") or result.get("answerEvaluation")
+    ).upper()
     correction_candidates = _unique_texts(assessment.get("correctionCandidates"))
 
     if status == "CORRECTED":
@@ -59,11 +62,14 @@ def build_transcribe_polly_transcript_feedback(
         # were a reliable candidate. Use targeted retry wording instead.
         status = "UNCERTAIN"
 
-    # Only a transcript assessment marked UNCERTAIN is an audio-recognition
-    # failure. Semantic follow-ups and rejected correction candidates must
-    # keep the Structured Interview wording instead of being relabeled as
-    # "could not hear" by this presentation layer.
-    if status != "UNCERTAIN":
+    # The shared evaluator is authoritative when it is available. Semantic
+    # insufficiency, off-target answers, and incomplete utterances must never
+    # be relabeled as an audio failure by this presentation layer. The legacy
+    # status-only fallback remains for old persisted turns without the new
+    # evaluation field.
+    if answer_evaluation and answer_evaluation != "NOT_HEARD":
+        return None
+    if status != "UNCERTAIN" and answer_evaluation != "NOT_HEARD":
         return None
 
     latest_message_ids = _latest_message_ids(state, turn)

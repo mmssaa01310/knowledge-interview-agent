@@ -67,6 +67,8 @@ from ai_interviewer_api.core.interview_locale import (
     localized_interview_document_confirmation_question,
     localized_interview_incomplete_prompt,
     localized_interview_fallbacks,
+    localized_interview_not_heard_prompt,
+    localized_interview_off_target_prompt,
     localized_interview_proposal_question,
     localized_interview_question_guidance,
     localized_interview_transcript_confirmation_question,
@@ -86,6 +88,11 @@ from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
 )
 from ai_interviewer_api.services.conversation_policy import CanonicalAction
+from ai_interviewer_api.services.conversation_control import (
+    build_conversation_trace,
+    field_state_summary,
+    normalize_conversation_output,
+)
 from ai_interviewer_api.services.interview_document_retrieval import (
     MAX_INTERVIEW_DOCUMENT_CONTEXT,
     SpeculativeInterviewRetrieval,
@@ -1512,7 +1519,37 @@ def _generate_structured_interview_result(
                     }
                 )
                 transcript_assessment_status = "UNCERTAIN"
-            if transcript_assessment_status == "UNCERTAIN":
+            if not raw_transcript and output.transcriptAssessment.recognitionStatus == "CLEAR":
+                # Empty final text is transport/STT evidence, not a semantic
+                # judgement about the answer. Mark only this concrete case as
+                # missing recognition input.
+                output = output.model_copy(
+                    update={
+                        "transcriptAssessment": output.transcriptAssessment.model_copy(
+                            update={
+                                "recognitionStatus": "MISSING",
+                                "recognitionEvidence": ["empty_final_transcript"],
+                            }
+                        )
+                    }
+                )
+            # Normalize the independent transcript/semantic judgements before
+            # any runtime-specific wording or state transition is selected.
+            output = normalize_conversation_output(output)
+            if (
+                output.utteranceCompleteness == "UNCERTAIN"
+                and output.transcriptAssessment.recognitionStatus == "CLEAR"
+                and output.transcriptAssessment.correctionStatus == "NONE"
+            ):
+                # Uncertain grammatical completeness is not evidence of an
+                # audio failure. Let the semantic answer assessment decide
+                # whether to move on or ask for a missing aspect; reserve the
+                # continuation/retry branches for explicit incomplete or
+                # recognition-uncertain turns.
+                output = output.model_copy(update={"utteranceCompleteness": "COMPLETE"})
+                effective_completeness = "COMPLETE"
+            _set_conversation_trace(state, output, interpreter_context)
+            if output.answerEvaluation == "NOT_HEARD":
                 _apply_uncertain_grounded_updates(
                     state=state,
                     output=output,
@@ -1537,7 +1574,14 @@ def _generate_structured_interview_result(
                     raw_transcript=raw_transcript,
                     current_question=current_question,
                     persist_state=persist_state,
-                    reply=localized_interview_transcript_retry(interview_locale),
+                    reply=localized_interview_not_heard_prompt(
+                        interview_locale,
+                        str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or "先ほどの質問"
+                        ),
+                    ),
                 )
             if canonical_intent is not None:
                 actual_dialogue_act = output.dialogueAct
@@ -1546,8 +1590,13 @@ def _generate_structured_interview_result(
                 state["lastStructuredValidationDialogueAct"] = actual_dialogue_act
                 if canonical_action in {
                     "EXPLAIN_CURRENT_QUESTION",
+                    "REPEAT_CURRENT_QUESTION",
                     "KEEP_CURRENT_QUESTION",
                 }:
+                    output = normalize_conversation_output(
+                        output.model_copy(update={"dialogueAct": canonical_intent})
+                    )
+                    _set_conversation_trace(state, output, interpreter_context)
                     if canonical_action == "EXPLAIN_CURRENT_QUESTION":
                         reply = _render_question_explanation(
                             record_id=str(record.get("id") or ""),
@@ -1562,9 +1611,20 @@ def _generate_structured_interview_result(
                             reasoning_effort=settings.structured_interview_question_reasoning_effort,
                             latency_metrics=latency_metrics,
                         )
+                    elif canonical_action == "REPEAT_CURRENT_QUESTION":
+                        reply = str(current_question.get("text") or "")
                     elif canonical_intent == "CONFIRMATION":
                         reply = localized_interview_confirmation_clarification_prompt(
                             interview_locale,
+                        )
+                    elif output.answerEvaluation == "OFF_TARGET":
+                        reply = localized_interview_off_target_prompt(
+                            interview_locale,
+                            str(
+                                current_question.get("targetLabel")
+                                or current_question.get("label")
+                                or "現在の項目"
+                            ),
                         )
                     else:
                         reply = localized_interview_hesitation_prompt(interview_locale)
@@ -1586,7 +1646,10 @@ def _generate_structured_interview_result(
                     )
                 # The structured interpreter remains useful for extraction and
                 # validation, but it must not replace the foreground intent.
-                output = output.model_copy(update={"dialogueAct": canonical_intent})
+                output = normalize_conversation_output(
+                    output.model_copy(update={"dialogueAct": canonical_intent})
+                )
+                _set_conversation_trace(state, output, interpreter_context)
                 if canonical_action in {
                     "CONFIRM_PENDING_CANDIDATE",
                     "REJECT_PENDING_CANDIDATE",
@@ -1612,7 +1675,40 @@ def _generate_structured_interview_result(
                             "openIssues": [],
                         }
                     )
-            if output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"} and not _has_structured_updates(output):
+            if output.answerEvaluation == "REPEAT_REQUEST":
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    persist_state=persist_state,
+                    reply=str(current_question.get("text") or ""),
+                )
+            if output.answerEvaluation == "CLARIFICATION_REQUEST" or (
+                output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"}
+                and not _has_structured_updates(output)
+            ):
+                if _has_structured_updates(output):
+                    output = output.model_copy(
+                        update={
+                            "fieldUpdates": [],
+                            "requirementUpdates": [],
+                            "processPatch": ProcessPatch(),
+                            "applicability": [],
+                            "contradictions": [],
+                            "resolvedContradictionIds": [],
+                            "openIssues": [],
+                        }
+                    )
+                    _set_conversation_trace(state, output, interpreter_context)
                 return _keep_current_question(
                     record=record,
                     state=state,
@@ -1639,6 +1735,30 @@ def _generate_structured_interview_result(
                         provider=structured_provider,
                         reasoning_effort=settings.structured_interview_question_reasoning_effort,
                         latency_metrics=latency_metrics,
+                    ),
+                )
+            if output.answerEvaluation == "OFF_TARGET":
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    persist_state=persist_state,
+                    reply=localized_interview_off_target_prompt(
+                        interview_locale,
+                        str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or "現在の項目"
+                        ),
                     ),
                 )
             if output.dialogueAct in {"HESITATION", "BACKCHANNEL", "OTHER"}:
@@ -1685,7 +1805,7 @@ def _generate_structured_interview_result(
                     persist_state=persist_state,
                     reply=localized_interview_confirmation_clarification_prompt(interview_locale),
                 )
-            if effective_completeness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
+            if effective_completeness != "COMPLETE":
                 apply_structured_output(
                     state,
                     output,
@@ -1701,6 +1821,7 @@ def _generate_structured_interview_result(
                     state.get("lastTranscriptAssessment"),
                     persist=persist_state,
                 )
+                _set_conversation_trace(state, output, interpreter_context)
                 state["lastStructuredOutput"] = output.model_dump()
                 state["lastStructuredModelId"] = model_id
                 state["lastStructuredReasoningEffort"] = selected_reasoning_effort
@@ -1781,11 +1902,15 @@ def _generate_structured_interview_result(
                 if not staged_transcript_correction:
                     current_target = _target_from_question(current_question)
                     answer_sufficiency = output.answerAssessment.sufficiency
+                    answer_needs_follow_up = (
+                        output.answerEvaluation == "PARTIALLY_ANSWERED"
+                        or answer_sufficiency != "SUFFICIENT"
+                    )
                     if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
                         output_to_apply = output.model_copy(
                             update={"fieldUpdates": [], "requirementUpdates": []}
                         )
-                    elif answer_sufficiency != "SUFFICIENT":
+                    elif answer_needs_follow_up:
                         output_to_apply = _downgrade_current_target_update(
                             output,
                             current_target,
@@ -1838,7 +1963,7 @@ def _generate_structured_interview_result(
                                     probe_type=output.answerAssessment.probeType,
                                 )
                                 keep_current_question_for_unanswerable = True
-                    elif answer_sufficiency != "SUFFICIENT":
+                    elif answer_needs_follow_up:
                         optional_target = select_optional_deepening_target(
                             state,
                             current_target,
@@ -1924,6 +2049,7 @@ def _generate_structured_interview_result(
                     normalized_transcript=str(normalized or raw_transcript),
                     valid_evidence_ids=valid_evidence_ids,
                 )
+            _set_conversation_trace(state, output, interpreter_context)
             if (
                 pending_transcript_confirmation
                 and output.dialogueAct == "REJECTION"
@@ -1987,6 +2113,23 @@ def _generate_structured_interview_result(
                     current_question.get("questionId"),
                 )
             answer_state_after = _structured_answer_state_snapshot(state)
+            if (
+                answer_state_before is not None
+                and answer_state_after == answer_state_before
+                and output.answerEvaluation == "PARTIALLY_ANSWERED"
+            ):
+                # A semantic partial answer may contain no safely extractable
+                # value. Still record the missing-information probe so the
+                # next-question generator can ask for that aspect directly.
+                current_target = _target_from_question(current_question)
+                if current_target is not None:
+                    register_probe(
+                        state,
+                        target=current_target,
+                        probe_type=output.answerAssessment.probeType,
+                    )
+                    _set_conversation_trace(state, output, interpreter_context)
+                    answer_state_after = _structured_answer_state_snapshot(state)
             if answer_state_before is not None and answer_state_after == answer_state_before:
                 # A sufficient-looking model result is not permission to
                 # complete the question. Require a persisted semantic effect
@@ -2353,6 +2496,13 @@ def _keep_current_question(
         latest_message_id=latest_message_id,
         raw_transcript=raw_transcript,
     )
+    trace = state.get("lastConversationTrace")
+    if isinstance(trace, Mapping):
+        state["lastConversationTrace"] = {
+            **trace,
+            "fieldStates": _field_state_trace(state),
+            "nextAction": state.get("lastNextAction"),
+        }
     if persist_state:
         _persist_transcript_assessment(
             latest_user_message,
@@ -2661,6 +2811,16 @@ def _build_interpreter_context(
     messages: Sequence[Mapping[str, Any]],
     current_question: Mapping[str, Any],
 ) -> dict[str, Any]:
+    current_target = _target_from_question(current_question) or {}
+    current_field = _field_for_target(current_target, fields)
+    question_definition = _question_definition_context(current_target, current_field)
+    latest_utterance = _latest_utterance_context(messages, current_question)
+    acquired_information = _target_acquired_information(state, current_target)
+    missing_information = _target_missing_information(state, current_target)
+    same_question_asked_before = _same_target_asked_before(
+        state,
+        current_question,
+    )
     return {
         "profile": state.get("interviewProfile"),
         "knowledge": {
@@ -2692,8 +2852,18 @@ def _build_interpreter_context(
             for field in fields
         ],
         "currentQuestion": dict(current_question),
+        "currentAnswer": latest_utterance,
+        "questionPurpose": question_definition.get("purpose"),
+        "requiredAspects": [
+            *question_definition.get("requiredItems", []),
+            *question_definition.get("optionalItems", []),
+        ],
+        "acquiredInformation": acquired_information,
+        "missingInformation": missing_information,
+        "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "sameQuestionAskedBefore": same_question_asked_before,
         "interviewState": _compact_state(state),
-        "latestUtterance": _latest_utterance_context(messages, current_question),
+        "latestUtterance": latest_utterance,
         "conversation": [
             {
                 "id": message.get("id"),
@@ -2729,6 +2899,119 @@ def _latest_utterance_context(
     }
 
 
+def _target_acquired_information(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Summarize facts already captured for the selected target."""
+
+    if not isinstance(target, Mapping):
+        return []
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        if not isinstance(target_state, Mapping):
+            return []
+        items = target_state.get("capturedItems") or target_state.get("candidateItems") or []
+        return [
+            {
+                "itemId": item.get("itemId"),
+                "value": item.get("value"),
+            }
+            for item in items
+            if isinstance(item, Mapping) and str(item.get("value") or "").strip()
+        ]
+    if target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        if isinstance(target_state, Mapping):
+            value = target_state.get("value") or target_state.get("candidateValue")
+            if str(value or "").strip():
+                return [{"targetId": target_id, "value": value}]
+    return []
+
+
+def _target_missing_information(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return configured missing items without inventing new requirements."""
+
+    if not isinstance(target, Mapping):
+        return []
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        if isinstance(target_state, Mapping):
+            plan = target_state.get("questionPlan")
+            if isinstance(plan, Mapping):
+                labels = {
+                    str(item.get("itemId")): item
+                    for item in plan.get("requiredItems", []) or []
+                    if isinstance(item, Mapping) and item.get("itemId")
+                }
+                missing_ids = target_state.get("missingRequiredItemIds") or []
+                return [
+                    {
+                        "itemId": item_id,
+                        "label": labels.get(str(item_id), {}).get("label", str(item_id)),
+                        "description": labels.get(str(item_id), {}).get("description"),
+                    }
+                    for item_id in missing_ids
+                ]
+    raw_items = target.get("missingItems")
+    if isinstance(raw_items, Sequence) and not isinstance(raw_items, (str, bytes)):
+        return [dict(item) for item in raw_items if isinstance(item, Mapping)]
+    return []
+
+
+def _same_target_asked_before(
+    state: Mapping[str, Any],
+    question: Mapping[str, Any],
+) -> bool:
+    target_type = str(question.get("targetType") or question.get("kind") or "")
+    target_id = str(question.get("targetId") or "")
+    if not target_type or not target_id:
+        return False
+    count = sum(
+        1
+        for asked in state.get("askedQuestions", []) or []
+        if isinstance(asked, Mapping)
+        and str(asked.get("targetType") or asked.get("kind") or "") == target_type
+        and str(asked.get("targetId") or "") == target_id
+    )
+    return count > 1
+
+
+def _set_conversation_trace(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    context: Mapping[str, Any],
+    *,
+    runtime: str = "structured_interview",
+) -> None:
+    """Persist one auditable decision trace shared by all input runtimes."""
+
+    trace = build_conversation_trace(
+        output,
+        context,
+        state=state,
+        runtime=runtime,
+        has_pending_confirmation=bool(
+            state.get("pendingTranscriptConfirmation")
+            or state.get("lastTentativeTarget")
+        ),
+    )
+    state["lastNextAction"] = trace["nextAction"]
+    state["lastConversationTrace"] = trace
+
+
+def _field_state_trace(state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Expose only decision-relevant state for turn diagnostics."""
+    return field_state_summary(state)
+
+
 def _compact_state(state: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(state)
     result.pop("lastStructuredOutput", None)
@@ -2752,6 +3035,10 @@ def _question_generator_state_context(state: Mapping[str, Any]) -> dict[str, Any
         "status": state.get("status"),
         "closingState": state.get("closingState"),
         "answerAssessment": state.get("lastAnswerAssessment"),
+        "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "missingInformation": list(state.get("lastMissingInformation") or []),
+        "extractedFields": list(state.get("lastExtractedFields") or []),
+        "nextAction": state.get("lastNextAction"),
         "activeProbe": state.get("activeProbeTarget"),
         "tentativeCandidates": _list_tentative_candidates(state),
     }
@@ -2848,6 +3135,12 @@ def _question_definition_context(
                 if isinstance(example, str) and example.strip():
                     original_question = example.strip()
                     break
+    if original_question is None:
+        fallback_title = str(
+            target.get("label") or field.get("name") or target.get("targetId") or "この項目"
+        ).strip()
+        if fallback_title:
+            original_question = f"{fallback_title}について教えてください。"
 
     description: str | None = None
     for value in (
@@ -3127,23 +3420,19 @@ def _fallback_question_help(
             label = str(item.get("label") or item.get("description") or "").strip()
             if label and label not in labels:
                 labels.append(label)
-    examples = [f"{label}に関する具体的な状況や出来事" for label in labels[:1]]
-    generic_examples = [
-        f"{target_label}に関して印象に残っている経験",
-        f"{target_label}が現在の仕事に影響したこと",
+    examples = [
+        f"{label}について、実際に起きた状況や出来事"
+        for label in labels[:1]
     ]
-    for example in generic_examples:
-        if len(examples) >= 1:
-            break
-        if example not in examples:
-            examples.append(example)
+    if not examples:
+        examples = [f"{target_label}について、実際に起きた状況や判断"]
     return QuestionHelpOutput(
         topic=target_label.strip() or "このテーマ",
         examples=examples[:1],
         perspectives=[
             "いつ・どのような状況だったか",
-            "何をしたか、何が変わったか",
-            "現在の仕事にどう影響しているか",
+            "何をしたか、どのように判断したか",
+            "結果や、その後に変わったこと",
         ],
     )
 
@@ -3617,6 +3906,17 @@ def _generate_question_text(
         "questionProgress": _question_progress_context(target),
         "tentativeCandidates": question_state["tentativeCandidates"],
         "answerAssessment": question_state["answerAssessment"],
+        "answerEvaluation": question_state["answerEvaluation"],
+        "currentAnswer": _latest_utterance_context(messages, _get_current_question(state) or {}),
+        "acquiredInformation": _target_acquired_information(state, target),
+        "missingInformation": _target_missing_information(state, target)
+        or question_state["missingInformation"],
+        "requiredAspects": [
+            *question_definition.get("requiredItems", []),
+            *question_definition.get("optionalItems", []),
+        ],
+        "sameQuestionAskedBefore": _same_target_asked_before(state, target),
+        "nextAction": question_state["nextAction"],
         "activeProbe": question_state["activeProbe"],
         # Registered facts and glossary entries are configuration context,
         # not optional lexical RAG. They remain available when retrievalPolicy
@@ -4154,6 +4454,8 @@ def _persist_transcript_assessment(
             "rawTranscript": assessment.get("rawTranscript") or stored.get("content") or "",
             "normalizedTranscript": assessment.get("normalizedTranscript") or "",
             "correctionStatus": assessment.get("correctionStatus") or "NONE",
+            "recognitionStatus": assessment.get("recognitionStatus") or "CLEAR",
+            "recognitionEvidence": list(assessment.get("recognitionEvidence") or []),
             "correctionCandidates": list(assessment.get("correctionCandidates") or []),
             "correctionReason": assessment.get("correctionReason"),
             "updatedAt": utc_now(),
@@ -4270,6 +4572,13 @@ def _build_result(
         _effective_profile(state, "system_requirement"),
         fields,
     )
+    trace = state.get("lastConversationTrace")
+    trace = trace if isinstance(trace, Mapping) else {}
+    resolved_missing_information = (
+        list(missing_information)
+        if missing_information is not None
+        else list(state.get("lastMissingInformation") or [])
+    )
     return {
         "status": status,
         "action": action,
@@ -4279,7 +4588,16 @@ def _build_result(
         "currentFieldId": question.get("fieldId") if question else None,
         "answerSummary": None,
         "recordAnswer": result_field.get("recordAnswer"),
-        "missingInformation": missing_information or [],
+        "missingInformation": resolved_missing_information,
+        "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "extractedFields": list(state.get("lastExtractedFields") or []),
+        "fieldStates": _field_state_trace(state),
+        "nextAction": state.get("lastNextAction"),
+        "rawTranscript": trace.get("rawTranscript"),
+        "finalTranscript": trace.get("finalTranscript"),
+        "llmInput": trace.get("llmInput"),
+        "llmOutput": trace.get("llmOutput"),
+        "conversationTrace": dict(trace) if trace else None,
         "assistantMessage": dict(assistant_message) if assistant_message else None,
         "interviewState": dict(state),
         "structuredDraft": _build_structured_draft(state, fields),

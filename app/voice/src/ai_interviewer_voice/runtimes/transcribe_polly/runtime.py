@@ -1068,7 +1068,13 @@ class TranscribePollyRuntime:
         await self._emit(
             RuntimeError(
                 message="transcribe_final_timeout",
-                detail={"fallback": "retry_input"},
+                detail={
+                    "fallback": "retry_input",
+                    "runtime": "transcribe_polly",
+                    "answerEvaluation": "NOT_HEARD",
+                    "nextAction": "ASK_REPEAT",
+                    "recognitionEvidence": ["no_final_or_partial_transcript"],
+                },
                 fatal=False,
             )
         )

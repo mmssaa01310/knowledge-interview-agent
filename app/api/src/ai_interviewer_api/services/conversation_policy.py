@@ -31,6 +31,7 @@ CanonicalAction = Literal[
     "CONFIRM_PENDING_CANDIDATE",
     "REJECT_PENDING_CANDIDATE",
     "EXPLAIN_CURRENT_QUESTION",
+    "REPEAT_CURRENT_QUESTION",
     "KEEP_CURRENT_QUESTION",
     "APPLY_CORRECTION",
     "HANDLE_CONTROL",
@@ -216,6 +217,8 @@ def resolve_canonical_action(
         return "REJECT_PENDING_CANDIDATE" if pending_confirmation else "KEEP_CURRENT_QUESTION"
     if dialogue_act in {"CLARIFICATION_REQUEST", "QUESTION_TO_ASSISTANT"}:
         return "EXPLAIN_CURRENT_QUESTION"
+    if dialogue_act == "REPEAT_REQUEST":
+        return "REPEAT_CURRENT_QUESTION"
     if dialogue_act == "CORRECTION":
         return "APPLY_CORRECTION"
     if dialogue_act == "CONVERSATION_REQUEST":
@@ -237,6 +240,7 @@ def _canonical_intent_system_prompt() -> str:
         "- ANSWER: 現在の質問に対応する事実、経験、判断、追加情報を述べる発話\n"
         "- QUESTION_TO_ASSISTANT: 現在の質問の定義ではなく、AI・インタビューの目的・進行・表示についてAIへ尋ねる発話\n"
         "- CLARIFICATION_REQUEST: 現在の質問の意味、対象範囲、必要な回答内容、答え方を明確にしてほしい発話\n"
+        "- REPEAT_REQUEST: 現在の質問や直前の説明をもう一度言ってほしい発話。回答内容ではありません\n"
         "- CONFIRMATION: 提示された候補や理解への肯定\n"
         "- REJECTION: 提示された候補や理解への否定\n"
         "- CORRECTION: 直前の発言や理解の訂正\n"
@@ -252,6 +256,7 @@ def _canonical_intent_system_prompt() -> str:
         "- pendingConfirmation=falseの単独の「はい」は、直前assistantの説明への相づちならBACKCHANNEL、現在質問への返答ならANSWERです。\n"
         "- 「おーい」「こんにちは」は回答ではなく呼びかけ・会話開始なのでCONVERSATION_REQUESTです。\n"
         "- 「えーっと」「少し考えます」はHESITATIONです。\n"
+        "- 「もう一度質問を言って」「質問を繰り返して」はREPEAT_REQUESTです。\n"
         "CLARIFICATION_REQUESTとQUESTION_TO_ASSISTANTが迷わしい場合、現在の質問の意味・範囲・答え方を聞いているならCLARIFICATION_REQUEST、AIやインタビューの進行・目的・表示を聞いているならQUESTION_TO_ASSISTANTです。\n"
         "迷う場合は発話の目的を優先し、内容の十分性を推測してANSWERにしないでください。\n"
         "指定されたJSON Schemaだけを返してください。"

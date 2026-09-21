@@ -1876,6 +1876,45 @@ async def test_hard_timeout_submits_best_available_transcript(
 
 
 @pytest.mark.anyio
+async def test_hard_timeout_without_transcript_emits_explicit_not_heard_evidence() -> None:
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=50,
+            hard_endpoint_ms=180,
+            final_result_wait_ms=20,
+        ),
+        interview_bridge=FakeBridge(),  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=FakePolly(),
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    await runtime.push_audio(_frame(1200))
+    await runtime.push_audio(_frame(0))
+    await asyncio.sleep(0.35)
+
+    timeout_event = next(
+        event
+        for event in list(runtime._events._queue)
+        if isinstance(event, RuntimeError)
+        and event.message == "transcribe_final_timeout"
+    )
+    assert timeout_event.fatal is False
+    assert timeout_event.detail["answerEvaluation"] == "NOT_HEARD"
+    assert timeout_event.detail["nextAction"] == "ASK_REPEAT"
+    assert timeout_event.detail["recognitionEvidence"] == [
+        "no_final_or_partial_transcript"
+    ]
+    await runtime.close()
+
+
+@pytest.mark.anyio
 async def test_speech_after_soft_endpoint_resets_settle_and_stays_in_same_turn() -> None:
     bridge = FakeBridge()
     transcribe = FakeTranscribe()

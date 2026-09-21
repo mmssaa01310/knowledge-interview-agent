@@ -19,6 +19,7 @@ from ai_interviewer_api.agents.interview_knowledge.provider import BedrockRespon
 from ai_interviewer_api.agents.interview_knowledge.service import resolve_structured_model_id
 from ai_interviewer_api.agents.interview_knowledge.schemas import StructuredInterviewOutput
 from ai_interviewer_api.auth.deps import UserContext
+from ai_interviewer_api.core.interview_locale import resolve_interview_locale
 from ai_interviewer_api.core.permissions import require_record_action
 from ai_interviewer_api.models.base import utc_now
 from ai_interviewer_api.repositories.store import store
@@ -29,7 +30,16 @@ from ai_interviewer_api.services.interview_state_transition import (
     apply_background_state_proposal,
     commit_interview_state,
 )
-from ai_interviewer_api.services.live_interview import _delegation_lock, build_live_interview_context
+from ai_interviewer_api.services.conversation_control import (
+    build_conversation_trace,
+    field_state_summary,
+    normalize_conversation_output,
+)
+from ai_interviewer_api.services.live_interview import (
+    _current_question,
+    _delegation_lock,
+    build_live_interview_context,
+)
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 from ai_interviewer_api.services.audit import write_audit_log
 
@@ -154,16 +164,49 @@ def process_live_capture(
         ]
         evidence_ids = {item["id"] for item in conversation if item["role"] == "user"}
         output = None
+        conversation_trace: dict[str, Any] | None = None
         if evidence_ids:
+            current_question = _current_question(state) or {}
+            latest_user_fragment = next(
+                (
+                    item
+                    for item in reversed(conversation)
+                    if item.get("role") == "user"
+                ),
+                {},
+            )
+            question_definition = current_question.get("questionDefinition")
+            question_definition = (
+                question_definition
+                if isinstance(question_definition, Mapping)
+                else {}
+            )
+            interpreter_context = {
+                "captureMode": "live_observation", "fields": fields,
+                "interviewState": state, "conversation": conversation,
+                "currentQuestion": current_question,
+                "currentAnswer": {
+                    "messageId": latest_user_fragment.get("id"),
+                    "rawTranscript": latest_user_fragment.get("content"),
+                },
+                "questionPurpose": question_definition.get("purpose"),
+                "requiredAspects": [
+                    *question_definition.get("requiredItems", []),
+                    *question_definition.get("optionalItems", []),
+                ],
+                "latestUtterance": {
+                    "messageId": latest_user_fragment.get("id"),
+                    "rawTranscript": latest_user_fragment.get("content"),
+                },
+                "answerEvaluation": state.get("lastAnswerEvaluation"),
+                "missingInformation": list(state.get("lastMissingInformation") or []),
+                "interviewLocale": resolve_interview_locale(record, knowledge),
+            }
             provider = BedrockResponsesStructuredProvider(model_id=resolve_structured_model_id(knowledge))
             output = provider.interpret(
                 profile=resolve_profile(knowledge),
                 reasoning_effort="low",
-                context={
-                    "captureMode": "live_observation", "fields": fields,
-                    "interviewState": state, "conversation": conversation,
-                    "currentQuestion": {}, "interviewLocale": "ja-JP",
-                },
+                context=interpreter_context,
             )
             # Observation extracts user facts; it does not generate proposals.
             output = output.model_copy(update={
@@ -173,6 +216,27 @@ def process_live_capture(
             # A transcript correction is a proposal, not an established fact.
             if output.transcriptAssessment.correctionStatus != "NONE":
                 output = output.model_copy(update={"utteranceCompleteness": "UNCERTAIN"})
+            if (
+                not str(latest_user_fragment.get("content") or "").strip()
+                and output.transcriptAssessment.recognitionStatus == "CLEAR"
+            ):
+                output = output.model_copy(
+                    update={
+                        "transcriptAssessment": output.transcriptAssessment.model_copy(
+                            update={
+                                "recognitionStatus": "MISSING",
+                                "recognitionEvidence": ["empty_final_transcript"],
+                            }
+                        )
+                    }
+                )
+            output = normalize_conversation_output(output)
+            conversation_trace = build_conversation_trace(
+                output,
+                interpreter_context,
+                state=state,
+                runtime="gpt_live",
+            )
             if coalesce:
                 latest_record = store.get("records", record_id)
                 if not latest_record or latest_record.get("deletedAt") or latest_record.get("status") == "approved":
@@ -183,30 +247,60 @@ def process_live_capture(
                 user=user,
                 fields=fields,
                 profile=resolve_profile(knowledge),
-                source_question=None,
+                source_question=current_question,
                 proposal={
                     "sourceMessageId": message_id,
                     "baseStateVersion": state.get("stateVersion", 0),
                     "structuredOutput": output.model_dump(exclude={"closingQuestionEvidenceIds", "closingAnswerEvidenceIds"}),
                     "validEvidenceIds": sorted(evidence_ids),
+                    "rawTranscript": str(latest_user_fragment.get("content") or ""),
                 },
             )
             if merge.decision not in {"applied", "stale_safe_merge", "duplicate_background_proposal"}:
                 raise HTTPException(409, "live_capture_merge_conflict")
+            if conversation_trace is not None:
+                merged_snapshot = get_interview_state_snapshot(dict(record), user, persist=True)
+                conversation_trace = {
+                    **conversation_trace,
+                    "fieldStates": field_state_summary(merged_snapshot.get("interviewState")),
+                }
         applied = history if coalesce else [existing]
         completed = _finalize_capture(record, knowledge, user, fields, conversation, output, {row["id"] for row in applied})
         completed_at = min((row["liveCaptureCompletedAt"] for row in history
                             if row.get("liveCaptureCompletedAt")), default=time())
         for row in applied:
             if not row.get("liveCaptureApplied"):
+                if output is not None and conversation_trace is not None:
+                    row.update(
+                        {
+                            "runtime": "gpt_live",
+                            "dialogueAct": output.dialogueAct,
+                            "answerEvaluation": output.answerEvaluation,
+                            "missingInformation": list(output.missingInformation),
+                            "extractedFields": list(conversation_trace.get("extractedFields") or []),
+                            "fieldStates": dict(conversation_trace.get("fieldStates") or {}),
+                            "nextAction": conversation_trace.get("nextAction"),
+                            "llmInput": dict(conversation_trace.get("llmInput") or {}),
+                            "llmOutput": dict(conversation_trace.get("llmOutput") or {}),
+                            "conversationTrace": conversation_trace,
+                        }
+                    )
                 row["liveCaptureApplied"] = True
                 row["updatedAt"] = utc_now()
                 if completed:
                     row["liveCaptureCompletedAt"] = completed_at
                 store.upsert("messages", row)
         logger.info(
-            "live_capture_applied record_id=%s revision=%s fragments=%s elapsed_ms=%s",
-            record_id, payload.revision, len(fragments), round((monotonic() - started) * 1000),
+            "live_conversation_turn_trace runtime=gpt_live record_id=%s revision=%s "
+            "fragments=%s answer_evaluation=%s dialogue_act=%s missing_information=%s "
+            "elapsed_ms=%s",
+            record_id,
+            payload.revision,
+            len(fragments),
+            output.answerEvaluation if output is not None else None,
+            output.dialogueAct if output is not None else None,
+            output.missingInformation if output is not None else [],
+            round((monotonic() - started) * 1000),
         )
         return _response(record, knowledge, user, "updated", capture_id=payload.capture_id)
 
@@ -279,11 +373,37 @@ def _response(
 ) -> dict[str, Any]:
     snapshot = get_interview_state_snapshot(dict(record), user, persist=True)
     checklist = build_live_interview_context(record, knowledge, user)["fields"]
+    state = snapshot["interviewState"]
+    latest_trace = next(
+        (
+            row.get("conversationTrace")
+            for row in reversed(store.list("messages", user.tenant_id))
+            if row.get("recordId") == record["id"]
+            and row.get("liveCaptureId")
+            and (capture_id is None or row.get("liveCaptureId") == capture_id)
+            and isinstance(row.get("conversationTrace"), Mapping)
+        ),
+        None,
+    )
+    conversation_control = latest_trace or state.get("lastConversationTrace") or {}
     return {
         "status": status,
-        "interviewState": snapshot["interviewState"],
+        "interviewState": state,
         "structuredDraft": snapshot["structuredDraft"],
         "checklist": checklist,
+        "answerEvaluation": conversation_control.get("answerEvaluation") or state.get("lastAnswerEvaluation"),
+        "missingInformation": list(
+            conversation_control.get("missingInformation")
+            or state.get("lastMissingInformation")
+            or []
+        ),
+        "extractedFields": list(
+            conversation_control.get("extractedFields")
+            or state.get("lastExtractedFields")
+            or []
+        ),
+        "nextAction": conversation_control.get("nextAction") or state.get("lastNextAction"),
+        "conversationTrace": conversation_control or None,
         "processing": any(row.get("liveCaptureId") and not row.get("liveCaptureApplied")
                           for row in store.list("messages", user.tenant_id)
                           if row.get("recordId") == record["id"]

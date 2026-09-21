@@ -16,6 +16,10 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     RequirementUpdate,
     StructuredInterviewOutput,
 )
+from ai_interviewer_api.services.conversation_control import (
+    extracted_update_summary,
+    normalize_conversation_output,
+)
 from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
 from ai_interviewer_api.services.interview_answer_resolution import (
     normalize_answer_resolution,
@@ -167,6 +171,11 @@ def build_initial_structured_state(
         "lastUtteranceCompleteness": None,
         "lastTranscriptAssessment": None,
         "lastAnswerAssessment": None,
+        "lastAnswerEvaluation": None,
+        "lastMissingInformation": [],
+        "lastExtractedFields": [],
+        "lastNextAction": None,
+        "lastConversationTrace": None,
         "activeProbeTarget": None,
         "pendingTranscriptConfirmation": None,
         "nextQuestionTarget": None,
@@ -328,6 +337,9 @@ def record_interpretation_assessment(
     state["lastUtteranceCompleteness"] = output.utteranceCompleteness
     state["lastTranscriptAssessment"] = assessment
     state["lastAnswerAssessment"] = output.answerAssessment.model_dump()
+    state["lastAnswerEvaluation"] = output.answerEvaluation
+    state["lastMissingInformation"] = list(output.missingInformation)
+    state["lastExtractedFields"] = extracted_update_summary(output)
     state["lastProcessedUserMessageId"] = latest_message_id
 
 
@@ -476,10 +488,11 @@ def apply_structured_output(
         latest_message_id=latest_message_id,
         raw_transcript=raw_transcript,
     )
-    if output.utteranceCompleteness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
-        # A final Transcribe result is still only a candidate utterance. The
-        # Interpreter must establish both grammatical completeness and a
-        # meaningful answer before any field or process state is changed.
+    if output.utteranceCompleteness != "COMPLETE":
+        # A genuinely incomplete utterance is still only a candidate. A
+        # complete utterance with insufficient semantic coverage is different:
+        # its grounded portion may be applied while the coordinator keeps the
+        # missing aspects open for a targeted follow-up.
         return []
 
     changed_topics: list[str] = []
@@ -705,7 +718,53 @@ def apply_background_structured_output(
     be replayed from a stale background snapshot.
     """
 
-    safe_output = output.model_copy(update={"dialogueAct": "OTHER"})
+    safe_output = normalize_conversation_output(output)
+    if safe_output.answerEvaluation in {
+        "OFF_TARGET",
+        "CLARIFICATION_REQUEST",
+        "NOT_HEARD",
+        "INCOMPLETE_UTTERANCE",
+        "REPEAT_REQUEST",
+    }:
+        safe_output = safe_output.model_copy(
+            update={
+                "fieldUpdates": [],
+                "requirementUpdates": [],
+                "processPatch": ProcessPatch(),
+                "applicability": [],
+                "contradictions": [],
+                "resolvedContradictionIds": [],
+                "openIssues": [],
+            }
+        )
+    if safe_output.answerAssessment.sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+        safe_output = safe_output.model_copy(
+            update={
+                "fieldUpdates": [],
+                "requirementUpdates": [],
+            }
+        )
+    elif (
+        safe_output.answerEvaluation == "PARTIALLY_ANSWERED"
+        or safe_output.answerAssessment.sufficiency != "SUFFICIENT"
+    ):
+        # Background observation has no foreground target-selection step that
+        # can selectively downgrade the active target. Keep every extracted
+        # value tentative until the foreground coordinator evaluates the same
+        # transcript and decides which missing aspect was answered.
+        safe_output = safe_output.model_copy(
+            update={
+                "fieldUpdates": [
+                    update.model_copy(update={"answerResolution": "TENTATIVE"})
+                    for update in safe_output.fieldUpdates
+                ],
+                "requirementUpdates": [
+                    update.model_copy(update={"answerResolution": "TENTATIVE"})
+                    for update in safe_output.requirementUpdates
+                ],
+            }
+        )
+    safe_output = safe_output.model_copy(update={"dialogueAct": "OTHER"})
     return apply_structured_output(
         state,
         safe_output,
