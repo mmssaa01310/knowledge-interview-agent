@@ -266,10 +266,20 @@ def localized_interview_clarification_target_reply(
     target_type: str,
     label: str | None = None,
     semantic_role: str | None = None,
+    span: str | None = None,
 ) -> str:
     """Explain the last clarification target without restating the question."""
 
     if target_type == "ASR_AMBIGUOUS":
+        normalized_span = (span or "").strip()
+        if normalized_span:
+            if locale == "en-US":
+                return f'The unclear part was "{normalized_span}".'
+            if locale == "zh-CN":
+                return f"是被识别为“{normalized_span}”的部分。"
+            if locale == "pt-BR":
+                return f'Foi a parte reconhecida como "{normalized_span}".'
+            return f"「{normalized_span}」と認識された部分です。"
         target_label = _localized_clarification_role(locale, semantic_role)
         if locale == "en-US":
             return f"The unclear part was {target_label}."

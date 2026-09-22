@@ -65,6 +65,15 @@ def test_ensure_dev_voice_demo_is_idempotent() -> None:
         "現在の仕事で課題と感じていることと、その課題に対して実施している改善を教えてください。",
         "今後取り組みたいテーマや身につけたい能力、実現に向けて必要な支援を教えてください。",
     ]
+    experience_field = next(item for item in fields if item["name"] == "経験・転機")
+    assert [
+        item["itemId"]
+        for item in experience_field["questionPlan"]["requiredItems"]
+    ] == ["trigger_experience", "impact_or_change"]
+    assert [
+        item["itemId"]
+        for item in experience_field["questionPlan"]["optionalItems"]
+    ] == ["current_application"]
 
 
 def test_reset_dev_voice_demo_removes_only_conversation_state() -> None:

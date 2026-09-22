@@ -11,6 +11,7 @@ from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.schemas impo
     FastAnswerAssessment,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
+    ASRAmbiguousSpan,
     AnswerAssessment,
     FieldUpdate,
     StructuredInterviewOutput,
@@ -254,6 +255,14 @@ def test_transcribe_polly_retry_names_only_the_unheard_profile_item(
             transcriptAssessment=TranscriptAssessment(
                 correctionStatus="UNCERTAIN",
                 correctionReason="所属部分が不自然",
+                recognitionStatus="AMBIGUOUS",
+                ambiguousSpans=[
+                    ASRAmbiguousSpan(
+                        span="家族部",
+                        semanticRole="department",
+                        important=True,
+                    )
+                ],
             ),
             answerAssessment=AnswerAssessment(sufficiency="SUFFICIENT"),
             fieldUpdates=updates,

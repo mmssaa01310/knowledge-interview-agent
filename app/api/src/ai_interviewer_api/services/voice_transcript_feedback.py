@@ -79,6 +79,11 @@ def build_transcribe_polly_transcript_feedback(
         state.get("lastClarificationTarget")
         or result.get("clarificationTarget")
     )
+    if not _has_concrete_asr_target(clarification_target, assessment):
+        # The shared coordinator does not initiate ASR retry without a named
+        # span.  Keep this presentation layer aligned with that invariant for
+        # legacy or malformed persisted state as well.
+        return None
     latest_message_ids = _latest_message_ids(state, turn)
     reliable_updates = _reliable_field_updates(
         output,
@@ -220,6 +225,26 @@ def _clean_text(value: object) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _has_concrete_asr_target(
+    clarification_target: Mapping[str, Any],
+    assessment: Mapping[str, Any],
+) -> bool:
+    if _clean_text(clarification_target.get("type")).upper() == "ASR_AMBIGUOUS":
+        return bool(
+            _clean_text(clarification_target.get("span"))
+            and _clean_text(clarification_target.get("semanticRole"))
+        )
+    spans = assessment.get("ambiguousSpans")
+    if not isinstance(spans, list):
+        return False
+    return any(
+        _as_mapping(item).get("important", True)
+        and _clean_text(_as_mapping(item).get("span"))
+        and _clean_text(_as_mapping(item).get("semanticRole"))
+        for item in spans
+    )
 
 
 def _unique_texts(value: object) -> list[str]:

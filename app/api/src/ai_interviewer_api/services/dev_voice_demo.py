@@ -39,8 +39,14 @@ LEGACY_VOICE_DEMO_FIELD_IDS = {
 def _question_plan(
     *items: tuple[str, str, str],
     optional_items: tuple[tuple[str, str, str], ...] = (),
+    purpose: str | None = None,
+    question_goal: str | None = None,
+    preferred_probe_dimensions: tuple[str, ...] = (),
 ) -> InterviewQuestionPlan:
     return InterviewQuestionPlan(
+        purpose=purpose,
+        questionGoal=question_goal,
+        preferredProbeDimensions=list(preferred_probe_dimensions),
         requiredItems=[
             InterviewPlanItem(itemId=item_id, label=label, description=description)
             for item_id, label, description in items
@@ -144,11 +150,26 @@ def ensure_dev_voice_demo() -> dict[str, str]:
             retrievalPolicy="never",
             aiQuestionExamples=["これまでの経験の中で、現在の仕事の進め方や専門性に大きく影響した出来事・転機を教えてください。"],
             questionPlan=_question_plan(
-                ("experience", "現在の専門性につながる主な経験", "現在の専門性につながる主な経験"),
-                ("turning_point", "大きく影響した出来事・転機", "現在の仕事の進め方や専門性に影響した出来事・転機"),
-                optional_items=(
-                    ("experience_application", "現在の仕事への活かし方", "その経験や転機が現在の仕事にどう活かされているか"),
+                (
+                    "trigger_experience",
+                    "きっかけとなった経験や出来事",
+                    "現在の専門性や仕事の進め方に影響した経験、出来事、または転機",
                 ),
+                (
+                    "impact_or_change",
+                    "経験による影響や変化",
+                    "その経験を通じて身についたこと、変わった考え方や仕事の進め方",
+                ),
+                optional_items=(
+                    (
+                        "current_application",
+                        "現在の仕事への活かし方",
+                        "その経験による学びや変化を現在の仕事でどう活かしているか",
+                    ),
+                ),
+                purpose="現在の専門性や仕事の進め方につながる経験を理解する",
+                question_goal="experience_and_learning",
+                preferred_probe_dimensions=("JUDGMENT", "LEARNING", "APPLICATION"),
             ),
             displayOrder=3,
         ),

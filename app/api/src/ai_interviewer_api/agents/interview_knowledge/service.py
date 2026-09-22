@@ -3957,14 +3957,16 @@ def _build_clarification_target(
         spans = [
             span
             for span in output.transcriptAssessment.ambiguousSpans
-            if span.important
+            if span.important and span.span.strip() and span.semanticRole.strip()
         ]
         span = spans[0] if spans else None
+        if span is None:
+            return None
         return {
             "type": "ASR_AMBIGUOUS",
             "questionId": question_id,
-            "span": span.span if span else None,
-            "semanticRole": span.semanticRole if span else None,
+            "span": span.span,
+            "semanticRole": span.semanticRole,
             "important": True,
         }
 
@@ -4064,9 +4066,13 @@ def _clarification_target_prompt(
     output: StructuredInterviewOutput | None = None,
 ) -> str:
     if not isinstance(target, Mapping):
-        return localized_interview_ambiguous_part_prompt(locale)
+        return localized_interview_hesitation_prompt(locale)
     target_type = str(target.get("type") or "")
     if target_type == "ASR_AMBIGUOUS":
+        span = str(target.get("span") or "").strip()
+        semantic_role = str(target.get("semanticRole") or "").strip()
+        if not span or not semantic_role:
+            return localized_interview_hesitation_prompt(locale)
         understood_values: list[str] = []
         if output is not None:
             for update in (*output.fieldUpdates, *output.requirementUpdates):
@@ -4075,7 +4081,7 @@ def _clarification_target_prompt(
                     understood_values.append(value)
         return localized_interview_ambiguous_part_prompt(
             locale,
-            str(target.get("semanticRole") or "") or None,
+            semantic_role,
             "、".join(understood_values[:3])[:240] or None,
         )
     if target_type == "MISSING_INFORMATION":
@@ -4091,15 +4097,16 @@ def _clarification_target_description(
     locale: InterviewLocale,
 ) -> str:
     if not isinstance(target, Mapping):
-        return localized_interview_clarification_target_reply(
-            locale,
-            "ASR_AMBIGUOUS",
-        )
+        return localized_interview_hesitation_prompt(locale)
+    target_type = str(target.get("type") or "")
+    if target_type == "ASR_AMBIGUOUS" and not str(target.get("span") or "").strip():
+        return localized_interview_hesitation_prompt(locale)
     return localized_interview_clarification_target_reply(
         locale,
-        str(target.get("type") or "ASR_AMBIGUOUS"),
+        target_type or "MISSING_INFORMATION",
         label=str(target.get("label") or "") or None,
         semantic_role=str(target.get("semanticRole") or "") or None,
+        span=str(target.get("span") or "") or None,
     )
 
 

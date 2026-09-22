@@ -84,29 +84,12 @@ def normalize_conversation_output(
         # interpreter.  Do not let a contradictory SUFFICIENT label advance
         # the interview as if all required aspects had been answered.
         evaluation = "PARTIALLY_ANSWERED"
-    recognition = output.transcriptAssessment.recognitionStatus
-    if evaluation == "NOT_HEARD" and recognition == "CLEAR":
-        assessment = output.transcriptAssessment.model_copy(
-            update={
-                "recognitionStatus": "AMBIGUOUS",
-                "recognitionEvidence": [
-                    *output.transcriptAssessment.recognitionEvidence,
-                    "correction_or_transcript_uncertain",
-                ][:5],
-            }
-        )
-        return output.model_copy(
-            update={
-                "answerEvaluation": evaluation,
-                "answerStatus": "NOT_ANSWERED",
-                "clarificationKind": "NONE",
-                "probeDecision": "NONE",
-                "probeDimension": None,
-                "probeReason": None,
-                "probeQuestion": None,
-                "transcriptAssessment": assessment,
-            }
-        )
+    if evaluation == "NOT_HEARD" and not _has_concrete_asr_target(output):
+        # An audio retry is only useful when the system can name the exact
+        # recognition target.  Do not manufacture an AMBIGUOUS status or ask
+        # the participant to repeat an unspecified "unclear part".  Keep
+        # the question active as a semantic follow-up instead.
+        evaluation = "PARTIALLY_ANSWERED"
     explicit_answer_status = "answerStatus" in output.model_fields_set
     explicit_probe_decision = "probeDecision" in output.model_fields_set
     answer_status = (
@@ -228,9 +211,12 @@ def derive_answer_evaluation(output: StructuredInterviewOutput) -> AnswerEvaluat
     recognition = output.transcriptAssessment.recognitionStatus
     if recognition in {"PARTIAL", "MISSING"}:
         return "NOT_HEARD"
-    if recognition == "AMBIGUOUS" and _has_actionable_asr_ambiguity(output):
+    if recognition == "AMBIGUOUS" and _has_concrete_asr_target(output):
         return "NOT_HEARD"
-    if output.transcriptAssessment.correctionStatus == "UNCERTAIN":
+    if (
+        output.transcriptAssessment.correctionStatus == "UNCERTAIN"
+        and _has_concrete_asr_target(output)
+    ):
         return "NOT_HEARD"
     if dialogue_act == "CORRECTION":
         return "CORRECTION"
@@ -276,18 +262,20 @@ def has_evaluable_answer_content(output: StructuredInterviewOutput) -> bool:
     )
 
 
-def _has_actionable_asr_ambiguity(output: StructuredInterviewOutput) -> bool:
-    """Return whether an ambiguous span is important enough to interrupt.
+def _has_concrete_asr_target(output: StructuredInterviewOutput) -> bool:
+    """Return whether an ASR retry can name one concrete ambiguous span.
 
-    ``recognitionStatus=AMBIGUOUS`` can describe a harmless word in an
-    otherwise usable answer.  Only an explicitly important span, or a legacy
-    ambiguity without span metadata, is an audio retry condition.
+    Recognition quality alone is not a user-facing retry target.  The
+    structured interpreter must identify an important span in the transcript
+    and its semantic role before the coordinator may say it did not hear the
+    answer.  This keeps ASR ambiguity separate from semantic missing
+    information and avoids vague retry prompts.
     """
 
-    spans = output.transcriptAssessment.ambiguousSpans
-    if not spans:
-        return True
-    return any(span.important for span in spans)
+    return any(
+        span.important and span.span.strip() and span.semanticRole.strip()
+        for span in output.transcriptAssessment.ambiguousSpans
+    )
 
 
 def _normalize_aspect_coverage(

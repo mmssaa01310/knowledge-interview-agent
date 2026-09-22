@@ -279,6 +279,7 @@ def test_interpreter_prompt_separates_question_help_from_answer_unavailability()
     assert "aspectAssessments" in prompt
     assert "clarificationKind" in prompt
     assert "ambiguousSpans" in prompt
+    assert "直前までの同じ質問への回答と照合" in prompt
 
 
 def test_question_help_uses_at_most_one_example_and_never_reads_answer_guides() -> None:
@@ -3058,8 +3059,222 @@ def test_asr_clarification_uses_only_the_ambiguous_semantic_role() -> None:
         provider=provider,
     )
 
-    assert target_reply["reply"] == "技術名の部分です。"
+    assert target_reply["reply"] == "「ジブ」と認識された部分です。"
     assert len(provider.question_help_calls) == 0
+
+
+def test_experience_trigger_is_captured_without_reasking_the_same_event() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-experience-trigger-coverage",
+        (("field-experience", "経験・転機"), ("field-next", "次の項目")),
+    )
+    field = store.get("knowledge_fields", "field-experience")
+    assert field is not None
+    field["questionPlan"] = InterviewQuestionPlan(
+        purpose="現在の専門性や仕事の進め方につながる経験を理解する",
+        questionGoal="experience_and_learning",
+        requiredItems=[
+            InterviewPlanItem(
+                itemId="trigger_experience",
+                label="きっかけとなった経験や出来事",
+            ),
+            InterviewPlanItem(
+                itemId="impact_or_change",
+                label="経験による影響や変化",
+            ),
+        ],
+        optionalItems=[
+            InterviewPlanItem(
+                itemId="current_application",
+                label="現在の仕事への活かし方",
+            )
+        ],
+    ).model_dump()
+    store.upsert("knowledge_fields", field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                aspectAssessments=[
+                    AnswerAspectAssessment(
+                        aspectId="trigger_experience",
+                        label="きっかけとなった経験や出来事",
+                        status="ANSWERED",
+                        evidence="顧客の要望を聞きながらシステム開発を進めた",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="impact_or_change",
+                        label="経験による影響や変化",
+                        status="MISSING",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="current_application",
+                        label="現在の仕事への活かし方",
+                        status="MISSING",
+                        required=False,
+                    ),
+                ],
+                missingInformation=["経験による影響や変化"],
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-experience",
+                        itemId="trigger_experience",
+                        value="顧客の要望を聞きながらシステム開発を進めた",
+                        evidenceTranscriptIds=["experience-trigger-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="experience-trigger-answer",
+        question=first["question"],
+        content="顧客の要望を聞きながらシステム開発を進め、手戻りを減らすようにしてきました。",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["missingInformation"] == ["経験による影響や変化"]
+    assert "経験による影響や変化" in result["reply"]
+    assert "きっかけとなった経験や出来事" not in result["reply"]
+    assert result["interviewState"]["fieldStates"]["field-experience"][
+        "capturedItemIds"
+    ] == ["trigger_experience"]
+
+
+def test_history_resolved_transcript_does_not_start_an_asr_clarification() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-history-resolved-transcript",
+        (("field-experience", "経験・転機"), ("field-next", "次の項目")),
+    )
+    field = store.get("knowledge_fields", "field-experience")
+    assert field is not None
+    field["questionPlan"] = InterviewQuestionPlan(
+        requiredItems=[
+            InterviewPlanItem(
+                itemId="trigger_experience",
+                label="きっかけとなった経験や出来事",
+            )
+        ]
+    ).model_dump()
+    store.upsert("knowledge_fields", field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                transcriptAssessment=TranscriptAssessment(recognitionStatus="CLEAR"),
+                aspectAssessments=[
+                    AnswerAspectAssessment(
+                        aspectId="trigger_experience",
+                        label="きっかけとなった経験や出来事",
+                        status="ANSWERED",
+                        evidence="顧客の要望を聞きながら開発した",
+                    )
+                ],
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-experience",
+                        itemId="trigger_experience",
+                        value="顧客の要望を聞きながら開発した",
+                        evidenceTranscriptIds=["history-variant-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="history-original-answer",
+        question=first["question"],
+        content="顧客の要望を聞きながら開発した経験があります。",
+    )
+    _add_structured_answer(
+        record,
+        user,
+        message_id="history-variant-answer",
+        question=first["question"],
+        content="顧客の予防を聞きながら開発した経験があります。",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    context = provider.interpret_calls[0]["context"]
+    assert any(
+        item["content"] == "顧客の要望を聞きながら開発した経験があります。"
+        for item in context["conversation"]
+    )
+    assert result["answerEvaluation"] != "NOT_HEARD"
+    assert "聞き取" not in result["reply"]
+
+
+@pytest.mark.parametrize("recognition_status", ["AMBIGUOUS", "CLEAR"])
+def test_missing_aspect_is_not_rephrased_as_asr_retry_without_a_concrete_span(
+    recognition_status: str,
+) -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        f"record-missing-not-asr-{recognition_status.lower()}",
+        (("field-goal", "今後の目標"), ("field-next", "次の項目")),
+    )
+    field = store.get("knowledge_fields", "field-goal")
+    assert field is not None
+    field["questionPlan"] = InterviewQuestionPlan(
+        requiredItems=[
+            InterviewPlanItem(itemId="theme", label="挑戦したいテーマ"),
+            InterviewPlanItem(itemId="skill", label="身につけたい能力"),
+        ]
+    ).model_dump()
+    store.upsert("knowledge_fields", field)
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                transcriptAssessment=TranscriptAssessment(
+                    recognitionStatus=recognition_status,
+                ),
+                aspectAssessments=[
+                    AnswerAspectAssessment(
+                        aspectId="theme",
+                        label="挑戦したいテーマ",
+                        status="ANSWERED",
+                    ),
+                    AnswerAspectAssessment(
+                        aspectId="skill",
+                        label="身につけたい能力",
+                        status="MISSING",
+                    ),
+                ],
+                missingInformation=["身につけたい能力"],
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-goal",
+                        itemId="theme",
+                        value="新しい技術を活用したテーマに取り組みたい",
+                        evidenceTranscriptIds=[f"missing-not-asr-{recognition_status.lower()}"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id=f"missing-not-asr-{recognition_status.lower()}",
+        question=first["question"],
+        content="新しい技術を活用したテーマに取り組みたいです。",
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["answerEvaluation"] == "PARTIALLY_ANSWERED"
+    assert result["clarificationTarget"]["type"] == "MISSING_INFORMATION"
+    assert "身につけたい能力" in result["reply"]
+    assert "聞き取" not in result["reply"]
 
 
 def test_missing_aspect_is_asked_without_repeating_answered_aspects() -> None:
@@ -3503,6 +3718,14 @@ def test_ambiguous_transcript_correction_requests_repetition_without_committing(
                     correctionStatus="UNCERTAIN",
                     correctionCandidates=["運用", "輸送"],
                     correctionReason="候補が一意でない",
+                    recognitionStatus="AMBIGUOUS",
+                    ambiguousSpans=[
+                        ASRAmbiguousSpan(
+                            span="運用",
+                            semanticRole="担当領域",
+                            important=True,
+                        )
+                    ],
                 ),
             )
         ]
@@ -3518,7 +3741,7 @@ def test_ambiguous_transcript_correction_requests_repetition_without_committing(
 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
-    assert "音声を正しく認識できませんでした" in result["reply"]
+    assert result["reply"] == "担当領域の部分だけ、もう一度教えてください。"
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert result["interviewState"]["pendingTranscriptConfirmation"] is None
     assert result["interviewState"]["fieldStates"]["field-role"]["candidateAnswer"] is None
@@ -3536,6 +3759,14 @@ def test_uncertain_transcript_keeps_clear_facts_as_tentative_candidates() -> Non
                 transcriptAssessment=TranscriptAssessment(
                     correctionStatus="UNCERTAIN",
                     correctionCandidates=["コード開発", "フロント開発"],
+                    recognitionStatus="AMBIGUOUS",
+                    ambiguousSpans=[
+                        ASRAmbiguousSpan(
+                            span="フォード開発",
+                            semanticRole="担当領域",
+                            important=True,
+                        )
+                    ],
                 ),
                 fieldUpdates=[
                     FieldUpdate(
@@ -3563,7 +3794,7 @@ def test_uncertain_transcript_keeps_clear_facts_as_tentative_candidates() -> Non
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert "音声を正しく認識できませんでした" in result["reply"]
+    assert result["reply"].endswith("担当領域だけもう一度お願いします。")
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "CANDIDATE_PENDING"
     assert field_state["candidateAnswer"] == "プロジェクトリーダー"
@@ -3582,6 +3813,14 @@ def test_multiple_corrected_candidates_are_not_confirmed_automatically() -> None
                     normalizedTranscript="運用まで関わっています。",
                     correctionStatus="CORRECTED",
                     correctionCandidates=["運用まで関わっています。", "輸送まで関わっています。"],
+                    recognitionStatus="AMBIGUOUS",
+                    ambiguousSpans=[
+                        ASRAmbiguousSpan(
+                            span="運用まで関わっています",
+                            semanticRole="担当領域",
+                            important=True,
+                        )
+                    ],
                 ),
                 fieldUpdates=[
                     FieldUpdate(
@@ -3606,7 +3845,7 @@ def test_multiple_corrected_candidates_are_not_confirmed_automatically() -> None
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert "音声を正しく認識できませんでした" in result["reply"]
+    assert result["reply"].endswith("担当領域だけもう一度お願いします。")
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "UNANSWERED"
     assert field_state["recordAnswer"] is None
@@ -3626,6 +3865,14 @@ def test_empty_corrected_candidate_is_treated_as_uncertain_without_committing() 
                     normalizedTranscript="",
                     correctionCandidates=[],
                     correctionReason="補正候補が空",
+                    recognitionStatus="AMBIGUOUS",
+                    ambiguousSpans=[
+                        ASRAmbiguousSpan(
+                            span="存在しない補正",
+                            semanticRole="担当領域",
+                            important=True,
+                        )
+                    ],
                 ),
                 fieldUpdates=[
                     FieldUpdate(
@@ -3650,7 +3897,7 @@ def test_empty_corrected_candidate_is_treated_as_uncertain_without_committing() 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert "音声を正しく認識できませんでした" in result["reply"]
+    assert result["reply"].endswith("担当領域だけもう一度お願いします。")
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "UNANSWERED"
     assert field_state["candidateAnswer"] is None

@@ -77,8 +77,8 @@ from ai_interviewer_api.services.conversation_control import (
                     recognitionEvidence=["no_final_or_partial_transcript"],
                 )
             ),
-            "NOT_HEARD",
-            "ASK_REPEAT",
+            "PARTIALLY_ANSWERED",
+            "ASK_MISSING_INFORMATION",
         ),
         (
             "正常文字起こし・情報不足",
@@ -180,8 +180,14 @@ def test_partial_answer_status_cannot_request_a_probe() -> None:
         ),
         StructuredInterviewOutput(
             transcriptAssessment=TranscriptAssessment(
-                recognitionStatus="MISSING",
-                recognitionEvidence=["no_final_transcript"],
+                recognitionStatus="AMBIGUOUS",
+                ambiguousSpans=[
+                    ASRAmbiguousSpan(
+                        span="聞き取り候補",
+                        semanticRole="organization_name",
+                        important=True,
+                    )
+                ],
             ),
             answerStatus="ANSWERED",
             probeDecision="PROBE",

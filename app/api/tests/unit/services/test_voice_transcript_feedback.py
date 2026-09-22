@@ -33,6 +33,14 @@ def _uncertain_result(
                 "rawTranscript": raw_transcript,
                 "normalizedTranscript": raw_transcript,
                 "correctionStatus": "UNCERTAIN",
+                "recognitionStatus": "AMBIGUOUS",
+                "ambiguousSpans": [
+                    {
+                        "span": "家族部",
+                        "semanticRole": "department",
+                        "important": True,
+                    }
+                ],
             },
             "lastProcessedUserMessageId": "voice-msg-turn-1",
             "lastStructuredOutput": {"fieldUpdates": updates},
@@ -76,7 +84,6 @@ def test_only_unclear_affiliation_is_requested_again_without_raw_asr_text() -> N
 
     assert "山田太郎" in reply
     assert "社内システムの開発" in reply
-    assert "所属がうまく聞き取れなかった" in reply
     assert "所属だけもう一度お願いします" in reply
     assert "家族部" not in reply
     assert "この部分をもう一度お願いします" not in reply
@@ -88,15 +95,14 @@ def test_multiple_unclear_profile_items_are_named() -> None:
     )
 
     assert "社内システムの開発" in reply
-    assert "お名前と所属" in reply
-    assert "お名前と所属だけもう一度お願いします" in reply
+    assert "所属だけもう一度お願いします" in reply
+    assert "お名前だけ" not in reply
 
 
 def test_almost_unheard_profile_requests_the_profile_again() -> None:
     reply = _feedback(_uncertain_result([]))
 
-    assert "回答がうまく聞き取れませんでした" in reply
-    assert "聞き取れなかった部分だけ" in reply
+    assert reply == "所属の部分だけ、もう一度教えてください。"
     assert "プロフィール" not in reply
     assert "この部分をもう一度お願いします" not in reply
 
@@ -145,8 +151,7 @@ def test_ambiguous_correction_does_not_speak_a_guessed_candidate() -> None:
 
     reply = _feedback(result)
 
-    assert "回答の一部がうまく聞き取れませんでした" in reply
-    assert "聞き取れなかった部分だけ、もう一度お願いします" in reply
+    assert "所属の部分だけ、もう一度教えてください" in reply
     assert "開発部" not in reply
     assert "改善部" not in reply
 
@@ -166,7 +171,7 @@ def test_ambiguous_correction_does_not_read_back_a_field_candidate() -> None:
 
     assert "運用まで関わっています" not in reply
     assert "輸送まで関わっています" not in reply
-    assert "担当業務" in reply
+    assert "所属の部分だけ、もう一度教えてください" in reply
 
 
 def test_clear_field_is_retained_when_another_transcript_part_is_ambiguous() -> None:
@@ -184,7 +189,7 @@ def test_clear_field_is_retained_when_another_transcript_part_is_ambiguous() -> 
     assert "山田太郎" in reply
     assert "コード開発" not in reply
     assert "フロント開発" not in reply
-    assert "一部" not in reply
+    assert "所属だけもう一度お願いします" in reply
 
 
 def test_clear_current_field_requests_only_the_unclear_part() -> None:
@@ -201,8 +206,7 @@ def test_clear_current_field_requests_only_the_unclear_part() -> None:
     reply = _feedback(result)
 
     assert "プロジェクトリーダー" in reply
-    assert "聞き取れなかった部分だけもう一度お願いします" in reply
-    assert "担当業務について、もう一度お願いします" not in reply
+    assert "所属だけもう一度お願いします" in reply
 
 
 def test_long_grounded_value_is_not_read_back_as_the_whole_answer() -> None:
@@ -210,7 +214,7 @@ def test_long_grounded_value_is_not_read_back_as_the_whole_answer() -> None:
     reply = _feedback(_uncertain_result([_update("field-name", long_value)]))
 
     assert long_value not in reply
-    assert "お名前は聞き取れました" in reply
+    assert "所属だけもう一度お願いします" in reply
 
 
 def test_rejected_correction_uses_the_original_item_for_voice_retry() -> None:
@@ -254,6 +258,21 @@ def test_non_transcript_retry_reply_is_not_rephrased_as_audio_failure() -> None:
     result = _uncertain_result([], target_id="field-department")
     result["interviewState"]["lastTranscriptAssessment"]["correctionStatus"] = "NONE"
     result["reply"] = "続き、お願いします。"
+
+    feedback = build_transcribe_polly_transcript_feedback(
+        result,
+        {"id": "turn-1"},
+        field_labels=FIELD_LABELS,
+        locale="ja-JP",
+    )
+
+    assert feedback is None
+
+
+def test_asr_feedback_is_not_generated_without_a_concrete_span() -> None:
+    result = _uncertain_result([])
+    result["interviewState"]["lastTranscriptAssessment"].pop("ambiguousSpans")
+    result["interviewState"]["lastTranscriptAssessment"]["recognitionStatus"] = "AMBIGUOUS"
 
     feedback = build_transcribe_polly_transcript_feedback(
         result,
