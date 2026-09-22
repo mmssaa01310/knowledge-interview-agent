@@ -243,6 +243,18 @@ def process_live_state_update(
                 user=user,
             )
 
+        current_question_id = str(state.get("currentQuestionId") or "").strip()
+        if current_question_id and payload.question_id != current_question_id:
+            logger.warning(
+                "gpt_live_state_update_question_stale record_id=%s turn_id=%s "
+                "current_question_id=%s payload_question_id=%s",
+                record_id,
+                payload.turn_id,
+                current_question_id,
+                payload.question_id,
+            )
+            raise HTTPException(status_code=409, detail="live_question_not_current")
+
         fields = [
             row
             for row in store.list("knowledge_fields", user.tenant_id)

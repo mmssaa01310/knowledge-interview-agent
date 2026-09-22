@@ -17,6 +17,7 @@ from ai_interviewer_api.auth.deps import DEV_TOKENS
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.services.interview_state_transition import (
     apply_background_state_proposal,
+    commit_interview_state,
 )
 
 
@@ -280,6 +281,23 @@ def test_late_background_result_preserves_newer_processed_message_and_is_idempot
     assert unchanged is not None
     assert unchanged["stateVersion"] == stored["stateVersion"]
     assert unchanged["analysisVersion"] == stored["analysisVersion"]
+
+
+def test_commit_interview_state_rejects_a_stale_snapshot() -> None:
+    user, state, _ = _seed_state()
+    stale = deepcopy(state)
+    current = deepcopy(state)
+    current["stateVersion"] = 12
+    current["currentQuestionId"] = "q-003"
+    store.upsert("interview_states", current)
+
+    with pytest.raises(ValueError, match="interview_state_version_conflict"):
+        commit_interview_state(stale, user, source="stale_writer")
+
+    stored = store.get("interview_states", state["id"])
+    assert stored is not None
+    assert stored["stateVersion"] == 12
+    assert stored["currentQuestionId"] == "q-003"
 
 
 def test_background_proposals_apply_per_topic_in_source_sequence_order() -> None:

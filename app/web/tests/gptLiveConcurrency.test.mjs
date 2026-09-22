@@ -21,7 +21,10 @@ const captureCode = ts.transpileModule(captureSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
-function setup(refresh = () => {}) {
+function setup(refresh = () => {}, stateUpdate = () => Promise.resolve({
+  status: "applied", stateVersion: 2,
+  currentQuestionId: "question-2", coveredAspects: [], missingAspects: [],
+})) {
   const sent = [];
   const requests = [];
   const polls = [];
@@ -79,10 +82,7 @@ function setup(refresh = () => {}) {
         }),
         submitGPTLiveStateUpdate: (...args) => {
           stateRequests.push({ args });
-          return Promise.resolve({
-            status: "applied", stateVersion: 2,
-            currentQuestionId: "question-2", coveredAspects: [], missingAspects: [],
-          });
+          return stateUpdate(...args);
         },
       };
       if (name.endsWith("gptLivePeerConnection")) return {
@@ -283,6 +283,44 @@ test("Responses function call is persisted and resumed without backend question 
   app.hook.stop();
 });
 
+test("a transient state update failure retries the same idempotent tool call", async () => {
+  let attempts = 0;
+  const app = setup(undefined, (...args) => {
+    attempts += 1;
+    if (attempts === 1) {
+      return Promise.reject(new Error("temporary network failure"));
+    }
+    return Promise.resolve({
+      status: "applied", stateVersion: 2, currentQuestionId: "question-2",
+      coveredAspects: [], missingAspects: [],
+    });
+  });
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答です。" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-retry",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-retry",
+        arguments: JSON.stringify({
+          turn_id: "turn-retry", base_state_version: 1, question_id: "question-1",
+          answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+
+  assert.equal(attempts, 2);
+  assert.equal(app.stateRequests.length, 2);
+  assert.equal(app.stateRequests[0].args[1].turn_id, app.stateRequests[1].args[1].turn_id);
+  app.hook.stop();
+});
+
 test("Responses state updates keep the transcript for their delegation when the next answer starts", async () => {
   const app = setup();
   await app.hook.start();
@@ -421,6 +459,76 @@ test("delegation before transcript does not lose late fragments; stop flushes fi
   assert.equal(app.requests[0].args[3][0].end_ms, 100);
   app.requests[0].resolve({ status: "updated", checklist: [] });
   await flush();
+});
+
+test("delegation snapshots keep every late transcript fragment until the next speech starts", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.delegation.created", delegation_id: "late-fragments" });
+  app.receive({ type: "session.input_transcript.delta", delta: "遅延した前半" });
+  app.receive({ type: "session.input_transcript.delta", delta: "と後半" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "late-fragments",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-late-fragments",
+        arguments: JSON.stringify({
+          turn_id: "turn-late-fragments", base_state_version: 1, question_id: "question-1",
+          answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+
+  assert.equal(app.stateRequests.length, 1);
+  assert.equal(app.stateRequests[0].args[2], "遅延した前半と後半");
+  app.hook.stop();
+});
+
+test("a completed delegation without a state tool does not block continuation", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "session.delegation.created", delegation_id: "completed-without-tool" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "completed-without-tool",
+    event: { type: "response.completed" },
+  });
+
+  app.advance(5000);
+  assert.equal(app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length, 1);
+  app.hook.stop();
+});
+
+test("a function call without call_id does not leave delegation pending forever", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "session.delegation.created", delegation_id: "missing-call-id" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "missing-call-id",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        arguments: "{}",
+      },
+    },
+  });
+
+  app.advance(5000);
+  assert.equal(app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length, 1);
+  app.hook.stop();
 });
 
 test("long continuous speech is drained in bounded, ordered batches without loss", async () => {

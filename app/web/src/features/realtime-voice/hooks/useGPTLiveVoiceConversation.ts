@@ -81,6 +81,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   } | null>(null);
   const turnSequenceRef = useRef(0);
   const handledToolCallIdsRef = useRef(new Set<string>());
+  const delegationToolCallSeenRef = useRef(new Set<string>());
   const delegatedResponseIdsRef = useRef(new Map<string, string>());
   const pendingDelegationIdsRef = useRef(new Set<string>());
   const delegationTranscriptSnapshotsRef = useRef(new Map<string, DelegationTranscriptSnapshot>());
@@ -136,6 +137,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     completedUserTranscriptRef.current = "";
     userSpeechActiveRef.current = false;
     handledToolCallIdsRef.current.clear();
+    delegationToolCallSeenRef.current.clear();
     delegatedResponseIdsRef.current.clear();
     pendingDelegationIdsRef.current.clear();
     delegationTranscriptSnapshotsRef.current.clear();
@@ -227,8 +229,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
     const existingTurn = activeTurnRef.current;
-    if (existingTurn && !existingTurn.responseStarted) {
-      return;
+    if (existingTurn) {
+      if (!existingTurn.responseStarted
+        || latestUserTranscriptRef.current === completedUserTranscriptRef.current) {
+        return;
+      }
     }
     clearActiveTurnTimers();
     turnSequenceRef.current += 1;
@@ -271,12 +276,40 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     event: GPTLiveEvent,
     item: Record<string, unknown>,
   ) => {
+    const eventDelegationId = readDelegationId(event);
     const callId = typeof item.call_id === "string" ? item.call_id : "";
-    if (!callId || handledToolCallIdsRef.current.has(callId)) {
+    if (!callId) {
+      if (eventDelegationId) {
+        pendingDelegationIdsRef.current.delete(eventDelegationId);
+        delegationTranscriptSnapshotsRef.current.delete(eventDelegationId);
+        delegationToolCallSeenRef.current.delete(eventDelegationId);
+      }
+      console.warn("gpt_live_function_call_id_missing", {
+        session_id: sessionIdRef.current,
+        delegation_id: eventDelegationId,
+      });
+      return;
+    }
+    if (handledToolCallIdsRef.current.has(callId)) {
+      return;
+    }
+    if (typeof item.name === "string" && item.name !== "update_interview_state") {
+      if (eventDelegationId) {
+        pendingDelegationIdsRef.current.delete(eventDelegationId);
+        delegationTranscriptSnapshotsRef.current.delete(eventDelegationId);
+        delegationToolCallSeenRef.current.delete(eventDelegationId);
+      }
+      console.warn("gpt_live_unknown_function_call", {
+        session_id: sessionIdRef.current,
+        delegation_id: eventDelegationId,
+        call_id: callId,
+        name: item.name,
+      });
       return;
     }
     handledToolCallIdsRef.current.add(callId);
     const delegationId = readDelegationId(event) ?? `delegation-${callId}`;
+    delegationToolCallSeenRef.current.add(delegationId);
     const responseId = readResponseId(event)
       ?? delegatedResponseIdsRef.current.get(delegationId);
     const transcriptSnapshot = delegationTranscriptSnapshotsRef.current.get(delegationId);
@@ -305,7 +338,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       if (!currentRecordRef.current) {
         throw new Error("gpt_live_record_id_missing");
       }
-      output = await submitGPTLiveStateUpdate(
+      output = await submitGPTLiveStateUpdateWithRetry(
         currentRecordRef.current,
         {
           delegation_id: delegationId,
@@ -351,6 +384,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       });
     }
     delegationTranscriptSnapshotsRef.current.delete(delegationId);
+    delegationToolCallSeenRef.current.delete(delegationId);
     pendingDelegationIdsRef.current.delete(delegationId);
     const peer = peerRef.current;
     if (!peer) {
@@ -422,12 +456,6 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         response_id: responseId,
       });
     }
-    if (["response.failed", "response.incomplete", "response.cancelled"].includes(nestedType ?? "")) {
-      const delegationId = readDelegationId(event);
-      if (delegationId) {
-        pendingDelegationIdsRef.current.delete(delegationId);
-      }
-    }
     if (isResponseStartEvent(eventType)) {
       markResponseStarted(eventType);
     }
@@ -444,8 +472,25 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       ? readResponseFunctionCall(event)
       : undefined;
     if (functionCall) {
+      const delegationId = readDelegationId(event);
+      if (delegationId) {
+        delegationToolCallSeenRef.current.add(delegationId);
+      }
       void handleDelegatedFunctionCall(event, functionCall);
       return;
+    }
+
+    if (isDelegatedResponseTerminalEvent(nestedType)) {
+      const delegationId = readDelegationId(event);
+      if (delegationId && !delegationToolCallSeenRef.current.has(delegationId)) {
+        pendingDelegationIdsRef.current.delete(delegationId);
+        delegationTranscriptSnapshotsRef.current.delete(delegationId);
+        console.warn("gpt_live_delegation_finished_without_state_tool", {
+          session_id: eventSessionId,
+          delegation_id: delegationId,
+          response_event: nestedType,
+        });
+      }
     }
 
     if (eventType === "session.started") {
@@ -549,11 +594,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       userSpeechActiveRef.current = true;
       appendTranscriptDelta("user", delta);
       latestUserTranscriptRef.current += delta;
-      // A delegation can be created before the final transcript fragment of
-      // the same utterance arrives. Accept those late fragments only while
-      // no new speech segment has started; once speech_started is received,
-      // the previous delegation snapshot is sealed.
-      if (!wasSpeechActive && pendingDelegationIdsRef.current.size > 0) {
+      // A delegation can be created before one or more final transcript
+      // fragments of the same utterance arrive. Keep appending to every
+      // unsealed snapshot; speech_started seals snapshots from the previous
+      // utterance before a new speech segment is accumulated.
+      if (pendingDelegationIdsRef.current.size > 0) {
         for (const snapshot of delegationTranscriptSnapshotsRef.current.values()) {
           if (!snapshot.sealed) {
             snapshot.transcript += delta;
@@ -590,8 +635,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       }
       if (delegationId) {
         pendingDelegationIdsRef.current.add(delegationId);
+        const transcript = userSpeechActiveRef.current
+          ? latestUserTranscriptRef.current
+          : completedUserTranscriptRef.current || latestUserTranscriptRef.current;
         delegationTranscriptSnapshotsRef.current.set(delegationId, {
-          transcript: completedUserTranscriptRef.current || latestUserTranscriptRef.current,
+          transcript,
           sealed: false,
         });
       }
@@ -651,6 +699,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     turnSequenceRef.current = 0;
     activeTurnRef.current = null;
     handledToolCallIdsRef.current.clear();
+    delegationToolCallSeenRef.current.clear();
     delegatedResponseIdsRef.current.clear();
     pendingDelegationIdsRef.current.clear();
     delegationTranscriptSnapshotsRef.current.clear();
@@ -908,6 +957,14 @@ function isResponseDoneEvent(type: string | undefined): boolean {
     || type === "response.audio.done";
 }
 
+function isDelegatedResponseTerminalEvent(type: string | undefined): boolean {
+  return type === "response.completed"
+    || type === "response.done"
+    || type === "response.failed"
+    || type === "response.incomplete"
+    || type === "response.cancelled";
+}
+
 function readNestedResponseEvent(event: GPTLiveEvent): Record<string, unknown> | undefined {
   const nested = event.event;
   return nested && typeof nested === "object"
@@ -993,6 +1050,43 @@ function readErrorField(error: unknown, field: "code" | "message"): string | und
   }
   const value = (error as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
+}
+
+type GPTLiveStateUpdatePayload = Parameters<typeof submitGPTLiveStateUpdate>[1];
+
+async function submitGPTLiveStateUpdateWithRetry(
+  recordId: string,
+  payload: GPTLiveStateUpdatePayload,
+  transcript: string,
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await submitGPTLiveStateUpdate(recordId, payload, transcript);
+    } catch (error) {
+      lastError = error;
+      if (attempt === 1 || !isRetryableLiveStateUpdateError(error)) {
+        throw error;
+      }
+      console.warn("gpt_live_state_update_retry", {
+        turn_id: payload.turn_id,
+        attempt: attempt + 1,
+      });
+      await Promise.resolve();
+    }
+  }
+  throw lastError;
+}
+
+function isRetryableLiveStateUpdateError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return true;
+  }
+  const status = (error as { status?: unknown }).status;
+  if (typeof status !== "number") {
+    return true;
+  }
+  return status === 408 || status === 429 || status >= 500;
 }
 
 function transcriptTiming(event: GPTLiveEvent): { start_ms?: number; end_ms?: number } {

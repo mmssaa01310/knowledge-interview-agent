@@ -143,6 +143,20 @@ class InMemoryStore:
         self.tables[table][item["id"]] = item
         return item
 
+    def compare_and_swap_interview_state(
+        self,
+        item: dict[str, Any],
+        expected_state_version: int,
+    ) -> bool:
+        existing = self.tables["interview_states"].get(item["id"])
+        if existing is None:
+            return False
+        current_version = int(existing.get("stateVersion", 0) or 0)
+        if current_version != expected_state_version:
+            return False
+        self.tables["interview_states"][item["id"]] = item
+        return True
+
     def delete(self, table: str, item_id: str) -> bool:
         return self.tables[table].pop(item_id, None) is not None
 
@@ -237,6 +251,31 @@ class PostgresStore:
                 (table, item["id"], item["tenantId"], Jsonb(item)),
             )
         return item
+
+    def compare_and_swap_interview_state(
+        self,
+        item: dict[str, Any],
+        expected_state_version: int,
+    ) -> bool:
+        with self._connection() as connection:
+            result = connection.execute(
+                """
+                UPDATE kikiori.entity_store
+                SET tenant_id = %s,
+                    payload = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE entity_type = 'interview_states'
+                  AND entity_id = %s
+                  AND COALESCE((payload ->> 'stateVersion')::integer, 0) = %s
+                """,
+                (
+                    item["tenantId"],
+                    Jsonb(item),
+                    item["id"],
+                    expected_state_version,
+                ),
+            )
+        return result.rowcount == 1
 
     def delete(self, table: str, item_id: str) -> bool:
         with self._connection() as connection:

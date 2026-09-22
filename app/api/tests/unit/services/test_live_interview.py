@@ -1,3 +1,6 @@
+import pytest
+from fastapi import HTTPException
+
 from ai_interviewer_api.agents.interview_knowledge.coordinator import build_initial_structured_state
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.repositories.store import store
@@ -316,4 +319,84 @@ def test_process_live_state_update_rejects_out_of_order_state(clean_interview_st
     )
 
     assert result["status"] == "stale"
+    assert store.list("messages", user.tenant_id) == []
+
+
+def test_process_live_state_update_rejects_an_old_question_at_the_current_version(
+    clean_interview_store,
+) -> None:
+    user = _user()
+    record = _record()
+    knowledge = {
+        "id": "knowledge-live-test",
+        "tenantId": user.tenant_id,
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    field = {
+        "id": "field-profile",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "name": "役割",
+        "description": "現在の役割を教えてください。",
+        "required": True,
+        "askByAi": True,
+        "questionPlan": {"requiredItems": [{"itemId": "role", "label": "役割"}]},
+    }
+    store.upsert("knowledges", knowledge)
+    store.upsert("records", record)
+    store.upsert("knowledge_fields", field)
+    state = build_initial_structured_state("fixed_form", [field])
+    state.update(
+        {
+            "id": "interview-state-record-live-test",
+            "recordId": record["id"],
+            "tenantId": user.tenant_id,
+            "stateVersion": 5,
+            "currentQuestionId": "question-current",
+            "currentFieldId": field["id"],
+            "askedQuestions": [
+                {
+                    "questionId": "question-old",
+                    "questionType": "structured",
+                    "fieldId": field["id"],
+                    "targetType": "field",
+                    "targetId": field["id"],
+                    "targetLabel": field["name"],
+                    "questionDefinition": {"requiredItems": field["questionPlan"]["requiredItems"]},
+                },
+                {
+                    "questionId": "question-current",
+                    "questionType": "structured",
+                    "fieldId": field["id"],
+                    "targetType": "field",
+                    "targetId": field["id"],
+                    "targetLabel": field["name"],
+                    "questionDefinition": {"requiredItems": field["questionPlan"]["requiredItems"]},
+                },
+            ],
+        }
+    )
+    store.upsert("interview_states", state)
+    payload = LiveStateUpdateCreate(
+        record_id=record["id"],
+        delegation_id="delegation-old-question",
+        call_id="call-old-question",
+        turn_id="turn-old-question",
+        base_state_version=6,
+        question_id="question-old",
+        answer_status="ANSWERED",
+        covered_aspects=[{"aspect_id": "role", "evidence": "プロジェクトリーダー"}],
+    )
+
+    with pytest.raises(HTTPException) as error:
+        live_interview_module.process_live_state_update(
+            payload,
+            record=record,
+            knowledge=knowledge,
+            user=user,
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == "live_question_not_current"
+    assert store.get("interview_states", state["id"])["currentQuestionId"] == "question-current"
     assert store.list("messages", user.tenant_id) == []
