@@ -151,6 +151,26 @@ test("Live transcripts continue while the Responses state update and UI refresh 
   await flush();
 });
 
+test("restarting the same GPT Live record keeps the visible transcript history", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "前の回答です。" });
+  app.receive({ type: "session.output_transcript.delta", delta: "ありがとうございます。" });
+  const beforeRestart = app.states.find(({ value }) => Array.isArray(value)
+    && value.some((line) => line.text === "前の回答です。"));
+  assert.ok(beforeRestart);
+
+  app.hook.stop();
+  await app.hook.start();
+
+  assert.deepEqual(
+    app.states.find(({ value }) => Array.isArray(value)
+      && value.some((line) => line.text === "前の回答です。"))?.value,
+    beforeRestart.value,
+  );
+  app.hook.stop();
+});
+
 test("durable receipt releases the next batch while server organization is pending", async () => {
   const app = setup();
   await app.hook.start();
@@ -332,6 +352,100 @@ test("standard function-call completion events update the interview state", asyn
   assert.equal(app.stateRequests.length, 1);
   assert.equal(app.stateRequests[0].args[1].call_id, "call-standard-call");
   assert.equal(app.sent.filter((event) => event.type === "response.item.create").length, 1);
+  app.hook.stop();
+});
+
+test("subsequent state updates reuse the latest acknowledged state version", async () => {
+  const app = setup(undefined, (...args) => Promise.resolve({
+    status: "applied",
+    stateVersion: args[1].call_id === "call-version-1" ? 3 : 4,
+    currentQuestionId: "question-1",
+    coveredAspects: [],
+    missingAspects: [],
+  }));
+  await app.hook.start();
+  app.receive({
+    type: "response.function_call_arguments.done",
+    delegation_id: "delegation-version-1",
+    name: "update_interview_state",
+    call_id: "call-version-1",
+    arguments: JSON.stringify({
+      turn_id: "turn-version-1", base_state_version: 0, question_id: "question-1",
+      answer_status: "PARTIAL", covered_aspects: [], missing_aspects: [], evidence: [],
+    }),
+  });
+  await flush();
+  app.receive({
+    type: "response.function_call_arguments.done",
+    delegation_id: "delegation-version-2",
+    name: "update_interview_state",
+    call_id: "call-version-2",
+    arguments: JSON.stringify({
+      turn_id: "turn-version-2", base_state_version: 0, question_id: "question-1",
+      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+    }),
+  });
+  await flush();
+
+  assert.equal(app.stateRequests[0].args[1].base_state_version, 0);
+  assert.equal(app.stateRequests[1].args[1].base_state_version, 3);
+  app.hook.stop();
+});
+
+test("a stale state response is retried with the returned current version", async () => {
+  let attempts = 0;
+  const app = setup(undefined, (...args) => {
+    attempts += 1;
+    return Promise.resolve(attempts === 1
+      ? { status: "stale", stateVersion: 5, currentQuestionId: "question-1" }
+      : {
+          status: "applied", stateVersion: 6, currentQuestionId: "question-1",
+          coveredAspects: [], missingAspects: [],
+        });
+  });
+  await app.hook.start();
+  app.receive({
+    type: "response.function_call_arguments.done",
+    delegation_id: "delegation-stale-retry",
+    name: "update_interview_state",
+    call_id: "call-stale-retry",
+    arguments: JSON.stringify({
+      turn_id: "turn-stale-retry", base_state_version: 0, question_id: "question-1",
+      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+    }),
+  });
+  await flush();
+
+  assert.equal(attempts, 2);
+  assert.equal(app.stateRequests[0].args[1].base_state_version, 0);
+  assert.equal(app.stateRequests[1].args[1].base_state_version, 5);
+  app.hook.stop();
+});
+
+test("standard function-call events correlate by response id when delegation id is absent", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-correlated", target: "responses" },
+    response_id: "response-correlated",
+  });
+  app.receive({
+    type: "response.function_call_arguments.done",
+    response_id: "response-correlated",
+    name: "update_interview_state",
+    call_id: "call-correlated",
+    arguments: JSON.stringify({
+      turn_id: "turn-correlated", base_state_version: 1, question_id: "question-1",
+      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+    }),
+  });
+  await flush();
+
+  app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.advance(5000);
+  assert.ok(app.sent.some((event) => event.event_id?.startsWith("gpt_live_continuation_")));
   app.hook.stop();
 });
 

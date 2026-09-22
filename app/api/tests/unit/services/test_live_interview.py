@@ -364,6 +364,109 @@ def test_process_live_state_update_confirms_complete_field_for_sidebar(
     assert result["checklist"][0]["answer_state"] == "CONFIRMED"
 
 
+def test_process_live_state_update_accepts_the_next_unasked_live_question(
+    clean_interview_store,
+) -> None:
+    user = _user()
+    record = _record()
+    knowledge = {
+        "id": "knowledge-live-test",
+        "tenantId": user.tenant_id,
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    profile_field = {
+        "id": "field-profile",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "name": "所属",
+        "required": True,
+        "askByAi": True,
+        "questionPlan": {"requiredItems": [{"itemId": "department", "label": "所属"}]},
+    }
+    role_field = {
+        "id": "field-role",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "name": "役職",
+        "required": True,
+        "askByAi": True,
+        "questionPlan": {"requiredItems": [{"itemId": "role", "label": "役職"}]},
+    }
+    store.upsert("knowledges", knowledge)
+    store.upsert("records", record)
+    store.upsert("knowledge_fields", profile_field)
+    store.upsert("knowledge_fields", role_field)
+    state = build_initial_structured_state("fixed_form", [profile_field, role_field])
+    state.update(
+        {
+            "id": "interview-state-record-live-test",
+            "recordId": record["id"],
+            "tenantId": user.tenant_id,
+            "stateVersion": 0,
+            "currentQuestionId": "live-field-field-profile",
+            "currentFieldId": profile_field["id"],
+            "askedQuestions": [
+                {
+                    "questionId": "live-field-field-profile",
+                    "questionType": "structured",
+                    "fieldId": profile_field["id"],
+                    "targetType": "field",
+                    "targetId": profile_field["id"],
+                    "targetLabel": profile_field["name"],
+                    "questionDefinition": {
+                        "requiredItems": profile_field["questionPlan"]["requiredItems"],
+                        "optionalItems": [],
+                    },
+                },
+            ],
+        }
+    )
+    store.upsert("interview_states", state)
+
+    first = live_interview_module.process_live_state_update(
+        LiveStateUpdateCreate(
+            record_id=record["id"],
+            delegation_id="delegation-profile",
+            call_id="call-profile",
+            turn_id="turn-profile",
+            base_state_version=1,
+            question_id="live-field-field-profile",
+            answer_status="ANSWERED",
+            covered_aspects=[{"aspect_id": "department", "evidence": "スマート技術開発部"}],
+            evidence=[{"aspect_id": "department", "text": "スマート技術開発部"}],
+            transcript="スマート技術開発部です。",
+        ),
+        record=record,
+        knowledge=knowledge,
+        user=user,
+    )
+    second = live_interview_module.process_live_state_update(
+        LiveStateUpdateCreate(
+            record_id=record["id"],
+            delegation_id="delegation-role",
+            call_id="call-role",
+            turn_id="turn-role",
+            base_state_version=first["stateVersion"],
+            question_id="live-field-field-role",
+            answer_status="ANSWERED",
+            covered_aspects=[{"aspect_id": "role", "evidence": "シニアエンジニア"}],
+            evidence=[{"aspect_id": "role", "text": "シニアエンジニア"}],
+            transcript="シニアエンジニアです。",
+        ),
+        record=record,
+        knowledge=knowledge,
+        user=user,
+    )
+
+    persisted = store.get("interview_states", state["id"])
+    assert first["status"] == "applied"
+    assert second["status"] == "applied"
+    assert persisted["currentQuestionId"] == "live-field-field-role"
+    assert persisted["fieldStates"]["field-profile"]["recordAnswer"] == "スマート技術開発部"
+    assert persisted["fieldStates"]["field-role"]["recordAnswer"] == "シニアエンジニア"
+    assert len(store.list("messages", user.tenant_id)) == 2
+
+
 def test_process_live_state_update_rejects_out_of_order_state(clean_interview_store) -> None:
     user = _user()
     record = _record()

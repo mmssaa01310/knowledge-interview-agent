@@ -279,6 +279,23 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   const selectedRecordIdRef = useRef(selectedRecordId);
   selectedRecordIdRef.current = selectedRecordId;
   const snapshotRequestRef = useRef(0);
+  const latestInterviewStateVersionRef = useRef(0);
+
+  function applyInterviewState(nextState: InterviewState | null | undefined) {
+    if (!nextState) return false;
+    const version = Number(nextState.stateVersion ?? 0);
+    if (Number.isFinite(version) && version < latestInterviewStateVersionRef.current) {
+      return false;
+    }
+    if (Number.isFinite(version)) {
+      latestInterviewStateVersionRef.current = Math.max(
+        latestInterviewStateVersionRef.current,
+        version,
+      );
+    }
+    setInterviewState(nextState);
+    return true;
+  }
 
   const hasUnsavedSettingsChanges = useMemo(() => {
     if (args.route.name !== "knowledge-settings" || !selectedKnowledge) return false;
@@ -366,12 +383,23 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     });
     // Background refreshes can overlap or finish after navigation.
     if (!snapshot || selectedRecordIdRef.current !== recordId || requestId !== snapshotRequestRef.current) return;
+    const snapshotVersion = Number(snapshot.interviewState?.stateVersion ?? 0);
+    if (Number.isFinite(snapshotVersion)
+      && snapshotVersion < latestInterviewStateVersionRef.current) {
+      console.info("interview_snapshot_stale_ignored", {
+        record_id: recordId,
+        snapshot_state_version: snapshotVersion,
+        latest_state_version: latestInterviewStateVersionRef.current,
+        timestamp_ms: Date.now(),
+      });
+      return;
+    }
     console.info("interview_snapshot_ready", {
       record_id: recordId,
       elapsed_ms: Math.round(performance.now() - startedAt),
       timestamp_ms: Date.now(),
     });
-    setInterviewState(snapshot.interviewState);
+    applyInterviewState(snapshot.interviewState);
     if (snapshot.interviewState.status === "completed") {
       markRecordAsSubmitted(recordId);
     }
@@ -459,15 +487,15 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
           retrievedSources: assistantMessage.retrievedSources,
         }]));
       }
-      if (metadata?.interviewState) {
-        setInterviewState(metadata.interviewState);
-      }
+      const acceptedMetadataState = metadata?.interviewState
+        ? applyInterviewState(metadata.interviewState)
+        : true;
       if (metadata?.status === "completed" || metadata?.interviewState?.status === "completed") {
         if (selectedRecordId) {
           markRecordAsSubmitted(selectedRecordId);
         }
       }
-      if (metadata?.structuredDraft) {
+      if (metadata?.structuredDraft && acceptedMetadataState) {
         setStructuredDraft(metadata.structuredDraft);
       }
       setStreamingInterviewReply("");
@@ -1358,9 +1386,15 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     });
   }
 
-  function refreshInterviewSnapshotForSelectedRecord() {
+  function refreshInterviewSnapshotForSelectedRecord(stateVersion?: number) {
     if (!selectedRecord?.id) {
       return;
+    }
+    if (typeof stateVersion === "number" && Number.isFinite(stateVersion)) {
+      latestInterviewStateVersionRef.current = Math.max(
+        latestInterviewStateVersionRef.current,
+        stateVersion,
+      );
     }
     loadInterviewSnapshot(selectedRecord.id).catch(() => {
       setInterviewError(true);
@@ -1445,6 +1479,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     setInterviewError(false);
     if (!selectedRecord?.id) {
       setPublishedGuidance([]);
+      latestInterviewStateVersionRef.current = 0;
       setInterviewState(null);
       setStructuredDraft({});
       setInterviewAnswerOverrides({});
@@ -1455,6 +1490,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       return;
     }
 
+    latestInterviewStateVersionRef.current = 0;
     setInterviewState(null);
     setStructuredDraft({});
     setInterviewAnswerOverrides({});

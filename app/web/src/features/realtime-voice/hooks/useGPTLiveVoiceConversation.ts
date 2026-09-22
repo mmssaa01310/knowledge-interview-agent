@@ -19,7 +19,7 @@ type UseGPTLiveVoiceConversationArgs = {
   enabled: boolean;
   remoteAudioRef: RefObject<HTMLAudioElement>;
   recordId?: string;
-  onInterviewStateChanged?: () => void | Promise<void>;
+  onInterviewStateChanged?: (stateVersion?: number) => void | Promise<void>;
 };
 
 export type GPTLiveTranscriptLine = {
@@ -77,6 +77,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const captureRef = useRef<ReturnType<typeof createLiveTranscriptCapture> | null>(null);
   const latestUserTranscriptRef = useRef("");
   const completedUserTranscriptRef = useRef("");
+  const latestStateVersionRef = useRef(0);
+  const transcriptRecordIdRef = useRef(recordId);
   const userTranscriptRevisionRef = useRef(0);
   const handledSpeechEndRevisionRef = useRef(-1);
   const userSpeechActiveRef = useRef(false);
@@ -96,6 +98,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const delegatedResponseIdsRef = useRef(new Map<string, string>());
   const pendingDelegationIdsRef = useRef(new Set<string>());
   const delegationTranscriptSnapshotsRef = useRef(new Map<string, DelegationTranscriptSnapshot>());
+  const stateUpdateQueueRef = useRef(Promise.resolve());
   const currentRecordRef = useRef(recordId);
   currentRecordRef.current = recordId;
   const onInterviewStateChangedRef = useRef(onInterviewStateChanged);
@@ -103,6 +106,14 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   useEffect(() => {
     onInterviewStateChangedRef.current = onInterviewStateChanged;
   }, [onInterviewStateChanged]);
+
+  useEffect(() => {
+    if (transcriptRecordIdRef.current === recordId) {
+      return;
+    }
+    transcriptRecordIdRef.current = recordId;
+    setTranscriptLines([]);
+  }, [recordId]);
 
   const clearActiveTurnTimers = useCallback(() => {
     const turn = activeTurnRef.current;
@@ -146,6 +157,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     activeTurnRef.current = null;
     latestUserTranscriptRef.current = "";
     completedUserTranscriptRef.current = "";
+    latestStateVersionRef.current = 0;
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
@@ -294,7 +306,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     event: GPTLiveEvent,
     item: Record<string, unknown>,
   ) => {
-    const eventDelegationId = readDelegationId(event);
+    const eventDelegationId = resolveDelegationId(
+      event,
+      delegatedResponseIdsRef.current,
+    );
     const callId = typeof item.call_id === "string" ? item.call_id : "";
     if (!callId) {
       if (eventDelegationId) {
@@ -326,7 +341,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
     handledToolCallIdsRef.current.add(callId);
-    const delegationId = readDelegationId(event) ?? `delegation-${callId}`;
+    const delegationId = eventDelegationId ?? `delegation-${callId}`;
     delegationToolCallSeenRef.current.add(delegationId);
     const responseId = readResponseId(event)
       ?? delegatedResponseIdsRef.current.get(delegationId);
@@ -353,43 +368,94 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }
     let output: unknown;
     try {
-      if (!currentRecordRef.current) {
+      const stateUpdateRecordId = currentRecordRef.current;
+      if (!stateUpdateRecordId) {
         throw new Error("gpt_live_record_id_missing");
       }
-      output = await submitGPTLiveStateUpdateWithRetry(
-        currentRecordRef.current,
-        {
-          delegation_id: delegationId,
-          call_id: callId,
-          turn_id: typeof argumentsValue.turn_id === "string"
-            ? argumentsValue.turn_id
-            : activeTurnRef.current?.turnId ?? `gpt-live-${delegationId}-${callId}`,
-          base_state_version: typeof argumentsValue.base_state_version === "number"
-            ? argumentsValue.base_state_version
-            : 0,
-          question_id: typeof argumentsValue.question_id === "string"
-            ? argumentsValue.question_id
-            : "",
-          answer_status: argumentsValue.answer_status as "ANSWERED" | "PARTIAL" | "NOT_ANSWERED",
-          covered_aspects: Array.isArray(argumentsValue.covered_aspects)
-            ? argumentsValue.covered_aspects as { aspect_id: string; evidence: string }[]
-            : [],
-          missing_aspects: Array.isArray(argumentsValue.missing_aspects)
-            ? argumentsValue.missing_aspects as string[]
-            : [],
-          evidence: Array.isArray(argumentsValue.evidence)
-            ? argumentsValue.evidence as { aspect_id: string; text: string }[]
-            : [],
-        },
-        delegatedTranscript,
-      );
+      const requestedBaseStateVersion = typeof argumentsValue.base_state_version === "number"
+        ? argumentsValue.base_state_version
+        : 0;
+      const stateUpdatePayload: GPTLiveStateUpdatePayload = {
+        delegation_id: delegationId,
+        call_id: callId,
+        turn_id: typeof argumentsValue.turn_id === "string"
+          ? argumentsValue.turn_id
+          : activeTurnRef.current?.turnId ?? `gpt-live-${delegationId}-${callId}`,
+        // The evaluator may have been created from an earlier session
+        // snapshot. Keep semantic fields untouched while using the latest
+        // state version already acknowledged by this Live session.
+        base_state_version: Math.max(
+          requestedBaseStateVersion,
+          latestStateVersionRef.current,
+        ),
+        question_id: typeof argumentsValue.question_id === "string"
+          ? argumentsValue.question_id
+          : "",
+        answer_status: argumentsValue.answer_status as "ANSWERED" | "PARTIAL" | "NOT_ANSWERED",
+        covered_aspects: Array.isArray(argumentsValue.covered_aspects)
+          ? argumentsValue.covered_aspects as { aspect_id: string; evidence: string }[]
+          : [],
+        missing_aspects: Array.isArray(argumentsValue.missing_aspects)
+          ? argumentsValue.missing_aspects as string[]
+          : [],
+        evidence: Array.isArray(argumentsValue.evidence)
+          ? argumentsValue.evidence as { aspect_id: string; text: string }[]
+          : [],
+      };
+      const persist = async () => {
+        let requestPayload = {
+          ...stateUpdatePayload,
+          base_state_version: Math.max(
+            stateUpdatePayload.base_state_version,
+            latestStateVersionRef.current,
+          ),
+        };
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          output = await submitGPTLiveStateUpdateWithRetry(
+            stateUpdateRecordId,
+            requestPayload,
+            delegatedTranscript,
+          );
+          const persistedStateVersion = (output as { stateVersion?: unknown })?.stateVersion;
+          if (typeof persistedStateVersion === "number" && Number.isFinite(persistedStateVersion)) {
+            latestStateVersionRef.current = Math.max(
+              latestStateVersionRef.current,
+              persistedStateVersion,
+            );
+          }
+          const status = (output as { status?: unknown })?.status;
+          if (status !== "stale" || attempt === 1
+            || typeof persistedStateVersion !== "number"
+            || !Number.isFinite(persistedStateVersion)) {
+            break;
+          }
+          requestPayload = {
+            ...requestPayload,
+            base_state_version: persistedStateVersion,
+          };
+          console.warn("gpt_live_state_update_retry_stale", {
+            session_id: sessionIdRef.current,
+            delegation_id: delegationId,
+            call_id: callId,
+            state_version: persistedStateVersion,
+          });
+        }
+      };
+      const queued = stateUpdateQueueRef.current.catch(() => undefined).then(persist);
+      stateUpdateQueueRef.current = queued.then(() => undefined, () => undefined);
+      await queued;
+      const acknowledgedStateVersion = (output as { stateVersion?: unknown })?.stateVersion;
       console.info("gpt_live_state_persisted", {
         session_id: sessionIdRef.current,
         delegation_id: delegationId,
         call_id: callId,
         status: (output as { status?: string })?.status,
       });
-      void onInterviewStateChangedRef.current?.();
+      void onInterviewStateChangedRef.current?.(
+        typeof acknowledgedStateVersion === "number" && Number.isFinite(acknowledgedStateVersion)
+          ? acknowledgedStateVersion
+          : undefined,
+      );
     } catch (error) {
       output = {
         status: "error",
@@ -493,7 +559,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       ? readResponseFunctionCall(event)
       : undefined;
     if (functionCall) {
-      const delegationId = readDelegationId(event);
+      const delegationId = resolveDelegationId(
+        event,
+        delegatedResponseIdsRef.current,
+      );
       if (delegationId) {
         delegationToolCallSeenRef.current.add(delegationId);
       }
@@ -714,9 +783,9 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     setMessage("");
     setRequiresManualPlayback(false);
     setStats(EMPTY_STATS);
-    setTranscriptLines([]);
     latestUserTranscriptRef.current = "";
     completedUserTranscriptRef.current = "";
+    latestStateVersionRef.current = 0;
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
@@ -1044,6 +1113,26 @@ function readDelegationId(event: GPTLiveEvent): string | undefined {
   return typeof delegationId === "string" && delegationId.trim()
     ? delegationId
     : undefined;
+}
+
+function resolveDelegationId(
+  event: GPTLiveEvent,
+  delegatedResponseIds: Map<string, string>,
+): string | undefined {
+  const directId = readDelegationId(event);
+  if (directId) {
+    return directId;
+  }
+  const responseId = readResponseId(event);
+  if (!responseId) {
+    return undefined;
+  }
+  for (const [delegationId, mappedResponseId] of delegatedResponseIds) {
+    if (mappedResponseId === responseId) {
+      return delegationId;
+    }
+  }
+  return undefined;
 }
 
 function readResponseId(event: GPTLiveEvent): string | undefined {

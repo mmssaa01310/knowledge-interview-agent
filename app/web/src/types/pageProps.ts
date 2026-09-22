@@ -137,7 +137,7 @@ export type KnowledgeLayoutProps = {
     interviewLocale?: InterviewLocale,
   ) => Promise<void>;
   onAppendInterviewMessage: (message: ChatMessage) => void;
-  onRefreshInterviewSnapshot: () => void;
+  onRefreshInterviewSnapshot: (stateVersion?: number) => void;
   onSaveProcessModel: (
     processState: ProcessModelState,
     baseProcessVersion: number,

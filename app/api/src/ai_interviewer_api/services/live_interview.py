@@ -243,18 +243,6 @@ def process_live_state_update(
                 user=user,
             )
 
-        current_question_id = str(state.get("currentQuestionId") or "").strip()
-        if current_question_id and payload.question_id != current_question_id:
-            logger.warning(
-                "gpt_live_state_update_question_stale record_id=%s turn_id=%s "
-                "current_question_id=%s payload_question_id=%s",
-                record_id,
-                payload.turn_id,
-                current_question_id,
-                payload.question_id,
-            )
-            raise HTTPException(status_code=409, detail="live_question_not_current")
-
         fields = [
             row
             for row in store.list("knowledge_fields", user.tenant_id)
@@ -264,6 +252,36 @@ def process_live_state_update(
         question = _question_for_live_update(state, fields, payload.question_id)
         if question is None:
             raise HTTPException(status_code=422, detail="live_question_id_unknown")
+
+        current_question_id = str(state.get("currentQuestionId") or "").strip()
+        if current_question_id and payload.question_id != current_question_id:
+            # GPT Live owns question progression. A valid live-field question
+            # that has not been recorded yet can therefore be the next basic
+            # question selected by Live. Previously asked questions remain
+            # protected so delayed delegations cannot overwrite newer state.
+            asked_question_ids = {
+                str(item.get("questionId") or "")
+                for item in state.get("askedQuestions", []) or []
+                if isinstance(item, Mapping)
+            }
+            if payload.question_id in asked_question_ids:
+                logger.warning(
+                    "gpt_live_state_update_question_stale record_id=%s turn_id=%s "
+                    "current_question_id=%s payload_question_id=%s",
+                    record_id,
+                    payload.turn_id,
+                    current_question_id,
+                    payload.question_id,
+                )
+                raise HTTPException(status_code=409, detail="live_question_not_current")
+            logger.info(
+                "gpt_live_state_update_question_advanced record_id=%s turn_id=%s "
+                "previous_question_id=%s question_id=%s",
+                record_id,
+                payload.turn_id,
+                current_question_id,
+                payload.question_id,
+            )
         allowed_aspects = _question_aspects(question)
         covered = _unique_aspect_map(payload.covered_aspects)
         missing = list(dict.fromkeys(str(item).strip() for item in payload.missing_aspects if str(item).strip()))
