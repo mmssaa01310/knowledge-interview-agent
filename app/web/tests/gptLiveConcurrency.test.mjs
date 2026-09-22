@@ -252,6 +252,34 @@ test("response start cancels the watchdog before it can send a second prompt", a
   app.hook.stop();
 });
 
+test("watchdog starts a new turn after a previous Live response", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "最初の回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "response.created", response_id: "response-1" });
+
+  app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.advance(5000);
+
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
+  app.hook.stop();
+});
+
+test("duplicate speech-end events do not create another turn without new transcript", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "response.created", response_id: "response-1" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.advance(5000);
+
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 0);
+  app.hook.stop();
+});
+
 test("Responses function call is persisted and resumed without backend question generation", async () => {
   const app = setup();
   await app.hook.start();
@@ -279,7 +307,31 @@ test("Responses function call is persisted and resumed without backend question 
   assert.equal(app.stateRequests.length, 1);
   assert.equal(app.stateRequests[0].args[1].question_id, "question-1");
   assert.equal(app.sent.filter((event) => event.type === "response.item.create").length, 1);
-  assert.equal(app.sent.filter((event) => event.type === "response.create").length, 1);
+  const continuation = app.sent.find((event) => event.type === "response.create");
+  assert.ok(continuation);
+  assert.match(continuation.response?.instructions ?? "", /latest persisted state/);
+  app.hook.stop();
+});
+
+test("standard function-call completion events update the interview state", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "所属と役職です。" });
+  app.receive({
+    type: "response.function_call_arguments.done",
+    delegation_id: "delegation-standard-call",
+    name: "update_interview_state",
+    call_id: "call-standard-call",
+    arguments: JSON.stringify({
+      turn_id: "turn-standard-call", base_state_version: 1, question_id: "question-1",
+      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+    }),
+  });
+  await flush();
+
+  assert.equal(app.stateRequests.length, 1);
+  assert.equal(app.stateRequests[0].args[1].call_id, "call-standard-call");
+  assert.equal(app.sent.filter((event) => event.type === "response.item.create").length, 1);
   app.hook.stop();
 });
 

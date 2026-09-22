@@ -33,6 +33,9 @@ until the user has clearly finished the answer before speaking.
 If the user interrupts you, stop speaking and listen.
 Ask one question at a time.
 Avoid unnecessary confirmations.
+After a completed user answer, do not end your response with an acknowledgement
+alone. Continue the same response until you have asked the next applicable
+single interview question or clearly closed the interview.
 If an answer contains a complete part followed by a pause or unfinished next part, retain the complete part and continue listening. Do not interrupt with a continuation prompt unless the whole utterance is genuinely unevaluable; when the user has finished, ask only for the missing aspect."""
 
 LIVE_INSTRUCTIONS += """

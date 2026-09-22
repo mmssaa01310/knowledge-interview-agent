@@ -52,7 +52,7 @@ Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、Dat
 
 ## DelegationとState保存
 
-`session.delegation.created`はDelegation開始の監査イベントとして記録する。Responses側のネストされた`response.event`から`response.output_item.done`内のFunction Tool callを読み取り、Browserは`POST /api/live/state-updates`へ転送する。`response.created`の`response_id`と外側の`delegation_id`も監査ログで関連付ける。その後、同じDataChannelへ`response.item.create`（`function_call_output`）を送り、`response.create`でGPT Liveの会話を再開する。
+`session.delegation.created`はDelegation開始の監査イベントとして記録する。Responses側のネストされた`response.event`から、Function Toolが完了した`response.output_item.done`または`response.function_call_arguments.done`を読み取り、Browserは`POST /api/live/state-updates`へ転送する。`response.created`の`response_id`と外側の`delegation_id`も監査ログで関連付ける。その後、同じDataChannelへ`response.item.create`（`function_call_output`）を送り、`response.create`でGPT Liveの会話を再開する。
 
 Function Toolの入力には、`turn_id`、`base_state_version`、`question_id`、`answer_status`、`covered_aspects`、`missing_aspects`、`evidence`を含める。`next_action`、次質問本文、ユーザー向け回答は含めない。Application Backendは質問・Aspectの存在、State version、冪等性、認証・認可を検証して保存する。古い`base_state_version`は`stale`として破棄し、古い結果で最新Stateを上書きしない。
 

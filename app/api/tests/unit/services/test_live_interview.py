@@ -286,6 +286,84 @@ def test_process_live_state_update_persists_semantics_without_generating_reply(
     assert persisted["lastAspectAssessments"][1]["status"] == "MISSING"
 
 
+def test_process_live_state_update_confirms_complete_field_for_sidebar(
+    clean_interview_store,
+) -> None:
+    user = _user()
+    record = _record()
+    knowledge = {
+        "id": "knowledge-live-test",
+        "tenantId": user.tenant_id,
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    field = {
+        "id": "field-role",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "name": "役割",
+        "description": "現在の役割を教えてください。",
+        "required": True,
+        "askByAi": True,
+        "questionPlan": {
+            "requiredItems": [{"itemId": "role", "label": "役割"}],
+        },
+    }
+    store.upsert("knowledges", knowledge)
+    store.upsert("records", record)
+    store.upsert("knowledge_fields", field)
+    state = build_initial_structured_state("fixed_form", [field])
+    state.update(
+        {
+            "id": "interview-state-record-live-test",
+            "recordId": record["id"],
+            "currentQuestionId": "live-field-field-role",
+            "currentFieldId": field["id"],
+            "askedQuestions": [
+                {
+                    "questionId": "live-field-field-role",
+                    "questionType": "structured",
+                    "fieldId": field["id"],
+                    "text": field["description"],
+                    "targetType": "field",
+                    "targetId": field["id"],
+                    "targetLabel": field["name"],
+                    "questionDefinition": {
+                        "requiredItems": field["questionPlan"]["requiredItems"],
+                        "optionalItems": [],
+                    },
+                },
+            ],
+        }
+    )
+    store.upsert("interview_states", state)
+    payload = LiveStateUpdateCreate(
+        record_id=record["id"],
+        delegation_id="delegation-role",
+        call_id="call-role",
+        turn_id="turn-role",
+        base_state_version=1,
+        question_id="live-field-field-role",
+        answer_status="ANSWERED",
+        covered_aspects=[{"aspect_id": "role", "evidence": "プロジェクトリーダー"}],
+        evidence=[{"aspect_id": "role", "text": "プロジェクトリーダー"}],
+        transcript="プロジェクトリーダーです。",
+    )
+
+    result = live_interview_module.process_live_state_update(
+        payload,
+        record=record,
+        knowledge=knowledge,
+        user=user,
+    )
+
+    persisted = store.get("interview_states", state["id"])
+    field_state = persisted["fieldStates"][field["id"]]
+    assert result["status"] == "applied"
+    assert field_state["answerState"] == "CONFIRMED"
+    assert field_state["recordAnswer"] == "プロジェクトリーダー"
+    assert result["checklist"][0]["answer_state"] == "CONFIRMED"
+
+
 def test_process_live_state_update_rejects_out_of_order_state(clean_interview_store) -> None:
     user = _user()
     record = _record()
