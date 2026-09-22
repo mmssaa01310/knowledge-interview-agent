@@ -7,6 +7,10 @@ class Settings:
     app_name: str = os.getenv("APP_NAME", "KIKIORI API")
     app_env: str = os.getenv("APP_ENV", "local")
     openai_secret_key: str = os.getenv("OPENAI_SECRET_KEY", "")
+    gpt_live_responses_model: str = os.getenv(
+        "GPT_LIVE_RESPONSES_MODEL",
+        "gpt-5.6-terra",
+    )
     dev_auto_seed_voice_demo: bool = (
         os.getenv("DEV_AUTO_SEED_VOICE_DEMO", "false").lower() == "true"
     )

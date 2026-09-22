@@ -16,6 +16,7 @@ type GPTLivePeerConnectionOptions = {
   remoteAudioElement: HTMLAudioElement | null;
   recordId?: string;
   onEvent: (event: GPTLiveEvent) => void;
+  onRemoteAudioPlaying?: () => void;
   onConnectionStateChange: (state: string) => void;
   onStatsChange: (stats: VoiceConnectionStats) => void;
   signal?: AbortSignal;
@@ -147,6 +148,7 @@ export async function createGPTLivePeerConnection(
               ? undefined
               : Math.max(0, Math.round(performance.now() - receivedAt)),
           });
+          options.onRemoteAudioPlaying?.();
         };
       }
       options.onStatsChange({

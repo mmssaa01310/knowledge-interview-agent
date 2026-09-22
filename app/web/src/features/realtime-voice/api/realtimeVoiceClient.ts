@@ -16,10 +16,19 @@ export type GPTLiveSessionResponse = {
 };
 
 export type GPTLiveDelegationResponse = {
-  status: "updated" | "duplicate" | "completed";
+  status: "updated" | "duplicate" | "completed" | "applied" | "stale";
   interviewState: Record<string, unknown>;
   structuredDraft: Record<string, string>;
   stateVersion?: number | null;
+  currentQuestionId?: string | null;
+};
+
+export type GPTLiveStateUpdateResponse = {
+  status: "applied" | "duplicate" | "stale" | "completed";
+  stateVersion?: number | null;
+  currentQuestionId?: string | null;
+  coveredAspects: string[];
+  missingAspects: string[];
 };
 
 export type LiveTranscriptFragment = {
@@ -151,21 +160,32 @@ export async function createGPTLiveSession(
   );
 }
 
-export async function submitGPTLiveDelegation(
+export async function submitGPTLiveStateUpdate(
   recordId: string,
-  delegationId: string,
-  transcript: string,
+  payload: {
+    delegation_id: string;
+    call_id: string;
+    turn_id: string;
+    base_state_version: number;
+    question_id: string;
+    answer_status: "ANSWERED" | "PARTIAL" | "NOT_ANSWERED";
+    covered_aspects: { aspect_id: string; evidence: string }[];
+    missing_aspects: string[];
+    evidence: { aspect_id: string; text: string }[];
+    transcript?: string;
+  },
+  transcript = "",
   signal?: AbortSignal,
 ) {
-  return requestJson<GPTLiveDelegationResponse>(
+  return requestJson<GPTLiveStateUpdateResponse>(
     API_BASE_URL,
-    "/api/live/delegations",
+    "/api/live/state-updates",
     {
       method: "POST",
       body: {
         record_id: recordId,
-        delegation_id: delegationId,
-        transcript,
+        ...payload,
+        transcript: transcript || payload.transcript || "",
       },
       signal,
     },

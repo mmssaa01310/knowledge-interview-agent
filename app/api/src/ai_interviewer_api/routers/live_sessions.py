@@ -8,14 +8,14 @@ from ai_interviewer_api.core.interview_configuration import require_interview_co
 from ai_interviewer_api.core.permissions import require_record_action
 from ai_interviewer_api.routers.common import ensure_interviewer_knowledge_access, get_scoped_item
 from ai_interviewer_api.schemas.live import (
-    LiveDelegationCreate,
     LiveCaptureCreate,
     LiveSessionCreate,
     LiveSessionResponse,
+    LiveStateUpdateCreate,
 )
 from ai_interviewer_api.services.live_interview import (
     build_live_interview_context,
-    process_live_delegation,
+    process_live_state_update,
 )
 from ai_interviewer_api.services.live_capture import receive_live_capture, _response
 from ai_interviewer_api.services.live_session import create_live_session
@@ -104,9 +104,9 @@ def create_live_web_session(
     return create_live_session(payload, interview_context=interview_context)
 
 
-@router.post("/delegations")
-def apply_live_delegation(
-    payload: LiveDelegationCreate,
+@router.post("/state-updates")
+def apply_live_state_update(
+    payload: LiveStateUpdateCreate,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", payload.record_id, user, "record_not_found")
@@ -119,4 +119,4 @@ def apply_live_delegation(
     )
     ensure_interviewer_knowledge_access(knowledge, user)
     require_interview_configuration(knowledge)
-    return process_live_delegation(payload, record=record, user=user)
+    return process_live_state_update(payload, record=record, knowledge=knowledge, user=user)

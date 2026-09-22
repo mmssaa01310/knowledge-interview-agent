@@ -1,8 +1,7 @@
-from types import SimpleNamespace
-
+from ai_interviewer_api.agents.interview_knowledge.coordinator import build_initial_structured_state
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.repositories.store import store
-from ai_interviewer_api.schemas.live import LiveDelegationCreate
+from ai_interviewer_api.schemas.live import LiveStateUpdateCreate
 import ai_interviewer_api.services.live_interview as live_interview_module
 
 
@@ -178,54 +177,143 @@ def test_build_live_context_includes_direct_prior_knowledge(
     assert "製品ライフサイクル管理" in context["prior_knowledge"][0]["content"]
 
 
-def test_process_live_delegation_is_idempotent(monkeypatch, clean_interview_store) -> None:
+def test_process_live_state_update_persists_semantics_without_generating_reply(
+    monkeypatch,
+    clean_interview_store,
+) -> None:
     user = _user()
     record = _record()
-    state = {
-        "id": "interview-state-record-live-test",
-        "recordId": record["id"],
-        "status": "in_progress",
-        "stateVersion": 3,
-        "currentQuestionId": "question-1",
-        "currentFieldId": "field-profile",
-        "askedQuestions": [
-            {
-                "questionId": "question-1",
-                "questionType": "structured",
-                "fieldId": "field-profile",
-                "text": "基本プロフィールについて教えてください。",
-                "targetType": "field",
-                "targetId": "field-profile",
-            },
-        ],
+    knowledge = {
+        "id": "knowledge-live-test",
+        "tenantId": user.tenant_id,
+        "interviewPlan": {"profile": "fixed_form"},
     }
-    snapshots = [_snapshot(state), _snapshot({**state, "stateVersion": 4})]
-    monkeypatch.setattr(
-        live_interview_module,
-        "get_interview_state_snapshot",
-        lambda *_args, **_kwargs: snapshots.pop(0) if snapshots else _snapshot(state),
+    field = {
+        "id": "field-profile",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "name": "経験",
+        "description": "経験と変化を教えてください。",
+        "required": True,
+        "askByAi": True,
+        "questionPlan": {
+            "requiredItems": [
+                {"itemId": "trigger_experience", "label": "きっかけとなった経験"},
+                {"itemId": "impact_or_change", "label": "経験による変化"},
+            ],
+        },
+    }
+    store.upsert("knowledges", knowledge)
+    store.upsert("records", record)
+    store.upsert("knowledge_fields", field)
+    state = build_initial_structured_state("fixed_form", [field])
+    state.update(
+        {
+            "id": "interview-state-record-live-test",
+            "recordId": record["id"],
+            "currentQuestionId": "live-field-field-profile",
+            "currentFieldId": "field-profile",
+            "askedQuestions": [
+                {
+                    "questionId": "live-field-field-profile",
+                    "questionType": "structured",
+                    "fieldId": "field-profile",
+                    "text": "経験と変化を教えてください。",
+                    "targetType": "field",
+                    "targetId": "field-profile",
+                    "targetLabel": "経験",
+                    "questionDefinition": {
+                        "requiredItems": field["questionPlan"]["requiredItems"],
+                        "optionalItems": [],
+                    },
+                },
+            ],
+        }
     )
-    generated: list[str] = []
-    monkeypatch.setattr(
-        live_interview_module,
-        "generate_interview_reply",
-        lambda record, _user, **_kwargs: (
-            generated.append(record["id"])
-            or SimpleNamespace(metadata={"completionStatus": "in_progress"})
-        ),
-    )
-
-    payload = LiveDelegationCreate(
+    store.upsert("interview_states", state)
+    payload = LiveStateUpdateCreate(
         record_id=record["id"],
         delegation_id="delegation-1",
-        transcript="田中です。開発部のマネージャーです。",
+        call_id="call-1",
+        turn_id="turn-1",
+        base_state_version=1,
+        question_id="live-field-field-profile",
+        answer_status="PARTIAL",
+        covered_aspects=[
+            {
+                "aspect_id": "trigger_experience",
+                "evidence": "顧客の要望を聞きながらシステム開発を進めた経験です。",
+            },
+        ],
+        missing_aspects=["impact_or_change"],
+        evidence=[
+            {
+                "aspect_id": "trigger_experience",
+                "text": "顧客の要望を聞きながらシステム開発を進めた経験です。",
+            },
+        ],
+        transcript="顧客の要望を聞きながらシステム開発を進めました。",
     )
-    first = live_interview_module.process_live_delegation(payload, record=record, user=user)
-    second = live_interview_module.process_live_delegation(payload, record=record, user=user)
+    first = live_interview_module.process_live_state_update(
+        payload,
+        record=record,
+        knowledge=knowledge,
+        user=user,
+    )
+    second = live_interview_module.process_live_state_update(
+        payload,
+        record=record,
+        knowledge=knowledge,
+        user=user,
+    )
 
-    assert first["status"] == "updated"
+    assert first["status"] == "applied"
     assert second["status"] == "duplicate"
-    assert generated == [record["id"]]
+    assert first["coveredAspects"] == ["trigger_experience"]
+    assert first["missingAspects"] == ["impact_or_change"]
+    assert first["persistedState"]["fieldStates"]["field-profile"]["capturedItems"]
+    assert first["checklist"][0]["missing_required_items"] == ["経験による変化"]
+    assert first["current"]["question_id"] == "live-field-field-profile"
     messages = store.list("messages", user.tenant_id)
     assert len(messages) == 1
-    assert messages[0]["answerToQuestionId"] == "question-1"
+    assert messages[0]["answerToQuestionId"] == "live-field-field-profile"
+    persisted = store.get("interview_states", state["id"])
+    assert persisted["lastAnswerStatus"] == "PARTIAL"
+    assert persisted["lastAspectAssessments"][0]["aspectId"] == "trigger_experience"
+    assert persisted["lastAspectAssessments"][1]["status"] == "MISSING"
+
+
+def test_process_live_state_update_rejects_out_of_order_state(clean_interview_store) -> None:
+    user = _user()
+    record = _record()
+    knowledge = {
+        "id": "knowledge-live-test",
+        "tenantId": user.tenant_id,
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    field = {
+        "id": "field-profile",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "name": "役割",
+        "questionPlan": {"requiredItems": [{"itemId": "role", "label": "役割"}]},
+    }
+    store.upsert("knowledges", knowledge)
+    store.upsert("records", record)
+    store.upsert("knowledge_fields", field)
+    state = build_initial_structured_state("fixed_form", [field])
+    state.update({"id": "interview-state-record-live-test", "recordId": record["id"], "stateVersion": 2})
+    store.upsert("interview_states", state)
+    payload = LiveStateUpdateCreate(
+        record_id=record["id"], delegation_id="delegation-old", call_id="call-old",
+        turn_id="turn-old", base_state_version=1, question_id="live-field-field-profile",
+        answer_status="ANSWERED",
+        covered_aspects=[{"aspect_id": "role", "evidence": "リーダー"}],
+    )
+
+    result = live_interview_module.process_live_state_update(
+        payload, record=record, knowledge=knowledge, user=user,
+    )
+
+    assert result["status"] == "stale"
+    assert store.list("messages", user.tenant_id) == []

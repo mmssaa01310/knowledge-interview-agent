@@ -25,10 +25,20 @@ function setup(refresh = () => {}) {
   const sent = [];
   const requests = [];
   const polls = [];
+  const stateRequests = [];
   const states = [];
   let receive;
   const timers = new Map();
   let nextTimer = 0;
+  let nextHookTimer = 0;
+  let hookNow = 0;
+  const hookTimers = new Map();
+  const hookSetTimeout = (callback, delay = 0) => {
+    const id = ++nextHookTimer;
+    hookTimers.set(id, { callback, due: hookNow + delay });
+    return id;
+  };
+  const hookClearTimeout = (id) => hookTimers.delete(id);
   const captureExports = {};
   const pageListeners = new Map();
   vm.runInNewContext(captureCode, {
@@ -43,7 +53,7 @@ function setup(refresh = () => {}) {
   const exports = {};
   vm.runInNewContext(code, {
     exports, AbortController, DOMException, performance, crypto: { randomUUID },
-    window: { setTimeout, clearTimeout },
+    window: { setTimeout: hookSetTimeout, clearTimeout: hookClearTimeout },
     console: { info() {}, warn() {} },
     require(name) {
       if (name === "react") return {
@@ -67,6 +77,13 @@ function setup(refresh = () => {}) {
         submitGPTLiveCapture: (...args) => new Promise((resolve, reject) => {
           requests.push({ args, resolve, reject });
         }),
+        submitGPTLiveStateUpdate: (...args) => {
+          stateRequests.push({ args });
+          return Promise.resolve({
+            status: "applied", stateVersion: 2,
+            currentQuestionId: "question-2", coveredAspects: [], missingAspects: [],
+          });
+        },
       };
       if (name.endsWith("gptLivePeerConnection")) return {
         async createGPTLivePeerConnection(options) {
@@ -82,12 +99,28 @@ function setup(refresh = () => {}) {
     enabled: true, recordId: "record", remoteAudioRef: { current: null },
     onInterviewStateChanged: refresh,
   });
-  return { hook, sent, requests, polls, states, pageListeners, receive: (event) => receive(event),
+  return { hook, sent, requests, stateRequests, polls, states, pageListeners,
+    receive: (event) => receive(event),
     tick: () => { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach((fn) => fn()); },
+    advance: (milliseconds) => {
+      hookNow += milliseconds;
+      let progressed = true;
+      while (progressed) {
+        progressed = false;
+        const due = [...hookTimers.entries()]
+          .filter(([, timer]) => timer.due <= hookNow)
+          .sort(([, left], [, right]) => left.due - right.due);
+        for (const [id, timer] of due) {
+          if (!hookTimers.delete(id)) continue;
+          progressed = true;
+          timer.callback();
+        }
+      }
+    },
   };
 }
 
-test("without delegation, Live transcripts continue while background LLM and UI refresh are pending", async () => {
+test("Live transcripts continue while the Responses state update and UI refresh are pending", async () => {
   const app = setup(() => new Promise(() => {}));
   await app.hook.start();
   app.receive({ type: "session.input_transcript.delta", delta: "田中です。" });
@@ -103,7 +136,11 @@ test("without delegation, Live transcripts continue while background LLM and UI 
     { label: "プロフィール", answer_state: "CANDIDATE_PENDING", missing_required_items: ["役職"] },
   ] });
   await flush();
-  assert.ok(app.sent.some((event) => event.type === "session.thinking.append" && event.content.includes("役職")));
+  assert.equal(
+    app.sent.some((event) => event.type === "session.thinking.append"),
+    false,
+    "GPT Live state is updated through Responses Delegation, not thinking.append",
+  );
   app.tick();
   assert.equal(app.requests.length, 2, "UI refresh must not hold the save queue");
   assert.equal(app.requests[1].args[2], 2);
@@ -150,7 +187,7 @@ test("manual stop shows organization until a persisted result arrives", async ()
   assert.equal(app.states[0].value, "completed");
 });
 
-test("candidate checklist state instructs Live to clarify before closing", async () => {
+test("capture status does not inject a second conversation decision into Live", async () => {
   const app = setup();
   await app.hook.start();
   app.receive({ type: "session.input_transcript.delta", delta: "回答" });
@@ -173,10 +210,151 @@ test("candidate checklist state instructs Live to clarify before closing", async
     }],
   });
   await flush();
-  const checklistEvent = app.sent.find((event) => event.content.includes("CANDIDATE_PENDING"));
-  assert.ok(checklistEvent);
-  assert.match(checklistEvent.content, /clarification or confirmation/);
+  assert.equal(app.sent.some((event) => event.type === "session.thinking.append"), false);
+  assert.equal(app.sent.some((event) => event.type === "session.commentary.append"), false);
   assert.equal(app.sent.some((event) => event.content.includes("必須項目は保存済みです")), false);
+});
+
+test("response watchdog emits one wait notice and one continuation at most", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "input_audio_buffer.speech_started" });
+  app.receive({ type: "session.input_transcript.delta", delta: "回答です。" });
+  app.receive({ type: "input_audio_buffer.speech_stopped" });
+
+  app.advance(2500);
+  assert.equal(app.sent.filter((event) => event.type === "session.commentary.append"
+    && event.event_id?.includes("wait_notice")).length, 1);
+  app.advance(2500);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
+  app.advance(10000);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
+  app.hook.stop();
+});
+
+test("response start cancels the watchdog before it can send a second prompt", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "response.created",
+    response_id: "response-1",
+  });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-1", target: "responses" },
+    response_id: "response-1",
+  });
+  app.receive({ type: "response.output_audio.delta", delta: "audio" });
+  app.advance(10000);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("wait_notice")).length, 0);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 0);
+  app.hook.stop();
+});
+
+test("Responses function call is persisted and resumed without backend question generation", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "顧客の要望を聞いて開発しました。" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-1",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-1",
+        arguments: JSON.stringify({
+          turn_id: "turn-1", base_state_version: 1, question_id: "question-1",
+          answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "trigger_experience", evidence: "顧客の要望を聞いて開発した" }],
+          missing_aspects: ["impact_or_change"],
+          evidence: [{ aspect_id: "trigger_experience", text: "顧客の要望を聞いて開発した" }],
+        }),
+      },
+    },
+  });
+  await flush();
+  assert.equal(app.stateRequests.length, 1);
+  assert.equal(app.stateRequests[0].args[1].question_id, "question-1");
+  assert.equal(app.sent.filter((event) => event.type === "response.item.create").length, 1);
+  assert.equal(app.sent.filter((event) => event.type === "response.create").length, 1);
+  app.hook.stop();
+});
+
+test("Responses state updates keep the transcript for their delegation when the next answer starts", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "input_audio_buffer.speech_started" });
+  app.receive({ type: "session.input_transcript.delta", delta: "最初の回答です。" });
+  app.receive({ type: "input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-snapshot", target: "responses" },
+    response_id: "response-snapshot",
+  });
+
+  // The next answer arrives before the Responses function call completes.
+  app.receive({ type: "input_audio_buffer.speech_started" });
+  app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-snapshot",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-snapshot",
+        arguments: JSON.stringify({
+          turn_id: "turn-snapshot", base_state_version: 1, question_id: "question-1",
+          answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+
+  assert.equal(app.stateRequests.length, 1);
+  assert.equal(app.stateRequests[0].args[2], "最初の回答です。");
+  app.hook.stop();
+});
+
+test("delegation in flight defers the watchdog continuation until its tool result", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-pending", target: "responses" },
+    response_id: "response-pending",
+  });
+
+  app.advance(5000);
+  assert.equal(app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length, 0);
+
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-pending",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-pending",
+        arguments: JSON.stringify({
+          turn_id: "turn-pending", base_state_version: 1, question_id: "question-1",
+          answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  assert.equal(app.sent.filter((event) => event.event_id === "gpt_live_state_tool_continue_call-pending").length, 1);
+  assert.equal(app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length, 0);
+  app.hook.stop();
 });
 
 test("page exit flushes speech and keeps the unsaved warning after audio stop", async () => {

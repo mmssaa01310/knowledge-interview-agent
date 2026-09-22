@@ -39,8 +39,9 @@ def consume_pending_captures() -> None:
                 if not knowledge or knowledge.get("tenantId") != user.tenant_id:
                     raise ValueError("live_capture_knowledge_unavailable")
                 ensure_interviewer_knowledge_access(knowledge, user)
-                # Interpret all receipts already available for this session in
-                # one cumulative observation, without making audio wait.
+                # Mark all receipts already available for this session as
+                # durable evidence. Semantic assessment is performed by the
+                # GPT-Live Responses Delegation function tool, never here.
                 session_receipts = [row for row in store.list("messages", user.tenant_id)
                                     if row.get("recordId") == record["id"]
                                     and row.get("liveCaptureId") == latest["liveCaptureId"]]

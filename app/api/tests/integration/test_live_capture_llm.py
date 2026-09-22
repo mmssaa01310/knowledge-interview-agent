@@ -1,50 +1,90 @@
-"""Opt-in real extraction smoke test. All records use the test in-memory store."""
-import os
-from time import monotonic
+"""GPT-Live capture integration contract.
 
-import pytest
+The file name is kept for compatibility with the previous opt-in smoke test.
+GPT-Live semantic evaluation now belongs to Responses Delegation, so this
+integration test verifies that the capture consumer only durabilizes receipts.
+"""
 
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.schemas.live import LiveCaptureCreate
-from ai_interviewer_api.services.live_capture import process_live_capture
+from ai_interviewer_api.services import live_capture as capture_service
+from ai_interviewer_api.services.live_capture_consumer import consume_pending_captures
 
 
-@pytest.mark.skipif(os.getenv("RUN_LIVE_CAPTURE_LLM") != "1", reason="real LLM opt-in")
-def test_real_llm_captures_followups_and_correction(clean_interview_store):
-    user = UserContext(user_id="capture-smoke-user", tenant_id="capture-smoke", role="interviewer", display_name="test")
-    record = {"id": "capture-smoke", "tenantId": user.tenant_id, "knowledgeId": "capture-smoke-k"}
-    knowledge = {"id": record["knowledgeId"], "tenantId": user.tenant_id, "interviewPlan": {"profile": "fixed_form"}}
+def test_gpt_live_capture_consumer_does_not_run_backend_interpreter(
+    clean_interview_store,
+    monkeypatch,
+) -> None:
+    user = UserContext(
+        user_id="capture-integration-user",
+        tenant_id="capture-integration",
+        role="interviewer",
+        display_name="test",
+    )
+    record = {
+        "id": "capture-integration-record",
+        "tenantId": user.tenant_id,
+        "knowledgeId": "capture-integration-knowledge",
+        "ownerUserId": user.user_id,
+        "status": "in_progress",
+    }
+    knowledge = {
+        "id": record["knowledgeId"],
+        "tenantId": user.tenant_id,
+        "knowledgeDbId": "capture-integration-db",
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+    store.upsert("knowledge_dbs", {
+        "id": knowledge["knowledgeDbId"],
+        "tenantId": user.tenant_id,
+        "status": "active",
+    })
     store.upsert("knowledges", knowledge)
     store.upsert("records", record)
-    for field_id, label, items in [
-        ("profile", "基本プロフィール", [("name", "氏名"), ("department", "所属"), ("role", "役職")]),
-        ("work", "担当業務", [("task", "主な業務内容")]),
-    ]:
-        store.upsert("knowledge_fields", {
-            "id": field_id, "tenantId": user.tenant_id, "knowledgeId": knowledge["id"],
-            "name": label, "askByAi": True, "required": True,
-            "questionPlan": {"requiredItems": [{"itemId": key, "label": name} for key, name in items]},
-        })
-    transcripts = [
-        [("assistant", "お名前、所属、役職を教えてください。"), ("user", "田中太郎です。開発部です。")],
-        [("assistant", "役職を教えてください。"), ("user", "課長です。")],
-        [("assistant", "担当業務を教えてください。"), ("user", "品質管理を担当しています。それと訂正します。役職は課長ではなく部長です。")],
-    ]
-    for revision, fragments in enumerate(transcripts, 1):
-        started = monotonic()
-        result = process_live_capture(LiveCaptureCreate(
-            record_id=record["id"], capture_id="smoke", revision=revision,
-            fragments=[{"role": role, "text": text} for role, text in fragments],
-        ), record=record, knowledge=knowledge, user=user)
-        print(f"live_capture_smoke revision={revision} elapsed_seconds={monotonic() - started:.2f}")
-        if revision == 1:
-            assert result["interviewState"]["fieldStates"]["profile"]["answerState"] != "CONFIRMED"
-            assert next(field for field in result["checklist"] if field["id"] == "profile")["missing_required_items"] == ["役職"]
-    fields = result["interviewState"]["fieldStates"]
-    assert all(field["answerState"] == "CONFIRMED" for field in fields.values())
-    assert "田中" in fields["profile"]["recordAnswer"]
-    assert "開発部" in fields["profile"]["recordAnswer"]
-    assert "部長" in fields["profile"]["recordAnswer"]
-    assert "課長" not in fields["profile"]["recordAnswer"]
-    assert "品質管理" in fields["work"]["recordAnswer"]
+    store.upsert("knowledge_fields", {
+        "id": "capture-integration-field",
+        "tenantId": user.tenant_id,
+        "knowledgeId": knowledge["id"],
+        "name": "プロフィール",
+        "required": True,
+        "askByAi": True,
+        "questionPlan": {
+            "requiredItems": [{"itemId": "name", "label": "名前"}],
+        },
+    })
+    monkeypatch.setattr(capture_service, "evaluate_completion", lambda *_args, **_kwargs: {
+        "complete": False,
+        "closingRequired": False,
+        "missingRequiredTargets": [],
+        "pendingConfirmationTargets": [],
+        "unknownApplicabilityTopics": [],
+        "unresolvedContradictionIds": [],
+    })
+
+    payload = LiveCaptureCreate(
+        record_id=record["id"],
+        capture_id="capture-integration-session",
+        revision=1,
+        fragments=[{"role": "user", "text": "田中です。"}],
+    )
+    capture_service.receive_live_capture(
+        payload,
+        record=record,
+        knowledge=knowledge,
+        user=user,
+    )
+
+    consume_pending_captures()
+
+    receipt = store.list("messages", user.tenant_id)[0]
+    assert receipt["liveCaptureApplied"] is True
+    assert receipt["liveSemanticSource"] == "responses_delegation"
+    state = store.get(
+        "interview_states",
+        "interview-state-capture-integration-record",
+    )
+    assert state is not None
+    assert state["lastAnswerStatus"] is None
+    assert state["lastAspectAssessments"] == []
+    assert state["questionAnswers"] == {}

@@ -32,6 +32,12 @@ def test_live_capture_status_requires_authentication() -> None:
     assert any(dependency.call is get_current_user for dependency in route.dependant.dependencies)
 
 
+def test_live_state_update_requires_authentication() -> None:
+    route = next(route for route in router.routes if route.path == "/api/live/state-updates")
+    assert route.methods == {"POST"}
+    assert any(dependency.call is get_current_user for dependency in route.dependant.dependencies)
+
+
 @pytest.mark.parametrize("denied_stage", ["record_scope", "record_permission", "knowledge_access"])
 def test_live_capture_checks_permissions_before_llm(monkeypatch, denied_stage) -> None:
     def deny():

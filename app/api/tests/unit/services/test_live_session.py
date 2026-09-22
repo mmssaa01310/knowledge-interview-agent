@@ -117,6 +117,8 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
         interview_context={
             "fields": [
                 {
+                    "id": "field-profile",
+                    "question_id": "live-field-field-profile",
                     "label": "基本プロフィール",
                     "required_items": [{"label": "お名前"}, {"label": "所属"}],
                     "missing_required_items": ["お名前", "所属"],
@@ -135,16 +137,27 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
         },
     )
 
-    assert captured["session"]["delegation"] == {"type": "client"}
+    delegation = captured["session"]["delegation"]
+    assert delegation["type"] == "responses"
+    assert delegation["responses"]["model"] == "gpt-5.6-terra"
+    assert delegation["responses"]["tool_choice"] == {
+        "type": "function",
+        "name": "update_interview_state",
+    }
+    assert delegation["responses"]["tools"][0]["name"] == "update_interview_state"
+    assert "next_action" not in delegation["responses"]["tools"][0]["parameters"]["properties"]
+    assert "質問本文" not in delegation["responses"]["instructions"]
     assert "基本プロフィール" in captured["session"]["instructions"]
+    assert "question_id=live-field-field-profile" in captured["session"]["instructions"]
     assert "お名前、所属" in captured["session"]["instructions"]
-    assert "without waiting for the application result" in captured["session"]["instructions"]
+    assert "sole interviewer" in captured["session"]["instructions"]
     assert "not CONFIRMED" in captured["session"]["instructions"]
     assert "Never close the interview" in captured["session"]["instructions"]
     assert "Unconfirmed candidate: 候補の回答" in captured["session"]["instructions"]
     assert "PLMは製品ライフサイクル管理を指す。" in captured["session"]["instructions"]
     assert "glossary" in captured["session"]["instructions"]
     assert "After delegation, wait" not in captured["session"]["instructions"]
+    assert "Every substantive answer must be delegated once" in captured["session"]["instructions"]
 
 
 def test_create_live_session_requires_server_key(monkeypatch) -> None:
