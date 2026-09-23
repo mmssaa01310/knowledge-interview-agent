@@ -119,6 +119,18 @@ Level 3のTelemetryは`audioInputMode=fake_microphone_wav`、`transcriptSource=g
 実APIを無効にしたまま、Jevだけを有効にするためです。旧`JEV_API_URL` / `JEV_API_KEY`も
 互換経路として利用できますが、TypeSafe設定がない場合のフォールバックです。
 
+### Evidence-driven Self-Healing
+
+Level 2だけの失敗は修正対象にしません。`voice-self-heal`は、Level 2結果とLevel 3実GPT Live結果が同じEvidence Packageにあり、seed、WAV、transcript、Interview State、timeline、console/network/DataChannel、screenshot、Playwright trace、replay commandが揃っている場合だけ`CONFIRMED_FAIL`として受理します。
+
+受理後の検証順序は、Unit → Integration → 同じseedのLevel 2 replay → 同じseed・同じWAVのLevel 3 replay → Level 1/2全回帰 → Jev再探索です。修正前のCodex callbackには、症状、根本原因仮説、根拠、関連コード、修正方針、回帰リスクの提示と、コード上で仮説を確認したことが必要です。3回の修正、1 Failureあたり2回のLevel 3 replayを上限とし、満たせない場合は`MANUAL_REVIEW_REQUIRED`で停止します。
+
+実行入口:
+
+    pnpm voice-self-heal -- --evidence /absolute/path/to/level3/session-1/evidence
+
+既定のCLIは修正callbackを持たないため、Evidenceの検証とFailure ID発行後に`MANUAL_REVIEW_REQUIRED`で停止します。ファイル編集、shell実行、git commit、git push、PR mergeは自動では行いません。履歴はEvidenceの親ディレクトリに`failure-history.json`として保存されます。
+
 ## 実行方法
 
 Playwright依存を取得したあと、APIとWebを別途起動して実行できます。
