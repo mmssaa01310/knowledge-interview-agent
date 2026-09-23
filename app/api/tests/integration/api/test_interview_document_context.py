@@ -187,7 +187,10 @@ def test_direct_prior_knowledge_reaches_question_and_answer_interpretation() -> 
     user = DEV_TOKENS["dev-manager"]
     record, knowledge, _ = _seed_interview_context(
         user,
-        profile="business_process",
+        # retrievalPolicy is a configured-field setting.  The
+        # business_process profile asks ProcessState targets instead, so its
+        # process.scope question does not inherit this field-level policy.
+        profile="fixed_form",
         retrieval_policy="never",
     )
     prior_document = {
