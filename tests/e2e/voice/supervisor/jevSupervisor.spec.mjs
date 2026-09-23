@@ -127,6 +127,40 @@ test("Jev returns a structured decision and caches the same state", async () => 
   expect(guard.snapshot().jevCalls).toBe(1);
 });
 
+test("Jev receives behavior expectations and observed outcomes", () => {
+  const testConfig = config();
+  const guard = new VoiceCostGuard(testConfig);
+  guard.startSession();
+  const supervisor = new JevSupervisor({
+    config: testConfig,
+    guard,
+    sessionId: "expectation-input-session",
+    typeSafeApiKey: "typesafe-test-key",
+  });
+  const requestInput = supervisor.buildInput({
+    ...input(),
+    expectations: {
+      transcriptFinal: "not_required",
+      answerPersistence: "must_not",
+      questionAdvance: "must_not",
+      assistantRecovery: "observe",
+    },
+    observed: {
+      transcriptFinal: false,
+      answerPersisted: false,
+      questionAdvanced: false,
+      assistantResponseStarted: true,
+    },
+    expectationResult: "PASS",
+    expectationViolations: [],
+  });
+
+  expect(requestInput.expectations.answerPersistence).toBe("must_not");
+  expect(requestInput.observed.transcriptFinal).toBe(false);
+  expect(requestInput.expectationResult).toBe("PASS");
+  expect(requestInput.expectationViolations).toEqual([]);
+});
+
 test("TypeSafe Jev sends named choice questions and normalizes the response", async () => {
   clearJevSupervisorCache();
   const testConfig = config({ maxJevCalls: 5 });

@@ -9,6 +9,8 @@ export const ANOMALIES = Object.freeze({
   WEBSOCKET_ERROR: "WEBSOCKET_ERROR",
   DATACHANNEL_ERROR: "DATACHANNEL_ERROR",
   API_5XX: "API_5XX",
+  UNEXPECTED_ANSWER_PERSISTED: "UNEXPECTED_ANSWER_PERSISTED",
+  UNEXPECTED_QUESTION_ADVANCE: "UNEXPECTED_QUESTION_ADVANCE",
 });
 
 function hasText(value) {
@@ -37,17 +39,21 @@ export function detectTurnAnomalies({
   responseIds = [],
   eventTypes = [],
   responseStarted = true,
+  responseTimeoutRequired = true,
   committedBeforeFinal = false,
   apiStatuses = [],
   dataChannelErrors = [],
   questionShouldAdvance = false,
   questionAdvanced = null,
   expectAnswerPersistence = true,
+  transcriptFinalRequired = true,
   allowRepeatedQuestion = false,
 }) {
   const anomalies = [];
   const answer = extractFieldAnswer(state, fieldId);
-  if (!hasText(finalText)) anomalies.push(ANOMALIES.TRANSCRIPT_FINAL_MISSING);
+  if (transcriptFinalRequired && !hasText(finalText)) {
+    anomalies.push(ANOMALIES.TRANSCRIPT_FINAL_MISSING);
+  }
   if (expectAnswerPersistence && hasText(finalText)
     && !hasText(answer.candidate) && !hasText(answer.confirmed)
     && !["CONFIRMED", "ANSWERED"].includes(answer.answerState)) {
@@ -65,7 +71,9 @@ export function detectTurnAnomalies({
   const ids = responseIds.filter(hasText);
   if (new Set(ids).size !== ids.length) anomalies.push(ANOMALIES.DUPLICATE_RESPONSE);
   if (committedBeforeFinal) anomalies.push(ANOMALIES.TURN_COMMITTED_TOO_EARLY);
-  if (!responseStarted) anomalies.push(ANOMALIES.RESPONSE_TIMEOUT);
+  if (responseTimeoutRequired && !responseStarted) {
+    anomalies.push(ANOMALIES.RESPONSE_TIMEOUT);
+  }
   if (eventTypes.some((type) => /websocket|transport\.closed/i.test(type))) {
     anomalies.push(ANOMALIES.WEBSOCKET_ERROR);
   }

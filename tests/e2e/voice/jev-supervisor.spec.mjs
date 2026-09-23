@@ -61,9 +61,19 @@ function emptyJev(callCount, provider = null) {
   };
 }
 
+function fieldAnswerIsPersisted(field) {
+  return Boolean(
+    field?.candidateAnswer
+    || field?.recordAnswer
+    || field?.answer
+    || ["CONFIRMED", "ANSWERED"].includes(field?.answerState),
+  );
+}
+
 function sessionTurnRecord({
   session,
   turn,
+  behavior,
   transcript,
   payload,
   answer,
@@ -83,10 +93,16 @@ function sessionTurnRecord({
     turn,
     audio: { startMs: 0, endMs: 1000, durationMs: 1000 },
     transcription: {
-      partialCount: 1,
+      partialCount: transcript ? 1 : 0,
       finalText: transcript,
       source: "fake_live_transport",
     },
+    behavior,
+    expectations: hardGate.expectations,
+    observed: hardGate.observed,
+    expectedConditions: hardGate.expectedConditions,
+    expectationResult: hardGate.expectationResult,
+    expectationViolations: hardGate.expectationViolations,
     interview: {
       questionId: payload.question_id,
       candidate: answer.candidateAnswer,
@@ -163,6 +179,12 @@ async function runSession({
       turnIndex: fieldIndex,
       retryCount,
     });
+    const turnExpectations = {
+      ...(fixture.expectations ?? {}),
+      ...(isRetry && fixture.expectations?.questionAdvance === "required"
+        ? { questionAdvance: "must_not" }
+        : {}),
+    };
     const nextField = !isRetry && fixture.expectedQuestionTransition
       ? fields[fieldIndex + 1] ?? null
       : null;
@@ -247,17 +269,27 @@ async function runSession({
 
     const persistedResponse = await updateResponse;
     expect(persistedResponse.status()).toBe(200);
+    const responseWaitOptions = turnExpectations.assistantRecovery === "observe"
+      ? { timeout: 1_500 }
+      : { timeout: 5_000 };
     await page.waitForFunction(
       ({ turnId }) => window.__kikioriVoiceTest?.serverEvents?.some(
         (item) => item.event?.type === "assistant_speech_started"
           && item.event?.turn_id === turnId,
       ),
       { turnId: payload.turn_id },
-    );
+      responseWaitOptions,
+    ).catch((error) => {
+      if (turnExpectations.assistantRecovery === "observe") return null;
+      throw error;
+    });
     state = await fetchInterviewState(request);
     session.state = state;
     const after = state.interviewState;
+    const beforeField = before.fieldStates?.[field.id] ?? {};
     const answer = after.fieldStates?.[field.id] ?? {};
+    const answerPersistedBefore = fieldAnswerIsPersisted(beforeField);
+    const answerPersistedAfter = fieldAnswerIsPersisted(answer);
     const diagnostics = await readFakeLiveDiagnostics(page);
     const turnEvents = diagnostics.events.filter(
       (item) => item.event?.turn_id === payload.turn_id,
@@ -269,7 +301,16 @@ async function runSession({
       .filter((item) => item.event?.type === "response.created")
       .map((item) => item.event?.response?.id ?? item.event?.response_id)
       .filter(Boolean);
-    const questionAdvanced = assistantStartedEvent?.event?.question_id
+    const assistantQuestionId = assistantStartedEvent?.event?.question_id ?? null;
+    const questionAdvanced = Boolean(
+      (assistantQuestionId && assistantQuestionId !== payload.question_id)
+      || (
+        after.currentQuestionId
+        && after.currentQuestionId !== payload.question_id
+        && after.currentQuestionId !== before.currentQuestionId
+      ),
+    );
+    const assistantQuestionMatchesExpectation = assistantStartedEvent?.event?.question_id
       === expectedAssistantQuestion.id;
     const simulatedTurnLatencyMs = assistantStartedEvent
       ? Math.max(0, assistantStartedEvent.timestampMs - finalEvent.timestampMs)
@@ -297,6 +338,7 @@ async function runSession({
       sourceTimestampMs: assistantStartedEvent?.timestampMs ?? null,
       nextQuestionId: expectedAssistantQuestion.id,
       nextQuestionText: expectedAssistantQuestion.text,
+      assistantQuestionMatchesExpectation,
       simulatedTurnLatencyMs,
     });
 
@@ -321,6 +363,9 @@ async function runSession({
       questionAdvanced,
       expectAnswerPersistence: fixture.expectAnswerPersistence !== false,
       allowRepeatedQuestion: isRetry,
+      expectations: turnExpectations,
+      answerPersistedBefore,
+      answerPersistedThisTurn: answerPersistedAfter && !answerPersistedBefore,
     });
     telemetry.event("hard_gate", {
       turn,
@@ -328,6 +373,9 @@ async function runSession({
       sessionIndex: session.index,
       status: hardGate.status,
       codes: hardGate.codes,
+      expectationResult: hardGate.expectationResult,
+      expectationViolations: hardGate.expectationViolations,
+      observed: hardGate.observed,
     });
 
     let jev = emptyJev(guard.snapshot().jevCalls, supervisor.provider);
@@ -335,6 +383,7 @@ async function runSession({
       const turnRecord = sessionTurnRecord({
         session,
         turn,
+        behavior: fixture.behavior,
         transcript,
         payload,
         answer,
@@ -353,6 +402,7 @@ async function runSession({
         behavior: fixture.behavior,
         jev,
         hardGate,
+        turnRecord,
       });
       session.path.push({
         turn,
@@ -367,6 +417,7 @@ async function runSession({
       const turnRecord = sessionTurnRecord({
         session,
         turn,
+        behavior: fixture.behavior,
         transcript,
         payload,
         answer,
@@ -385,6 +436,7 @@ async function runSession({
         behavior: fixture.behavior,
         jev,
         hardGate,
+        turnRecord,
       });
       session.path.push({
         turn,
@@ -430,6 +482,11 @@ async function runSession({
         simulatedTurnLatencyMs,
         anomalies: hardGate.anomalies,
       },
+      expectations: hardGate.expectations,
+      observed: hardGate.observed,
+      expectedConditions: hardGate.expectedConditions,
+      expectationResult: hardGate.expectationResult,
+      expectationViolations: hardGate.expectationViolations,
     });
     jev = await supervisor.decideAfterTurn({ hardGate, input });
     telemetry.event("jev_decision", {
@@ -438,9 +495,10 @@ async function runSession({
       sessionIndex: session.index,
       ...jev,
     });
-    telemetry.recordTurn(sessionTurnRecord({
+    const turnRecord = sessionTurnRecord({
       session,
       turn,
+      behavior: fixture.behavior,
       transcript,
       payload,
       answer,
@@ -453,12 +511,14 @@ async function runSession({
       jev,
       turnTimeline,
       supervisorInput: input,
-    }));
+    });
+    telemetry.recordTurn(turnRecord);
     recordExplorationTurn(summary, {
       session,
       behavior: fixture.behavior,
       jev,
       hardGate,
+      turnRecord,
     });
     session.path.push({
       turn,
@@ -514,6 +574,13 @@ test.describe("voice E2E Jev Supervisor", () => {
     page,
     request,
   }, testInfo) => {
+    // The exploration is deliberately bounded by VoiceCostGuard, but the
+    // default Playwright timeout is too short for the configured multi-session
+    // Jev run. Derive a finite timeout from those same caps.
+    test.setTimeout(Math.max(
+      45_000,
+      30_000 + config.maxSessions * config.maxTurnsPerSession * 30_000,
+    ));
     const guard = new VoiceCostGuard(config);
     for (let retry = 0; retry < testInfo.retry; retry += 1) guard.recordRetry();
     clearJevSupervisorCache();

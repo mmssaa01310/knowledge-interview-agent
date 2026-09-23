@@ -294,6 +294,11 @@ export class JevSupervisor {
     errors = [],
     interviewState,
     telemetry,
+    expectations = null,
+    observed = null,
+    expectedConditions = [],
+    expectationResult = null,
+    expectationViolations = [],
   }) {
     return {
       task: "kikiori_voice_test_supervisor",
@@ -313,6 +318,11 @@ export class JevSupervisor {
       remainingTurns,
       remainingJevCalls,
       errors: [...errors],
+      expectations: expectations ?? null,
+      observed: observed ?? null,
+      expectedConditions: [...expectedConditions],
+      expectationResult: expectationResult ?? null,
+      expectationViolations: [...expectationViolations],
       interviewState: compactInterviewState(interviewState),
       telemetry: telemetry ?? null,
       criteria: [...JEV_SUPERVISOR_CRITERIA],

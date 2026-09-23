@@ -38,6 +38,12 @@ export function readVoiceTestConfig(env = process.env) {
     maxJevCallsTotal,
     maxLlmJudgeCalls: integerEnv(env.VOICE_TEST_MAX_LLM_JUDGE_CALLS, 5),
     maxRetries: integerEnv(env.VOICE_TEST_MAX_RETRIES, jevMode ? 0 : 1),
+    maxLevel3Sessions: integerEnv(env.VOICE_TEST_MAX_LEVEL3_SESSIONS, 5),
+    maxLevel3TurnsPerSession: integerEnv(env.VOICE_TEST_MAX_LEVEL3_TURNS_PER_SESSION, 6),
+    maxLevel3Retries: integerEnv(env.VOICE_TEST_MAX_LEVEL3_RETRIES, 0),
+    level2SummaryPath: env.VOICE_TEST_LEVEL2_SUMMARY
+      ? path.resolve(env.VOICE_TEST_LEVEL2_SUMMARY)
+      : null,
     seed: integerEnv(env.VOICE_TEST_SEED, 38291),
     agentMode,
     scenario: env.VOICE_TEST_SCENARIO || "NORMAL",

@@ -45,3 +45,17 @@ export function ensureVoiceFixtureWav(
   }
   return outputPath;
 }
+
+export function readWavDurationSeconds(filePath) {
+  const buffer = fs.readFileSync(path.resolve(filePath));
+  if (buffer.length < 44 || buffer.toString("ascii", 0, 4) !== "RIFF"
+    || buffer.toString("ascii", 8, 12) !== "WAVE") {
+    throw new Error("VOICE_TEST_AUDIO_FIXTURE is not a RIFF/WAVE file: " + filePath);
+  }
+  const byteRate = buffer.readUInt32LE(28);
+  const dataSize = buffer.readUInt32LE(40);
+  if (!byteRate || !dataSize) {
+    throw new Error("VOICE_TEST_AUDIO_FIXTURE has no measurable PCM duration: " + filePath);
+  }
+  return dataSize / byteRate;
+}

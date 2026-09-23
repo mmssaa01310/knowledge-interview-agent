@@ -11,6 +11,9 @@ export class VoiceTelemetry {
     audioInputMode = "unknown",
     transcriptSource = "unknown",
     liveApiUsed = false,
+    level = null,
+    audioFixturePath = null,
+    promotionCandidate = null,
   }) {
     this.outputDir = outputDir;
     this.sessionId = sessionId;
@@ -20,6 +23,9 @@ export class VoiceTelemetry {
     this.audioInputMode = audioInputMode;
     this.transcriptSource = transcriptSource;
     this.liveApiUsed = liveApiUsed;
+    this.level = level;
+    this.audioFixturePath = audioFixturePath;
+    this.promotionCandidate = promotionCandidate;
     this.timeline = [];
     this.turns = [];
     this.transcripts = [];
@@ -34,10 +40,18 @@ export class VoiceTelemetry {
   }
 
   event(name, detail = {}) {
-    const item = { timestampMs: Date.now(), event: name, ...detail };
+    return this.eventAt(name, Date.now(), detail);
+  }
+
+  eventAt(name, timestampMs, detail = {}) {
+    const item = { timestampMs, event: name, ...detail };
     this.timeline.push(item);
     fs.appendFileSync(this.jsonlPath, JSON.stringify(item) + "\n", "utf8");
     return item;
+  }
+
+  setLiveTrace(entries) {
+    this.liveTrace = Array.isArray(entries) ? entries : [];
   }
 
   error(error) {
@@ -72,6 +86,7 @@ export class VoiceTelemetry {
       resourceType: entry?.resourceType ?? null,
       status: entry?.status ?? null,
       failure: entry?.failure ?? null,
+      expectedCancellation: Boolean(entry?.expectedCancellation),
       timestampMs: entry?.timestampMs ?? Date.now(),
     };
     this.networkLog.push(item);
@@ -119,6 +134,12 @@ export class VoiceTelemetry {
         finalText: turn.transcription?.finalText ?? "",
         source: turn.transcription?.source ?? this.transcriptSource,
       },
+      behavior: turn.behavior ?? null,
+      expectations: turn.expectations ?? null,
+      observed: turn.observed ?? null,
+      expectedConditions: turn.expectedConditions ?? [],
+      expectationResult: turn.expectationResult ?? null,
+      expectationViolations: turn.expectationViolations ?? [],
       interview: {
         questionId: turn.interview?.questionId ?? null,
         candidate: turn.interview?.candidate ?? null,
@@ -133,9 +154,15 @@ export class VoiceTelemetry {
       },
       response: {
         assistantSpeechStarted: turn.response?.assistantSpeechStarted ?? false,
+        assistantSpeechEnded: turn.response?.assistantSpeechEnded ?? false,
+        assistantTranscript: turn.response?.assistantTranscript ?? null,
         simulatedTurnLatencyMs: turn.response?.simulatedTurnLatencyMs ?? null,
         firstAudioLatencyMs: turn.response?.firstAudioLatencyMs ?? null,
+        speechEndToTranscriptFinalMs: turn.response?.speechEndToTranscriptFinalMs ?? null,
+        transcriptFinalToAssistantStartMs: turn.response?.transcriptFinalToAssistantStartMs ?? null,
+        speechEndToAssistantStartMs: turn.response?.speechEndToAssistantStartMs ?? null,
       },
+      realTiming: turn.realTiming ?? null,
       hardGate: {
         status: turn.hardGate?.status ?? null,
         codes: turn.hardGate?.codes ?? [],
@@ -170,6 +197,9 @@ export class VoiceTelemetry {
       audioInputMode: this.audioInputMode,
       transcriptSource: this.transcriptSource,
       liveApiUsed: this.liveApiUsed,
+      level: this.level,
+      audioFixturePath: this.audioFixturePath,
+      promotionCandidate: this.promotionCandidate,
       turns: this.turns,
       transcripts: this.transcripts,
       timeline: this.timeline,
@@ -178,6 +208,7 @@ export class VoiceTelemetry {
       consoleLogs: this.consoleLogs,
       networkLog: this.networkLog,
       dataChannelErrors: this.dataChannelErrors,
+      liveTrace: this.liveTrace ?? [],
       costGuard: this.costGuard?.snapshot() ?? null,
       jsonlPath: this.jsonlPath,
     };
@@ -190,12 +221,22 @@ export async function writeEvidencePackage({
   telemetry,
   state,
   networkErrors = [],
+  audioFixturePath = telemetry?.audioFixturePath ?? null,
+  comparison = null,
+  assistantResponse = null,
+  replayCommand = null,
+  candidate = telemetry?.promotionCandidate ?? null,
+  evidenceDir: requestedEvidenceDir = null,
 }) {
-  const evidenceDir = testInfo.outputPath("evidence");
+  const evidenceDir = requestedEvidenceDir || testInfo.outputPath("evidence");
   fs.mkdirSync(evidenceDir, { recursive: true });
   const snapshot = telemetry.snapshot();
   fs.writeFileSync(path.join(evidenceDir, "telemetry.json"), JSON.stringify(snapshot, null, 2));
   fs.writeFileSync(path.join(evidenceDir, "interview-state.json"), JSON.stringify(state ?? null, null, 2));
+  fs.writeFileSync(path.join(evidenceDir, "promotion-candidate.json"), JSON.stringify(candidate, null, 2));
+  fs.writeFileSync(path.join(evidenceDir, "comparison.json"), JSON.stringify(comparison, null, 2));
+  fs.writeFileSync(path.join(evidenceDir, "assistant-response.json"), JSON.stringify(assistantResponse, null, 2));
+  fs.writeFileSync(path.join(evidenceDir, "audio-fixture-path.txt"), String(audioFixturePath ?? "") + "\n");
   fs.writeFileSync(path.join(evidenceDir, "network-errors.json"), JSON.stringify(networkErrors, null, 2));
   fs.writeFileSync(path.join(evidenceDir, "network-log.json"), JSON.stringify(snapshot.networkLog, null, 2));
   fs.writeFileSync(path.join(evidenceDir, "console-errors.json"), JSON.stringify(snapshot.consoleErrors, null, 2));
@@ -219,13 +260,18 @@ export async function writeEvidencePackage({
     ),
   );
   fs.writeFileSync(path.join(evidenceDir, "timeline.json"), JSON.stringify(snapshot.timeline, null, 2));
+  fs.writeFileSync(path.join(evidenceDir, "live-trace.json"), JSON.stringify(snapshot.liveTrace ?? [], null, 2));
+  fs.writeFileSync(
+    path.join(evidenceDir, "state-timeline.json"),
+    JSON.stringify(snapshot.timeline.filter((item) => /state|question|answer/i.test(item.event)), null, 2),
+  );
   fs.writeFileSync(
     path.join(evidenceDir, "playwright-trace-path.txt"),
     path.join(testInfo.outputDir, "trace.zip") + "\n",
   );
   fs.writeFileSync(
     path.join(evidenceDir, "replay-command.txt"),
-    "pnpm voice-test -- --replay " + telemetry.seed + "\n",
+    (replayCommand || ("pnpm voice-test -- --replay " + telemetry.seed)) + "\n",
   );
   if (page && !page.isClosed()) {
     await page.screenshot({

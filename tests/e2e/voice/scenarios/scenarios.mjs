@@ -55,22 +55,94 @@ export const JEV_BEHAVIOR_FIXTURES = Object.freeze({
   ]),
 });
 
+// Expectations describe what the application should do for a behavior. They
+// are intentionally separate from the fixture text: an empty SILENCE fixture
+// is a valid test input, not a missing test case.
+export const JEV_BEHAVIOR_EXPECTATIONS = Object.freeze({
+  NORMAL: Object.freeze({
+    transcriptFinal: "required",
+    answerPersistence: "required",
+    questionAdvance: "required",
+    assistantRecovery: "required",
+  }),
+  HESITATE: Object.freeze({
+    transcriptFinal: "required",
+    answerPersistence: "required",
+    questionAdvance: "required",
+    assistantRecovery: "required",
+  }),
+  SELF_CORRECT: Object.freeze({
+    transcriptFinal: "required",
+    answerPersistence: "required",
+    questionAdvance: "required",
+    correction: "corrected_value_required",
+    assistantRecovery: "required",
+  }),
+  MULTI_ANSWER: Object.freeze({
+    transcriptFinal: "required",
+    answerPersistence: "required",
+    questionAdvance: "optional",
+    informationPreservation: "required",
+    assistantRecovery: "required",
+  }),
+  AMBIGUOUS: Object.freeze({
+    transcriptFinal: "required",
+    answerPersistence: "optional",
+    questionAdvance: "optional",
+    assistantRecovery: "required",
+  }),
+  ASK_CLARIFICATION: Object.freeze({
+    transcriptFinal: "required",
+    answerPersistence: "not_required",
+    questionAdvance: "not_required",
+    assistantRecovery: "required",
+  }),
+  SILENCE: Object.freeze({
+    transcriptFinal: "not_required",
+    answerPersistence: "must_not",
+    questionAdvance: "must_not",
+    assistantRecovery: "observe",
+  }),
+});
+
 export const JEV_BEHAVIOR_OUTCOMES = Object.freeze({
-  NORMAL: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
-  HESITATE: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
-  SELF_CORRECT: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
-  AMBIGUOUS: Object.freeze({ answerStatus: "PARTIAL", expectedQuestionTransition: false }),
+  NORMAL: Object.freeze({
+    answerStatus: "ANSWERED",
+    expectedQuestionTransition: true,
+    expectations: JEV_BEHAVIOR_EXPECTATIONS.NORMAL,
+  }),
+  HESITATE: Object.freeze({
+    answerStatus: "ANSWERED",
+    expectedQuestionTransition: true,
+    expectations: JEV_BEHAVIOR_EXPECTATIONS.HESITATE,
+  }),
+  SELF_CORRECT: Object.freeze({
+    answerStatus: "ANSWERED",
+    expectedQuestionTransition: true,
+    expectations: JEV_BEHAVIOR_EXPECTATIONS.SELF_CORRECT,
+  }),
+  AMBIGUOUS: Object.freeze({
+    answerStatus: "PARTIAL",
+    expectedQuestionTransition: false,
+    expectations: JEV_BEHAVIOR_EXPECTATIONS.AMBIGUOUS,
+  }),
   ASK_CLARIFICATION: Object.freeze({
     answerStatus: "NOT_ANSWERED",
     expectedQuestionTransition: false,
     expectAnswerPersistence: false,
+    expectations: JEV_BEHAVIOR_EXPECTATIONS.ASK_CLARIFICATION,
   }),
   SILENCE: Object.freeze({
     answerStatus: "NOT_ANSWERED",
     expectedQuestionTransition: false,
     expectAnswerPersistence: false,
+    expectations: JEV_BEHAVIOR_EXPECTATIONS.SILENCE,
   }),
-  MULTI_ANSWER: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
+  MULTI_ANSWER: Object.freeze({
+    answerStatus: "ANSWERED",
+    expectedQuestionTransition: true,
+    expectations: JEV_BEHAVIOR_EXPECTATIONS.MULTI_ANSWER,
+  }),
 });
 
 const RETRY_NORMAL_FIXTURES = Object.freeze([

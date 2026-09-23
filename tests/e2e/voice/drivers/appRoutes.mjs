@@ -57,22 +57,30 @@ export function observePageNetwork(page, telemetry) {
   });
 
   page.on("requestfailed", (request) => {
+    const failure = request.failure()?.errorText || "unknown";
+    const expectedCancellation = /ERR_ABORTED|aborted/i.test(failure);
     const item = {
       url: request.url(),
       method: request.method(),
-      failure: request.failure()?.errorText || "unknown",
+      failure,
+      expectedCancellation,
       timestampMs: now(),
     };
-    errors.push(item);
     telemetry.networkEvent({
       direction: "request_failed",
       method: item.method,
       url: item.url,
       resourceType: request.resourceType(),
       failure: item.failure,
+      expectedCancellation,
       timestampMs: item.timestampMs,
     });
-    telemetry.error(item.failure);
+    if (expectedCancellation) {
+      telemetry.event("expected_request_cancellation", item);
+    } else {
+      errors.push(item);
+      telemetry.error(item.failure);
+    }
   });
   page.on("response", (response) => {
     const item = {

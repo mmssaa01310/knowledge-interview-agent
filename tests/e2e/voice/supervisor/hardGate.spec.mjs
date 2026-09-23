@@ -88,3 +88,94 @@ test("the Jev call limit stops before another Jev call", () => {
   expect(result.shouldCallJev).toBe(false);
   expect(result.codes).toEqual([HARD_GATE_STOP_CODES.MAX_JEV_CALLS_EXCEEDED]);
 });
+
+test("intentional SILENCE accepts a missing final and keeps the current question", () => {
+  const result = evaluateHardGate({
+    ...base,
+    finalText: "",
+    state: {
+      currentQuestionId: "q-001",
+      fieldStates: { field: { answerState: "UNANSWERED" } },
+    },
+    questionShouldAdvance: false,
+    questionAdvanced: false,
+    expectAnswerPersistence: false,
+    expectations: {
+      transcriptFinal: "not_required",
+      answerPersistence: "must_not",
+      questionAdvance: "must_not",
+      assistantRecovery: "observe",
+    },
+    answerPersistedBefore: false,
+    answerPersistedThisTurn: false,
+  });
+
+  expect(result.status).toBe("PASS");
+  expect(result.shouldCallJev).toBe(true);
+  expect(result.expectationResult).toBe("PASS");
+  expect(result.observed.transcriptFinal).toBe(false);
+  expect(result.expectedConditions).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      name: "transcript_final",
+      expectedCondition: true,
+      satisfied: true,
+    }),
+  ]));
+  expect(result.codes).not.toContain(ANOMALIES.TRANSCRIPT_FINAL_MISSING);
+});
+
+test("SILENCE fails when it unexpectedly persists an answer or advances", () => {
+  const result = evaluateHardGate({
+    ...base,
+    finalText: "",
+    state: {
+      currentQuestionId: "q-002",
+      fieldStates: { field: { answerState: "CONFIRMED", recordAnswer: "回答" } },
+    },
+    questionShouldAdvance: false,
+    questionAdvanced: true,
+    expectAnswerPersistence: false,
+    expectations: {
+      transcriptFinal: "not_required",
+      answerPersistence: "must_not",
+      questionAdvance: "must_not",
+      assistantRecovery: "observe",
+    },
+    answerPersistedBefore: false,
+    answerPersistedThisTurn: true,
+  });
+
+  expect(result.status).toBe("FAIL");
+  expect(result.shouldCallJev).toBe(false);
+  expect(result.codes).toEqual(expect.arrayContaining([
+    ANOMALIES.UNEXPECTED_ANSWER_PERSISTED,
+    ANOMALIES.UNEXPECTED_QUESTION_ADVANCE,
+  ]));
+  expect(result.expectationResult).toBe("FAIL");
+});
+
+test("optional ambiguity does not fail for a valid but unpersisted answer", () => {
+  const result = evaluateHardGate({
+    ...base,
+    finalText: "そのあたりを色々やっています。",
+    state: {
+      currentQuestionId: "q-001",
+      fieldStates: { field: { answerState: "UNANSWERED" } },
+    },
+    questionShouldAdvance: false,
+    questionAdvanced: false,
+    expectAnswerPersistence: false,
+    expectations: {
+      transcriptFinal: "required",
+      answerPersistence: "optional",
+      questionAdvance: "optional",
+      assistantRecovery: "required",
+    },
+    answerPersistedBefore: false,
+    answerPersistedThisTurn: false,
+  });
+
+  expect(result.status).toBe("PASS");
+  expect(result.expectationResult).toBe("PASS");
+  expect(result.expectationViolations).toEqual([]);
+});
