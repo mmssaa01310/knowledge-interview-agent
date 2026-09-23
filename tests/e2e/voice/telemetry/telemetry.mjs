@@ -105,6 +105,7 @@ export class VoiceTelemetry {
   recordTurn(turn) {
     const item = {
       sessionId: this.sessionId,
+      sessionIndex: turn.sessionIndex ?? null,
       turn: turn.turn,
       scenario: this.scenario,
       seed: this.seed,
@@ -147,7 +148,11 @@ export class VoiceTelemetry {
         confidence: turn.jev?.confidence ?? null,
         cacheHit: turn.jev?.cacheHit ?? false,
         callCount: turn.jev?.callCount ?? null,
+        provider: turn.jev?.provider ?? null,
+        model: turn.jev?.model ?? null,
+        usage: turn.jev?.usage ?? null,
       },
+      supervisorInput: turn.supervisorInput ?? null,
       timeline: turn.timeline ?? [],
       errors: turn.errors ?? [],
       anomalies: turn.anomalies ?? [],

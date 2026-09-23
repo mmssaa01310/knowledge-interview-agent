@@ -19,6 +19,9 @@ export const JEV_USER_BEHAVIORS = Object.freeze([
   "MULTI_ANSWER",
 ]);
 
+export const TYPESAFE_DEFAULT_BASE_URL = "https://api.typesafe.ai";
+export const TYPESAFE_DEFAULT_MODEL = "jev-latest";
+
 export const JEV_SUPERVISOR_CRITERIA = Object.freeze([
   "The purpose is to find useful untested failure modes, not to make the test pass.",
   "Prefer a behavior that exercises an untested transition or state.",
@@ -30,6 +33,23 @@ export const JEV_SUPERVISOR_CRITERIA = Object.freeze([
 
 const JEV_CACHE = new Map();
 const JEV_IN_FLIGHT = new Map();
+
+const TYPESAFE_ACTION_CRITERIA = Object.freeze({
+  CONTINUE: "Continue with a normal answer fixture when no untested stress case is more valuable.",
+  STRESS_NEXT: "Advance to the next basic question and apply the selected unusual user behavior.",
+  RETRY_CURRENT: "Keep the current question and apply a different fixture to test the same state boundary.",
+  END_SUCCESS: "End this session because its useful exploration is complete or the budget is nearly exhausted.",
+});
+
+const TYPESAFE_BEHAVIOR_CRITERIA = Object.freeze({
+  NORMAL: "A clear, ordinary answer to the current interview question.",
+  HESITATE: "An answer containing a brief hesitation before a meaningful response.",
+  SELF_CORRECT: "An answer that corrects an initial interpretation or role.",
+  AMBIGUOUS: "A vague answer that is related but leaves semantic coverage uncertain.",
+  ASK_CLARIFICATION: "The user asks what the question means instead of answering it.",
+  SILENCE: "The user produces no usable final transcript; this is a transport or timeout stress case.",
+  MULTI_ANSWER: "The user answers multiple nearby interview aspects in one utterance.",
+});
 
 function stableStringify(value) {
   if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
@@ -83,6 +103,71 @@ function hasOwnText(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function compactInterviewState(state) {
+  if (!state || typeof state !== "object") return state ?? null;
+  const currentQuestionId = state.currentQuestionId ?? null;
+  const fieldEntries = Object.entries(state.fieldStates ?? {});
+  const fieldStates = Object.fromEntries(fieldEntries.map(([fieldId, field]) => {
+    return [fieldId, {
+      fieldId: field?.fieldId ?? fieldId,
+      status: field?.status ?? null,
+      answerState: field?.answerState ?? null,
+      answerStatus: field?.answerStatus ?? null,
+      probeStatus: field?.probeStatus ?? null,
+      probeCount: field?.probeCount ?? 0,
+      missingRequiredItemIds: field?.missingRequiredItemIds ?? [],
+      missingInformation: field?.missingInformation ?? [],
+      hasCandidateAnswer: Boolean(field?.candidateAnswer),
+      hasConfirmedAnswer: Boolean(field?.recordAnswer ?? field?.answer),
+      answer: field?.recordAnswer ?? field?.answer ?? field?.candidateAnswer ?? null,
+    }];
+  }));
+  return {
+    id: state.id ?? null,
+    status: state.status ?? null,
+    stateVersion: state.stateVersion ?? null,
+    currentQuestionId,
+    openIssues: state.openIssues ?? [],
+    fieldStates,
+  };
+}
+
+function typeSafeEndpoint(baseUrl) {
+  const normalized = String(baseUrl || TYPESAFE_DEFAULT_BASE_URL).replace(/\/+$/, "");
+  if (/\/v1\/systemone$/i.test(normalized)) return normalized;
+  if (/\/v1$/i.test(normalized)) return normalized + "/systemone";
+  return normalized + "/v1/systemone";
+}
+
+function buildTypeSafeRequest(input, model) {
+  return {
+    model,
+    state: input,
+    questions: {
+      session_action: {
+        type: "choice",
+        instructions: (
+          "Choose the next test-session action from the allowed values. "
+          + "Optimize for finding untested, state-sensitive KIKIORI failures, "
+          + "not for making the test pass. Consider testedBehaviors, the current "
+          + "Interview State, and remainingTurns/remainingJevCalls."
+        ),
+        criteria: TYPESAFE_ACTION_CRITERIA,
+      },
+      next_user_behavior: {
+        type: "choice",
+        instructions: (
+          "Choose the most useful fixed user behavior for STRESS_NEXT or "
+          + "RETRY_CURRENT. Prefer a behavior not in testedBehaviors and use "
+          + "the current state boundary to decide. This is a label only; do not "
+          + "write transcript text."
+        ),
+        criteria: TYPESAFE_BEHAVIOR_CRITERIA,
+      },
+    },
+  };
+}
+
 function normalizeDecision(payload) {
   const source = payload?.decision && typeof payload.decision === "object"
     ? payload.decision
@@ -118,7 +203,25 @@ function normalizeDecision(payload) {
   };
 }
 
-function decisionResult(decision, { cacheHit, callCount }) {
+function normalizeTypeSafeDecision(payload) {
+  const actionAnswer = payload?.answers?.session_action;
+  const behaviorAnswer = payload?.answers?.next_user_behavior;
+  if (!actionAnswer || typeof actionAnswer.choice !== "string") {
+    throw new Error("TypeSafe response must contain answers.session_action.choice");
+  }
+  const decision = normalizeDecision({
+    session_action: actionAnswer.choice,
+    next_user_behavior: behaviorAnswer?.choice ?? null,
+    confidence: actionAnswer.confidence,
+  });
+  return {
+    ...decision,
+    usage: payload?.usage ?? null,
+    model: payload?.model ?? null,
+  };
+}
+
+function decisionResult(decision, { cacheHit, callCount, provider, model }) {
   return {
     called: true,
     sessionAction: decision.sessionAction,
@@ -126,6 +229,9 @@ function decisionResult(decision, { cacheHit, callCount }) {
     confidence: decision.confidence,
     cacheHit,
     callCount,
+    provider: provider ?? null,
+    model: model ?? decision.model ?? null,
+    usage: decision.usage ?? null,
   };
 }
 
@@ -140,16 +246,34 @@ export class JevSupervisor {
     guard,
     sessionId,
     fetchImpl = fetch,
-    apiUrl = envValue("JEV_API_URL"),
-    apiKey = envValue("JEV_API_KEY"),
+    apiUrl,
+    apiKey,
+    typeSafeApiKey,
+    typeSafeBaseUrl,
+    typeSafeModel,
     timeoutMs = Number(process.env.JEV_API_TIMEOUT_MS || 15_000),
   }) {
+    const explicitLegacyEndpoint = apiUrl !== undefined && apiUrl !== null;
     this.config = config;
     this.guard = guard;
     this.sessionId = sessionId;
     this.fetchImpl = fetchImpl;
-    this.apiUrl = apiUrl;
-    this.apiKey = apiKey;
+    this.apiUrl = apiUrl ?? envValue("JEV_API_URL");
+    this.apiKey = apiKey ?? envValue("JEV_API_KEY");
+    this.typeSafeApiKey = typeSafeApiKey ?? envValue("TYPESAFE_API_KEY");
+    this.typeSafeBaseUrl = hasOwnText(typeSafeBaseUrl)
+      ? typeSafeBaseUrl
+      : envValue("TYPESAFE_BASE_URL") || TYPESAFE_DEFAULT_BASE_URL;
+    this.typeSafeModel = hasOwnText(typeSafeModel)
+      ? typeSafeModel
+      : envValue("TYPESAFE_DEFAULT_MODEL") || TYPESAFE_DEFAULT_MODEL;
+    this.provider = explicitLegacyEndpoint
+      ? "jev_http"
+      : hasOwnText(this.typeSafeApiKey)
+        ? "typesafe"
+        : hasOwnText(this.apiUrl)
+          ? "jev_http"
+          : null;
     this.timeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15_000;
   }
 
@@ -189,7 +313,7 @@ export class JevSupervisor {
       remainingTurns,
       remainingJevCalls,
       errors: [...errors],
-      interviewState: interviewState ?? null,
+      interviewState: compactInterviewState(interviewState),
       telemetry: telemetry ?? null,
       criteria: [...JEV_SUPERVISOR_CRITERIA],
       output_schema: {
@@ -209,6 +333,7 @@ export class JevSupervisor {
         confidence: null,
         cacheHit: false,
         callCount: this.guard.snapshot().jevCalls,
+        provider: this.provider,
         skippedReason: "hard_gate_" + String(hardGate?.status || "unknown").toLowerCase(),
       };
     }
@@ -220,6 +345,7 @@ export class JevSupervisor {
         confidence: null,
         cacheHit: false,
         callCount: this.guard.snapshot().jevCalls,
+        provider: this.provider,
         skippedReason: "agent_mode_not_jev",
       };
     }
@@ -233,11 +359,15 @@ export class JevSupervisor {
         confidence: null,
         cacheHit: false,
         callCount: current.jevCalls,
+        provider: this.provider,
         skippedReason: "max_jev_calls",
       };
     }
-    if (!hasOwnText(this.apiUrl)) {
-      throw new Error("TEST_AGENT_MODE=jev requires JEV_API_URL");
+    if (!this.provider) {
+      throw new Error(
+        "TEST_AGENT_MODE=jev requires TYPESAFE_API_KEY "
+        + "or the legacy JEV_API_URL configuration",
+      );
     }
 
     const cacheInput = Object.fromEntries(
@@ -247,12 +377,18 @@ export class JevSupervisor {
         && key !== "telemetry"
       )),
     );
-    const cacheKey = cacheKeyFor(cacheInput);
+    const cacheKey = cacheKeyFor({
+      provider: this.provider,
+      model: this.provider === "typesafe" ? this.typeSafeModel : null,
+      ...cacheInput,
+    });
     const cached = JEV_CACHE.get(cacheKey);
     if (cached) {
       return decisionResult(cached, {
         cacheHit: true,
         callCount: current.jevCalls,
+        provider: this.provider,
+        model: this.provider === "typesafe" ? this.typeSafeModel : null,
       });
     }
     const inFlight = JEV_IN_FLIGHT.get(cacheKey);
@@ -261,6 +397,8 @@ export class JevSupervisor {
       return decisionResult(decision, {
         cacheHit: true,
         callCount: this.guard.snapshot().jevCalls,
+        provider: this.provider,
+        model: this.provider === "typesafe" ? this.typeSafeModel : null,
       });
     }
 
@@ -268,17 +406,27 @@ export class JevSupervisor {
     const headers = {
       "content-type": "application/json",
       "x-voice-test-cache-key": cacheKey,
+      "x-voice-test-provider": this.provider,
     };
-    if (hasOwnText(this.apiKey)) headers.authorization = "Bearer " + this.apiKey;
+    const authorization = this.provider === "typesafe"
+      ? this.typeSafeApiKey
+      : this.apiKey;
+    if (hasOwnText(authorization)) headers.authorization = "Bearer " + authorization;
+    const requestUrl = this.provider === "typesafe"
+      ? typeSafeEndpoint(this.typeSafeBaseUrl)
+      : this.apiUrl;
+    const requestBody = this.provider === "typesafe"
+      ? buildTypeSafeRequest(input, this.typeSafeModel)
+      : input;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const request = (async () => {
       let response;
       try {
-        response = await this.fetchImpl(this.apiUrl, {
+        response = await this.fetchImpl(requestUrl, {
           method: "POST",
           headers,
-          body: JSON.stringify(input),
+          body: JSON.stringify(requestBody),
           signal: controller.signal,
         });
       } finally {
@@ -288,7 +436,9 @@ export class JevSupervisor {
         throw new Error("Jev request failed: " + (response?.status ?? "unknown"));
       }
       const payload = await response.json();
-      return normalizeDecision(payload);
+      return this.provider === "typesafe"
+        ? normalizeTypeSafeDecision(payload)
+        : normalizeDecision(payload);
     })();
     JEV_IN_FLIGHT.set(cacheKey, request);
     try {
@@ -297,6 +447,8 @@ export class JevSupervisor {
       return decisionResult(decision, {
         cacheHit: false,
         callCount: this.guard.snapshot().jevCalls,
+        provider: this.provider,
+        model: this.provider === "typesafe" ? this.typeSafeModel : null,
       });
     } finally {
       if (JEV_IN_FLIGHT.get(cacheKey) === request) JEV_IN_FLIGHT.delete(cacheKey);

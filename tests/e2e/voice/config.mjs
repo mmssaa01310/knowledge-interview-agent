@@ -21,17 +21,23 @@ export function readVoiceTestConfig(env = process.env) {
     ? "jev"
     : "deterministic";
   const jevMode = agentMode === "jev";
+  const configuredJevCalls = integerEnv(env.VOICE_TEST_MAX_JEV_CALLS, jevMode ? 80 : 20);
+  const maxJevCallsTotal = integerEnv(
+    env.VOICE_TEST_MAX_JEV_CALLS_TOTAL,
+    configuredJevCalls,
+  );
   const config = {
     realApiEnabled: booleanEnv(env.VOICE_TEST_REAL_API_ENABLED, false),
     realProvider: ["gpt_live", "transcribe_polly"].includes(requestedProvider)
       ? requestedProvider
       : "gpt_live",
-    maxSessions: integerEnv(env.VOICE_TEST_MAX_SESSIONS, jevMode ? 1 : 3),
-    maxTurnsPerSession: integerEnv(env.VOICE_TEST_MAX_TURNS_PER_SESSION, jevMode ? 5 : 8),
+    maxSessions: integerEnv(env.VOICE_TEST_MAX_SESSIONS, jevMode ? 10 : 3),
+    maxTurnsPerSession: integerEnv(env.VOICE_TEST_MAX_TURNS_PER_SESSION, 8),
     maxAudioSecondsPerSession: integerEnv(env.VOICE_TEST_MAX_AUDIO_SECONDS_PER_SESSION, 120),
-    maxJevCalls: integerEnv(env.VOICE_TEST_MAX_JEV_CALLS, jevMode ? 5 : 20),
+    maxJevCalls: maxJevCallsTotal,
+    maxJevCallsTotal,
     maxLlmJudgeCalls: integerEnv(env.VOICE_TEST_MAX_LLM_JUDGE_CALLS, 5),
-    maxRetries: integerEnv(env.VOICE_TEST_MAX_RETRIES, 1),
+    maxRetries: integerEnv(env.VOICE_TEST_MAX_RETRIES, jevMode ? 0 : 1),
     seed: integerEnv(env.VOICE_TEST_SEED, 38291),
     agentMode,
     scenario: env.VOICE_TEST_SCENARIO || "NORMAL",
@@ -105,7 +111,10 @@ export class VoiceCostGuard {
 
   recordJevCall() {
     this.counters.jevCalls += 1;
-    this.#assertWithin("jevCalls", this.config.maxJevCalls);
+    this.#assertWithin(
+      "jevCalls",
+      this.config.maxJevCallsTotal ?? this.config.maxJevCalls,
+    );
   }
 
   recordLlmJudgeCall() {
@@ -128,6 +137,7 @@ export class VoiceCostGuard {
         maxTurnsPerSession: this.config.maxTurnsPerSession,
         maxAudioSecondsPerSession: this.config.maxAudioSecondsPerSession,
         maxJevCalls: this.config.maxJevCalls,
+        maxJevCallsTotal: this.config.maxJevCallsTotal ?? this.config.maxJevCalls,
         maxLlmJudgeCalls: this.config.maxLlmJudgeCalls,
         maxRetries: this.config.maxRetries,
       },

@@ -53,7 +53,7 @@ Transcribe + Pollyを実行する場合は、プロバイダも明示する。
 
 通常の pnpm test:e2e:voice では実APIテストは起動しません。
 
-### Jev Supervisor
+### Jev Supervisor（TypeSafe）
 
 `TEST_AGENT_MODE=jev`を明示した場合だけ、`jev-supervisor.spec.mjs`を実行します。Jevは各ターン終了後のテスト進行だけを判断し、ユーザー発話本文は生成しません。発話には`scenarios.mjs`の固定fixtureを使用します。
 
@@ -67,16 +67,37 @@ Transcribe + Pollyを実行する場合は、プロバイダも明示する。
 
 Hard Gateで異常が検出された場合は、Jevを呼ばずにFAILまたはSTOPします。対象はtranscript欠落、回答未保存、質問遷移不備、重複応答、HTTP 5xx、WebSocket/DataChannelエラー、応答タイムアウト、ターン数・Jev呼出数上限です。同一StateのJev結果はプロセス内でキャッシュします。
 
-実行例:
+初期の探索実行では、ユーザー発話本文を生成させず、TypeSafeのJevに各ターンの
+`session_action`と、必要な場合の`next_user_behavior`だけを選択させます。TypeSafeの
+リクエストは公式の[SystemOne API](https://api.typesafe.ai/docs)へ送信し、本文は固定fixtureから
+選びます。したがって外部APIはJevだけで、GPT Live、Transcribe、Polly、LLM Judgeは呼びません。
+
+リポジトリルートの`.env`またはプロセス環境に、次のTypeSafe設定を用意します。
+
+    TYPESAFE_API_KEY=...
+    TYPESAFE_BASE_URL=https://api.typesafe.ai
+    TYPESAFE_DEFAULT_MODEL=jev-latest
+
+`TYPESAFE_BASE_URL`にはAPIのorigin（`https://api.typesafe.ai`）または
+`/v1/systemone`まで含むURLを指定できます。モデルはTypeSafeで利用可能な
+`jev-latest`または`jev-preview`を指定してください。
+
+実行例（初期探索の上限は10セッション、1セッション8ターン、Jev合計80回）:
 
     TEST_AGENT_MODE=jev \
-    JEV_API_URL=https://jev.example/supervise \
-    JEV_API_KEY=... \
+    VOICE_TEST_REAL_API_ENABLED=false \
     VOICE_TEST_START_LOCAL_STACK=true \
+    VOICE_TEST_MAX_SESSIONS=10 \
+    VOICE_TEST_MAX_TURNS_PER_SESSION=8 \
+    VOICE_TEST_MAX_JEV_CALLS_TOTAL=80 \
     VOICE_TEST_MAX_RETRIES=0 \
-    pnpm exec playwright test tests/e2e/voice/jev-supervisor.spec.mjs --project=chromium
+    pnpm exec playwright test tests/e2e/voice/jev-supervisor.spec.mjs --project=chromium --workers=1
 
-`JEV_API_KEY`はAuthorization Bearerとして送信し、TelemetryやEvidence Packageには保存しません。環境変数が未指定の場合はリポジトリルートの`.env`から`JEV_API_URL`と`JEV_API_KEY`を読み取ります。`TEST_AGENT_MODE=jev`を指定して`JEV_API_URL`が未設定の場合は、接続先が不明なため設定エラーとして停止します。通常のテストでは`TEST_AGENT_MODE`を指定しないため、Jev APIは呼ばれません。
+`TYPESAFE_API_KEY`はAuthorization Bearerとして送信し、TelemetryやEvidence Packageには保存しません。
+`TEST_AGENT_MODE=jev`を指定し、TypeSafeキーが存在する場合だけTypeSafe APIを呼びます。
+`VOICE_TEST_REAL_API_ENABLED`は`false`のままにしてください。これはGPT LiveやTranscribe + Pollyの
+実APIを無効にしたまま、Jevだけを有効にするためです。旧`JEV_API_URL` / `JEV_API_KEY`も
+互換経路として利用できますが、TypeSafe設定がない場合のフォールバックです。
 
 ## 実行方法
 
@@ -103,28 +124,33 @@ Level 2のブラウザ音声テストは、現在はNORMALシナリオを固定�
 
 ## コストガード
 
-設定の既定値は tests/e2e/voice/voice-test.config.json に記載しています。環境変数で上書きできます。
+決定論的モードの既定値は`tests/e2e/voice/voice-test.config.json`と`config.mjs`で管理し、
+Jevモードの探索上限は`config.mjs`が別途適用します。環境変数で上書きできます。
 
 | 環境変数 | 既定値 | 意味 |
 | --- | ---: | --- |
 | VOICE_TEST_REAL_API_ENABLED | false | 実APIテストの明示許可 |
 | VOICE_TEST_REAL_PROVIDER | gpt_live | Level 3で使う実プロバイダ（`gpt_live` / `transcribe_polly`） |
 | VOICE_TEST_AUDIO_FIXTURE | 未指定 | 仮想マイクへ入力する録音済みWAVの絶対パス |
-| VOICE_TEST_MAX_SESSIONS | 3 | 1実行で許可するセッション数 |
+| VOICE_TEST_MAX_SESSIONS | 3（決定論的） / 10（Jev） | 1実行で許可するセッション数 |
 | VOICE_TEST_MAX_TURNS_PER_SESSION | 8 | セッションごとの最大ターン数 |
 | VOICE_TEST_MAX_AUDIO_SECONDS_PER_SESSION | 120 | セッションごとの音声秒数 |
-| VOICE_TEST_MAX_JEV_CALLS | 20 | Jevの最大呼出数 |
+| VOICE_TEST_MAX_JEV_CALLS | 20（決定論的） / 80（Jev） | 後方互換用のJev最大呼出数 |
+| VOICE_TEST_MAX_JEV_CALLS_TOTAL | `VOICE_TEST_MAX_JEV_CALLS` | 探索全体のJev最大呼出数 |
 | VOICE_TEST_MAX_LLM_JUDGE_CALLS | 5 | LLM Judgeの最大呼出数 |
 | VOICE_TEST_MAX_RETRIES | 1 | Playwright retryの上限 |
 
-超過した場合はテストを直ちに失敗させます。決定論的実行が既定です。Jevモードでは未指定時の上限を1セッション、5ターン、5 Jev callsとして扱います。`TEST_AGENT_MODE=jev`と`JEV_API_URL`が指定されている場合だけJevを呼びます。
+超過した場合はテストを直ちに停止または失敗させます。決定論的実行が既定です。
+Jevモードでは未指定時の上限を10セッション、1セッション8ターン、合計80 Jev calls、
+retryなしとして扱います。Hard Gateで機械的な異常を先に検出し、通過したターンだけJevを
+最大1回呼びます。同一Stateはプロセス内でキャッシュします。
 
 ## TelemetryとEvidence Package
 
 各テストの出力先に以下を保存します。
 
 - `telemetry.jsonl`: turn、transcript final、candidate/confirmed、answerState、State version、current/next question、擬似レイテンシ、error、anomaly
-- Jev Supervisor実行時は各turnに`hardGate`と`jev`（sessionAction、nextUserBehavior、confidence、cacheHit、callCount）を追加
+- Jev Supervisor実行時は各turnに`hardGate`と`jev`（provider、model、sessionAction、nextUserBehavior、confidence、cacheHit、callCount、usage）を追加し、`exploration-summary.json`に全セッションの経路、行動・アクション集計、Hard Gate異常数を保存
 - 失敗時の`evidence/`: Interview State、transcript、timeline、console log、network log、DataChannel error、screenshot、Playwright traceの参照、replayコマンド
 
 NORMALの各ターンでは、次の順序をTimelineに記録します。
@@ -145,10 +171,10 @@ LLM Judgeは初期実装では呼び出していません。決定論的検査�
 
 - Level 1 / Level 2: GPT Live、Responses、Transcribe、Polly、Jev、LLM Judgeを呼ばない
 - Level 3: VOICE_TEST_REAL_API_ENABLED=true のときだけ、`VOICE_TEST_REAL_PROVIDER`で指定した実GPT LiveまたはTranscribe + Pollyを呼ぶ
-- Jev: TEST_AGENT_MODE=jev を明示し、JEV_API_URLが設定されている場合だけ呼ぶ。JEV_API_KEYはBearer認証に使う。JEV_API_URLが無い場合は設定エラーで停止する
+- Jev: TEST_AGENT_MODE=jev を明示し、TYPESAFE_API_KEY（または旧JEV_API_URL）が設定されている場合だけ呼ぶ。TYPESAFE_API_KEY / JEV_API_KEYはBearer認証に使う。通常の実行ではJevを呼ばない
 - LLM Judge: 初期テストでは呼ばない。追加実装時も異常時または明示指定時だけにする
 
-通常モードの既定上限は最大3セッション、1セッション8ターン、音声120秒、Jev 20回、LLM Judge 5回です。`TEST_AGENT_MODE=jev`では、初期Phaseの上限を最大1セッション、1セッション5ターン、Jev 5回として扱います。
+通常モードの既定上限は最大3セッション、1セッション8ターン、音声120秒、Jev 20回、LLM Judge 5回です。`TEST_AGENT_MODE=jev`では、初期探索の上限を最大10セッション、1セッション8ターン、Jev合計80回、retryなしとして扱います。
 
 ## 現時点の残課題
 
