@@ -40,22 +40,45 @@ export async function fetchInterviewContext(
   return apiJson(request, "/api/records/" + encodeURIComponent(recordId) + "/interview-context");
 }
 
-export function buildLiveAssessment({ field, transcript, stateVersion, turn }) {
-  const questionId = "live-field-" + field.id;
+export function liveQuestionId(field) {
+  return "live-field-" + field.id;
+}
+
+export function questionText(field) {
+  const examples = field.aiQuestionExamples ?? field.ai_question_examples ?? [];
+  return examples[0] ?? field.name ?? null;
+}
+
+export function buildLiveAssessment({
+  field,
+  transcript,
+  stateVersion,
+  turn,
+  answerStatus = "ANSWERED",
+}) {
+  const questionId = liveQuestionId(field);
   const requiredItems = field.questionPlan?.requiredItems ?? [];
-  const covered = requiredItems.map((item) => ({
+  const coveredItems = answerStatus === "ANSWERED"
+    ? requiredItems
+    : answerStatus === "PARTIAL"
+      ? requiredItems.slice(0, 1)
+      : [];
+  const covered = coveredItems.map((item) => ({
     aspect_id: item.itemId,
     evidence: transcript,
   }));
+  const missing = requiredItems
+    .filter((item) => !covered.some((candidate) => candidate.aspect_id === item.itemId))
+    .map((item) => item.itemId);
   return {
     delegation_id: "e2e-delegation-" + turn,
     call_id: "e2e-call-" + turn,
     turn_id: "e2e-turn-" + turn,
     base_state_version: Number(stateVersion ?? 0),
     question_id: questionId,
-    answer_status: "ANSWERED",
+    answer_status: answerStatus,
     covered_aspects: covered,
-    missing_aspects: [],
+    missing_aspects: missing,
     evidence: covered.map(({ aspect_id, evidence }) => ({ aspect_id, text: evidence })),
     transcript,
   };

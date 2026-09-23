@@ -17,19 +17,23 @@ function integerEnv(value, fallback) {
 
 export function readVoiceTestConfig(env = process.env) {
   const requestedProvider = env.VOICE_TEST_REAL_PROVIDER || "gpt_live";
+  const agentMode = String(env.TEST_AGENT_MODE || "").trim().toLowerCase() === "jev"
+    ? "jev"
+    : "deterministic";
+  const jevMode = agentMode === "jev";
   const config = {
     realApiEnabled: booleanEnv(env.VOICE_TEST_REAL_API_ENABLED, false),
     realProvider: ["gpt_live", "transcribe_polly"].includes(requestedProvider)
       ? requestedProvider
       : "gpt_live",
-    maxSessions: integerEnv(env.VOICE_TEST_MAX_SESSIONS, 3),
-    maxTurnsPerSession: integerEnv(env.VOICE_TEST_MAX_TURNS_PER_SESSION, 8),
+    maxSessions: integerEnv(env.VOICE_TEST_MAX_SESSIONS, jevMode ? 1 : 3),
+    maxTurnsPerSession: integerEnv(env.VOICE_TEST_MAX_TURNS_PER_SESSION, jevMode ? 5 : 8),
     maxAudioSecondsPerSession: integerEnv(env.VOICE_TEST_MAX_AUDIO_SECONDS_PER_SESSION, 120),
-    maxJevCalls: integerEnv(env.VOICE_TEST_MAX_JEV_CALLS, 20),
+    maxJevCalls: integerEnv(env.VOICE_TEST_MAX_JEV_CALLS, jevMode ? 5 : 20),
     maxLlmJudgeCalls: integerEnv(env.VOICE_TEST_MAX_LLM_JUDGE_CALLS, 5),
     maxRetries: integerEnv(env.VOICE_TEST_MAX_RETRIES, 1),
     seed: integerEnv(env.VOICE_TEST_SEED, 38291),
-    agentMode: env.TEST_AGENT_MODE === "jev" ? "jev" : "deterministic",
+    agentMode,
     scenario: env.VOICE_TEST_SCENARIO || "NORMAL",
     baseURL: env.VOICE_TEST_BASE_URL || "http://127.0.0.1:5173",
     apiBaseURL: env.VOICE_TEST_API_BASE_URL || "http://127.0.0.1:8001",

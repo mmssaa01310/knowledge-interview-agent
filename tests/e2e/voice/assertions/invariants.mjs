@@ -7,6 +7,7 @@ export const ANOMALIES = Object.freeze({
   TURN_COMMITTED_TOO_EARLY: "TURN_COMMITTED_TOO_EARLY",
   RESPONSE_TIMEOUT: "RESPONSE_TIMEOUT",
   WEBSOCKET_ERROR: "WEBSOCKET_ERROR",
+  DATACHANNEL_ERROR: "DATACHANNEL_ERROR",
   API_5XX: "API_5XX",
 });
 
@@ -38,26 +39,39 @@ export function detectTurnAnomalies({
   responseStarted = true,
   committedBeforeFinal = false,
   apiStatuses = [],
+  dataChannelErrors = [],
+  questionShouldAdvance = false,
+  questionAdvanced = null,
+  expectAnswerPersistence = true,
+  allowRepeatedQuestion = false,
 }) {
   const anomalies = [];
   const answer = extractFieldAnswer(state, fieldId);
   if (!hasText(finalText)) anomalies.push(ANOMALIES.TRANSCRIPT_FINAL_MISSING);
-  if (hasText(finalText) && !hasText(answer.candidate) && !hasText(answer.confirmed)
+  if (expectAnswerPersistence && hasText(finalText)
+    && !hasText(answer.candidate) && !hasText(answer.confirmed)
     && !["CONFIRMED", "ANSWERED"].includes(answer.answerState)) {
     anomalies.push(ANOMALIES.ANSWER_NOT_PERSISTED);
+  }
+  if (questionShouldAdvance && questionAdvanced === false) {
+    anomalies.push(ANOMALIES.QUESTION_NOT_ADVANCED);
   }
   if (nextQuestionId && state?.currentQuestionId === expectedQuestionId) {
     anomalies.push(ANOMALIES.QUESTION_NOT_ADVANCED);
   }
-  if (previousQuestionId && expectedQuestionId === previousQuestionId) {
+  if (!allowRepeatedQuestion && previousQuestionId && expectedQuestionId === previousQuestionId) {
     anomalies.push(ANOMALIES.REPEATED_QUESTION);
   }
   const ids = responseIds.filter(hasText);
   if (new Set(ids).size !== ids.length) anomalies.push(ANOMALIES.DUPLICATE_RESPONSE);
   if (committedBeforeFinal) anomalies.push(ANOMALIES.TURN_COMMITTED_TOO_EARLY);
   if (!responseStarted) anomalies.push(ANOMALIES.RESPONSE_TIMEOUT);
-  if (eventTypes.some((type) => /websocket|data_channel_error|transport\.closed/i.test(type))) {
+  if (eventTypes.some((type) => /websocket|transport\.closed/i.test(type))) {
     anomalies.push(ANOMALIES.WEBSOCKET_ERROR);
+  }
+  if (dataChannelErrors.length
+    || eventTypes.some((type) => /data[_-]?channel(?:[_-]?error)?/i.test(type))) {
+    anomalies.push(ANOMALIES.DATACHANNEL_ERROR);
   }
   if (apiStatuses.some((status) => Number(status) >= 500)) anomalies.push(ANOMALIES.API_5XX);
   return [...new Set(anomalies)];

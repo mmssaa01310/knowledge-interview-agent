@@ -2,16 +2,32 @@ import fs from "node:fs";
 import path from "node:path";
 
 export class VoiceTelemetry {
-  constructor({ outputDir, sessionId, scenario, seed, costGuard = null }) {
+  constructor({
+    outputDir,
+    sessionId,
+    scenario,
+    seed,
+    costGuard = null,
+    audioInputMode = "unknown",
+    transcriptSource = "unknown",
+    liveApiUsed = false,
+  }) {
     this.outputDir = outputDir;
     this.sessionId = sessionId;
     this.scenario = scenario;
     this.seed = seed;
     this.costGuard = costGuard;
+    this.audioInputMode = audioInputMode;
+    this.transcriptSource = transcriptSource;
+    this.liveApiUsed = liveApiUsed;
     this.timeline = [];
     this.turns = [];
+    this.transcripts = [];
     this.errors = [];
     this.consoleErrors = [];
+    this.consoleLogs = [];
+    this.networkLog = [];
+    this.dataChannelErrors = [];
     fs.mkdirSync(outputDir, { recursive: true });
     this.jsonlPath = path.join(outputDir, "telemetry.jsonl");
     fs.writeFileSync(this.jsonlPath, "", "utf8");
@@ -36,6 +52,56 @@ export class VoiceTelemetry {
     this.event("console_error", item);
   }
 
+  consoleLog(entry) {
+    const item = {
+      type: entry?.type ?? "log",
+      text: String(entry?.text ?? ""),
+      location: entry?.location ?? null,
+      timestampMs: entry?.timestampMs ?? Date.now(),
+    };
+    this.consoleLogs.push(item);
+    this.event("console_log", item);
+    return item;
+  }
+
+  networkEvent(entry) {
+    const item = {
+      direction: entry?.direction ?? "unknown",
+      method: entry?.method ?? null,
+      url: entry?.url ?? null,
+      resourceType: entry?.resourceType ?? null,
+      status: entry?.status ?? null,
+      failure: entry?.failure ?? null,
+      timestampMs: entry?.timestampMs ?? Date.now(),
+    };
+    this.networkLog.push(item);
+    this.event("network", item);
+    return item;
+  }
+
+  dataChannelError(entry) {
+    const item = {
+      type: entry?.type ?? "data_channel_error",
+      message: String(entry?.message ?? ""),
+      timestampMs: entry?.timestampMs ?? Date.now(),
+    };
+    this.dataChannelErrors.push(item);
+    this.event("data_channel_error", item);
+    return item;
+  }
+
+  transcriptFinal(entry) {
+    const item = {
+      turn: entry?.turn ?? null,
+      source: entry?.source ?? this.transcriptSource,
+      finalText: String(entry?.finalText ?? ""),
+      sourceTimestampMs: entry?.sourceTimestampMs ?? null,
+      timestampMs: entry?.timestampMs ?? Date.now(),
+    };
+    this.transcripts.push(item);
+    return item;
+  }
+
   recordTurn(turn) {
     const item = {
       sessionId: this.sessionId,
@@ -50,15 +116,39 @@ export class VoiceTelemetry {
       transcription: {
         partialCount: turn.transcription?.partialCount ?? 0,
         finalText: turn.transcription?.finalText ?? "",
+        source: turn.transcription?.source ?? this.transcriptSource,
       },
       interview: {
         questionId: turn.interview?.questionId ?? null,
         candidate: turn.interview?.candidate ?? null,
         confirmed: turn.interview?.confirmed ?? null,
+        answerState: turn.interview?.answerState ?? null,
         stateVersionBefore: turn.interview?.stateVersionBefore ?? null,
         stateVersionAfter: turn.interview?.stateVersionAfter ?? null,
+        currentQuestionBefore: turn.interview?.currentQuestionBefore ?? null,
+        currentQuestionAfter: turn.interview?.currentQuestionAfter ?? null,
+        nextQuestionId: turn.interview?.nextQuestionId ?? null,
+        nextQuestionText: turn.interview?.nextQuestionText ?? null,
       },
-      response: { firstAudioLatencyMs: turn.response?.firstAudioLatencyMs ?? null },
+      response: {
+        assistantSpeechStarted: turn.response?.assistantSpeechStarted ?? false,
+        simulatedTurnLatencyMs: turn.response?.simulatedTurnLatencyMs ?? null,
+        firstAudioLatencyMs: turn.response?.firstAudioLatencyMs ?? null,
+      },
+      hardGate: {
+        status: turn.hardGate?.status ?? null,
+        codes: turn.hardGate?.codes ?? [],
+        shouldCallJev: turn.hardGate?.shouldCallJev ?? false,
+      },
+      jev: {
+        called: turn.jev?.called ?? false,
+        sessionAction: turn.jev?.sessionAction ?? null,
+        nextUserBehavior: turn.jev?.nextUserBehavior ?? null,
+        confidence: turn.jev?.confidence ?? null,
+        cacheHit: turn.jev?.cacheHit ?? false,
+        callCount: turn.jev?.callCount ?? null,
+      },
+      timeline: turn.timeline ?? [],
       errors: turn.errors ?? [],
       anomalies: turn.anomalies ?? [],
     };
@@ -72,10 +162,17 @@ export class VoiceTelemetry {
       sessionId: this.sessionId,
       scenario: this.scenario,
       seed: this.seed,
+      audioInputMode: this.audioInputMode,
+      transcriptSource: this.transcriptSource,
+      liveApiUsed: this.liveApiUsed,
       turns: this.turns,
+      transcripts: this.transcripts,
       timeline: this.timeline,
       errors: this.errors,
       consoleErrors: this.consoleErrors,
+      consoleLogs: this.consoleLogs,
+      networkLog: this.networkLog,
+      dataChannelErrors: this.dataChannelErrors,
       costGuard: this.costGuard?.snapshot() ?? null,
       jsonlPath: this.jsonlPath,
     };
@@ -95,7 +192,27 @@ export async function writeEvidencePackage({
   fs.writeFileSync(path.join(evidenceDir, "telemetry.json"), JSON.stringify(snapshot, null, 2));
   fs.writeFileSync(path.join(evidenceDir, "interview-state.json"), JSON.stringify(state ?? null, null, 2));
   fs.writeFileSync(path.join(evidenceDir, "network-errors.json"), JSON.stringify(networkErrors, null, 2));
+  fs.writeFileSync(path.join(evidenceDir, "network-log.json"), JSON.stringify(snapshot.networkLog, null, 2));
   fs.writeFileSync(path.join(evidenceDir, "console-errors.json"), JSON.stringify(snapshot.consoleErrors, null, 2));
+  fs.writeFileSync(path.join(evidenceDir, "console-log.json"), JSON.stringify(snapshot.consoleLogs, null, 2));
+  fs.writeFileSync(
+    path.join(evidenceDir, "data-channel-errors.json"),
+    JSON.stringify(snapshot.dataChannelErrors, null, 2),
+  );
+  fs.writeFileSync(
+    path.join(evidenceDir, "transcript.json"),
+    JSON.stringify(
+      snapshot.transcripts.length > 0
+        ? snapshot.transcripts
+        : snapshot.turns.map((turn) => ({
+            turn: turn.turn,
+            source: turn.transcription.source,
+            finalText: turn.transcription.finalText,
+          })),
+      null,
+      2,
+    ),
+  );
   fs.writeFileSync(path.join(evidenceDir, "timeline.json"), JSON.stringify(snapshot.timeline, null, 2));
   fs.writeFileSync(
     path.join(evidenceDir, "playwright-trace-path.txt"),

@@ -22,26 +22,62 @@ export async function installFakeLiveTransport(
     }
 
     function dispatchServer(event) {
-      serverEvents.push({ direction: "server", event });
+      serverEvents.push({
+        direction: "server",
+        timestampMs: performance.now(),
+        event,
+      });
       for (const channel of channels) {
         emit(channel, "message", { data: JSON.stringify(event) });
       }
     }
 
-    function emitAssistantResponse(text, responseId = "e2e-response-" + Date.now()) {
-      dispatchServer({ type: "response.created", response: { id: responseId } });
+    function emitAssistantResponse(
+      text,
+      responseId = "e2e-response-" + Date.now(),
+      context = {},
+    ) {
+      const questionId = context.nextQuestion?.id ?? null;
+      const questionText = context.nextQuestion?.text ?? null;
+      const turnId = context.turnId ?? null;
+      dispatchServer({
+        type: "response.created",
+        response: { id: responseId },
+        turn_id: turnId,
+        question_id: questionId,
+        question_text: questionText,
+      });
+      dispatchServer({
+        type: "assistant_speech_started",
+        response_id: responseId,
+        turn_id: turnId,
+        question_id: questionId,
+        question_text: questionText,
+      });
       dispatchServer({
         type: "response.output_transcript.delta",
         response_id: responseId,
         delta: text,
+        turn_id: turnId,
+        question_id: questionId,
+        question_text: questionText,
       });
       dispatchServer({
         type: "response.output_audio.delta",
         response_id: responseId,
         delta: "fixture-audio",
+        turn_id: turnId,
       });
-      dispatchServer({ type: "response.output_audio.done", response_id: responseId });
-      dispatchServer({ type: "response.done", response_id: responseId });
+      dispatchServer({
+        type: "response.output_audio.done",
+        response_id: responseId,
+        turn_id: turnId,
+      });
+      dispatchServer({ type: "response.done", response_id: responseId, turn_id: turnId });
+      dispatchServer({ type: "assistant_speech_ended", response_id: responseId, turn_id: turnId });
+      if (window.__kikioriVoiceTest.pendingResponseContext?.turnId === turnId) {
+        window.__kikioriVoiceTest.pendingResponseContext = null;
+      }
     }
 
     class FakeDataChannel {
@@ -76,7 +112,12 @@ export async function installFakeLiveTransport(
               : "こんにちは。最初の質問をお願いします。",
           ));
         } else if (event.type === "response.create") {
-          queueMicrotask(() => emitAssistantResponse("ありがとうございます。次の質問です."));
+          const responseContext = window.__kikioriVoiceTest.pendingResponseContext ?? {};
+          queueMicrotask(() => emitAssistantResponse(
+            "ありがとうございます。次の質問です。",
+            "e2e-response-" + (responseContext.turnId ?? Date.now()),
+            responseContext,
+          ));
         }
       }
     }
@@ -128,14 +169,21 @@ export async function installFakeLiveTransport(
     window.__kikioriVoiceTest = {
       sentEvents,
       serverEvents,
+      dataChannelErrors: [],
       audioTrackLive: false,
+      pendingResponseContext: null,
       emit(event) {
         dispatchServer(event);
       },
-      emitTurn({ transcript, assessment }) {
+      emitTurn({ transcript, assessment, nextQuestion }) {
         const turn = assessment?.turn_id ?? "e2e-turn-" + Date.now();
         const delegationId = assessment?.delegation_id ?? "e2e-delegation-" + turn;
         const responseId = "e2e-delegated-response-" + turn;
+        window.__kikioriVoiceTest.pendingResponseContext = {
+          turnId: turn,
+          delegationId,
+          nextQuestion: nextQuestion ?? null,
+        };
         dispatchServer({
           type: "input_audio_buffer.speech_started",
           session: { id: configuredSessionId },
@@ -146,7 +194,9 @@ export async function installFakeLiveTransport(
         });
         dispatchServer({
           type: "conversation.item.input_audio_transcription.completed",
+          item_id: "e2e-item-" + turn,
           transcript,
+          turn_id: turn,
         });
         dispatchServer({
           type: "session.delegation.created",
@@ -173,4 +223,11 @@ export async function installFakeLiveTransport(
 
 export async function readFakeLiveEvents(page) {
   return page.evaluate(() => window.__kikioriVoiceTest?.serverEvents ?? []);
+}
+
+export async function readFakeLiveDiagnostics(page) {
+  return page.evaluate(() => ({
+    events: window.__kikioriVoiceTest?.serverEvents ?? [],
+    dataChannelErrors: window.__kikioriVoiceTest?.dataChannelErrors ?? [],
+  }));
 }

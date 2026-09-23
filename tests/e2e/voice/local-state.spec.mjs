@@ -26,6 +26,11 @@ import {
 const config = readVoiceTestConfig();
 
 test.describe("voice E2E level 1: local state contract", () => {
+  test.skip(
+    config.agentMode === "jev",
+    "Jev mode uses the Jev Supervisor scenario",
+  );
+
   test("selected scenario persists final answers and keeps the canonical state durable", async ({
     request,
   }, testInfo) => {

@@ -1,5 +1,3 @@
-import crypto from "node:crypto";
-
 export const VOICE_SCENARIOS = Object.freeze({
   NORMAL: Object.freeze({
     name: "NORMAL",
@@ -30,6 +28,59 @@ export const VOICE_SCENARIOS = Object.freeze({
   }),
 });
 
+// These are test inputs only. Jev selects a behavior label; it never writes
+// the transcript itself. Each label has fixed variants so a replay remains
+// deterministic and RETRY_CURRENT can use a different fixture.
+export const JEV_BEHAVIOR_FIXTURES = Object.freeze({
+  HESITATE: Object.freeze([
+    "えーっと……プロジェクトリーダーを担当しています。",
+    "えっと、現在はプロジェクトリーダーです。",
+  ]),
+  SELF_CORRECT: Object.freeze([
+    "プロジェクトマネージャー……いや、プロジェクトリーダーをしています。",
+    "マネージャーではなく、プロジェクトリーダーを担当しています。",
+  ]),
+  AMBIGUOUS: Object.freeze([
+    "まあ、そのあたりを色々やっています。",
+    "関係する業務を一通り担当しています。",
+  ]),
+  ASK_CLARIFICATION: Object.freeze([
+    "この質問では、何を答えればよいですか？",
+    "質問の意図をもう少し教えてください。",
+  ]),
+  SILENCE: Object.freeze([""]),
+  MULTI_ANSWER: Object.freeze([
+    "プロジェクトリーダーで、進捗管理をしています。今後は生成AIも学びたいです。",
+    "現在はプロジェクトリーダーとして開発を進め、これから生成AIも学びたいです。",
+  ]),
+});
+
+export const JEV_BEHAVIOR_OUTCOMES = Object.freeze({
+  NORMAL: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
+  HESITATE: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
+  SELF_CORRECT: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
+  AMBIGUOUS: Object.freeze({ answerStatus: "PARTIAL", expectedQuestionTransition: false }),
+  ASK_CLARIFICATION: Object.freeze({
+    answerStatus: "NOT_ANSWERED",
+    expectedQuestionTransition: false,
+    expectAnswerPersistence: false,
+  }),
+  SILENCE: Object.freeze({
+    answerStatus: "NOT_ANSWERED",
+    expectedQuestionTransition: false,
+    expectAnswerPersistence: false,
+  }),
+  MULTI_ANSWER: Object.freeze({ answerStatus: "ANSWERED", expectedQuestionTransition: true }),
+});
+
+const RETRY_NORMAL_FIXTURES = Object.freeze([
+  "宮崎と申します。スマート技術開発部でシニアエンジニアを担当しています。",
+  "プロジェクトリーダーとして、メンバーのタスクと進捗を管理しています。",
+  "顧客の要望を整理して開発を進め、手戻りを減らす方法を学びました。",
+  "要件と優先順位を整理して実装し、予定通りリリースしました。",
+  "要望変更の影響範囲を確認し、計画を更新しています。",
+]);
+
 export function resolveScenario(name = "NORMAL") {
   const scenario = VOICE_SCENARIOS[String(name).toUpperCase()];
   if (!scenario) throw new Error("Unknown voice test scenario: " + name);
@@ -59,36 +110,29 @@ export function transcriptForAction(action, scenario, turn) {
   return actionScenario.turns[Math.min(turn, actionScenario.turns.length - 1)];
 }
 
-const JEV_ACTION_CACHE = new Map();
-
-export async function chooseNextAction({
-  scenario,
-  turn,
-  state,
-  config,
-  guard,
-  fetchImpl = fetch,
+export function fixtureForBehavior({
+  behavior = "NORMAL",
+  scenario = VOICE_SCENARIOS.NORMAL,
+  turnIndex = 0,
+  retryCount = 0,
 }) {
-  if (config.agentMode !== "jev") return scenario.turns[turn] ?? null;
-  guard.recordJevCall();
-  const url = process.env.JEV_API_URL;
-  if (!url) throw new Error("TEST_AGENT_MODE=jev requires JEV_API_URL");
-  const cacheKey = crypto.createHash("sha256").update(JSON.stringify({
-    seed: config.seed,
-    scenario: scenario.name,
-    turn,
-    state,
-  })).digest("hex");
-  if (JEV_ACTION_CACHE.has(cacheKey)) return JEV_ACTION_CACHE.get(cacheKey);
-  const response = await fetchImpl(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-voice-test-cache-key": cacheKey },
-    body: JSON.stringify({ scenario: scenario.name, turn, state, seed: config.seed }),
-  });
-  if (!response.ok) throw new Error("Jev request failed: " + response.status);
-  const result = await response.json();
-  const action = typeof result.action === "string" ? result.action : null;
-  if (!action) throw new Error("Jev response must contain an action, not generated text");
-  JEV_ACTION_CACHE.set(cacheKey, action);
-  return action;
+  const normalized = String(behavior).trim().toUpperCase();
+  const outcome = JEV_BEHAVIOR_OUTCOMES[normalized];
+  if (!outcome) throw new Error("Unsupported Jev user behavior: " + behavior);
+  if (normalized === "NORMAL") {
+    const transcript = retryCount > 0
+      ? RETRY_NORMAL_FIXTURES[Math.min(turnIndex, RETRY_NORMAL_FIXTURES.length - 1)]
+      : scenario.turns[Math.min(turnIndex, scenario.turns.length - 1)];
+    return { behavior: normalized, transcript: transcript ?? "", ...outcome };
+  }
+  const variants = JEV_BEHAVIOR_FIXTURES[normalized];
+  const transcript = variants[Math.min(retryCount, variants.length - 1)];
+  return { behavior: normalized, transcript, ...outcome };
+}
+
+export function chooseNextAction({ scenario, turn, config }) {
+  if (config.agentMode === "jev") {
+    throw new Error("Jev mode uses JevSupervisor; chooseNextAction is deterministic-only");
+  }
+  return scenario.turns[turn] ?? null;
 }

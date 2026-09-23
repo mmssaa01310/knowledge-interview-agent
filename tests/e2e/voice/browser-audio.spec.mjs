@@ -1,20 +1,20 @@
 import { test, expect } from "@playwright/test";
 import { readVoiceTestConfig, VoiceCostGuard } from "./config.mjs";
 import {
-  chooseNextAction,
   deterministicSeed,
   resolveScenario,
-  transcriptForAction,
 } from "./scenarios/scenarios.mjs";
 import {
   buildLiveAssessment,
   fetchInterviewContext,
   fetchInterviewState,
+  liveQuestionId,
+  questionText,
   resetVoiceDemo,
 } from "./drivers/apiDriver.mjs";
 import {
   installFakeLiveTransport,
-  readFakeLiveEvents,
+  readFakeLiveDiagnostics,
 } from "./drivers/fakeLiveTransport.mjs";
 import {
   installLocalApiRoutes,
@@ -33,31 +33,40 @@ const config = readVoiceTestConfig();
 const recordUrl = "/knowledge-dbs/dev-voice-demo-db/knowledges/"
   + "dev-voice-demo-knowledge/records/dev-voice-demo-record";
 
-test.describe("voice E2E level 2: browser + audio fixture", () => {
+test.describe("voice E2E level 2: NORMAL scenario", () => {
+  test.skip(
+    config.agentMode === "jev",
+    "Jev mode uses the Jev Supervisor scenario",
+  );
   test.skip(
     !config.runBrowserAudio,
     "Set VOICE_TEST_RUN_BROWSER_AUDIO=true to run browser audio tests",
   );
 
-  test("selected scenario streams a fixture mic, receives finals, and persists state", async ({
+  test("streams one WAV-backed microphone session and verifies the NORMAL turn lifecycle", async ({
     page,
     request,
   }, testInfo) => {
     const guard = new VoiceCostGuard(config);
     for (let retry = 0; retry < testInfo.retry; retry += 1) guard.recordRetry();
     guard.startSession();
+
     const seed = deterministicSeed(config.seed);
-    const scenario = resolveScenario(config.scenario);
+    const scenario = resolveScenario("NORMAL");
     const telemetry = new VoiceTelemetry({
       outputDir: testInfo.outputPath("telemetry"),
-      sessionId: "browser-" + seed,
+      sessionId: "browser-normal-" + seed,
       scenario: scenario.name,
       seed,
       costGuard: guard,
+      audioInputMode: "fake_microphone_wav",
+      transcriptSource: "fake_live_transport",
+      liveApiUsed: false,
     });
     const apiEvents = [];
     const networkErrors = observePageNetwork(page, telemetry);
     let state = null;
+
     try {
       await resetVoiceDemo(request);
       await installFakeLiveTransport(page);
@@ -81,94 +90,213 @@ test.describe("voice E2E level 2: browser + audio fixture", () => {
       const fields = [...context.fields].sort(
         (left, right) => left.displayOrder - right.displayOrder,
       );
-      expect(fields.length).toBeGreaterThan(0);
-      for (let index = 0; index < fields.length; index += 1) {
+      expect(fields.length).toBeGreaterThanOrEqual(scenario.turns.length);
+
+      let previousQuestionId = null;
+      for (let index = 0; index < scenario.turns.length; index += 1) {
+        const turn = index + 1;
         const field = fields[index];
+        const nextField = fields[index + 1] ?? null;
+        const nextQuestion = nextField
+          ? {
+              id: liveQuestionId(nextField),
+              text: questionText(nextField),
+            }
+          : null;
+        const transcript = scenario.turns[index];
+
         guard.startTurn(1);
         state = await fetchInterviewState(request);
         const before = state.interviewState;
-        const action = await chooseNextAction({
-          scenario,
-          turn: index,
-          state: before,
-          config,
-          guard,
-        });
-        const transcript = transcriptForAction(action, scenario, index)
-          || "ブラウザ音声テスト回答 " + (index + 1);
         const payload = buildLiveAssessment({
           field,
           transcript,
           stateVersion: before.stateVersion,
-          turn: index + 1,
+          turn,
         });
+        const turnTimeline = [];
+        const recordTimeline = (name, detail = {}) => {
+          const item = telemetry.event(name, { turn, ...detail });
+          turnTimeline.push(item);
+          return item;
+        };
+
         const updateResponse = page.waitForResponse(
           (response) => response.url().includes("/api/live/state-updates")
             && response.request().method() === "POST",
         );
         telemetry.event("delegation_created", {
-          turn: index + 1,
+          turn,
           delegationId: payload.delegation_id,
+          source: "fake_live_transport",
         });
         telemetry.event("function_tool_call", {
-          turn: index + 1,
+          turn,
           callId: payload.call_id,
+          source: "fake_live_transport",
         });
-        await page.evaluate(({ text, assessment }) => {
+
+        await page.evaluate(({ text, assessment, followingQuestion }) => {
           window.__kikioriVoiceTest.emitTurn({
             transcript: text,
             assessment,
+            nextQuestion: followingQuestion,
           });
-        }, { text: transcript, assessment: payload });
-        await updateResponse;
-        await page.waitForTimeout(50);
+        }, { text: transcript, assessment: payload, followingQuestion: nextQuestion });
+
+        await page.waitForFunction(
+          ({ turnId }) => window.__kikioriVoiceTest?.serverEvents?.some(
+            (item) => item.event?.type === "conversation.item.input_audio_transcription.completed"
+              && item.event?.turn_id === turnId,
+          ),
+          { turnId: payload.turn_id },
+        );
+        const afterFinal = await readFakeLiveDiagnostics(page);
+        const finalEvent = afterFinal.events.find(
+          (item) => item.event?.type === "conversation.item.input_audio_transcription.completed"
+            && item.event?.turn_id === payload.turn_id,
+        );
+        expect(finalEvent).toBeTruthy();
+        telemetry.transcriptFinal({
+          turn,
+          finalText: transcript,
+          source: "fake_live_transport",
+          sourceTimestampMs: finalEvent.timestampMs,
+        });
+        recordTimeline("user_transcript_final", {
+          transcript,
+          source: "fake_live_transport",
+          sourceTimestampMs: finalEvent.timestampMs,
+        });
+        recordTimeline("user_turn_completed", {
+          source: "fake_live_transport",
+          sourceTimestampMs: finalEvent.timestampMs,
+        });
+
+        const persistedResponse = await updateResponse;
+        expect(persistedResponse.status()).toBe(200);
+        await page.waitForFunction(
+          ({ turnId }) => window.__kikioriVoiceTest?.serverEvents?.some(
+            (item) => item.event?.type === "assistant_speech_started"
+              && item.event?.turn_id === turnId,
+          ),
+          { turnId: payload.turn_id },
+        );
+        await page.waitForTimeout(25);
+
         state = await fetchInterviewState(request);
         const after = state.interviewState;
-        telemetry.event("backend_state_persisted", {
-          turn: index + 1,
-          stateVersion: after.stateVersion,
-        });
-        telemetry.event("delegation_completed", { turn: index + 1 });
-        telemetry.event("response_start", { turn: index + 1 });
-        telemetry.event("first_audio", { turn: index + 1, latencyMs: 0 });
-        telemetry.event("response_done", { turn: index + 1 });
         const answer = after.fieldStates?.[field.id] ?? {};
-        const events = await readFakeLiveEvents(page);
-        const responseIds = events
+        const diagnostics = await readFakeLiveDiagnostics(page);
+        const turnEvents = diagnostics.events.filter(
+          (item) => item.event?.turn_id === payload.turn_id,
+        );
+        const assistantStartedEvent = turnEvents.find(
+          (item) => item.event?.type === "assistant_speech_started",
+        );
+        const responseIds = turnEvents
           .filter((item) => item.event?.type === "response.created")
           .map((item) => item.event?.response?.id ?? item.event?.response_id)
           .filter(Boolean);
+        const simulatedTurnLatencyMs = assistantStartedEvent
+          ? Math.max(0, assistantStartedEvent.timestampMs - finalEvent.timestampMs)
+          : null;
+
+        recordTimeline("candidate_answer_saved", {
+          value: answer.candidateAnswer ?? null,
+          present: Boolean(answer.candidateAnswer),
+          resolution: answer.candidateAnswer ? "CANDIDATE" : "AUTO_CONFIRM",
+        });
+        expect(answer.recordAnswer).toBeTruthy();
+        recordTimeline("record_answer_saved", {
+          value: answer.recordAnswer,
+        });
+        expect(answer.answerState).toBe("CONFIRMED");
+        recordTimeline("answer_state_updated", {
+          answerState: answer.answerState,
+        });
+        expect(Number(after.stateVersion)).toBeGreaterThan(Number(before.stateVersion));
+        recordTimeline("state_version_updated", {
+          before: before.stateVersion,
+          after: after.stateVersion,
+        });
+        expect(after.currentQuestionId).toBe(payload.question_id);
+        recordTimeline("current_question_updated", {
+          before: before.currentQuestionId,
+          after: after.currentQuestionId,
+        });
+        expect(assistantStartedEvent).toBeTruthy();
+        if (nextQuestion) {
+          expect(assistantStartedEvent.event.question_id).toBe(nextQuestion.id);
+          if (nextQuestion.text) {
+            expect(assistantStartedEvent.event.question_text).toBe(nextQuestion.text);
+          }
+        }
+        recordTimeline("assistant_speech_started", {
+          source: "fake_live_transport",
+          sourceTimestampMs: assistantStartedEvent.timestampMs,
+          nextQuestionId: nextQuestion?.id ?? null,
+          nextQuestionText: nextQuestion?.text ?? null,
+          simulatedTurnLatencyMs,
+        });
+
         const anomalies = detectTurnAnomalies({
           finalText: transcript,
           state: after,
           fieldId: field.id,
           expectedQuestionId: payload.question_id,
+          previousQuestionId,
           responseIds,
-          eventTypes: events.map((item) => item.event?.type).filter(Boolean),
-          responseStarted: events.some(
-            (item) => item.event?.type === "response.created",
-          ),
+          eventTypes: turnEvents.map((item) => item.event?.type).filter(Boolean),
+          responseStarted: Boolean(assistantStartedEvent),
+          apiStatuses: telemetry.networkLog
+            .filter((item) => item.direction === "response")
+            .map((item) => item.status),
         });
         assertNoAnomalies(anomalies);
-        expect(answer.answerState).toBe("CONFIRMED");
-        expect(after.currentQuestionId).toBe(payload.question_id);
+        expect(diagnostics.dataChannelErrors).toEqual([]);
+        previousQuestionId = payload.question_id;
+
         telemetry.recordTurn({
-          turn: index + 1,
+          turn,
           audio: { startMs: 0, endMs: 1000, durationMs: 1000 },
-          transcription: { partialCount: 1, finalText: transcript },
+          transcription: {
+            partialCount: 1,
+            finalText: transcript,
+            source: "fake_live_transport",
+          },
           interview: {
             questionId: payload.question_id,
             candidate: answer.candidateAnswer,
             confirmed: answer.recordAnswer,
+            answerState: answer.answerState,
             stateVersionBefore: before.stateVersion,
             stateVersionAfter: after.stateVersion,
+            currentQuestionBefore: before.currentQuestionId,
+            currentQuestionAfter: after.currentQuestionId,
+            nextQuestionId: nextQuestion?.id ?? null,
+            nextQuestionText: nextQuestion?.text ?? null,
           },
-          response: { firstAudioLatencyMs: 0 },
+          response: {
+            assistantSpeechStarted: Boolean(assistantStartedEvent),
+            simulatedTurnLatencyMs,
+            firstAudioLatencyMs: simulatedTurnLatencyMs,
+          },
+          timeline: turnTimeline,
           anomalies,
         });
       }
+
       expect(networkErrors).toEqual([]);
+      expect(telemetry.consoleErrors).toEqual([]);
+      expect(telemetry.dataChannelErrors).toEqual([]);
+      expect(telemetry.networkLog.some((item) => Number(item.status) >= 500)).toBe(false);
       expect(apiEvents.some((event) => event.type === "live_session_created")).toBe(true);
+      telemetry.event("test_completed", {
+        audioInputMode: "fake_microphone_wav",
+        transcriptSource: "fake_live_transport",
+        liveApiUsed: false,
+      });
     } catch (error) {
       telemetry.error(error);
       await writeEvidencePackage({
