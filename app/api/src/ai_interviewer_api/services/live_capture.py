@@ -137,7 +137,8 @@ def process_live_capture(
     record_id = str(record["id"])
     started = monotonic()
     with _delegation_lock(record_id):
-        snapshot = get_interview_state_snapshot(dict(record), user, persist=True)
+        # Keep state initialization as a side effect before accepting a receipt.
+        get_interview_state_snapshot(dict(record), user, persist=True)
         history = sorted(
             [
                 row

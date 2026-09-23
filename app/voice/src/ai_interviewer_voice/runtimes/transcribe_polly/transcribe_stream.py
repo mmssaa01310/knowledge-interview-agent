@@ -76,9 +76,6 @@ class AwsTranscribeStreamingPort:
         self._connected = asyncio.Event()
         self._initial_error: Exception | None = None
         self._closed = False
-        self.audio_queue_drop_count = 0
-        self.audio_queue_dropped_ms = 0.0
-        self._last_drop_log_at = 0.0
 
     async def start(
         self,
@@ -112,34 +109,26 @@ class AwsTranscribeStreamingPort:
     async def send_audio(self, pcm: bytes) -> None:
         if self._closed or not pcm:
             return
-        while self._audio_queue.full():
+        enqueued_at = monotonic()
+        while not self._closed:
             try:
-                dropped = self._audio_queue.get_nowait()
-                self._audio_queue.task_done()
-                self.audio_queue_drop_count += 1
-                dropped_ms = (
-                    len(dropped)
-                    / 2
-                    / self._config.input_sample_rate_hz
-                    * 1000
-                )
-                self.audio_queue_dropped_ms += dropped_ms
-                now = monotonic()
-                if (
-                    self.audio_queue_drop_count == 1
-                    or now - self._last_drop_log_at >= 1.0
-                ):
-                    self._last_drop_log_at = now
+                # Backpressure is preferable to silently removing the oldest
+                # PCM. The caller will stop producing frames when this await
+                # blocks, and the audio remains ordered across reconnects.
+                await asyncio.wait_for(self._audio_queue.put(pcm), timeout=0.5)
+                waited_ms = (monotonic() - enqueued_at) * 1000
+                if waited_ms >= 100:
                     logger.warning(
-                        "transcribe_audio_queue_drop dropped_count=%s dropped_ms=%.1f total_dropped_ms=%.1f queue_size=%s",
-                        self.audio_queue_drop_count,
-                        dropped_ms,
-                        self.audio_queue_dropped_ms,
-                        self._audio_queue.maxsize,
+                        "transcribe_audio_queue_backpressure waited_ms=%.1f queue_size=%s",
+                        waited_ms,
+                        self._audio_queue.qsize(),
                     )
-            except asyncio.QueueEmpty:
-                break
-        self._audio_queue.put_nowait(pcm)
+                return
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "transcribe_audio_queue_waiting queue_size=%s",
+                    self._audio_queue.qsize(),
+                )
 
     async def close(self) -> None:
         self._closed = True

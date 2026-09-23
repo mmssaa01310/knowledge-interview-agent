@@ -321,11 +321,13 @@ def start_speculative_voice_turn(
         name="voice-speculative-interpreter",
     ).start()
     logger.info(
-        "speculative_llm_accepted session_id=%s turn_id=%s result_id=%s transcript=%r state_version=%s",
+        "speculative_llm_accepted session_id=%s turn_id=%s result_id=%s "
+        "transcript_len=%s transcript_sha256=%s state_version=%s",
         voice_session_id,
         speculative_id,
         speculative_id,
-        transcript,
+        len(transcript),
+        sha256(transcript.encode("utf-8")).hexdigest()[:16],
         expected_state_version,
     )
     return {
@@ -438,11 +440,13 @@ def _discard_speculative_preview(
     with _SPECULATIVE_PREVIEWS_GUARD:
         _SPECULATIVE_PREVIEWS.pop(speculative_id, None)
     logger.info(
-        "speculative_llm_discarded session_id=%s turn_id=%s result_id=%s transcript=%r detail=%s",
+        "speculative_llm_discarded session_id=%s turn_id=%s result_id=%s "
+        "transcript_len=%s transcript_sha256=%s detail=%s",
         session_id,
         turn_id,
         speculative_id,
-        transcript,
+        len(transcript or ""),
+        sha256((transcript or "").encode("utf-8")).hexdigest()[:16],
         reason,
     )
 
@@ -1135,21 +1139,23 @@ def _process_structured_voice_turn(
                 )
                 logger.info(
                     "speculative_llm_reused session_id=%s turn_id=%s result_id=%s "
-                    "transcript=%r elapsed_ms=%s",
+                    "transcript_len=%s transcript_sha256=%s elapsed_ms=%s",
                     session.get("id"),
                     turn.get("id"),
                     speculative_id,
-                    turn.get("transcript"),
+                    len(str(turn.get("transcript") or "")),
+                    sha256(str(turn.get("transcript") or "").encode("utf-8")).hexdigest()[:16],
                     round((monotonic() - api_started_at) * 1000, 1),
                 )
             else:
                 logger.info(
                     "speculative_llm_discarded session_id=%s turn_id=%s result_id=%s "
-                    "transcript=%r elapsed_ms=%s detail=%s",
+                    "transcript_len=%s transcript_sha256=%s elapsed_ms=%s detail=%s",
                     session.get("id"),
                     turn.get("id"),
                     speculative_id,
-                    turn.get("transcript"),
+                    len(str(turn.get("transcript") or "")),
+                    sha256(str(turn.get("transcript") or "").encode("utf-8")).hexdigest()[:16],
                     round((monotonic() - api_started_at) * 1000, 1),
                     speculative_reason,
                 )

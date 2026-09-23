@@ -11,6 +11,26 @@ import {
   type GPTLiveEvent,
   type GPTLivePeerConnectionHandle,
 } from "../webrtc/gptLivePeerConnection";
+import {
+  isDelegatedResponseTerminalEvent,
+  isErrorEvent,
+  isInputTranscriptDelta,
+  isOutputTranscriptDelta,
+  isResponseAudioEvent,
+  isResponseDoneEvent,
+  isResponseFunctionCallEvent,
+  isResponseStartEvent,
+  isUserSpeechEndEvent,
+  isUserSpeechStartEvent,
+  readClientEventId,
+  readDelegationId,
+  readErrorField,
+  readNestedResponseEvent,
+  readResponseFunctionCall,
+  readResponseId,
+  resolveDelegationId,
+  transcriptTiming,
+} from "../runtime/gptLiveEventUtils";
 import { createLiveTranscriptCapture } from "../utils/liveTranscriptCapture";
 import { toStartErrorMessage } from "../utils/voiceErrors";
 import { logVoiceStartupEvent } from "../utils/voiceTelemetry";
@@ -49,6 +69,10 @@ const GPT_LIVE_CONTINUE_INSTRUCTIONS =
   + "Do not close while the persisted state is in progress. Produce the next "
   + "user-facing turn now; do not stop at an intermediate conversational transition "
   + "or an acknowledgement alone.";
+const GPT_LIVE_STATE_UPDATE_FAILED_INSTRUCTIONS =
+  "The interview state update did not complete. Do not advance to another checklist "
+  + "item or claim that the answer was saved. Stay on the current interview question "
+  + "and briefly ask the user to repeat or clarify their latest answer.";
 
 export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArgs) {
   const {
@@ -77,7 +101,6 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const captureRef = useRef<ReturnType<typeof createLiveTranscriptCapture> | null>(null);
   const latestUserTranscriptRef = useRef("");
   const completedUserTranscriptRef = useRef("");
-  const latestStateVersionRef = useRef(0);
   const transcriptRecordIdRef = useRef(recordId);
   const userTranscriptRevisionRef = useRef(0);
   const handledSpeechEndRevisionRef = useRef(-1);
@@ -99,6 +122,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const pendingDelegationIdsRef = useRef(new Set<string>());
   const delegationTranscriptSnapshotsRef = useRef(new Map<string, DelegationTranscriptSnapshot>());
   const stateUpdateQueueRef = useRef(Promise.resolve());
+  const stateUpdateAbortControllersRef = useRef(new Set<AbortController>());
   const currentRecordRef = useRef(recordId);
   currentRecordRef.current = recordId;
   const onInterviewStateChangedRef = useRef(onInterviewStateChanged);
@@ -157,7 +181,6 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     activeTurnRef.current = null;
     latestUserTranscriptRef.current = "";
     completedUserTranscriptRef.current = "";
-    latestStateVersionRef.current = 0;
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
@@ -166,6 +189,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     delegatedResponseIdsRef.current.clear();
     pendingDelegationIdsRef.current.clear();
     delegationTranscriptSnapshotsRef.current.clear();
+    for (const controller of stateUpdateAbortControllersRef.current) {
+      controller.abort();
+    }
+    stateUpdateAbortControllersRef.current.clear();
     captureRef.current?.stop();
     captureRef.current = null;
     connectionGenerationRef.current += 1;
@@ -193,6 +220,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     if (turn.responseStartTimeoutId !== undefined) {
       window.clearTimeout(turn.responseStartTimeoutId);
       turn.responseStartTimeoutId = undefined;
+    }
+    if (turn.waitNoticeTimeoutId !== undefined) {
+      window.clearTimeout(turn.waitNoticeTimeoutId);
+      turn.waitNoticeTimeoutId = undefined;
     }
     console.info("gpt_live_response_started", {
       session_id: sessionIdRef.current,
@@ -282,7 +313,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     });
     turn.waitNoticeTimeoutId = window.setTimeout(() => {
       const active = activeTurnRef.current;
-      if (!active || active.turnId !== turn.turnId || active.firstAudio || active.waitNoticeSent) {
+      if (!active || active.turnId !== turn.turnId || active.responseStarted
+        || active.firstAudio || active.waitNoticeSent) {
         return;
       }
       active.waitNoticeSent = true;
@@ -305,7 +337,18 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const handleDelegatedFunctionCall = useCallback(async (
     event: GPTLiveEvent,
     item: Record<string, unknown>,
+    context: {
+      connectionGeneration: number;
+      sessionId: string | null;
+      recordId?: string;
+    },
   ) => {
+    const isCurrentLiveCall = () => (
+      connectionGenerationRef.current === context.connectionGeneration
+      && currentRecordRef.current === context.recordId
+      && (!context.sessionId || sessionIdRef.current === context.sessionId)
+      && peerRef.current !== null
+    );
     const eventDelegationId = resolveDelegationId(
       event,
       delegatedResponseIdsRef.current,
@@ -367,8 +410,16 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       });
     }
     let output: unknown;
+    let stateUpdateAbortController: AbortController | undefined;
     try {
-      const stateUpdateRecordId = currentRecordRef.current;
+      if (!isCurrentLiveCall()) {
+        console.info("gpt_live_state_update_discarded_stale_session", {
+          delegation_id: delegationId,
+          call_id: callId,
+        });
+        return;
+      }
+      const stateUpdateRecordId = context.recordId;
       if (!stateUpdateRecordId) {
         throw new Error("gpt_live_record_id_missing");
       }
@@ -381,13 +432,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         turn_id: typeof argumentsValue.turn_id === "string"
           ? argumentsValue.turn_id
           : activeTurnRef.current?.turnId ?? `gpt-live-${delegationId}-${callId}`,
-        // The evaluator may have been created from an earlier session
-        // snapshot. Keep semantic fields untouched while using the latest
-        // state version already acknowledged by this Live session.
-        base_state_version: Math.max(
-          requestedBaseStateVersion,
-          latestStateVersionRef.current,
-        ),
+        // Keep the evaluator's version as the concurrency boundary. Rebasing
+        // an old semantic assessment onto a newer state can apply evidence to
+        // the wrong turn; the backend returns the current state instead.
+        base_state_version: requestedBaseStateVersion,
         question_id: typeof argumentsValue.question_id === "string"
           ? argumentsValue.question_id
           : "",
@@ -402,48 +450,29 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
           ? argumentsValue.evidence as { aspect_id: string; text: string }[]
           : [],
       };
+      stateUpdateAbortController = new AbortController();
+      stateUpdateAbortControllersRef.current.add(stateUpdateAbortController);
       const persist = async () => {
-        let requestPayload = {
-          ...stateUpdatePayload,
-          base_state_version: Math.max(
-            stateUpdatePayload.base_state_version,
-            latestStateVersionRef.current,
-          ),
-        };
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          output = await submitGPTLiveStateUpdateWithRetry(
-            stateUpdateRecordId,
-            requestPayload,
-            delegatedTranscript,
-          );
-          const persistedStateVersion = (output as { stateVersion?: unknown })?.stateVersion;
-          if (typeof persistedStateVersion === "number" && Number.isFinite(persistedStateVersion)) {
-            latestStateVersionRef.current = Math.max(
-              latestStateVersionRef.current,
-              persistedStateVersion,
-            );
-          }
-          const status = (output as { status?: unknown })?.status;
-          if (status !== "stale" || attempt === 1
-            || typeof persistedStateVersion !== "number"
-            || !Number.isFinite(persistedStateVersion)) {
-            break;
-          }
-          requestPayload = {
-            ...requestPayload,
-            base_state_version: persistedStateVersion,
-          };
-          console.warn("gpt_live_state_update_retry_stale", {
-            session_id: sessionIdRef.current,
-            delegation_id: delegationId,
-            call_id: callId,
-            state_version: persistedStateVersion,
-          });
+        if (!isCurrentLiveCall()) {
+          return;
         }
+        output = await submitGPTLiveStateUpdateWithRetry(
+          stateUpdateRecordId,
+          stateUpdatePayload,
+          delegatedTranscript,
+          stateUpdateAbortController?.signal,
+        );
       };
       const queued = stateUpdateQueueRef.current.catch(() => undefined).then(persist);
       stateUpdateQueueRef.current = queued.then(() => undefined, () => undefined);
       await queued;
+      if (!isCurrentLiveCall()) {
+        console.info("gpt_live_state_update_discarded_after_session_change", {
+          delegation_id: delegationId,
+          call_id: callId,
+        });
+        return;
+      }
       const acknowledgedStateVersion = (output as { stateVersion?: unknown })?.stateVersion;
       console.info("gpt_live_state_persisted", {
         session_id: sessionIdRef.current,
@@ -451,11 +480,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         call_id: callId,
         status: (output as { status?: string })?.status,
       });
-      void onInterviewStateChangedRef.current?.(
-        typeof acknowledgedStateVersion === "number" && Number.isFinite(acknowledgedStateVersion)
-          ? acknowledgedStateVersion
-          : undefined,
-      );
+      if ((output as { status?: unknown })?.status !== "error") {
+        void onInterviewStateChangedRef.current?.(
+          typeof acknowledgedStateVersion === "number" && Number.isFinite(acknowledgedStateVersion)
+            ? acknowledgedStateVersion
+            : undefined,
+        );
+      }
     } catch (error) {
       output = {
         status: "error",
@@ -466,6 +497,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         delegation_id: delegationId,
         call_id: callId,
       });
+    } finally {
+      if (stateUpdateAbortController) {
+        stateUpdateAbortControllersRef.current.delete(stateUpdateAbortController);
+      }
+    }
+    if (!isCurrentLiveCall()) {
+      return;
     }
     delegationTranscriptSnapshotsRef.current.delete(delegationId);
     delegationToolCallSeenRef.current.delete(delegationId);
@@ -483,11 +521,14 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         output: JSON.stringify(output),
       },
     });
+    const stateUpdateFailed = (output as { status?: unknown })?.status === "error";
     const responseRequested = outputSent && peer.sendEvent({
       type: "response.create",
       event_id: `gpt_live_state_tool_continue_${callId}`,
       response: {
-        instructions: GPT_LIVE_CONTINUE_INSTRUCTIONS,
+        instructions: stateUpdateFailed
+          ? GPT_LIVE_STATE_UPDATE_FAILED_INSTRUCTIONS
+          : GPT_LIVE_CONTINUE_INSTRUCTIONS,
       },
     });
     console.info("gpt_live_delegation_completed", {
@@ -566,7 +607,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       if (delegationId) {
         delegationToolCallSeenRef.current.add(delegationId);
       }
-      void handleDelegatedFunctionCall(event, functionCall);
+      void handleDelegatedFunctionCall(event, functionCall, {
+        connectionGeneration: connectionGenerationRef.current,
+        sessionId: eventSessionId,
+        recordId: currentRecordRef.current,
+      });
       return;
     }
 
@@ -785,7 +830,6 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     setStats(EMPTY_STATS);
     latestUserTranscriptRef.current = "";
     completedUserTranscriptRef.current = "";
-    latestStateVersionRef.current = 0;
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
@@ -995,206 +1039,18 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   };
 }
 
-function isInputTranscriptDelta(type: string): boolean {
-  return type === "session.input_transcript.delta"
-    || type === "input_transcript.delta"
-    || type === "conversation.item.input_audio_transcription.delta";
-}
-
-function isOutputTranscriptDelta(type: string): boolean {
-  return type === "session.output_transcript.delta"
-    || type === "output_transcript.delta"
-    || type === "response.output_transcript.delta"
-    || type === "response.output_audio_transcript.delta";
-}
-
-function isUserSpeechEndEvent(type: string): boolean {
-  return [
-    "session.input_transcript.done",
-    "input_transcript.done",
-    "session.input_transcript.completed",
-    "conversation.item.input_audio_transcription.completed",
-    "session.input_audio_buffer.speech_stopped",
-    "input_audio_buffer.speech_stopped",
-  ].includes(type);
-}
-
-function isUserSpeechStartEvent(type: string): boolean {
-  return [
-    "session.input_audio_buffer.speech_started",
-    "input_audio_buffer.speech_started",
-    "session.input_speech_started",
-    "input_speech_started",
-  ].includes(type);
-}
-
-function isResponseStartEvent(type: string | undefined): boolean {
-  return type === "response.created"
-    || type === "response.output_audio.delta"
-    || type === "session.output_audio.delta"
-    || type === "response.output_transcript.delta"
-    || type === "response.output_audio_transcript.delta"
-    || type === "session.output_transcript.delta";
-}
-
-function isResponseAudioEvent(type: string | undefined): boolean {
-  return type === "response.output_audio.delta"
-    || type === "session.output_audio.delta"
-    || type === "response.audio.delta";
-}
-
-function isResponseDoneEvent(type: string | undefined): boolean {
-  return type === "response.done"
-    || type === "response.output_audio.done"
-    || type === "session.output_audio.done"
-    || type === "response.audio.done";
-}
-
-function isResponseFunctionCallEvent(type: string | undefined): boolean {
-  return type === "response.output_item.done"
-    || type === "response.function_call_arguments.done";
-}
-
-function isDelegatedResponseTerminalEvent(type: string | undefined): boolean {
-  return type === "response.completed"
-    || type === "response.done"
-    || type === "response.failed"
-    || type === "response.incomplete"
-    || type === "response.cancelled";
-}
-
-function readNestedResponseEvent(event: GPTLiveEvent): Record<string, unknown> | undefined {
-  const nested = event.event;
-  return nested && typeof nested === "object"
-    ? nested as Record<string, unknown>
-    : undefined;
-}
-
-function readResponseFunctionCall(event: GPTLiveEvent): Record<string, unknown> | undefined {
-  const candidates = [event, readNestedResponseEvent(event)].filter(
-    (candidate): candidate is Record<string, unknown> => Boolean(candidate),
-  );
-  for (const candidate of candidates) {
-    const item = candidate.item;
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-    const itemRecord = item as Record<string, unknown>;
-    if (itemRecord.type === "function_call") {
-      return itemRecord;
-    }
-  }
-  for (const candidate of candidates) {
-    if (candidate.type !== "response.function_call_arguments.done") {
-      continue;
-    }
-    if (typeof candidate.name !== "string" || typeof candidate.call_id !== "string") {
-      continue;
-    }
-    return {
-      type: "function_call",
-      name: candidate.name,
-      call_id: candidate.call_id,
-      arguments: typeof candidate.arguments === "string" ? candidate.arguments : "{}",
-    };
-  }
-  return undefined;
-}
-
-function readDelegationId(event: GPTLiveEvent): string | undefined {
-  const delegation = event.delegation;
-  if (delegation && typeof delegation === "object" && "id" in delegation) {
-    const id = (delegation as Record<string, unknown>).id;
-    if (typeof id === "string" && id.trim()) {
-      return id;
-    }
-  }
-  const delegationId = event.delegation_id;
-  return typeof delegationId === "string" && delegationId.trim()
-    ? delegationId
-    : undefined;
-}
-
-function resolveDelegationId(
-  event: GPTLiveEvent,
-  delegatedResponseIds: Map<string, string>,
-): string | undefined {
-  const directId = readDelegationId(event);
-  if (directId) {
-    return directId;
-  }
-  const responseId = readResponseId(event);
-  if (!responseId) {
-    return undefined;
-  }
-  for (const [delegationId, mappedResponseId] of delegatedResponseIds) {
-    if (mappedResponseId === responseId) {
-      return delegationId;
-    }
-  }
-  return undefined;
-}
-
-function readResponseId(event: GPTLiveEvent): string | undefined {
-  const nested = readNestedResponseEvent(event);
-  const response = nested?.response;
-  if (response && typeof response === "object" && "id" in response) {
-    const id = (response as Record<string, unknown>).id;
-    if (typeof id === "string" && id.trim()) {
-      return id;
-    }
-  }
-  const delegation = event.delegation;
-  const delegationRecord = delegation && typeof delegation === "object"
-    ? delegation as Record<string, unknown>
-    : undefined;
-  for (const candidate of [event, nested, delegationRecord]) {
-    if (!candidate) {
-      continue;
-    }
-    for (const key of ["response_id", "responseId"]) {
-      const value = candidate[key];
-      if (typeof value === "string" && value.trim()) {
-        return value;
-      }
-    }
-  }
-  return undefined;
-}
-
-function readClientEventId(event: GPTLiveEvent): string | undefined {
-  const clientEventId = event.client_event_id;
-  if (typeof clientEventId === "string" && clientEventId.trim()) {
-    return clientEventId;
-  }
-  return typeof event.event_id === "string" && event.event_id.trim()
-    ? event.event_id
-    : undefined;
-}
-
-function isErrorEvent(type: string): boolean {
-  return type === "error" || type.endsWith(".error");
-}
-
-function readErrorField(error: unknown, field: "code" | "message"): string | undefined {
-  if (!error || typeof error !== "object" || !(field in error)) {
-    return undefined;
-  }
-  const value = (error as Record<string, unknown>)[field];
-  return typeof value === "string" ? value : undefined;
-}
-
 type GPTLiveStateUpdatePayload = Parameters<typeof submitGPTLiveStateUpdate>[1];
 
 async function submitGPTLiveStateUpdateWithRetry(
   recordId: string,
   payload: GPTLiveStateUpdatePayload,
   transcript: string,
+  signal?: AbortSignal,
 ) {
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      return await submitGPTLiveStateUpdate(recordId, payload, transcript);
+      return await submitGPTLiveStateUpdate(recordId, payload, transcript, signal);
     } catch (error) {
       lastError = error;
       if (attempt === 1 || !isRetryableLiveStateUpdateError(error)) {
@@ -1219,11 +1075,4 @@ function isRetryableLiveStateUpdateError(error: unknown): boolean {
     return true;
   }
   return status === 408 || status === 429 || status >= 500;
-}
-
-function transcriptTiming(event: GPTLiveEvent): { start_ms?: number; end_ms?: number } {
-  return {
-    ...(typeof event.start_ms === "number" ? { start_ms: event.start_ms } : {}),
-    ...(typeof event.end_ms === "number" ? { end_ms: event.end_ms } : {}),
-  };
 }

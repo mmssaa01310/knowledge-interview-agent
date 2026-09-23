@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from contextlib import contextmanager
 from copy import deepcopy
 from hashlib import sha256
 from threading import RLock
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import HTTPException
 
@@ -201,7 +202,7 @@ def process_live_state_update(
     """
 
     record_id = str(record.get("id") or payload.record_id)
-    with _delegation_lock(record_id):
+    with _live_state_update_lock(record_id, user.tenant_id):
         logger.info(
             "gpt_live_state_tool_call record_id=%s delegation_id=%s call_id=%s "
             "turn_id=%s base_state_version=%s question_id=%s",
@@ -386,12 +387,41 @@ def process_live_state_update(
         state["liveLastDelegationId"] = payload.delegation_id
         state["liveLastToolCallId"] = payload.call_id
         state["liveStateSource"] = "responses_delegation"
-        committed = commit_interview_state(
-            state,
-            user,
-            source="gpt_live_responses_state_update",
-            expected_state_version=current_version,
-        )
+        try:
+            committed = commit_interview_state(
+                state,
+                user,
+                source="gpt_live_responses_state_update",
+                expected_state_version=current_version,
+            )
+        except ValueError as exc:
+            if str(exc) != "interview_state_version_conflict":
+                raise
+            # A foreground writer may not use the Live advisory lock. Do not
+            # turn that legitimate CAS race into a 500, and never rebase the
+            # semantic assessment onto the newer state in this path.
+            latest_snapshot = get_interview_state_snapshot(dict(record), user, persist=True)
+            latest_state = latest_snapshot.get("interviewState") or {}
+            status = (
+                "duplicate"
+                if payload.turn_id in _string_list(latest_state.get("liveAppliedTurnIds"))
+                else "stale"
+            )
+            logger.warning(
+                "gpt_live_state_update_version_conflict record_id=%s turn_id=%s "
+                "status=%s current_state_version=%s",
+                record_id,
+                payload.turn_id,
+                status,
+                latest_state.get("stateVersion"),
+            )
+            return _state_update_response(
+                status,
+                latest_snapshot,
+                record=record,
+                knowledge=knowledge,
+                user=user,
+            )
         message.update(
             {
                 "liveStateApplied": True,
@@ -777,6 +807,15 @@ def _string_list(value: Any) -> list[str]:
 def _delegation_lock(record_id: str) -> RLock:
     with _LIVE_DELEGATION_LOCKS_GUARD:
         return _LIVE_DELEGATION_LOCKS.setdefault(record_id, RLock())
+
+
+@contextmanager
+def _live_state_update_lock(record_id: str, tenant_id: str) -> Iterator[None]:
+    """Serialize Live state updates across threads and API replicas."""
+
+    with store.live_capture_lock(f"live-state:{tenant_id}:{record_id}"):
+        with _delegation_lock(record_id):
+            yield
 
 
 def _delegation_client_message_id(turn_id: str) -> str:

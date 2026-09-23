@@ -65,13 +65,10 @@ export function createOpenAIRealtimeEventHandler(
     const eventType = stringValue(event.type);
     const voiceSessionId = voiceSessionRef.current?.id;
     const emitOpenAIAssistantMessage = ({
-      responseId,
       text,
       metadata,
     }: {
-      responseId: string;
       text: string;
-      voiceSessionId?: string;
       metadata?: Record<string, string>;
     }) => {
       const message = realtimeAssistantMessage(voiceSessionRef.current, metadata, text);
@@ -245,9 +242,7 @@ export function createOpenAIRealtimeEventHandler(
           timestamp_ms: Math.round(performance.now()),
         });
         emitOpenAIAssistantMessage({
-          responseId,
           text: transcript,
-          voiceSessionId,
           metadata: openAIResponseMetadataRef.current.get(responseId),
         });
         return;
@@ -281,9 +276,7 @@ export function createOpenAIRealtimeEventHandler(
         if (!responseId || !transcript) return;
         openAIAssistantTranscriptRef.current.set(responseId, transcript);
         emitOpenAIAssistantMessage({
-          responseId,
           text: transcript,
-          voiceSessionId,
           metadata: openAIResponseMetadataRef.current.get(responseId),
         });
         return;
@@ -319,7 +312,7 @@ export function createOpenAIRealtimeEventHandler(
           : openAIResponseMetadataRef.current.get(responseId);
         if (metadata) openAIResponseMetadataRef.current.set(responseId, metadata);
         const transcript = openAIAssistantTranscriptRef.current.get(responseId);
-        if (transcript) emitOpenAIAssistantMessage({ responseId, text: transcript, voiceSessionId, metadata });
+        if (transcript) emitOpenAIAssistantMessage({ text: transcript, metadata });
         if (metadata?.kikiori_kind === "initial") {
           setInitialReplyActive(false);
           if (voiceSessionRef.current && responseStatus === "completed") {

@@ -78,6 +78,13 @@ from ai_interviewer_voice.startup_timing import log_voice_startup_stage
 
 logger = logging.getLogger(__name__)
 
+
+def _transcript_digest(text: str | None) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+    return sha256(value.encode("utf-8")).hexdigest()[:16]
+
 LISTEN_ACK_TEXT = "はい。"
 PROCESSING_ACK_TEXT = "回答を確認しています。"
 LONG_PROCESSING_TEXT = "確認に少し時間がかかっています。"
@@ -882,14 +889,17 @@ class TranscribePollyRuntime:
         )
         logger.info(
             "transcribe_turn_event event=%s session_id=%s turn_id=%s result_id=%s "
-            "is_partial=%s stable_text=%r transcript=%r elapsed_ms=%s detail=%s",
+            "is_partial=%s stable_text_len=%s stable_text_sha256=%s "
+            "transcript_len=%s transcript_sha256=%s elapsed_ms=%s detail=%s",
             event,
             session_id,
             turn_id,
             result_id,
             result.is_partial if result is not None else None,
-            stable_text or "",
-            transcript or "",
+            len(stable_text or ""),
+            _transcript_digest(stable_text),
+            len(transcript or ""),
+            _transcript_digest(transcript),
             elapsed_ms,
             detail or "",
         )
@@ -1353,8 +1363,14 @@ class TranscribePollyRuntime:
         if category == "PROCESS_TIMEOUT":
             # The API may still commit this turn after the client-side timeout.
             # Keep its clientTurnId active so a later utterance cancels that exact
-            # backend turn before any replacement turn starts.
-            await self._emit_input_state("ANSWER_PROCESSING")
+            # backend turn before any replacement turn starts, but reopen the
+            # microphone. Leaving the gate closed here permanently deadlocks the
+            # runtime when the backend has actually failed rather than completed
+            # in the background.
+            await self._resume_input_after_formal_reply(
+                "ANSWER_LISTENING",
+                reason="interview_process_timeout",
+            )
             return True
         if self._interview_status == "active" and self._formal_response_id is None:
             await self._resume_input_after_formal_reply(
@@ -2586,7 +2602,9 @@ class TranscribePollyRuntime:
         return max(
             self._partial_segments.values(),
             key=lambda result: (
-                result.start_time if result.start_time is not None else float("inf"),
+                getattr(result, "start_time", None)
+                if getattr(result, "start_time", None) is not None
+                else float("inf"),
                 self._segment_sequence.get(result.result_id or "anonymous-partial", 0),
             ),
         )
@@ -2602,9 +2620,8 @@ class TranscribePollyRuntime:
         return sorted(
             self._final_segments,
             key=lambda key: (
-                self._final_segment_results.get(key).start_time
-                if self._final_segment_results.get(key) is not None
-                and self._final_segment_results[key].start_time is not None
+                getattr(self._final_segment_results.get(key), "start_time", None)
+                if getattr(self._final_segment_results.get(key), "start_time", None) is not None
                 else float("inf"),
                 self._segment_sequence.get(key, 0),
             ),

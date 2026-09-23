@@ -1064,7 +1064,7 @@ async def test_new_speech_cancels_only_pending_evaluating_turn() -> None:
 
 
 @pytest.mark.anyio
-async def test_process_timeout_keeps_turn_pending_until_a_replacement_turn_cancels_it() -> None:
+async def test_process_timeout_reopens_listening_while_retainining_turn_cancellation() -> None:
     bridge = TimeoutBridge()
     runtime = TranscribePollyRuntime(
         config=_config(),
@@ -1098,7 +1098,7 @@ async def test_process_timeout_keeps_turn_pending_until_a_replacement_turn_cance
     )
     assert any(
         isinstance(event, InputStateChanged)
-        and event.input_state == "ANSWER_PROCESSING"
+        and event.input_state == "ANSWER_LISTENING"
         for event in events
     )
     assert runtime._active_client_turn_id == "timed-out-client-turn"

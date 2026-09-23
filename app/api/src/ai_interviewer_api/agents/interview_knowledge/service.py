@@ -11,6 +11,7 @@ from hashlib import sha256
 from threading import Event, Lock
 from time import monotonic, time
 from typing import Any
+from uuid import uuid4
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     accept_no_answer,

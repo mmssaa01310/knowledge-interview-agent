@@ -10,6 +10,10 @@ const hookSource = await readFile(
   new URL("../src/features/realtime-voice/hooks/useGPTLiveVoiceConversation.ts", import.meta.url),
   "utf8",
 );
+const eventUtilsSource = await readFile(
+  new URL("../src/features/realtime-voice/runtime/gptLiveEventUtils.ts", import.meta.url),
+  "utf8",
+);
 
 function position(text) {
   const index = source.indexOf(text);
@@ -63,14 +67,15 @@ test("GPT-Live never exposes the server API key to browser code", () => {
 });
 
 test("GPT-Live transcript deltas stay observational", () => {
+  const eventHandlingSource = `${hookSource}\n${eventUtilsSource}`;
   assert.match(hookSource, /gpt_live_input_transcript_delta/);
   assert.match(hookSource, /gpt_live_output_transcript_delta/);
   assert.doesNotMatch(hookSource, /setPartialTranscript|process_turn/);
   assert.match(hookSource, /submitGPTLiveStateUpdate/);
   assert.doesNotMatch(hookSource, /type: "session\.thinking\.append"/);
   assert.match(hookSource, /session\.delegation\.created/);
-  assert.match(hookSource, /response\.output_item\.done/);
-  assert.match(hookSource, /response\.item\.create/);
+  assert.match(eventHandlingSource, /response\.output_item\.done/);
+  assert.match(eventHandlingSource, /response\.item\.create/);
   assert.match(hookSource, /response\.create/);
   assert.match(hookSource, /gpt_live_continuation_[\s\S]+type: "response\.create"/);
 });

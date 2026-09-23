@@ -20,6 +20,13 @@ const captureSource = await readFile(new URL(
 const captureCode = ts.transpileModule(captureSource, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const eventUtilsSource = await readFile(new URL(
+  "../src/features/realtime-voice/runtime/gptLiveEventUtils.ts", import.meta.url),
+  "utf8",
+);
+const eventUtilsCode = ts.transpileModule(eventUtilsSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
 
 function setup(refresh = () => {}, stateUpdate = () => Promise.resolve({
   status: "applied", stateVersion: 2,
@@ -43,6 +50,7 @@ function setup(refresh = () => {}, stateUpdate = () => Promise.resolve({
   };
   const hookClearTimeout = (id) => hookTimers.delete(id);
   const captureExports = {};
+  const eventUtilsExports = {};
   const pageListeners = new Map();
   vm.runInNewContext(captureCode, {
     exports: captureExports, console, TextEncoder,
@@ -52,6 +60,9 @@ function setup(refresh = () => {}, stateUpdate = () => Promise.resolve({
     },
     setTimeout: (callback) => { const id = ++nextTimer; timers.set(id, callback); return id; },
     clearTimeout: (id) => timers.delete(id),
+  });
+  vm.runInNewContext(eventUtilsCode, {
+    exports: eventUtilsExports,
   });
   const exports = {};
   vm.runInNewContext(code, {
@@ -75,6 +86,7 @@ function setup(refresh = () => {}, stateUpdate = () => Promise.resolve({
       if (name.endsWith("voiceErrors")) return { toStartErrorMessage: () => "error" };
       if (name.endsWith("voiceTelemetry")) return { logVoiceStartupEvent() {} };
       if (name.endsWith("liveTranscriptCapture")) return captureExports;
+      if (name.endsWith("gptLiveEventUtils")) return eventUtilsExports;
       if (name.endsWith("realtimeVoiceClient")) return {
         getGPTLiveCaptureStatus: () => new Promise((resolve, reject) => polls.push({ resolve, reject })),
         submitGPTLiveCapture: (...args) => new Promise((resolve, reject) => {
@@ -355,7 +367,7 @@ test("standard function-call completion events update the interview state", asyn
   app.hook.stop();
 });
 
-test("subsequent state updates reuse the latest acknowledged state version", async () => {
+test("each Live assessment keeps the evaluator state version as its concurrency boundary", async () => {
   const app = setup(undefined, (...args) => Promise.resolve({
     status: "applied",
     stateVersion: args[1].call_id === "call-version-1" ? 3 : 4,
@@ -388,11 +400,11 @@ test("subsequent state updates reuse the latest acknowledged state version", asy
   await flush();
 
   assert.equal(app.stateRequests[0].args[1].base_state_version, 0);
-  assert.equal(app.stateRequests[1].args[1].base_state_version, 3);
+  assert.equal(app.stateRequests[1].args[1].base_state_version, 0);
   app.hook.stop();
 });
 
-test("a stale state response is retried with the returned current version", async () => {
+test("a stale state response is returned to Live without rebasing the old assessment", async () => {
   let attempts = 0;
   const app = setup(undefined, (...args) => {
     attempts += 1;
@@ -416,9 +428,42 @@ test("a stale state response is retried with the returned current version", asyn
   });
   await flush();
 
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 1);
   assert.equal(app.stateRequests[0].args[1].base_state_version, 0);
-  assert.equal(app.stateRequests[1].args[1].base_state_version, 5);
+  assert.equal(app.sent.filter((event) => event.event_id === "gpt_live_state_tool_continue_call-stale-retry").length, 1);
+  app.hook.stop();
+});
+
+test("an in-flight Live state update cannot write into a restarted session", async () => {
+  let resolveUpdate;
+  const app = setup(undefined, () => new Promise((resolve) => {
+    resolveUpdate = resolve;
+  }));
+  await app.hook.start();
+  app.receive({
+    type: "response.function_call_arguments.done",
+    delegation_id: "delegation-old-session",
+    name: "update_interview_state",
+    call_id: "call-old-session",
+    arguments: JSON.stringify({
+      turn_id: "turn-old-session", base_state_version: 0, question_id: "question-1",
+      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+    }),
+  });
+  await flush();
+  assert.equal(app.stateRequests.length, 1);
+
+  app.hook.stop();
+  await app.hook.start();
+  const sentAfterRestart = app.sent.length;
+  resolveUpdate({
+    status: "applied", stateVersion: 1, currentQuestionId: "question-1",
+    coveredAspects: [], missingAspects: [],
+  });
+  await flush();
+
+  assert.equal(app.sent.length, sentAfterRestart);
+  assert.equal(app.states.some(({ value }) => value === "completed"), false);
   app.hook.stop();
 });
 
@@ -484,6 +529,31 @@ test("a transient state update failure retries the same idempotent tool call", a
   assert.equal(attempts, 2);
   assert.equal(app.stateRequests.length, 2);
   assert.equal(app.stateRequests[0].args[1].turn_id, app.stateRequests[1].args[1].turn_id);
+  app.hook.stop();
+});
+
+test("a state update error resumes Live without advancing the checklist", async () => {
+  const app = setup(undefined, () => Promise.reject(new Error("state unavailable")));
+  await app.hook.start();
+  app.receive({
+    type: "response.function_call_arguments.done",
+    delegation_id: "delegation-state-error",
+    name: "update_interview_state",
+    call_id: "call-state-error",
+    arguments: JSON.stringify({
+      turn_id: "turn-state-error", base_state_version: 0, question_id: "question-1",
+      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+    }),
+  });
+  await flush();
+
+  const continuation = app.sent.find(
+    (event) => event.event_id === "gpt_live_state_tool_continue_call-state-error",
+  );
+  assert.ok(continuation);
+  assert.match(continuation.response.instructions, /state update did not complete/);
+  assert.doesNotMatch(continuation.response.instructions, /latest persisted state/);
+  assert.equal(app.stateRequests.length, 2, "network failures may still use the bounded retry");
   app.hook.stop();
 });
 

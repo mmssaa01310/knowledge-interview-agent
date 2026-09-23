@@ -38,6 +38,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
     get_structured_interview_state_snapshot,
+    preview_structured_interview_output,
     resolve_structured_model_id,
 )
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
@@ -258,6 +259,52 @@ def _add_structured_answer(
             "answerToQuestionId": question["questionId"],
         },
     )
+
+
+def test_speculative_preview_without_source_message_id_uses_generated_evidence_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = {"id": "record-preview-generated-id", "knowledgeId": "knowledge-preview-generated-id"}
+    knowledge = {
+        "id": "knowledge-preview-generated-id",
+        "name": "プレビュー",
+        "interviewPlan": {"profile": "fixed_form"},
+    }
+
+    class CapturingProvider:
+        def __init__(self) -> None:
+            self.context: Mapping[str, object] | None = None
+
+        def interpret(self, *, context: Mapping[str, object], **_: object) -> StructuredInterviewOutput:
+            self.context = context
+            return StructuredInterviewOutput()
+
+    provider = CapturingProvider()
+    monkeypatch.setattr(
+        "ai_interviewer_api.agents.interview_knowledge.service._get_structured_provider",
+        lambda *_args, **_kwargs: provider,
+    )
+
+    preview_structured_interview_output(
+        record,
+        knowledge,
+        user,
+        transcript="回答のプレビューです。",
+        answer_to_question_id=None,
+        current_question_override={
+            "questionId": "q-preview",
+            "targetType": "field",
+            "targetId": "field-preview",
+            "targetLabel": "確認項目",
+            "text": "確認項目を教えてください。",
+        },
+    )
+
+    assert provider.context is not None
+    messages = provider.context["conversation"]
+    assert isinstance(messages, list)
+    assert messages[-1]["id"].startswith("speculative-message-")
 
 
 def test_structured_model_selection_uses_luna_when_configured() -> None:
