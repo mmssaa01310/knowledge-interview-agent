@@ -7,9 +7,14 @@
     "dev:web": "pnpm --dir app/web dev",
     "build:web": "pnpm --dir app/web build",
     "lint:web": "pnpm --dir app/web lint",
+    "test:e2e:voice": "playwright test tests/e2e/voice --project=chromium",
+    "voice-test": "node tests/e2e/voice/cli.mjs",
     "docker:config": "docker compose -f infra/docker-compose.yml config",
     "docker:build": "docker compose -f infra/docker-compose.yml build",
     "docker:up": "docker compose -f infra/docker-compose.yml up",
     "docker:down": "docker compose -f infra/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.52.0"
   }
 }

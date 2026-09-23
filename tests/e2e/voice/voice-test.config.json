@@ -1,0 +1,9 @@
+{
+  "real_api_enabled": false,
+  "max_sessions": 3,
+  "max_turns_per_session": 8,
+  "max_audio_seconds_per_session": 120,
+  "max_jev_calls": 20,
+  "max_llm_judge_calls": 5,
+  "max_retries": 1
+}

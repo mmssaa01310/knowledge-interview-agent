@@ -49,3 +49,23 @@ jobs:
           node-version: 22
       - run: node --test tests/*.test.mjs
         working-directory: app/web
+
+  voice-e2e-local:
+    name: voice / playwright local
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: app/api/uv.lock
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: uv sync --locked
+        working-directory: app/api
+      - run: VOICE_TEST_START_LOCAL_STACK=true pnpm test:e2e:voice

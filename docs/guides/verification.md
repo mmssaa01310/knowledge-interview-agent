@@ -29,6 +29,17 @@ pnpm build
 node --test tests/*.test.mjs
 ```
 
+ブラウザ音声の決定的E2Eは、リポジトリルートで実行する。通常実行では外部音声APIを呼び出さない。
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+pnpm test:e2e:voice
+```
+
+APIとWebのローカルスタックも自動起動する場合は、`VOICE_TEST_START_LOCAL_STACK=true`を付ける。
+実プロバイダを使うテストは`VOICE_TEST_REAL_API_ENABLED=true`を明示した場合だけ実行する。
+
 ## 3. Backend API
 
 ```bash
