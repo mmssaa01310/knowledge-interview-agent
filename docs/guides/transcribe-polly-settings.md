@@ -43,9 +43,9 @@ AWS profileはVoiceコンテナからホストの`~/.aws`を参照します。�
 | 環境変数 | 初期値 | 何を設定するか | 調整するとどうなるか |
 | --- | --- | --- | --- |
 | `VOICE_ENDPOINT_SILENCE_MS` | `600` | 発話後の無音を検出して、回答の終了候補（soft endpoint）にするまでの時間です。 | 小さくすると次の処理が早くなりますが、文の途中で確定しやすくなります。大きくすると話し終わりを待てますが応答開始が遅くなります。 |
-| `VOICE_TRANSCRIPT_SETTLE_MS` | `300` | soft endpoint後、最終Transcriptが届くのを待つ時間です。 | 小さくすると応答が早くなりますが、最後の語を取りこぼす可能性があります。 |
+| `VOICE_TRANSCRIPT_SETTLE_MS` | `300` | soft endpoint後にTranscriptの更新を観測する互換設定です。これだけでユーザー発話を確定することはありません。 | 小さくしてもhard endpointより前にはInterview APIへ送られません。 |
 | `VOICE_FINAL_RESULT_SETTLE_MS` | `150` | `VOICE_TRANSCRIPT_SETTLE_MS`を指定しない旧呼び出し元向けの確定待ち時間です。 | 通常のCompose経路では`VOICE_TRANSCRIPT_SETTLE_MS`を優先します。互換設定として残しています。 |
-| `VOICE_HARD_TIMEOUT_MS` | `1500` | soft endpoint後に最終Transcriptが来ない場合の安全上限です。 | 小さくするとハングを早く回復できますが、遅れて届く最後のTranscriptを待たなくなります。 |
+| `VOICE_HARD_TIMEOUT_MS` | `1200` | soft endpoint後も入力を同じユーザーturnとして待つhard endpointまでの時間です。初期値ではsoft 600msと合わせて最大約1800msです。 | 小さくすると応答は早くなりますが、長い間を置いた続きが次turnへ分かれる可能性があります。 |
 | `VOICE_HARD_ENDPOINT_MS` | `1000` | 旧endpoint判定を使う呼び出し元向けの互換設定です。 | 現行の本番Compose経路は`VOICE_ENDPOINT_SILENCE_MS`、`VOICE_TRANSCRIPT_SETTLE_MS`、`VOICE_HARD_TIMEOUT_MS`を使います。 |
 
 ## 5. Polly（読み上げ）の設定
@@ -75,6 +75,7 @@ Pollyの速度指定の詳細は[AWS公式ドキュメント](https://docs.aws.a
 | 環境変数 | 初期値 | 何を設定するか | 調整するとどうなるか |
 | --- | --- | --- | --- |
 | `VOICE_ENABLE_BACKCHANNELS` | `false` | 発話中の「はい。」などの相槌と、処理中の案内を有効にするかです。 | `true`にするとPollyの先行生成が行われます。会話のテンポは上がりますが、発話への割り込みに注意が必要です。 |
+| `VOICE_PROCESSING_ACK_DELAY_MS` | `900` | ユーザーturnを確定してから、Interview APIの処理が続いている場合に固定音声の相槌を開始するまでの時間です。 | `700`〜`1200`ms程度で調整します。応答が速い場合は正式応答開始時にキャンセルされます。 |
 | `VOICE_TURN_SAVE_TIMEOUT_SECONDS` | `5` | 音声ターンの保存処理を待つ上限秒数です。 | 小さくしすぎると保存完了前にタイムアウトしやすくなります。 |
 | `VOICE_TURN_PROCESS_TIMEOUT_SECONDS` | `30` | Interview APIの回答解釈・次質問生成を待つ上限秒数です。 | 小さくすると失敗応答へ早く切り替わりますが、通常のLLM処理も失敗扱いになりやすくなります。 |
 | `VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS` | `5` | 読み上げ音声の再生終了を待つ上限秒数です。 | 小さくすると入力再開が早くなりますが、末尾再生中に次ターンへ進むリスクがあります。 |

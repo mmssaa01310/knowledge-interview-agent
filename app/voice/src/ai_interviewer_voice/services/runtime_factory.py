@@ -94,6 +94,7 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
                 polly_speech_rate=settings.polly_speech_rate,
                 polly_max_parallel_requests=settings.polly_max_parallel_requests,
                 backchannel_enabled=settings.voice_enable_backchannels,
+                processing_ack_delay_ms=settings.voice_processing_ack_delay_ms,
                 listen_ack_text=runtime_texts["listen_ack"],
                 processing_ack_text=runtime_texts["processing_ack"],
                 long_processing_text=runtime_texts["long_processing"],

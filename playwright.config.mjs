@@ -19,9 +19,15 @@ export default defineConfig({
   retries: voiceTestConfig.maxRetries,
   workers: 1,
   outputDir: voiceTestConfig.outputDir,
-  reporter: process.env.CI
-    ? [["line"], ["json", { outputFile: voiceTestConfig.outputDir + "/playwright.json" }]]
-    : "list",
+  reporter: [
+    ...(process.env.CI
+      ? [["line"], ["json", { outputFile: voiceTestConfig.outputDir + "/playwright.json" }]]
+      : [["list"]]),
+    ["./tests/e2e/voice/reporting/voiceReportReporter.mjs", {
+      outputDir: voiceTestConfig.outputDir,
+      runId: voiceTestConfig.runId,
+    }],
+  ],
   use: {
     baseURL: voiceTestConfig.baseURL,
     trace: "retain-on-failure",

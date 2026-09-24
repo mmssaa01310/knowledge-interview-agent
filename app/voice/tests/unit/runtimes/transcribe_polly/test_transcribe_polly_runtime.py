@@ -526,7 +526,7 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
 
     await transcribe.result("最終回答です", is_partial=False, confidence=0.91)
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.11)
+    await asyncio.sleep(0.18)
 
     assert len(bridge.process_calls) == 1
     assert bridge.process_calls[0]["transcript"] == "最終回答です"
@@ -563,7 +563,7 @@ async def test_duplicate_transcribe_final_events_create_only_one_interview_turn(
     await transcribe.result("回答です。", is_partial=False, result_id="same-result")
     await transcribe.result("回答です。", is_partial=False, result_id="same-result")
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.11)
+    await asyncio.sleep(0.18)
 
     assert len(bridge.process_calls) == 1
     assert bridge.process_calls[0]["transcript"] == "回答です。"
@@ -590,7 +590,7 @@ async def test_final_transcript_is_emitted_before_api_control_evaluation() -> No
     await runtime.push_audio(_frame(1200))
     await transcribe.result("会話を終了してください", is_partial=False)
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.11)
+    await asyncio.sleep(0.18)
 
     assert bridge.process_calls[0]["turn_type"] == "ANSWER"
     assert bridge.process_calls[0]["answer_to_question_id"] == "q-1"
@@ -856,7 +856,7 @@ async def test_finalized_answer_blocks_transcribe_until_next_question_drains() -
         result_id="second-answer",
     )
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.11)
+    await asyncio.sleep(0.18)
     assert len(bridge.process_calls) == 4
     assert bridge.process_calls[-1]["transcript"] == "次の回答です。"
     await runtime.close()
@@ -1428,7 +1428,7 @@ async def test_formal_reply_reopens_after_drain_and_uses_current_question() -> N
         result_id="confirmation-result-after-drain",
     )
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.11)
+    await asyncio.sleep(0.18)
 
     assert bridge.process_calls[-1]["transcript"] == "はい"
     assert bridge.process_calls[-1]["answer_to_question_id"] == "q-2"
@@ -1703,7 +1703,7 @@ async def test_normal_endpoint_finalizes_transcribe_final_for_backend_assessment
     await runtime.push_audio(_frame(1200))
     await transcribe.result(transcript, stable_text=transcript, is_partial=False)
     await runtime.push_audio(_frame(0))
-    await asyncio.sleep(0.09)
+    await asyncio.sleep(0.23)
     assert bool(bridge.process_calls) is normal_should_finalize
     await runtime.close()
 
@@ -1767,7 +1767,7 @@ async def test_final_result_rebuild_includes_later_segment_before_formal_commit(
             _config(),
             normal_endpoint_ms=30,
             transcript_settle_ms=40,
-            hard_timeout_ms=300,
+            hard_timeout_ms=80,
             backchannel_enabled=False,
         ),
         interview_bridge=bridge,  # type: ignore[arg-type]
@@ -1792,7 +1792,7 @@ async def test_final_result_rebuild_includes_later_segment_before_formal_commit(
         result_id="segment-2",
         start_time=1.0,
     )
-    await asyncio.sleep(0.07)
+    await asyncio.sleep(0.15)
 
     assert bridge.process_calls
     assert bridge.process_calls[-1]["transcript"] == "山田です製造部の課長です"
@@ -1992,7 +1992,7 @@ async def test_long_speech_uses_longer_final_endpoint_settle_window() -> None:
     await asyncio.sleep(0.08)
 
     assert bridge.process_calls == []
-    await asyncio.sleep(0.14)
+    await asyncio.sleep(0.25)
     assert len(bridge.process_calls) == 1
     await runtime.close()
 
@@ -2091,3 +2091,308 @@ async def test_warm_failure_is_retrieved_and_close_leaves_no_tasks() -> None:
 
     assert not runtime._background_tasks
     assert not runtime._notice_tasks
+
+
+async def _wait_until(predicate, *, timeout: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("condition was not reached before timeout")
+        await asyncio.sleep(0.01)
+
+
+def _robustness_context() -> VoiceRuntimeContext:
+    return VoiceRuntimeContext(
+        voice_session_id="vs-robustness",
+        record_id="record-robustness",
+        provider="transcribe_polly",
+    )
+
+
+@pytest.mark.anyio
+async def test_split_utterance_commits_once_after_later_segment() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            backchannel_enabled=False,
+            normal_endpoint_ms=30,
+            hard_timeout_ms=180,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(_robustness_context())
+
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result(
+        "名前は",
+        is_partial=False,
+        result_id="split-1",
+        start_time=0.0,
+    )
+    await runtime.push_audio(_frame(0))
+    await _wait_until(lambda: runtime._soft_endpoint_triggered)
+    await asyncio.sleep(0.08)
+    assert bridge.process_calls == []
+
+    # The second segment resumes the same user turn and must cancel the
+    # speculative endpoint rather than creating a second answer.
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result(
+        "はるかです。",
+        is_partial=False,
+        result_id="split-2",
+        start_time=0.9,
+    )
+    await runtime.push_audio(_frame(0))
+    await _wait_until(lambda: len(bridge.process_calls) == 1, timeout=1.0)
+
+    assert bridge.process_calls[0]["transcript"] == "名前はるかです。"
+    assert sum(isinstance(event, UserTranscriptFinal) for event in runtime._events._queue) == 1
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_split_utterance_long_pause_stays_pending_until_hard_endpoint() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            backchannel_enabled=False,
+            normal_endpoint_ms=30,
+            hard_timeout_ms=260,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(_robustness_context())
+
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("設備の担当は", is_partial=False, result_id="pause-1")
+    await runtime.push_audio(_frame(0))
+    await _wait_until(lambda: runtime._soft_endpoint_triggered)
+    await asyncio.sleep(0.15)
+    assert bridge.process_calls == []
+
+    # Transcribe may deliver the next final after a pause even when local VAD
+    # did not observe a new voiced frame in between.
+    await transcribe.result("開発です。", is_partial=False, result_id="pause-2")
+    await _wait_until(lambda: len(bridge.process_calls) == 1, timeout=1.0)
+    assert bridge.process_calls[0]["transcript"] == "設備の担当は開発です。"
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_multiple_transcribe_finals_produce_one_turn_and_one_response() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            backchannel_enabled=False,
+            normal_endpoint_ms=30,
+            hard_timeout_ms=120,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(_robustness_context())
+
+    await runtime.push_audio(_frame(1200))
+    for index, text_value in enumerate(("顧客の", "要望を聞き", "開発しました。"), start=1):
+        await transcribe.result(
+            text_value,
+            is_partial=False,
+            result_id=f"multi-{index}",
+            start_time=float(index),
+        )
+    await runtime.push_audio(_frame(0))
+    await _wait_until(lambda: len(bridge.process_calls) == 1, timeout=1.0)
+
+    assert bridge.process_calls[0]["transcript"] == "顧客の要望を聞き開発しました。"
+    assert (
+        sum(
+            call["client_turn_id"].startswith("transcribe-")
+            for call in bridge.process_calls
+        )
+        == 1
+    )
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_user_resumes_before_commit_cancels_only_soft_endpoint() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            backchannel_enabled=False,
+            normal_endpoint_ms=30,
+            hard_timeout_ms=200,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(_robustness_context())
+
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("プロジェクトリーダーを", is_partial=False, result_id="resume-1")
+    await runtime.push_audio(_frame(0))
+    await _wait_until(lambda: runtime._soft_endpoint_triggered)
+    assert bridge.process_calls == []
+
+    await runtime.push_audio(_frame(1200))
+    assert runtime._soft_endpoint_triggered is False
+    await transcribe.result("担当しています。", is_partial=False, result_id="resume-2")
+    await runtime.push_audio(_frame(0))
+    await _wait_until(lambda: len(bridge.process_calls) == 1, timeout=1.0)
+
+    assert bridge.process_calls[0]["transcript"] == "プロジェクトリーダーを担当しています。"
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_slow_response_plays_one_processing_ack_before_main_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    bridge = BlockingBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=30,
+            hard_timeout_ms=80,
+            listen_ack_min_speech_ms=10_000,
+            processing_ack_delay_ms=20,
+            long_processing_notice_ms=5_000,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(_robustness_context())
+
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("遅い処理の回答です。", is_partial=False, result_id="slow-1")
+    await runtime.push_audio(_frame(0))
+    await asyncio.wait_for(bridge.process_started.wait(), timeout=1.0)
+    await _wait_until(
+        lambda: any(
+            isinstance(event, AssistantBackchannel)
+            and event.kind == "processing_ack"
+            for event in runtime._events._queue
+        )
+    )
+
+    bridge.release_process.set()
+    assert runtime._processing_task is not None
+    await runtime._processing_task
+    events = list(runtime._events._queue)
+    ack_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, AssistantBackchannel)
+        and event.kind == "processing_ack"
+    )
+    main_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, AssistantSpeechStarted)
+        and event.response_id == "response-1"
+    )
+    assert ack_index < main_index
+    assert sum(
+        isinstance(event, AssistantBackchannel) and event.kind == "processing_ack"
+        for event in events
+    ) == 1
+    assert "transcribe_turn_telemetry event=ack_started" in caplog.text
+    assert "turnCommitToAckMs" in caplog.text
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_fast_response_does_not_play_processing_ack() -> None:
+    bridge = FakeBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=30,
+            hard_timeout_ms=80,
+            listen_ack_min_speech_ms=10_000,
+            processing_ack_delay_ms=80,
+            long_processing_notice_ms=5_000,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(_robustness_context())
+
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("すぐ返る回答です。", is_partial=False, result_id="fast-1")
+    await runtime.push_audio(_frame(0))
+    await _wait_until(lambda: len(bridge.process_calls) == 1, timeout=1.0)
+    await asyncio.sleep(0.12)
+
+    assert not any(
+        isinstance(event, AssistantBackchannel)
+        and event.kind == "processing_ack"
+        for event in runtime._events._queue
+    )
+    await runtime.close()
+
+
+@pytest.mark.anyio
+async def test_user_interrupts_processing_ack_and_starts_a_new_turn() -> None:
+    bridge = BlockingBridge()
+    transcribe = FakeTranscribe()
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            normal_endpoint_ms=30,
+            hard_timeout_ms=80,
+            listen_ack_min_speech_ms=10_000,
+            processing_ack_delay_ms=20,
+            long_processing_notice_ms=5_000,
+            barge_in_voice_ms=40,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=FakePolly(),
+    )
+    await runtime.start(_robustness_context())
+
+    await runtime.push_audio(_frame(1200))
+    await transcribe.result("前の回答です。", is_partial=False, result_id="interrupt-1")
+    await runtime.push_audio(_frame(0))
+    await asyncio.wait_for(bridge.process_started.wait(), timeout=1.0)
+    await _wait_until(
+        lambda: any(
+            isinstance(event, AssistantBackchannel)
+            and event.kind == "processing_ack"
+            for event in runtime._events._queue
+        )
+    )
+
+    await runtime.push_audio(_frame(1200))
+    await runtime.push_audio(_frame(1200))
+    await _wait_until(lambda: runtime._turn_active and runtime._input_available)
+
+    events = list(runtime._events._queue)
+    assert any(isinstance(event, AssistantInterrupted) for event in events)
+    assert not any(
+        isinstance(event, AssistantSpeechStarted)
+        and event.response_id == "response-1"
+        for event in events
+    )
+    await runtime.close()

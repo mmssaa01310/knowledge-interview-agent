@@ -78,7 +78,7 @@ class Settings:
         os.getenv("VOICE_TRANSCRIPT_SETTLE_MS", "300")
     )
     voice_hard_timeout_ms: int = int(
-        os.getenv("VOICE_HARD_TIMEOUT_MS", "1500")
+        os.getenv("VOICE_HARD_TIMEOUT_MS", "1200")
     )
     polly_voice_id: str = os.getenv("POLLY_VOICE_ID", "Kazuha")
     polly_engine: str = os.getenv("POLLY_ENGINE", "neural")
@@ -89,6 +89,9 @@ class Settings:
     voice_enable_backchannels: bool = os.getenv(
         "VOICE_ENABLE_BACKCHANNELS", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
+    voice_processing_ack_delay_ms: int = int(
+        os.getenv("VOICE_PROCESSING_ACK_DELAY_MS", "900")
+    )
     interview_turn_save_timeout_seconds: float = float(os.getenv("VOICE_TURN_SAVE_TIMEOUT_SECONDS", "5"))
     # Structured-interview turns can include an LLM interpretation and next-question
     # generation. Keep a finite bound, but do not treat ordinary 6-10 second turns

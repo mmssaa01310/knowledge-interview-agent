@@ -29,7 +29,11 @@ class TranscribePollyRuntimeConfig:
     listen_ack_min_stable_chars: int = 5
     backchannel_cooldown_ms: int = 3000
     backchannel_enabled: bool = False
-    processing_ack_delay_ms: int = 1300
+    # A fixed, cached acknowledgement may be played while the interview API
+    # is still evaluating a committed turn.  Keep the default inside the
+    # short UX window; the feature itself remains opt-in via
+    # ``backchannel_enabled``.
+    processing_ack_delay_ms: int = 900
     long_processing_notice_ms: int = 3000
     barge_in_voice_ms: int = 120
     polly_voice_id: str = "Kazuha"

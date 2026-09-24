@@ -97,8 +97,11 @@ Transcribe側は`ResultId`ごとに最新Resultを保持し、`IsPartial=false`�
 UIとsoft endpointの先行入力に利用する。600msのsoft endpointでは入力ゲートを閉じず、
 `start_speculative_turn()`で非コミットのStructured Interpreterを開始する。
 
-正式Turnを作成するのは`transcript_settle_ms=300`の更新停止後、またはsoft endpoint後の
-`hard_timeout_ms=1500`安全装置到達時だけである。正式確定前にDB/Interview Stateは更新しない。
+正式Turnを作成するのは、soft endpoint後のhard endpoint到達時だけである。Transcribeの
+`IsPartial=false`はセグメント確定に過ぎず、`transcript_settle_ms`の経過だけでは正式Turnを
+作成しない。これにより、無音を挟んだ後続セグメントを同じユーザーturnへ統合できる。正式確定前に
+DB/Interview Stateは更新しない。確定後のInterview API処理が遅い場合は、固定キャッシュ済みの
+相槌を最大1回だけ再生し、相槌はTurnやInterview Stateへ保存しない。
 正式Transcriptが先行入力と一致した場合のみ先行解釈を再利用し、異なる場合・未完了の場合は
 先行結果を破棄して正式Transcriptで実行する。
 

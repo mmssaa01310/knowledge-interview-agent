@@ -1,8 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const configuredRunId = String(process.env.VOICE_TEST_RUN_ID || "").trim();
+const DEFAULT_RUN_ID = configuredRunId
+  || new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)
+    + "-" + String(process.pid);
+// Playwright loads this module in the runner and in worker processes. Share
+// the generated id through the inherited environment so one test run has one
+// output directory and one report.
+if (!configuredRunId) process.env.VOICE_TEST_RUN_ID = DEFAULT_RUN_ID;
 const DEFAULT_OUTPUT_DIR = process.env.VOICE_TEST_OUTPUT_DIR
-  || path.resolve(process.cwd(), "test-results", "voice-e2e");
+  || path.resolve(process.cwd(), "test-results", "voice-runs", DEFAULT_RUN_ID);
 const RUN_COUNTERS = new Map();
 
 function booleanEnv(value, fallback = false) {
@@ -27,6 +35,7 @@ export function readVoiceTestConfig(env = process.env) {
     configuredJevCalls,
   );
   const config = {
+    runId: String(env.VOICE_TEST_RUN_ID || DEFAULT_RUN_ID),
     realApiEnabled: booleanEnv(env.VOICE_TEST_REAL_API_ENABLED, false),
     realProvider: ["gpt_live", "transcribe_polly"].includes(requestedProvider)
       ? requestedProvider

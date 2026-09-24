@@ -227,6 +227,8 @@ class TranscribePollyRuntime:
         self._assistant_response_states: dict[str, AssistantResponseState] = {}
         self._interrupt_emitted_for: set[str] = set()
         self._backchannel_metadata: dict[str, tuple[OutputKind, str]] = {}
+        self._response_turn_ids: dict[str, str] = {}
+        self._turn_timings: dict[str, dict[str, Any]] = {}
         self._pipeline_timings: dict[str, dict[str, Any]] = {}
         self._startup_first_tts_chunk_logged = False
         self._pending_listening_state: Literal[
@@ -384,7 +386,7 @@ class TranscribePollyRuntime:
         ):
             raise ValueError("TranscribePollyRuntime requires 16kHz mono PCM")
         monitor_barge_in = (
-            self._formal_response_id is not None
+            self._assistant_speaking
             and self._interview_status not in {"completed", "stopped"}
         )
         if self._input_available or monitor_barge_in:
@@ -555,6 +557,8 @@ class TranscribePollyRuntime:
             return_exceptions=True,
         )
         self._notice_tasks.clear()
+        self._response_turn_ids.clear()
+        self._turn_timings.clear()
         self._pipeline_timings.clear()
         self._background_tasks.clear()
         await self._transcribe.close()
@@ -622,6 +626,7 @@ class TranscribePollyRuntime:
                 await self._start_user_turn(
                     increment_generation=False,
                     initial_voiced_ms=initial_ms,
+                    allow_when_gated=True,
                 )
                 return
             if not self._turn_active:
@@ -651,6 +656,7 @@ class TranscribePollyRuntime:
                 self._soft_endpoint_triggered = False
                 self._soft_endpoint_at = None
                 self._settle_started_at = None
+                self._log_transcript_event("speech_resumed")
             self._speech_active = True
             self._silence_started_at = None
             return
@@ -665,9 +671,23 @@ class TranscribePollyRuntime:
         *,
         increment_generation: bool,
         initial_voiced_ms: int,
+        allow_when_gated: bool = False,
     ) -> None:
-        if self._interview_status in {"completed", "stopped"} or not self._input_available:
+        if self._interview_status in {"completed", "stopped"}:
             return
+        if not self._input_available:
+            if not allow_when_gated:
+                return
+            # A VAD-confirmed barge-in may interrupt the fixed processing
+            # acknowledgement while the previous turn is still pending. Do
+            # not reopen the gate for ordinary gated audio.
+            self._input_available = True
+            self._input_gate_reason = None
+            self._silence_keepalive_logged = False
+            self._listening_ready_at = monotonic()
+            self._first_input_after_resume = True
+            self._audio_batch.clear()
+            await self._emit_input_state("ANSWER_LISTENING")
         if increment_generation:
             self._generation += 1
         await self._cancel_notice_tasks()
@@ -677,6 +697,7 @@ class TranscribePollyRuntime:
         self._turn_started_at = monotonic()
         self._voiced_duration_ms = initial_voiced_ms
         await self._emit(UserSpeechStarted())
+        self._log_transcript_event("speech_start")
 
     def _reset_transcription_turn_state(self) -> None:
         """Discard transcript/timing data so it cannot leak into another turn."""
@@ -773,6 +794,9 @@ class TranscribePollyRuntime:
                 else self._combined_final_text()
             )
             self._latest_partial_text = latest_partial.text if latest_partial else ""
+            self._log_transcript_event("transcribe_segment_final", result=result)
+            # Keep the historical event name for existing log consumers while
+            # exposing the turn-level name used by robustness telemetry.
             self._log_transcript_event("transcript_segment_final", result=result)
             logger.info(
                 "voice_turn_transcribe_final transcribe_final=%s result_id=%s",
@@ -781,6 +805,11 @@ class TranscribePollyRuntime:
             )
         visible = self._combined_transcript()
         if visible:
+            self._log_transcript_event(
+                "pending_transcript_updated",
+                result=result,
+                transcript=visible,
+            )
             await self._emit(UserTranscriptPartial(text=visible))
 
     async def _on_transcribe_reconnecting(self, attempt: int) -> None:
@@ -904,6 +933,43 @@ class TranscribePollyRuntime:
             detail or "",
         )
 
+    def _log_turn_telemetry(
+        self,
+        event: str,
+        client_turn_id: str | None,
+        **details: object,
+    ) -> None:
+        """Emit bounded turn telemetry without sending it through Interview API."""
+
+        session_id = self._context.voice_session_id if self._context else None
+        logger.info(
+            "transcribe_turn_telemetry event=%s session_id=%s client_turn_id=%s details=%s",
+            event,
+            session_id,
+            client_turn_id,
+            details,
+        )
+
+    @staticmethod
+    def _turn_latency_metrics(timing: dict[str, Any]) -> dict[str, int | None]:
+        commit_at = timing.get("turn_finalize_at_ms")
+        final_at = timing.get("transcript_final_at_ms")
+        ack_started_at = timing.get("ack_started_at_ms")
+        ack_ended_at = timing.get("ack_ended_at_ms")
+        main_started_at = timing.get("main_started_at_ms")
+
+        def delta(end: object, start: object) -> int | None:
+            if not isinstance(end, (int, float)) or not isinstance(start, (int, float)):
+                return None
+            return max(0, round(end - start))
+
+        return {
+            "segmentFinalToTurnCommitMs": delta(commit_at, final_at),
+            "turnCommitToAckMs": delta(ack_started_at, commit_at),
+            "turnCommitToMainResponseMs": delta(main_started_at, commit_at),
+            "ackToMainResponseMs": delta(main_started_at, ack_ended_at),
+        }
+
     async def _endpoint_loop(self) -> None:
         # Keep the endpoint watcher alive while the input gate is closed.  The
         # gate is reopened only after formal assistant playback has drained;
@@ -933,16 +999,20 @@ class TranscribePollyRuntime:
                         "transcript_settle_started",
                         stable_text=self._combined_stable_text(),
                     )
-                settle_ms = int((monotonic() - self._settle_started_at) * 1000)
-                if settle_ms >= self._transcript_settle_ms():
-                    await self._finalize_user_turn(final)
-                    continue
+                # A Transcribe ``IsPartial=false`` result closes only an STT
+                # segment. It is not a conversation-turn boundary. Keep the
+                # pending transcript open until the hard endpoint so a later
+                # segment (including one after a natural pause) can be merged
+                # into the same user turn.
             if (
                 self._soft_endpoint_at is not None
                 and int((monotonic() - self._soft_endpoint_at) * 1000)
                 >= self._hard_timeout_after_soft_ms()
             ):
-                await self._recover_from_missing_final_transcript()
+                if self._has_final_transcript and _normalize_ending(final):
+                    await self._finalize_user_turn(final)
+                else:
+                    await self._recover_from_missing_final_transcript()
 
     async def _maybe_play_listen_ack(self, stable: str) -> None:
         if not self._config.backchannel_enabled:
@@ -976,6 +1046,11 @@ class TranscribePollyRuntime:
         self._settle_started_at = None
         transcript = self._combined_stable_text().strip()
         self._log_transcript_event(
+            "soft_endpoint",
+            stable_text=self._combined_stable_text(),
+            transcript=transcript,
+        )
+        self._log_transcript_event(
             "soft_endpoint_triggered",
             stable_text=self._combined_stable_text(),
             transcript=transcript,
@@ -995,11 +1070,27 @@ class TranscribePollyRuntime:
         turn_finalize_at_ms = int(time() * 1000)
         client_turn_id = self._final_client_turn_id()
         speculative_id = self._speculative_id
+        self._turn_timings[client_turn_id] = {
+            "client_turn_id": client_turn_id,
+            "transcript_final_at_ms": self._last_transcribe_final_at_ms,
+            "turn_finalize_at_ms": turn_finalize_at_ms,
+            "user_speech_end_at_ms": self._last_user_speech_end_at_ms,
+        }
+        self._log_turn_telemetry(
+            "user_turn_committed",
+            client_turn_id,
+            segmentFinalToTurnCommitMs=(
+                max(0, turn_finalize_at_ms - self._last_transcribe_final_at_ms)
+                if self._last_transcribe_final_at_ms is not None
+                else None
+            ),
+            forced=forced,
+        )
         self._log_transcript_event(
             "transcript_finalized",
             result_id=(self._final_result_ids[-1] if self._final_result_ids else client_turn_id),
             transcript=normalized,
-            detail="hard_timeout" if forced else "settled",
+            detail="hard_timeout" if forced else "hard_endpoint",
         )
         logger.info(
             "voice_turn_timing_event event=turn_finalize user_speech_end=%s transcribe_final=%s turn_finalize=%s forced=%s",
@@ -1154,8 +1245,10 @@ class TranscribePollyRuntime:
                             continue
                         stream_queue = asyncio.Queue()
                         streamed_response_id = stream_event.response_id
+                        self._response_turn_ids[streamed_response_id] = client_turn_id
                         self._pipeline_timings[streamed_response_id] = {
                             "turn_id": client_turn_id,
+                            "client_turn_id": client_turn_id,
                             "transcript_final_at_ms": transcript_final_at_ms
                             or int(time() * 1000),
                             "turn_finalize_at_ms": turn_finalize_at_ms
@@ -1290,6 +1383,7 @@ class TranscribePollyRuntime:
         api_completed_at = monotonic()
         pipeline_timing: dict[str, Any] = {
             "turn_id": result.turn_id,
+            "client_turn_id": client_turn_id,
             "user_speech_end_at_ms": self._last_user_speech_end_at_ms,
             "transcribe_final_at_ms": transcript_final_at_ms or int(time() * 1000),
             "transcript_final_at_ms": transcript_final_at_ms or int(time() * 1000),
@@ -1304,6 +1398,7 @@ class TranscribePollyRuntime:
             existing_timing.update(pipeline_timing)
             pipeline_timing = existing_timing
         self._pipeline_timings[result.response_id] = pipeline_timing
+        self._response_turn_ids[result.response_id] = client_turn_id
         logger.info(
             "voice_turn_api_completed voice_session_id=%s turn_id=%s response_id=%s question_id=%s api_processing_ms=%s transcribe_to_api_completed_ms=%s api_metrics=%s",
             self._context.voice_session_id,
@@ -1447,6 +1542,8 @@ class TranscribePollyRuntime:
         )
         self._assistant_response_states[response_id] = AssistantResponseState.PLANNED
         self._backchannel_metadata[response_id] = (kind, text)
+        if kind is OutputKind.PROCESSING_ACK and self._active_client_turn_id is not None:
+            self._response_turn_ids[response_id] = self._active_client_turn_id
         result = await self._output.play(request)
         if not result.accepted:
             self._backchannel_metadata.pop(response_id, None)
@@ -2101,6 +2198,40 @@ class TranscribePollyRuntime:
                 timing["polly_first_chunk_ms"],
                 timing["total_turn_latency_ms"],
             )
+        client_turn_id = self._response_turn_ids.get(request.response_id)
+        if timing is not None:
+            client_turn_id = timing.get("client_turn_id") or client_turn_id
+        turn_timing = (
+            self._turn_timings.get(client_turn_id)
+            if client_turn_id is not None
+            else None
+        )
+        now_ms = int(time() * 1000)
+        if request.kind is OutputKind.FORMAL_REPLY:
+            if turn_timing is not None:
+                turn_timing["main_started_at_ms"] = now_ms
+            self._log_turn_telemetry(
+                "assistant_main_started",
+                client_turn_id,
+                **(
+                    self._turn_latency_metrics(turn_timing)
+                    if turn_timing is not None
+                    else {}
+                ),
+            )
+        elif request.kind is OutputKind.PROCESSING_ACK:
+            if turn_timing is not None:
+                turn_timing["ack_started_at_ms"] = now_ms
+            self._log_turn_telemetry(
+                "ack_started",
+                client_turn_id,
+                **(
+                    self._turn_latency_metrics(turn_timing)
+                    if turn_timing is not None
+                    else {}
+                ),
+            )
+
         backchannel = self._backchannel_metadata.get(request.response_id)
         if backchannel is not None:
             kind, text = backchannel
@@ -2187,6 +2318,41 @@ class TranscribePollyRuntime:
             transcript=None,
             detail={"kind": request.kind.value, "audioDurationMs": duration_ms},
         )
+        pipeline_timing = self._pipeline_timings.get(request.response_id)
+        client_turn_id = self._response_turn_ids.get(request.response_id)
+        if pipeline_timing is not None:
+            client_turn_id = pipeline_timing.get("client_turn_id") or client_turn_id
+        turn_timing = (
+            self._turn_timings.get(client_turn_id)
+            if client_turn_id is not None
+            else None
+        )
+        if request.kind is OutputKind.PROCESSING_ACK:
+            if turn_timing is not None:
+                turn_timing["ack_ended_at_ms"] = int(time() * 1000)
+            self._log_turn_telemetry(
+                "ack_ended",
+                client_turn_id,
+                interrupted=False,
+                **(
+                    self._turn_latency_metrics(turn_timing)
+                    if turn_timing is not None
+                    else {}
+                ),
+            )
+        elif request.kind is OutputKind.FORMAL_REPLY:
+            if turn_timing is not None:
+                turn_timing["main_ended_at_ms"] = int(time() * 1000)
+            self._log_turn_telemetry(
+                "assistant_main_ended",
+                client_turn_id,
+                interrupted=False,
+                **(
+                    self._turn_latency_metrics(turn_timing)
+                    if turn_timing is not None
+                    else {}
+                ),
+            )
         if request.kind is not OutputKind.FORMAL_REPLY:
             self._assistant_speaking = False
             self._backchannel_metadata.pop(request.response_id, None)
@@ -2195,9 +2361,21 @@ class TranscribePollyRuntime:
             )
         else:
             self._pipeline_timings.pop(request.response_id, None)
+            if client_turn_id is not None:
+                self._turn_timings.pop(client_turn_id, None)
+        self._response_turn_ids.pop(request.response_id, None)
 
     async def _on_output_interrupted(self, request: AudioOutputRequest) -> None:
         interrupted_formal = self._formal_response_id == request.response_id
+        pipeline_timing = self._pipeline_timings.get(request.response_id)
+        client_turn_id = self._response_turn_ids.get(request.response_id)
+        if pipeline_timing is not None:
+            client_turn_id = pipeline_timing.get("client_turn_id") or client_turn_id
+        turn_timing = (
+            self._turn_timings.get(client_turn_id)
+            if client_turn_id is not None
+            else None
+        )
         next_input_state = (
             self._pending_listening_state if interrupted_formal else None
         )
@@ -2212,6 +2390,33 @@ class TranscribePollyRuntime:
         )
         if request.kind is OutputKind.FORMAL_REPLY:
             self._pipeline_timings.pop(request.response_id, None)
+            if turn_timing is not None:
+                turn_timing["main_ended_at_ms"] = int(time() * 1000)
+            self._log_turn_telemetry(
+                "assistant_main_ended",
+                client_turn_id,
+                interrupted=True,
+                **(
+                    self._turn_latency_metrics(turn_timing)
+                    if turn_timing is not None
+                    else {}
+                ),
+            )
+            if client_turn_id is not None:
+                self._turn_timings.pop(client_turn_id, None)
+        elif request.kind is OutputKind.PROCESSING_ACK:
+            if turn_timing is not None:
+                turn_timing["ack_ended_at_ms"] = int(time() * 1000)
+            self._log_turn_telemetry(
+                "ack_ended",
+                client_turn_id,
+                interrupted=True,
+                **(
+                    self._turn_latency_metrics(turn_timing)
+                    if turn_timing is not None
+                    else {}
+                ),
+            )
         if self._output.active_response_id in {None, request.response_id}:
             self._assistant_speaking = False
         if request.response_id in self._interrupt_emitted_for:
@@ -2228,6 +2433,7 @@ class TranscribePollyRuntime:
                 next_input_state,
                 reason="formal_reply_interrupted",
             )
+        self._response_turn_ids.pop(request.response_id, None)
 
     def _release_formal_playback_waiter(self) -> None:
         drained_event = self._formal_playback_drained_event

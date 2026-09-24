@@ -203,6 +203,23 @@ NORMALの各ターンでは、次の順序をTimelineに記録します。
 
 LLM Judgeは初期実装では呼び出していません。決定論的検査で異常が発生した場合に追加できるcost-guard付きの境界だけを用意しています。
 
+## 静的HTMLレポート
+
+Playwrightの各Run終了時に、外部サーバーやCDNを使わない静的レポートを自動生成します。
+
+    test-results/voice-runs/<run-id>/report.html
+
+ブラウザで直接開ける`file://`形式で、Dashboard、behavior別のPASS/FAIL、失敗種別、Level 2 / Level 3のレイテンシ（p50 / p95 / p99）、Jev・LLM Judge・音声APIの利用状況、Failure Explorerを確認できます。失敗項目は展開すると、AI質問、ユーザーtranscript、AI応答、Expected / Actual、Interview State、TimelineとEvidenceへの相対リンクを表示します。behavior、status、level、issue typeのフィルタもレポート内だけで動作します。
+
+入力データが存在する場合は`summary.json`、`sessions.jsonl`、`metrics.json`、`failures.json`を利用します。従来の`exploration-summary.json`、`level3-summary.json`、`telemetry.json` / `telemetry.jsonl`も読み込み、必要な正規化済み入力をRunディレクトリへ出力します。レポート生成に失敗してもE2E本体の成否は変更せず、警告を出力します。
+
+標準出力には次の形式でパスを表示します。
+
+    Voice test report:
+    test-results/voice-runs/<run-id>/report.html
+
+同じRunディレクトリの親が`test-results/voice-runs`の場合は、最新Runを指す`test-results/voice-runs/latest/report.html`も更新します。金額を正確に算出できない利用量について、推測コストは表示しません。
+
 ## 外部APIが呼ばれる条件
 
 - Level 1 / Level 2: GPT Live、Responses、Transcribe、Polly、Jev、LLM Judgeを呼ばない
