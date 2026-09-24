@@ -209,7 +209,7 @@ Playwrightの各Run終了時に、外部サーバーやCDNを使わない静的�
 
     test-results/voice-runs/<run-id>/report.html
 
-ブラウザで直接開ける`file://`形式で、Dashboard、behavior別のPASS/FAIL、失敗種別、Level 2 / Level 3のレイテンシ（p50 / p95 / p99）、Jev・LLM Judge・音声APIの利用状況、Failure Explorerを確認できます。失敗項目は展開すると、AI質問、ユーザーtranscript、AI応答、Expected / Actual、Interview State、TimelineとEvidenceへの相対リンクを表示します。behavior、status、level、issue typeのフィルタもレポート内だけで動作します。
+ブラウザで直接開ける`file://`形式で、日本語の実行概要、回答パターン別の成功・失敗、失敗内容と影響、Level 2 / Level 3のレイテンシ（p50 / p95 / p99）、Jev・LLM Judge・音声APIの利用状況、失敗の詳細を確認できます。失敗項目は展開すると、AIの質問、ユーザーの文字起こし、AIの返答、期待結果 / 実際の結果、Interview State、タイムラインと証拠ファイルへの相対リンクを表示します。内部コードは原因調査用に併記します。回答パターン、結果、実行レベル、失敗種別のフィルタもレポート内だけで動作します。
 
 入力データが存在する場合は`summary.json`、`sessions.jsonl`、`metrics.json`、`failures.json`を利用します。従来の`exploration-summary.json`、`level3-summary.json`、`telemetry.json` / `telemetry.jsonl`も読み込み、必要な正規化済み入力をRunディレクトリへ出力します。レポート生成に失敗してもE2E本体の成否は変更せず、警告を出力します。
 

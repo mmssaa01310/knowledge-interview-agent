@@ -36,6 +36,99 @@ export const REPORT_FAILURE_TYPES = Object.freeze([
   "WebSocket/DataChannel error",
 ]);
 
+export const REPORT_BEHAVIOR_INFO = Object.freeze({
+  NORMAL: { label: "通常回答", description: "質問に対して通常どおり回答したケース" },
+  HESITATION: { label: "ためらい・言いよどみ", description: "考えながら、または言いよどみを含めて回答したケース" },
+  SELF_CORRECTION: { label: "自己訂正", description: "回答途中で自分の発言を訂正したケース" },
+  MULTI_ANSWER: { label: "複数項目を含む回答", description: "複数の質問項目に関係する情報を一度に回答したケース" },
+  AMBIGUOUS: { label: "曖昧な回答", description: "内容が曖昧で追加確認が必要なケース" },
+  ASK_CLARIFICATION: { label: "質問の意味を確認", description: "ユーザーが質問の意味や意図を確認したケース" },
+  SILENCE: { label: "無発話", description: "ユーザーの発話がない、または無音だったケース" },
+  OFF_TOPIC: { label: "質問と無関係な回答", description: "現在の質問とは異なる内容を回答したケース" },
+  CONTRADICTION: { label: "矛盾する回答", description: "過去の回答と矛盾する内容を回答したケース" },
+  CHANGE_PREVIOUS_ANSWER: { label: "過去回答の変更", description: "以前の回答内容を変更したケース" },
+  DONT_KNOW: { label: "分からない・回答できない", description: "分からない、または回答を控えたケース" },
+  PARTIAL_ANSWER: { label: "一部回答", description: "質問に含まれる観点の一部だけを回答したケース" },
+  LONG_ANSWER: { label: "長い回答", description: "通常より長い発話で回答したケース" },
+  ANSWER_FUTURE_QUESTION: { label: "後続質問への先回り回答", description: "後で尋ねる項目も先に回答したケース" },
+  USER_INTERRUPTION: { label: "ユーザー割り込み", description: "AIの発話中にユーザーが割り込んだケース" },
+  SPLIT_UTTERANCE: { label: "分割発話", description: "一つの回答を複数回の発話に分けたケース" },
+});
+
+export const REPORT_FAILURE_INFO = Object.freeze({
+  ANSWER_NOT_PERSISTED: {
+    label: "回答が保存されていない",
+    description: "確定した文字起こしはあるが、回答がcandidateまたはconfirmedとして保存されていません。",
+  },
+  QUESTION_NOT_ADVANCED: {
+    label: "次の質問へ進まない",
+    description: "回答処理後に、期待される次の質問へ進んでいません。",
+  },
+  REPEATED_QUESTION: {
+    label: "同じ質問の不要な繰り返し",
+    description: "回答済みの質問が、必要な理由なく再度提示されています。",
+  },
+  DUPLICATE_RESPONSE: {
+    label: "AI応答が重複",
+    description: "同じターンにAIの応答が複数回開始されています。",
+  },
+  TRANSCRIPT_FINAL_MISSING: {
+    label: "確定文字起こしがない",
+    description: "ユーザー発話のfinal transcriptを取得できていません。",
+  },
+  RESPONSE_TIMEOUT: {
+    label: "AI応答のタイムアウト",
+    description: "ユーザー発話後、制限時間内にAI応答が開始されていません。",
+  },
+  TURN_COMMITTED_TOO_EARLY: {
+    label: "確定前にターンを保存",
+    description: "final transcriptを受け取る前にターンが確定されています。",
+  },
+  CONTEXT_LOSS: {
+    label: "会話コンテキストの欠落",
+    description: "過去の回答や会話状態が次の処理へ引き継がれていません。",
+  },
+  SELF_CORRECTION_FAILED: {
+    label: "自己訂正を反映できない",
+    description: "訂正後の回答が保存またはInterview Stateへ正しく反映されていません。",
+  },
+  MULTI_ANSWER_INFORMATION_LOST: {
+    label: "複数情報の一部が欠落",
+    description: "一つの発話に含まれていた複数の回答情報の一部が失われています。",
+  },
+  "inappropriate clarification": {
+    label: "不適切な聞き返し",
+    description: "聞き取れている回答に対して、不要または対象が不明確な聞き返しが生成されています。",
+  },
+  API_5XX: {
+    label: "APIサーバーエラー（5xx）",
+    description: "バックエンドまたは外部APIが5xxエラーを返しています。",
+  },
+  "WebSocket/DataChannel error": {
+    label: "音声通信チャネルエラー",
+    description: "WebSocketまたはWebRTC DataChannelで通信エラーが発生しています。",
+  },
+  ERROR: {
+    label: "未分類のエラー",
+    description: "エラーは記録されていますが、既知の失敗分類に対応していません。",
+  },
+});
+
+const REPORT_LATENCY_INFO = Object.freeze({
+  speechEndToTranscriptFinalMs: "発話終了 → 文字起こし確定",
+  transcriptFinalToAssistantStartMs: "文字起こし確定 → AI応答開始",
+  speechEndToAssistantStartMs: "発話終了 → AI応答開始",
+  fullTurnLatencyMs: "1ターン全体の応答時間",
+});
+
+const REPORT_QUALITY_INFO = Object.freeze({
+  coherent: "会話の自然さ",
+  correctionHandled: "自己訂正の処理",
+  contextPreserved: "会話コンテキストの維持",
+  appropriateClarification: "聞き返しの適切さ",
+  unnecessaryRepeatedQuestion: "不要な質問の繰り返しがない",
+});
+
 const LATENCY_METRICS = Object.freeze([
   "speechEndToTranscriptFinalMs",
   "transcriptFinalToAssistantStartMs",
@@ -966,6 +1059,12 @@ export function renderVoiceReportHtml(data, { reportDir = data.runDir } = {}) {
   }));
   const linkData = {
     ...data,
+    reportLabels: {
+      behaviors: REPORT_BEHAVIOR_INFO,
+      failures: REPORT_FAILURE_INFO,
+      latency: REPORT_LATENCY_INFO,
+      quality: REPORT_QUALITY_INFO,
+    },
     summary: {
       ...data.summary,
       failures: linkedFailures,
@@ -982,7 +1081,7 @@ export function renderVoiceReportHtml(data, { reportDir = data.runDir } = {}) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KIKIORI Voice Test Report</title>
+<title>KIKIORI 音声インタビューテストレポート</title>
 <style>
 :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #172033; background: #f5f7fb; }
 * { box-sizing: border-box; }
@@ -1018,6 +1117,7 @@ details.failure summary::-webkit-details-marker { display: none; }
 details.failure summary::before { content: "▸"; margin-right: 8px; color: #64748b; }
 details.failure[open] summary::before { content: "▾"; }
 .failure-body { padding: 0 13px 14px; border-top: 1px solid #e5eaf2; }
+.failure-explanation { margin: 12px 0 0; color: #334155; }
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-top: 12px; }
 .detail-box { background: #f8fafc; border-radius: 8px; padding: 10px; }
 .detail-box h3 { font-size: 13px; margin: 0 0 6px; color: #475569; }
@@ -1031,22 +1131,22 @@ svg.spark { width: 100%; height: 46px; }
 <body>
 <main>
   <header>
-    <h1>KIKIORI Voice Test Report</h1>
+    <h1>KIKIORI 音声インタビューテストレポート</h1>
     <p id="run-meta" class="meta muted"></p>
   </header>
-  <section><h2>Dashboard</h2><div id="dashboard" class="cards"></div></section>
-  <section><h2>Behavior coverage</h2><div class="panel"><div id="behavior-coverage"></div></div></section>
-  <section><h2>Failure summary</h2><div class="panel"><div id="failure-summary"></div></div></section>
-  <section><h2>Conversation Quality</h2><div class="panel"><div id="quality"></div></div></section>
-  <section><h2>Latency</h2><div class="panel"><div id="latency"></div></div></section>
-  <section><h2>API Usage / Cost visibility</h2><div class="panel"><div id="usage"></div></div></section>
-  <section><h2>Previous run comparison</h2><div class="panel"><div id="comparison"></div></div></section>
-  <section><h2>Failure Explorer</h2><div class="panel">
+  <section><h2>実行概要</h2><div id="dashboard" class="cards"></div></section>
+  <section><h2>回答パターンの網羅状況</h2><div class="panel"><div id="behavior-coverage"></div></div></section>
+  <section><h2>失敗の概要</h2><div class="panel"><div id="failure-summary"></div></div></section>
+  <section><h2>会話品質（LLM Judge）</h2><div class="panel"><div id="quality"></div></div></section>
+  <section><h2>応答時間</h2><div class="panel"><div id="latency"></div></div></section>
+  <section><h2>API利用状況・コスト</h2><div class="panel"><div id="usage"></div></div></section>
+  <section><h2>前回実行との比較</h2><div class="panel"><div id="comparison"></div></div></section>
+  <section><h2>失敗の詳細</h2><div class="panel">
     <div class="filters">
-      <select id="filter-behavior"><option value="">behavior: all</option></select>
-      <select id="filter-status"><option value="">status: all</option><option value="PASS">PASS</option><option value="FAIL">FAIL</option></select>
-      <select id="filter-level"><option value="">level: all</option><option value="2">Level 2</option><option value="3">Level 3</option></select>
-      <select id="filter-issue"><option value="">issue type: all</option></select>
+      <select id="filter-behavior"><option value="">回答パターン：すべて</option></select>
+      <select id="filter-status"><option value="">結果：すべて</option><option value="PASS">成功</option><option value="FAIL">失敗</option></select>
+      <select id="filter-level"><option value="">実行レベル：すべて</option><option value="2">Level 2（ローカル）</option><option value="3">Level 3（実音声API）</option></select>
+      <select id="filter-issue"><option value="">失敗種別：すべて</option></select>
     </div>
     <div id="failure-list"></div>
   </div></section>
@@ -1056,72 +1156,100 @@ svg.spark { width: 100%; height: 46px; }
 (() => {
   const data = JSON.parse(document.getElementById("voice-report-data").textContent);
   const summary = data.summary || {};
+  const labels = data.reportLabels || {};
+  const info = (group, key, fallback = key) => group?.[key] || { label: fallback, description: "" };
+  const behaviorInfo = (key) => info(labels.behaviors, key);
+  const failureInfo = (key) => info(labels.failures, key, "未分類の失敗");
+  const latencyLabel = (key) => labels.latency?.[key] || key;
+  const qualityLabel = (key) => labels.quality?.[key] || key;
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[char]));
   const json = (value) => esc(JSON.stringify(value ?? null, null, 2));
   const fmt = (value, suffix = "") => value === null || value === undefined ? "—" : esc(value) + suffix;
   const rate = (value) => value === null || value === undefined ? "—" : esc(value.toFixed ? value.toFixed(1) : value) + "%";
-  const level = (value) => value === 3 ? '<span class="level3">Level 3</span>' : '<span class="level2">Level 2</span>';
+  const date = (value) => {
+    if (!value) return "—";
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? esc(value) : esc(parsed.toLocaleString("ja-JP"));
+  };
+  const statusLabel = (value) => value === "FAIL" ? "失敗" : value === "PASS" ? "成功" : value || "—";
+  const level = (value) => value === 3
+    ? '<span class="level3">Level 3（実音声API）</span>'
+    : '<span class="level2">Level 2（ローカル・無料）</span>';
+  const code = (value) => '<span class="muted small">（コード: ' + esc(value) + '）</span>';
   const card = (label, value) => '<div class="card"><span class="label">' + esc(label) + '</span><span class="value">' + value + '</span></div>';
   document.getElementById("run-meta").innerHTML = [
-    "Run ID: <strong>" + esc(summary.runId) + "</strong>",
-    "実行日時: " + esc(summary.runDate),
+    "実行ID: <strong>" + esc(summary.runId) + "</strong>",
+    "実行日時: " + date(summary.runDate),
   ].join("<span>•</span>");
   document.getElementById("dashboard").innerHTML = [
-    card("sessions", fmt(summary.sessions)), card("turns", fmt(summary.turns)),
-    card("PASS", '<span class="pass">' + fmt(summary.pass) + '</span>'),
-    card("FAIL", '<span class="fail">' + fmt(summary.fail) + '</span>'),
-    card("success rate", rate(summary.successRate)),
-    card("Level 2 sessions", fmt(summary.level2Sessions)),
-    card("Level 3 sessions", fmt(summary.level3Sessions)),
+    card("セッション数", fmt(summary.sessions)), card("ターン数", fmt(summary.turns)),
+    card("成功", '<span class="pass">' + fmt(summary.pass) + '</span>'),
+    card("失敗", '<span class="fail">' + fmt(summary.fail) + '</span>'),
+    card("成功率", rate(summary.successRate)),
+    card("Level 2（ローカル）", fmt(summary.level2Sessions)),
+    card("Level 3（実音声API）", fmt(summary.level3Sessions)),
   ].join("");
   const behaviorRows = Object.values(summary.behaviorCoverage || {}).map((item) => {
     const width = item.passRate === null ? 0 : Math.max(0, Math.min(100, item.passRate));
-    return '<tr><td>' + esc(item.behavior) + '</td><td class="num">' + fmt(item.runs) + '</td>'
+    const itemInfo = behaviorInfo(item.behavior);
+    return '<tr><td><strong>' + esc(itemInfo.label) + '</strong><div class="muted small">' + esc(itemInfo.description) + '</div>' + code(item.behavior) + '</td><td class="num">' + fmt(item.runs) + '</td>'
       + '<td class="num pass">' + fmt(item.pass) + '</td><td class="num fail">' + fmt(item.fail) + '</td>'
       + '<td class="num">' + rate(item.passRate) + '</td><td><div class="bar"><span style="width:' + width + '%"></span></div></td></tr>';
   }).join("");
-  document.getElementById("behavior-coverage").innerHTML = '<table><thead><tr><th>behavior</th><th class="num">実行回数</th><th class="num">PASS</th><th class="num">FAIL</th><th class="num">PASS率</th><th>coverage</th></tr></thead><tbody>' + behaviorRows + '</tbody></table>';
-  const failureRows = Object.entries(summary.failureSummary || {}).map(([key, count]) => '<tr><td>' + esc(key) + '</td><td class="num ' + (count ? 'fail' : '') + '">' + fmt(count) + '</td></tr>').join("");
-  document.getElementById("failure-summary").innerHTML = '<table><thead><tr><th>error type</th><th class="num">件数</th></tr></thead><tbody>' + failureRows + '</tbody></table>';
-  const qualityRows = Object.values(summary.quality || {}).filter((item) => item.count).map((item) => '<tr><td>' + esc(item.key) + '</td><td class="num">' + fmt(item.count) + '</td><td class="num pass">' + fmt(item.pass) + '</td><td class="num fail">' + fmt(item.fail) + '</td><td class="num">' + rate(item.passRate) + '</td></tr>').join("");
-  document.getElementById("quality").innerHTML = qualityRows ? '<table><thead><tr><th>判定</th><th class="num">件数</th><th class="num">PASS</th><th class="num">FAIL</th><th class="num">PASS率</th></tr></thead><tbody>' + qualityRows + '</tbody></table>' : '<div class="empty">LLM Judge結果なし</div>';
+  document.getElementById("behavior-coverage").innerHTML = '<table><thead><tr><th>回答パターン</th><th class="num">実行回数</th><th class="num">成功</th><th class="num">失敗</th><th class="num">成功率</th><th>実行状況</th></tr></thead><tbody>' + behaviorRows + '</tbody></table>';
+  const failureRows = Object.entries(summary.failureSummary || {}).map(([key, count]) => {
+    const itemInfo = failureInfo(key);
+    return '<tr><td><strong>' + esc(itemInfo.label) + '</strong><div>' + esc(itemInfo.description) + '</div>' + code(key) + '</td><td class="num ' + (count ? 'fail' : '') + '">' + fmt(count) + '</td></tr>';
+  }).join("");
+  document.getElementById("failure-summary").innerHTML = '<table><thead><tr><th>何が起きたか</th><th class="num">件数</th></tr></thead><tbody>' + failureRows + '</tbody></table>';
+  const qualityRows = Object.values(summary.quality || {}).filter((item) => item.count).map((item) => '<tr><td>' + esc(qualityLabel(item.key)) + code(item.key) + '</td><td class="num">' + fmt(item.count) + '</td><td class="num pass">' + fmt(item.pass) + '</td><td class="num fail">' + fmt(item.fail) + '</td><td class="num">' + rate(item.passRate) + '</td></tr>').join("");
+  document.getElementById("quality").innerHTML = qualityRows ? '<table><thead><tr><th>判定項目</th><th class="num">件数</th><th class="num">成功</th><th class="num">失敗</th><th class="num">成功率</th></tr></thead><tbody>' + qualityRows + '</tbody></table>' : '<div class="empty">LLM Judgeの結果はありません。</div>';
   const latencyRows = LATENCY_METRICS_PLACEHOLDER(data).map((name) => {
     const l2 = summary.latency?.level2?.[name] || {}; const l3 = summary.latency?.level3?.[name] || {};
-    return '<tr><td>' + esc(name) + '</td><td>' + latencyCell(l2) + '</td><td>' + latencyCell(l3) + '</td></tr>';
+    return '<tr><td>' + esc(latencyLabel(name)) + code(name) + '</td><td>' + latencyCell(l2) + '</td><td>' + latencyCell(l3) + '</td></tr>';
   }).join("");
-  document.getElementById("latency").innerHTML = '<table><thead><tr><th>metric</th><th>Level 2 (p50 / p95 / p99)</th><th>Level 3 (p50 / p95 / p99)</th></tr></thead><tbody>' + latencyRows + '</tbody></table>';
+  document.getElementById("latency").innerHTML = '<table><thead><tr><th>計測項目</th><th>Level 2（p50 / p95 / p99）</th><th>Level 3（p50 / p95 / p99）</th></tr></thead><tbody>' + latencyRows + '</tbody></table>';
   function LATENCY_METRICS_PLACEHOLDER() { return ["speechEndToTranscriptFinalMs", "transcriptFinalToAssistantStartMs", "speechEndToAssistantStartMs", "fullTurnLatencyMs"]; }
-  function latencyCell(item) { return item && item.count ? fmt(item.p50, "ms") + " / " + fmt(item.p95, "ms") + " / " + fmt(item.p99, "ms") + ' <span class="muted small">(n=' + fmt(item.count) + ')</span>' : "—"; }
+  function latencyCell(item) { return item && item.count ? fmt(item.p50, "ms") + " / " + fmt(item.p95, "ms") + " / " + fmt(item.p99, "ms") + ' <span class="muted small">（' + fmt(item.count) + '件）</span>' : "—"; }
   const usage = summary.usage || {};
   const usageRows = [
-    ["Jev calls", usage.jevCalls], ["Jev cache hit", usage.jevCacheHits], ["Jev cache miss", usage.jevCacheMisses],
-    ["LLM Judge calls", usage.llmJudgeCalls], ["GPT Live sessions", usage.gptLiveSessions],
-    ["Transcribe usage", usage.transcribeUsage], ["Polly usage", usage.pollyUsage], ["推測費用", null],
+    ["Jev呼び出し回数", usage.jevCalls], ["Jevキャッシュヒット", usage.jevCacheHits], ["Jevキャッシュミス", usage.jevCacheMisses],
+    ["LLM Judge呼び出し回数", usage.llmJudgeCalls], ["GPT Liveセッション数", usage.gptLiveSessions],
+    ["Transcribe利用量", usage.transcribeUsage], ["Polly利用量", usage.pollyUsage], ["推測費用", null],
   ].map(([label, value]) => '<tr><td>' + esc(label) + '</td><td class="num">' + (value === null || value === undefined ? '<span class="muted">記録なし</span>' : fmt(value)) + '</td></tr>').join("");
-  document.getElementById("usage").innerHTML = '<table><thead><tr><th>項目</th><th class="num">利用回数</th></tr></thead><tbody>' + usageRows + '</tbody></table><p class="muted small">金額を正確に算出できないため、推測費用は表示していません。</p>';
+  document.getElementById("usage").innerHTML = '<table><thead><tr><th>項目</th><th class="num">記録値</th></tr></thead><tbody>' + usageRows + '</tbody></table><p class="muted small">金額を正確に算出できないため、推測費用は表示していません。</p>';
   const previous = data.previous?.summary?.behaviorCoverage;
   const comparisonRows = previous ? Object.values(summary.behaviorCoverage || {}).map((item) => {
     const old = previous[item.behavior]; if (!old || old.passRate === null || item.passRate === null) return "";
     const delta = Math.round((item.passRate - old.passRate) * 10) / 10;
-    return '<tr><td>' + esc(item.behavior) + '</td><td class="num">' + rate(old.passRate) + '</td><td class="num">' + rate(item.passRate) + '</td><td class="num ' + (delta >= 0 ? 'pass' : 'fail') + '">' + (delta >= 0 ? '↑ ' : '↓ ') + rate(Math.abs(delta)) + '</td></tr>';
+    return '<tr><td>' + esc(behaviorInfo(item.behavior).label) + code(item.behavior) + '</td><td class="num">' + rate(old.passRate) + '</td><td class="num">' + rate(item.passRate) + '</td><td class="num ' + (delta >= 0 ? 'pass' : 'fail') + '">' + (delta >= 0 ? '↑ ' : '↓ ') + rate(Math.abs(delta)) + '</td></tr>';
   }).filter(Boolean).join("") : "";
-  document.getElementById("comparison").innerHTML = comparisonRows ? '<table><thead><tr><th>behavior</th><th class="num">前回</th><th class="num">今回</th><th class="num">差分</th></tr></thead><tbody>' + comparisonRows + '</tbody></table>' : '<div class="empty">比較可能な前回Runがありません。</div>';
+  document.getElementById("comparison").innerHTML = comparisonRows ? '<table><thead><tr><th>回答パターン</th><th class="num">前回</th><th class="num">今回</th><th class="num">差分</th></tr></thead><tbody>' + comparisonRows + '</tbody></table>' : '<div class="empty">比較可能な前回実行はありません。</div>';
   const failures = arrayValue(data.failures);
   const behaviorFilter = document.getElementById("filter-behavior");
   const issueFilter = document.getElementById("filter-issue");
-  [...new Set(failures.map((failure) => failure.behavior).filter(Boolean))].sort().forEach((value) => behaviorFilter.insertAdjacentHTML("beforeend", '<option value="' + esc(value) + '">' + esc(value) + '</option>'));
-  [...new Set(failures.map((failure) => failure.issueType).filter(Boolean))].sort().forEach((value) => issueFilter.insertAdjacentHTML("beforeend", '<option value="' + esc(value) + '">' + esc(value) + '</option>'));
+  [...new Set(failures.map((failure) => failure.behavior).filter(Boolean))].sort().forEach((value) => {
+    const itemInfo = behaviorInfo(value);
+    behaviorFilter.insertAdjacentHTML("beforeend", '<option value="' + esc(value) + '">' + esc(itemInfo.label) + '（' + esc(value) + '）</option>');
+  });
+  [...new Set(failures.map((failure) => failure.issueType).filter(Boolean))].sort().forEach((value) => {
+    const itemInfo = failureInfo(value);
+    issueFilter.insertAdjacentHTML("beforeend", '<option value="' + esc(value) + '">' + esc(itemInfo.label) + '（' + esc(value) + '）</option>');
+  });
   [behaviorFilter, issueFilter, document.getElementById("filter-status"), document.getElementById("filter-level")].forEach((element) => element.addEventListener("change", renderFailures));
   function arrayValue(value) { return Array.isArray(value) ? value : []; }
   function renderFailures() {
     const behavior = behaviorFilter.value; const status = document.getElementById("filter-status").value; const levelValue = document.getElementById("filter-level").value; const issue = issueFilter.value;
     const filtered = failures.filter((failure) => (!behavior || failure.behavior === behavior) && (!status || failure.status === status) && (!levelValue || String(failure.level) === levelValue) && (!issue || failure.issueType === issue));
     document.getElementById("failure-list").innerHTML = filtered.length ? filtered.map((failure) => {
-      const links = failure.evidence ? Object.entries(failure.evidence).map(([key, value]) => '<a href="' + esc(value) + '">' + esc(key) + '</a>').join("") : '<span class="muted">Evidenceなし</span>';
-      return '<details class="failure"><summary><strong>' + esc(failure.failureId) + '</strong> · ' + esc(failure.behavior || "—") + ' · turn ' + fmt(failure.turn) + ' · ' + esc(failure.issueType) + ' · ' + (failure.level === 3 ? '<span class="level3">Level 3</span>' : '<span class="level2">Level 2</span>') + '</summary><div class="failure-body"><div class="detail-grid">' + detailBox("AI質問", failure.aiQuestion) + detailBox("User transcript", failure.userTranscript) + detailBox("AI response", failure.aiResponse) + detailBox("Expected", failure.expected) + detailBox("Actual", failure.actual) + detailBox("Interview State", failure.interviewState) + '</div><p><strong>relevant timeline</strong></p><pre>' + json(failure.timeline) + '</pre><p class="evidence"><strong>Evidence:</strong> ' + links + '</p></div></details>';
-    }).join("") : '<div class="empty">条件に一致するFAILセッションはありません。</div>';
+      const behavior = behaviorInfo(failure.behavior || "");
+      const failureType = failureInfo(failure.issueType);
+      const evidenceLabels = { screenshot: "スクリーンショット", telemetry: "Telemetry", trace: "Playwright trace" };
+      const links = failure.evidence ? Object.entries(failure.evidence).map(([key, value]) => '<a href="' + esc(value) + '">' + esc(evidenceLabels[key] || key) + '</a>').join("") : '<span class="muted">証拠ファイルなし</span>';
+      return '<details class="failure"><summary><strong>' + esc(failure.failureId) + '</strong> · ' + esc(failureType.label) + ' · ' + esc(behavior.label || "回答パターン不明") + ' · ターン ' + fmt(failure.turn) + ' · ' + level(failure.level) + '</summary><div class="failure-body"><p class="failure-explanation"><strong>' + esc(failureType.description) + '</strong><br>' + code(failure.issueType) + '　' + statusLabel(failure.status) + '</p><div class="detail-grid">' + detailBox("AIの質問", failure.aiQuestion) + detailBox("ユーザーの文字起こし", failure.userTranscript) + detailBox("AIの返答", failure.aiResponse) + detailBox("期待結果", failure.expected) + detailBox("実際の結果", failure.actual) + detailBox("インタビュー状態", failure.interviewState) + '</div><p><strong>関連タイムライン</strong></p><pre>' + json(failure.timeline) + '</pre><p class="evidence"><strong>証拠ファイル：</strong> ' + links + '</p></div></details>';
+    }).join("") : '<div class="empty">条件に一致する失敗はありません。</div>';
   }
   function detailBox(label, value) { return '<div class="detail-box"><h3>' + esc(label) + '</h3><pre>' + (typeof value === "object" ? json(value) : esc(value ?? "—")) + '</pre></div>'; }
   renderFailures();

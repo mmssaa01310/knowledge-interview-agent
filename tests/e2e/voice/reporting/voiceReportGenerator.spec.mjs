@@ -87,15 +87,16 @@ test("generates a self-contained report that renders from file://", async ({ pag
     expect(fs.existsSync(path.join(runDir, "failures.json"))).toBe(true);
 
     const html = fs.readFileSync(reportPath, "utf8");
-    expect(html).toContain("KIKIORI Voice Test Report");
-    expect(html).toContain("Failure Explorer");
+    expect(html).toContain("KIKIORI 音声インタビューテストレポート");
+    expect(html).toContain("失敗の詳細");
+    expect(html).toContain("自己訂正を反映できない");
     expect(html).toContain("artifacts/session-s2/evidence/screenshot.png");
     expect(html).not.toMatch(/<script\s+src=/i);
 
     await page.goto(pathToFileURL(reportPath).href);
-    await expect(page.getByRole("heading", { name: "KIKIORI Voice Test Report" })).toBeVisible();
-    await expect(page.getByText("SELF_CORRECTION_FAILED").first()).toBeVisible();
-    await expect(page.getByText("Level 3 sessions")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "KIKIORI 音声インタビューテストレポート" })).toBeVisible();
+    await expect(page.getByText("自己訂正を反映できない").first()).toBeVisible();
+    await expect(page.getByText("Level 3（実音声API）").first()).toBeVisible();
   } finally {
     fs.rmSync(runDir, { recursive: true, force: true });
   }
