@@ -48,12 +48,29 @@ export function ensureVoiceFixtureWav(
 
 export function readWavDurationSeconds(filePath) {
   const buffer = fs.readFileSync(path.resolve(filePath));
-  if (buffer.length < 44 || buffer.toString("ascii", 0, 4) !== "RIFF"
+  if (buffer.length < 12 || buffer.toString("ascii", 0, 4) !== "RIFF"
     || buffer.toString("ascii", 8, 12) !== "WAVE") {
     throw new Error("VOICE_TEST_AUDIO_FIXTURE is not a RIFF/WAVE file: " + filePath);
   }
-  const byteRate = buffer.readUInt32LE(28);
-  const dataSize = buffer.readUInt32LE(40);
+  let offset = 12;
+  let byteRate = 0;
+  let dataSize = 0;
+  while (offset + 8 <= buffer.length) {
+    const chunkSize = buffer.readUInt32LE(offset + 4);
+    const chunkStart = offset + 8;
+    const chunkEnd = chunkStart + chunkSize;
+    if (chunkEnd > buffer.length) break;
+    const chunkId = buffer.toString("ascii", offset, offset + 4);
+    if (chunkId === "fmt " && chunkSize >= 12) {
+      byteRate = buffer.readUInt32LE(chunkStart + 8);
+    } else if (chunkId === "data") {
+      dataSize = chunkSize;
+      break;
+    }
+    // RIFF chunks are word aligned. Some speech synthesizers emit an
+    // extended fmt chunk, so fixed offsets are not safe here.
+    offset = chunkEnd + (chunkSize % 2);
+  }
   if (!byteRate || !dataSize) {
     throw new Error("VOICE_TEST_AUDIO_FIXTURE has no measurable PCM duration: " + filePath);
   }

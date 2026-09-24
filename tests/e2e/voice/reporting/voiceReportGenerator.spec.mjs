@@ -24,6 +24,7 @@ test("generates a self-contained report that renders from file://", async ({ pag
           sessionId: "s1",
           index: 1,
           level: 2,
+          engine: "gpt_live",
           status: "PASS",
           turns: [
             {
@@ -42,6 +43,9 @@ test("generates a self-contained report that renders from file://", async ({ pag
                 transcriptFinalToAssistantStartMs: 480,
                 speechEndToAssistantStartMs: 600,
                 firstAudioLatencyMs: 600,
+                segmentFinalToTurnCommitMs: 20,
+                turnCommitToAckMs: null,
+                ackToMainResponseMs: null,
               },
             },
           ],
@@ -50,6 +54,7 @@ test("generates a self-contained report that renders from file://", async ({ pag
           sessionId: "s2",
           index: 2,
           level: 3,
+          engine: "transcribe_polly",
           status: "FAIL",
           turns: [
             {
@@ -63,7 +68,12 @@ test("generates a self-contained report that renders from file://", async ({ pag
               actual: { confirmed: null },
               interviewState: { stateVersion: 3 },
               anomalies: ["SELF_CORRECTION_FAILED"],
-              timeline: [{ event: "transcript_final", timestampMs: 1000 }],
+                timeline: [{ event: "transcript_final", timestampMs: 1000 }],
+                response: {
+                  segmentFinalToTurnCommitMs: 30,
+                  turnCommitToAckMs: 120,
+                  ackToMainResponseMs: 500,
+                },
             },
           ],
         },
@@ -90,6 +100,9 @@ test("generates a self-contained report that renders from file://", async ({ pag
     expect(html).toContain("KIKIORI 音声インタビューテストレポート");
     expect(html).toContain("失敗の詳細");
     expect(html).toContain("自己訂正を反映できない");
+    expect(html).toContain("GPT-Live");
+    expect(html).toContain("Transcribe + Polly");
+    expect(html).toContain("文字起こしsegment確定 → ターン保存");
     expect(html).toContain("artifacts/session-s2/evidence/screenshot.png");
     expect(html).not.toMatch(/<script\s+src=/i);
 

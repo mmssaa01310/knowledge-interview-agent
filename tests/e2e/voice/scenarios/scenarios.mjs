@@ -55,6 +55,171 @@ export const JEV_BEHAVIOR_FIXTURES = Object.freeze({
   ]),
 });
 
+// Real-provider robustness inputs. These are test fixtures, not application
+// conversation rules. The runner resolves the corresponding prerecorded WAV
+// by behavior and variant so the same utterance is never the only evidence
+// for a behavior.
+export const REAL_VOICE_BEHAVIORS = Object.freeze([
+  "NORMAL",
+  "HESITATION",
+  "SELF_CORRECTION",
+  "MULTI_ANSWER",
+  "AMBIGUOUS",
+  "ASK_CLARIFICATION",
+  "SILENCE",
+  "OFF_TOPIC",
+  "CONTRADICTION",
+  "CHANGE_PREVIOUS_ANSWER",
+  "DONT_KNOW",
+  "PARTIAL_ANSWER",
+  "LONG_ANSWER",
+  "ANSWER_FUTURE_QUESTION",
+  "USER_INTERRUPTION",
+  "SPLIT_UTTERANCE",
+  "SPLIT_UTTERANCE_LONG_PAUSE",
+  "MULTIPLE_TRANSCRIBE_FINALS",
+  "USER_RESUMES_BEFORE_COMMIT",
+  "SLOW_RESPONSE_WITH_ACK",
+  "FAST_RESPONSE_WITHOUT_ACK",
+  "USER_INTERRUPTS_ACK",
+]);
+
+export const REAL_VOICE_BEHAVIORS_BY_ENGINE = Object.freeze({
+  gpt_live: Object.freeze([
+    "NORMAL",
+    "HESITATION",
+    "SELF_CORRECTION",
+    "MULTI_ANSWER",
+    "AMBIGUOUS",
+    "ASK_CLARIFICATION",
+    "SILENCE",
+    "OFF_TOPIC",
+    "CONTRADICTION",
+    "CHANGE_PREVIOUS_ANSWER",
+    "DONT_KNOW",
+    "PARTIAL_ANSWER",
+    "LONG_ANSWER",
+    "ANSWER_FUTURE_QUESTION",
+    "USER_INTERRUPTION",
+  ]),
+  transcribe_polly: REAL_VOICE_BEHAVIORS,
+});
+
+export const REAL_VOICE_FIXTURE_TEXTS = Object.freeze({
+  NORMAL: Object.freeze([
+    "宮崎です。現在はシニアエンジニアとしてシステム開発を担当しています。",
+    "名前は宮崎です。スマート技術開発部で働いています。",
+    "宮崎と申します。担当は生成AIを活用した開発です。",
+  ]),
+  HESITATION: Object.freeze([
+    "えーっと、宮崎です。現在はシステム開発を担当しています。",
+    "少し考えます。宮崎で、シニアエンジニアです。",
+    "あの、名前は宮崎です。担当は開発です。",
+  ]),
+  SELF_CORRECTION: Object.freeze([
+    "田中です。あ、すみません、宮崎です。",
+    "担当は保全です……いや、今はシステム開発です。",
+    "三年くらい……正確には五年、開発を担当しています。",
+  ]),
+  MULTI_ANSWER: Object.freeze([
+    "宮崎です。開発部のシニアエンジニアで、プロジェクト管理も担当しています。",
+    "名前は宮崎で、役職はシニアエンジニアです。専門は生成AIを使った開発です。",
+    "宮崎です。部署は開発部、役割はリーダーで、今後はAIの知識も身につけたいです。",
+  ]),
+  AMBIGUOUS: Object.freeze([
+    "まあ、そのあたりを色々やっています。",
+    "関係する業務を一通り担当しています。",
+    "いろいろな開発に関わっています。",
+  ]),
+  ASK_CLARIFICATION: Object.freeze([
+    "この質問では、何を答えればよいですか？",
+    "質問の意図をもう少し教えてください。",
+    "どの範囲について話せばいいでしょうか？",
+  ]),
+  SILENCE: Object.freeze(["", "", ""]),
+  OFF_TOPIC: Object.freeze([
+    "週末は家で映画を見ることが多いです。",
+    "最近は天気がよくて、散歩を楽しんでいます。",
+    "昼食は近所の店で食べました。",
+  ]),
+  CONTRADICTION: Object.freeze([
+    "先ほどは開発担当と言いましたが、実際は営業担当です。",
+    "役職はリーダーと話しましたが、現在はメンバーです。",
+    "東京勤務と答えましたが、勤務地は大阪でした。",
+  ]),
+  CHANGE_PREVIOUS_ANSWER: Object.freeze([
+    "先ほどの回答を訂正します。部署は開発部ではなく企画部です。",
+    "前の回答を変更します。担当は保全ではなく生産技術です。",
+    "さきほどの年数は違いました。正しくは五年です。",
+  ]),
+  DONT_KNOW: Object.freeze([
+    "分かりません。",
+    "その点は今は答えられません。",
+    "特に思い当たることはありません。",
+  ]),
+  PARTIAL_ANSWER: Object.freeze([
+    "宮崎です。",
+    "開発部に所属しています。",
+    "シニアエンジニアです。",
+  ]),
+  LONG_ANSWER: Object.freeze([
+    "宮崎です。開発部でシニアエンジニアをしています。顧客の要望を整理し、関係者と優先順位を確認してから実装しています。問題が起きたときは影響範囲を調べ、計画を見直してチームに共有します。",
+    "現在はシステム開発を担当しています。要件を聞き、関係者の認識を合わせ、実装と検証を進めます。リリース後の問い合わせにも対応し、次の改善につなげています。",
+    "プロジェクトリーダーとして、進捗と品質を管理しています。メンバーの状況を確認し、リスクがあれば早めに相談します。顧客の期待と開発の現実を調整することを大切にしています。",
+  ]),
+  ANSWER_FUTURE_QUESTION: Object.freeze([
+    "宮崎です。役職はシニアエンジニアで、今後は生成AIの活用にも取り組みたいです。",
+    "開発部で働いています。課題は要望変更で、将来は自動化の知識を身につけたいです。",
+    "現在はリーダーです。強みは調整力で、次はAIを使った開発を学びたいです。",
+  ]),
+  USER_INTERRUPTION: Object.freeze([
+    "宮崎です。あ、部署は開発部で、役割はリーダーです。",
+    "システム開発を担当していて、すみません、今の質問に戻ると宮崎です。",
+    "プロジェクト管理です。いや、まず名前は宮崎です。",
+  ]),
+  SPLIT_UTTERANCE: Object.freeze([
+    "名前は……|宮崎です。",
+    "担当は……|AWS基盤です。",
+    "原因は……|たぶんセンサーですね。",
+  ]),
+  SPLIT_UTTERANCE_LONG_PAUSE: Object.freeze([
+    "そのときは……|まず設備を止めます。",
+    "所属は……|スマート技術開発部です。",
+    "役割は……|プロジェクトリーダーです。",
+  ]),
+  MULTIPLE_TRANSCRIBE_FINALS: Object.freeze([
+    "最初に確認して……|その後で関係者へ共有します。",
+    "原因を調べて……|再発防止策を決めます。",
+    "要件を整理して……|優先順位を合わせます。",
+  ]),
+  USER_RESUMES_BEFORE_COMMIT: Object.freeze([
+    "名前は……|宮崎です。",
+    "担当は……|AWS基盤です。",
+    "そのときは……|まず設備を止めます。",
+  ]),
+  SLOW_RESPONSE_WITH_ACK: Object.freeze([
+    "関係者の要望を整理して、影響範囲を確認しながら対応しました。",
+    "難しい案件でしたが、状況を整理してチームで判断しました。",
+    "顧客と相談し、優先順位を決めてから開発を進めました。",
+  ]),
+  FAST_RESPONSE_WITHOUT_ACK: Object.freeze([
+    "宮崎です。",
+    "開発部です。",
+    "シニアエンジニアです。",
+  ]),
+  USER_INTERRUPTS_ACK: Object.freeze([
+    "はい、宮崎です。",
+    "確認ありがとうございます。開発部です。",
+    "そうですね、プロジェクトリーダーです。",
+  ]),
+});
+
+export function realVoiceFixtureText(behavior, variant = 0) {
+  const values = REAL_VOICE_FIXTURE_TEXTS[String(behavior).toUpperCase()];
+  if (!values) throw new Error("Unknown real voice behavior: " + behavior);
+  return values[Math.max(0, Number(variant) || 0) % values.length];
+}
+
 // Expectations describe what the application should do for a behavior. They
 // are intentionally separate from the fixture text: an empty SILENCE fixture
 // is a valid test input, not a missing test case.

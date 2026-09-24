@@ -18,6 +18,12 @@ export const REPORT_BEHAVIORS = Object.freeze([
   "ANSWER_FUTURE_QUESTION",
   "USER_INTERRUPTION",
   "SPLIT_UTTERANCE",
+  "SPLIT_UTTERANCE_LONG_PAUSE",
+  "MULTIPLE_TRANSCRIBE_FINALS",
+  "USER_RESUMES_BEFORE_COMMIT",
+  "SLOW_RESPONSE_WITH_ACK",
+  "FAST_RESPONSE_WITHOUT_ACK",
+  "USER_INTERRUPTS_ACK",
 ]);
 
 export const REPORT_FAILURE_TYPES = Object.freeze([
@@ -34,6 +40,7 @@ export const REPORT_FAILURE_TYPES = Object.freeze([
   "inappropriate clarification",
   "API_5XX",
   "WebSocket/DataChannel error",
+  "ACK_DUPLICATE",
 ]);
 
 export const REPORT_BEHAVIOR_INFO = Object.freeze({
@@ -53,6 +60,12 @@ export const REPORT_BEHAVIOR_INFO = Object.freeze({
   ANSWER_FUTURE_QUESTION: { label: "後続質問への先回り回答", description: "後で尋ねる項目も先に回答したケース" },
   USER_INTERRUPTION: { label: "ユーザー割り込み", description: "AIの発話中にユーザーが割り込んだケース" },
   SPLIT_UTTERANCE: { label: "分割発話", description: "一つの回答を複数回の発話に分けたケース" },
+  SPLIT_UTTERANCE_LONG_PAUSE: { label: "長い間を含む分割発話", description: "長い無音を挟んで一つの回答を続けたケース" },
+  MULTIPLE_TRANSCRIBE_FINALS: { label: "複数の確定文字起こし", description: "一つの回答中に複数の文字起こし確定を受け取ったケース" },
+  USER_RESUMES_BEFORE_COMMIT: { label: "保存前の再発話", description: "ターン保存前にユーザーが発話を再開したケース" },
+  SLOW_RESPONSE_WITH_ACK: { label: "遅延時の応答案内", description: "応答が遅い場合に待機案内を含めて処理したケース" },
+  FAST_RESPONSE_WITHOUT_ACK: { label: "高速応答", description: "待機案内を出さずに応答したケース" },
+  USER_INTERRUPTS_ACK: { label: "待機案内への割り込み", description: "AIの待機案内中にユーザーが割り込んだケース" },
 });
 
 export const REPORT_FAILURE_INFO = Object.freeze({
@@ -108,6 +121,10 @@ export const REPORT_FAILURE_INFO = Object.freeze({
     label: "音声通信チャネルエラー",
     description: "WebSocketまたはWebRTC DataChannelで通信エラーが発生しています。",
   },
+  ACK_DUPLICATE: {
+    label: "待機案内が重複",
+    description: "同一ターンに待機案内が複数回発生しています。",
+  },
   ERROR: {
     label: "未分類のエラー",
     description: "エラーは記録されていますが、既知の失敗分類に対応していません。",
@@ -119,6 +136,9 @@ const REPORT_LATENCY_INFO = Object.freeze({
   transcriptFinalToAssistantStartMs: "文字起こし確定 → AI応答開始",
   speechEndToAssistantStartMs: "発話終了 → AI応答開始",
   fullTurnLatencyMs: "1ターン全体の応答時間",
+  segmentFinalToTurnCommitMs: "文字起こしsegment確定 → ターン保存",
+  turnCommitToAckMs: "ターン保存 → 待機案内",
+  ackToMainResponseMs: "待機案内 → 本応答開始",
 });
 
 const REPORT_QUALITY_INFO = Object.freeze({
@@ -134,6 +154,9 @@ const LATENCY_METRICS = Object.freeze([
   "transcriptFinalToAssistantStartMs",
   "speechEndToAssistantStartMs",
   "fullTurnLatencyMs",
+  "segmentFinalToTurnCommitMs",
+  "turnCommitToAckMs",
+  "ackToMainResponseMs",
 ]);
 
 const QUALITY_METRICS = Object.freeze([
@@ -298,6 +321,7 @@ function normalizeTurn(raw, {
   level = 2,
   defaultSeed = null,
   defaultBehavior = null,
+  defaultEngine = null,
 } = {}) {
   const source = isObject(raw) ? raw : {};
   const interview = isObject(source.interview) ? source.interview : {};
@@ -350,6 +374,8 @@ function normalizeTurn(raw, {
     sessionId: source.sessionId ?? sessionId ?? null,
     turn: number(source.turn, null),
     level: normalizeLevel(source.level, level),
+    engine: source.engine ?? source.provider ?? defaultEngine ?? null,
+    provider: source.provider ?? source.engine ?? defaultEngine ?? null,
     seed: source.seed ?? defaultSeed,
     behavior,
     status,
@@ -366,6 +392,13 @@ function normalizeTurn(raw, {
     response,
     transcription,
     realTiming,
+    conversation: source.conversation ?? null,
+    judgeReason: firstText(
+      source.judgeReason,
+      source.llmJudge?.reason,
+      source.semanticJudge?.reason,
+      source.judge?.reason,
+    ),
     timeline: array(source.timeline),
   };
 }
@@ -416,6 +449,7 @@ function mergeSessionTurn(session, rawTurn, defaults) {
     level: defaults.level ?? session.level ?? 2,
     defaultSeed: defaults.seed ?? session.seed ?? null,
     defaultBehavior: defaults.behavior ?? session.scenario ?? null,
+    defaultEngine: defaults.engine ?? defaults.provider ?? session.engine ?? session.provider ?? null,
   });
   const key = normalized.turn === null ? `unknown-${session.turns.length}` : String(normalized.turn);
   const existingIndex = session.turns.findIndex((turn) => (
@@ -464,6 +498,8 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
         testedBehaviors: [...array(defaults.testedBehaviors)],
         liveApiUsed: Boolean(defaults.liveApiUsed),
         transcriptSource: defaults.transcriptSource ?? null,
+        engine: defaults.engine ?? defaults.provider ?? null,
+        provider: defaults.provider ?? defaults.engine ?? null,
         evidence: null,
         turns: [],
       });
@@ -479,6 +515,8 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
         path: current.path ?? defaults.path ?? null,
         liveApiUsed: current.liveApiUsed || Boolean(defaults.liveApiUsed),
         transcriptSource: current.transcriptSource ?? defaults.transcriptSource ?? null,
+        engine: current.engine ?? defaults.engine ?? defaults.provider ?? null,
+        provider: current.provider ?? defaults.provider ?? defaults.engine ?? null,
       });
     }
     return sessions.get(key);
@@ -549,6 +587,8 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
       scenario: snapshot.scenario,
       liveApiUsed: snapshot.liveApiUsed,
       transcriptSource: snapshot.transcriptSource,
+      engine: snapshot.engine ?? snapshot.provider,
+      provider: snapshot.provider ?? snapshot.engine,
       sourcePath: filePath,
     };
     const snapshotEvidence = evidenceMap.get(snapshot.sessionId) ?? null;
@@ -575,6 +615,8 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
         index: turn.sessionIndex ?? indexedSession?.index,
         seed: turn.seed ?? snapshot.seed,
         scenario: turn.scenario ?? snapshot.scenario,
+        engine: turn.engine ?? snapshot.engine ?? snapshot.provider,
+        provider: turn.provider ?? snapshot.provider ?? snapshot.engine,
       });
       session.evidence = snapshotEvidence ?? evidenceMap.get(session.sessionId) ?? session.evidence;
       mergeSessionTurn(session, turn, {
@@ -624,11 +666,15 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
           scenario: record.scenario,
           index: record.sessionIndex ?? indexedSession?.index,
           sourcePath: filePath,
+          engine: record.engine ?? record.provider,
+          provider: record.provider ?? record.engine,
         });
         mergeSessionTurn(session, record, {
           level: record.level ?? levelFromPath(filePath),
           seed: record.seed,
           behavior: record.behavior ?? record.scenario ?? null,
+          engine: record.engine ?? record.provider,
+          provider: record.provider ?? record.engine,
           sourcePath: filePath,
         });
       } else if (record.event === "session_summary" || record.event === "session_started") {
@@ -773,6 +819,8 @@ function buildFailureRecords(data, sessions) {
     result.push({
       failureId: text(raw?.failureId || `${data.runId}-F${String(result.length + 1).padStart(4, "0")}`),
       sessionId: session?.sessionId ?? raw?.sessionId ?? null,
+      engine: normalizeEngine(raw?.engine ?? raw?.provider ?? turn?.engine ?? turn?.provider ?? session?.engine ?? session?.provider),
+      provider: raw?.provider ?? turn?.provider ?? session?.provider ?? null,
       seed: raw?.seed ?? turn?.seed ?? session?.seed ?? data.summary?.seed ?? null,
       behavior: normalizeBehavior(raw?.behavior ?? turn?.behavior ?? session?.scenario) ?? null,
       turn: number(raw?.turn ?? turn?.turn, null),
@@ -785,6 +833,15 @@ function buildFailureRecords(data, sessions) {
       expected: raw?.expected ?? turn?.expected ?? turn?.expectations ?? null,
       actual: raw?.actual ?? turn?.actual ?? turn?.observed ?? null,
       interviewState: raw?.interviewState ?? turn?.interviewState ?? null,
+      conversation: raw?.conversation ?? turn?.conversation ?? null,
+      judgeReason: firstText(
+        raw?.judgeReason,
+        raw?.llmJudge?.reason,
+        raw?.semanticJudge?.reason,
+        turn?.judgeReason,
+        turn?.llmJudge?.reason,
+        turn?.semanticJudge?.reason,
+      ),
       timeline: raw?.timeline ?? turn?.timeline ?? [],
       evidence: raw?.evidence ?? session?.evidence ?? null,
       raw,
@@ -828,6 +885,63 @@ function buildBehaviorCoverage(sessions) {
     item.passRate = item.runs ? Math.round((item.pass / item.runs) * 1000) / 10 : null;
   }
   return coverage;
+}
+
+const REPORT_ENGINE_INFO = Object.freeze({
+  gpt_live: { label: "GPT-Live", description: "GPT-Live実音声経路" },
+  transcribe_polly: { label: "Transcribe + Polly", description: "Amazon Transcribe + Polly実音声経路" },
+});
+
+function normalizeEngine(value) {
+  const normalized = text(value).trim().toLowerCase();
+  if (normalized === "gpt-live" || normalized === "gptlive" || normalized === "gpt_live") return "gpt_live";
+  if (normalized === "transcribe+polly" || normalized === "transcribe-polly" || normalized === "transcribe_polly") return "transcribe_polly";
+  return normalized || null;
+}
+
+function engineOf(value) {
+  if (isObject(value)) return normalizeEngine(value.engine ?? value.provider ?? value.transcriptSource);
+  return normalizeEngine(value);
+}
+
+function buildEngineComparison(sessions) {
+  const result = {};
+  for (const engine of Object.keys(REPORT_ENGINE_INFO)) {
+    const matching = sessions.filter((session) => engineOf(session) === engine);
+    const turns = matching.flatMap((session) => session.turns);
+    const pass = matching.filter((session) => sessionStatus(session) === "PASS").length;
+    result[engine] = {
+      engine,
+      label: REPORT_ENGINE_INFO[engine].label,
+      description: REPORT_ENGINE_INFO[engine].description,
+      sessions: matching.length,
+      turns: turns.length,
+      pass,
+      fail: matching.length - pass,
+      successRate: matching.length ? Math.round((pass / matching.length) * 1000) / 10 : null,
+      behaviorCoverage: buildBehaviorCoverage(matching),
+      latency: buildLatency(matching, {}),
+    };
+  }
+  return result;
+}
+
+function buildLatencyByEngine(sessions) {
+  const result = {};
+  for (const engine of Object.keys(REPORT_ENGINE_INFO)) {
+    const matching = sessions.filter((session) => engineOf(session) === engine);
+    const values = {};
+    for (const name of LATENCY_METRICS) {
+      const items = matching.flatMap((session) => session.turns)
+        .map((turn) => metricValue(turn, name))
+        .filter((value) => value !== null);
+      values[name] = items.length
+        ? { count: items.length, p50: percentile(items, 0.5), p95: percentile(items, 0.95), p99: percentile(items, 0.99) }
+        : { count: 0, p50: null, p95: null, p99: null };
+    }
+    result[engine] = values;
+  }
+  return result;
 }
 
 function buildLatency(sessions, metrics) {
@@ -948,7 +1062,16 @@ function buildUsage(data, sessions) {
   };
 }
 
-function buildSummary(data, sessions, failures, behaviorCoverage, latency, quality) {
+function buildSummary(
+  data,
+  sessions,
+  failures,
+  behaviorCoverage,
+  latency,
+  quality,
+  engineComparison,
+  latencyByEngine,
+) {
   const passSessions = sessions.filter((session) => sessionStatus(session) === "PASS").length;
   const failSessions = sessions.length - passSessions;
   const turns = sessions.flatMap((session) => session.turns);
@@ -975,6 +1098,10 @@ function buildSummary(data, sessions, failures, behaviorCoverage, latency, quali
       failures.filter((failure) => failure.issueType === type).length,
     ])),
     latency,
+    latencyByEngine,
+    engineComparison,
+    gptLivePassRate: engineComparison.gpt_live?.successRate ?? null,
+    transcribePollyPassRate: engineComparison.transcribe_polly?.successRate ?? null,
     quality,
     usage,
   };
@@ -1012,13 +1139,25 @@ export function normalizeVoiceRunData(data, { reportDir = data.runDir } = {}) {
       level: session.level,
       defaultSeed: session.seed,
       defaultBehavior: session.scenario,
+      defaultEngine: session.engine ?? session.provider,
     })),
   }));
   const failures = buildFailureRecords(data, sessions);
   const behaviorCoverage = buildBehaviorCoverage(sessions);
   const latency = buildLatency(sessions, data.metrics);
+  const engineComparison = buildEngineComparison(sessions);
+  const latencyByEngine = buildLatencyByEngine(sessions);
   const quality = buildQuality(sessions, data.metrics);
-  const summary = buildSummary(data, sessions, failures, behaviorCoverage, latency, quality);
+  const summary = buildSummary(
+    data,
+    sessions,
+    failures,
+    behaviorCoverage,
+    latency,
+    quality,
+    engineComparison,
+    latencyByEngine,
+  );
   return {
     ...data,
     sessions,
@@ -1064,6 +1203,7 @@ export function renderVoiceReportHtml(data, { reportDir = data.runDir } = {}) {
       failures: REPORT_FAILURE_INFO,
       latency: REPORT_LATENCY_INFO,
       quality: REPORT_QUALITY_INFO,
+      engines: REPORT_ENGINE_INFO,
     },
     summary: {
       ...data.summary,
@@ -1135,6 +1275,7 @@ svg.spark { width: 100%; height: 46px; }
     <p id="run-meta" class="meta muted"></p>
   </header>
   <section><h2>実行概要</h2><div id="dashboard" class="cards"></div></section>
+  <section><h2>実行方式別比較</h2><div class="panel"><div id="engine-comparison"></div></div></section>
   <section><h2>回答パターンの網羅状況</h2><div class="panel"><div id="behavior-coverage"></div></div></section>
   <section><h2>失敗の概要</h2><div class="panel"><div id="failure-summary"></div></div></section>
   <section><h2>会話品質（LLM Judge）</h2><div class="panel"><div id="quality"></div></div></section>
@@ -1146,6 +1287,7 @@ svg.spark { width: 100%; height: 46px; }
       <select id="filter-behavior"><option value="">回答パターン：すべて</option></select>
       <select id="filter-status"><option value="">結果：すべて</option><option value="PASS">成功</option><option value="FAIL">失敗</option></select>
       <select id="filter-level"><option value="">実行レベル：すべて</option><option value="2">Level 2（ローカル）</option><option value="3">Level 3（実音声API）</option></select>
+      <select id="filter-engine"><option value="">実行方式：すべて</option></select>
       <select id="filter-issue"><option value="">失敗種別：すべて</option></select>
     </div>
     <div id="failure-list"></div>
@@ -1190,7 +1332,27 @@ svg.spark { width: 100%; height: 46px; }
     card("成功率", rate(summary.successRate)),
     card("Level 2（ローカル）", fmt(summary.level2Sessions)),
     card("Level 3（実音声API）", fmt(summary.level3Sessions)),
+    card("GPT-Live 成功率", rate(summary.gptLivePassRate)),
+    card("Transcribe + Polly 成功率", rate(summary.transcribePollyPassRate)),
   ].join("");
+  const engineComparison = summary.engineComparison || {};
+  const engineComparisonRows = Object.values(engineComparison).map((engine) => {
+    const behaviorRuns = Object.values(engine.behaviorCoverage || {})
+      .filter((item) => item.runs > 0).length;
+    return '<tr><td><strong>' + esc(engine.label) + '</strong><div class="muted small">' + esc(engine.description) + '</div><span class="muted small">（コード: ' + esc(engine.engine) + '）</span></td>'
+      + '<td class="num">' + fmt(engine.sessions) + '</td><td class="num">' + fmt(engine.turns) + '</td>'
+      + '<td class="num pass">' + fmt(engine.pass) + '</td><td class="num fail">' + fmt(engine.fail) + '</td>'
+      + '<td class="num">' + rate(engine.successRate) + '</td><td class="num">' + fmt(behaviorRuns) + '</td></tr>';
+  }).join("");
+  document.getElementById("engine-comparison").innerHTML = engineComparisonRows
+    ? '<table><thead><tr><th>実行方式</th><th class="num">セッション</th><th class="num">ターン</th><th class="num">成功</th><th class="num">失敗</th><th class="num">成功率</th><th class="num">実行済みパターン数</th></tr></thead><tbody>' + engineComparisonRows + '</tbody></table>'
+    : '<div class="empty">方式別の実音声結果はありません。</div>';
+  const engineBehaviorRows = Object.values(engineComparison).flatMap((engine) =>
+    Object.values(engine.behaviorCoverage || {}).filter((item) => item.runs > 0).map((item) => ({ engine, item }))
+  ).map(({ engine, item }) => '<tr><td>' + esc(engine.label) + '</td><td><strong>' + esc(behaviorInfo(item.behavior).label) + '</strong><div class="muted small">' + esc(item.behavior) + '</div></td><td class="num">' + fmt(item.runs) + '</td><td class="num pass">' + fmt(item.pass) + '</td><td class="num fail">' + fmt(item.fail) + '</td><td class="num">' + rate(item.passRate) + '</td></tr>').join("");
+  if (engineBehaviorRows) {
+    document.getElementById("behavior-coverage").insertAdjacentHTML("afterbegin", '<h3>実行方式別</h3><table><thead><tr><th>実行方式</th><th>回答パターン</th><th class="num">実行回数</th><th class="num">成功</th><th class="num">失敗</th><th class="num">成功率</th></tr></thead><tbody>' + engineBehaviorRows + '</tbody></table><h3>全実行</h3>');
+  }
   const behaviorRows = Object.values(summary.behaviorCoverage || {}).map((item) => {
     const width = item.passRate === null ? 0 : Math.max(0, Math.min(100, item.passRate));
     const itemInfo = behaviorInfo(item.behavior);
@@ -1210,8 +1372,12 @@ svg.spark { width: 100%; height: 46px; }
     const l2 = summary.latency?.level2?.[name] || {}; const l3 = summary.latency?.level3?.[name] || {};
     return '<tr><td>' + esc(latencyLabel(name)) + code(name) + '</td><td>' + latencyCell(l2) + '</td><td>' + latencyCell(l3) + '</td></tr>';
   }).join("");
-  document.getElementById("latency").innerHTML = '<table><thead><tr><th>計測項目</th><th>Level 2（p50 / p95 / p99）</th><th>Level 3（p50 / p95 / p99）</th></tr></thead><tbody>' + latencyRows + '</tbody></table>';
-  function LATENCY_METRICS_PLACEHOLDER() { return ["speechEndToTranscriptFinalMs", "transcriptFinalToAssistantStartMs", "speechEndToAssistantStartMs", "fullTurnLatencyMs"]; }
+  const engineLatencyRows = Object.entries(summary.latencyByEngine || {}).flatMap(([engine, values]) =>
+    LATENCY_METRICS_PLACEHOLDER(data).map((name) => '<tr><td>' + esc(labels.engines?.[engine]?.label || engine) + '</td><td>' + esc(latencyLabel(name)) + code(name) + '</td><td>' + latencyCell(values?.[name] || {}) + '</td></tr>')
+  ).join("");
+  document.getElementById("latency").innerHTML = '<h3>実行レベル別</h3><table><thead><tr><th>計測項目</th><th>Level 2（p50 / p95 / p99）</th><th>Level 3（p50 / p95 / p99）</th></tr></thead><tbody>' + latencyRows + '</tbody></table>'
+    + '<h3>実行方式別（実音声）</h3><table><thead><tr><th>実行方式</th><th>計測項目</th><th>p50 / p95 / p99</th></tr></thead><tbody>' + (engineLatencyRows || '<tr><td colspan="3">実音声の計測結果はありません。</td></tr>') + '</tbody></table>';
+  function LATENCY_METRICS_PLACEHOLDER() { return ["speechEndToTranscriptFinalMs", "transcriptFinalToAssistantStartMs", "speechEndToAssistantStartMs", "fullTurnLatencyMs", "segmentFinalToTurnCommitMs", "turnCommitToAckMs", "ackToMainResponseMs"]; }
   function latencyCell(item) { return item && item.count ? fmt(item.p50, "ms") + " / " + fmt(item.p95, "ms") + " / " + fmt(item.p99, "ms") + ' <span class="muted small">（' + fmt(item.count) + '件）</span>' : "—"; }
   const usage = summary.usage || {};
   const usageRows = [
@@ -1230,6 +1396,7 @@ svg.spark { width: 100%; height: 46px; }
   const failures = arrayValue(data.failures);
   const behaviorFilter = document.getElementById("filter-behavior");
   const issueFilter = document.getElementById("filter-issue");
+  const engineFilter = document.getElementById("filter-engine");
   [...new Set(failures.map((failure) => failure.behavior).filter(Boolean))].sort().forEach((value) => {
     const itemInfo = behaviorInfo(value);
     behaviorFilter.insertAdjacentHTML("beforeend", '<option value="' + esc(value) + '">' + esc(itemInfo.label) + '（' + esc(value) + '）</option>');
@@ -1238,17 +1405,21 @@ svg.spark { width: 100%; height: 46px; }
     const itemInfo = failureInfo(value);
     issueFilter.insertAdjacentHTML("beforeend", '<option value="' + esc(value) + '">' + esc(itemInfo.label) + '（' + esc(value) + '）</option>');
   });
-  [behaviorFilter, issueFilter, document.getElementById("filter-status"), document.getElementById("filter-level")].forEach((element) => element.addEventListener("change", renderFailures));
+  [...new Set(failures.map((failure) => failure.engine).filter(Boolean))].sort().forEach((value) => {
+    engineFilter.insertAdjacentHTML("beforeend", '<option value="' + esc(value) + '">' + esc(labels.engines?.[value]?.label || value) + '</option>');
+  });
+  [behaviorFilter, issueFilter, engineFilter, document.getElementById("filter-status"), document.getElementById("filter-level")].forEach((element) => element.addEventListener("change", renderFailures));
   function arrayValue(value) { return Array.isArray(value) ? value : []; }
   function renderFailures() {
-    const behavior = behaviorFilter.value; const status = document.getElementById("filter-status").value; const levelValue = document.getElementById("filter-level").value; const issue = issueFilter.value;
-    const filtered = failures.filter((failure) => (!behavior || failure.behavior === behavior) && (!status || failure.status === status) && (!levelValue || String(failure.level) === levelValue) && (!issue || failure.issueType === issue));
+    const behavior = behaviorFilter.value; const status = document.getElementById("filter-status").value; const levelValue = document.getElementById("filter-level").value; const issue = issueFilter.value; const engine = engineFilter.value;
+    const filtered = failures.filter((failure) => (!behavior || failure.behavior === behavior) && (!status || failure.status === status) && (!levelValue || String(failure.level) === levelValue) && (!issue || failure.issueType === issue) && (!engine || failure.engine === engine));
     document.getElementById("failure-list").innerHTML = filtered.length ? filtered.map((failure) => {
       const behavior = behaviorInfo(failure.behavior || "");
       const failureType = failureInfo(failure.issueType);
       const evidenceLabels = { screenshot: "スクリーンショット", telemetry: "Telemetry", trace: "Playwright trace" };
       const links = failure.evidence ? Object.entries(failure.evidence).map(([key, value]) => '<a href="' + esc(value) + '">' + esc(evidenceLabels[key] || key) + '</a>').join("") : '<span class="muted">証拠ファイルなし</span>';
-      return '<details class="failure"><summary><strong>' + esc(failure.failureId) + '</strong> · ' + esc(failureType.label) + ' · ' + esc(behavior.label || "回答パターン不明") + ' · ターン ' + fmt(failure.turn) + ' · ' + level(failure.level) + '</summary><div class="failure-body"><p class="failure-explanation"><strong>' + esc(failureType.description) + '</strong><br>' + code(failure.issueType) + '　' + statusLabel(failure.status) + '</p><div class="detail-grid">' + detailBox("AIの質問", failure.aiQuestion) + detailBox("ユーザーの文字起こし", failure.userTranscript) + detailBox("AIの返答", failure.aiResponse) + detailBox("期待結果", failure.expected) + detailBox("実際の結果", failure.actual) + detailBox("インタビュー状態", failure.interviewState) + '</div><p><strong>関連タイムライン</strong></p><pre>' + json(failure.timeline) + '</pre><p class="evidence"><strong>証拠ファイル：</strong> ' + links + '</p></div></details>';
+      const engineLabel = labels.engines?.[failure.engine]?.label || failure.engine || "実行方式不明";
+      return '<details class="failure"><summary><strong>' + esc(failure.failureId) + '</strong> · ' + esc(failureType.label) + ' · ' + esc(behavior.label || "回答パターン不明") + ' · ターン ' + fmt(failure.turn) + ' · ' + esc(engineLabel) + ' · ' + level(failure.level) + '</summary><div class="failure-body"><p class="failure-explanation"><strong>' + esc(failureType.description) + '</strong><br>' + code(failure.issueType) + '　' + statusLabel(failure.status) + '</p><div class="detail-grid">' + detailBox("実行方式", engineLabel) + detailBox("seed", failure.seed) + detailBox("会話", failure.conversation) + detailBox("AIの質問", failure.aiQuestion) + detailBox("ユーザーの文字起こし", failure.userTranscript) + detailBox("AIの返答", failure.aiResponse) + detailBox("期待結果", failure.expected) + detailBox("実際の結果", failure.actual) + detailBox("インタビュー状態", failure.interviewState) + detailBox("Judge理由", failure.judgeReason) + '</div><p><strong>関連タイムライン</strong></p><pre>' + json(failure.timeline) + '</pre><p class="evidence"><strong>証拠ファイル：</strong> ' + links + '</p></div></details>';
     }).join("") : '<div class="empty">条件に一致する失敗はありません。</div>';
   }
   function detailBox(label, value) { return '<div class="detail-box"><h3>' + esc(label) + '</h3><pre>' + (typeof value === "object" ? json(value) : esc(value ?? "—")) + '</pre></div>'; }

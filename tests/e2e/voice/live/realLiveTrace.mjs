@@ -40,6 +40,77 @@ export async function readRealLiveTrace(page) {
   return page.evaluate(() => window.__kikioriVoiceLiveTrace?.entries ?? []);
 }
 
+/**
+ * Observe the application WebRTC data channel without replacing the runtime.
+ * GPT-Live logs provider events to the console, while Transcribe + Polly sends
+ * its runtime events only through this channel.  The observer is installed in
+ * the page before the application creates its peer connection.
+ */
+export async function installVoiceDataChannelTrace(page) {
+  await page.addInitScript(() => {
+    const trace = [];
+    const record = (direction, value) => {
+      let parsed = null;
+      if (typeof value === "string") {
+        try {
+          parsed = JSON.parse(value);
+        } catch {
+          parsed = null;
+        }
+      }
+      trace.push({
+        direction,
+        timestampMs: Date.now(),
+        performanceMs: Math.round(performance.now()),
+        raw: typeof value === "string" ? value : null,
+        event: parsed,
+      });
+    };
+    window.__kikioriVoiceDataChannelTrace = { entries: trace };
+    const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
+    RTCPeerConnection.prototype.createDataChannel = function (...args) {
+      const channel = originalCreateDataChannel.apply(this, args);
+      const originalSend = channel.send.bind(channel);
+      channel.send = (value) => {
+        record("client", value);
+        return originalSend(value);
+      };
+      channel.addEventListener("message", (event) => {
+        record("server", event.data);
+      });
+      return channel;
+    };
+  });
+}
+
+export async function readVoiceDataChannelTrace(page) {
+  return page.evaluate(() => window.__kikioriVoiceDataChannelTrace?.entries ?? []);
+}
+
+export function dataChannelEventType(entry) {
+  return typeof entry?.event?.type === "string" ? entry.event.type : null;
+}
+
+export function realRuntimeTimeline({ consoleEntries = [], dataChannelEntries = [] } = {}) {
+  const consoleTimeline = (consoleEntries ?? []).map((entry) => ({
+    event: loggerName(entry) || liveEventType(entry) || "browser_log",
+    timestampMs: entry.timestampMs ?? null,
+    performanceMs: entry.performanceMs ?? null,
+    details: loggerDetails(entry),
+    source: "console",
+  }));
+  const dataTimeline = (dataChannelEntries ?? []).map((entry) => ({
+    event: dataChannelEventType(entry) || "data_channel_message",
+    timestampMs: entry.timestampMs ?? null,
+    performanceMs: entry.performanceMs ?? null,
+    details: entry.event ?? { raw: entry.raw },
+    source: entry.direction === "client" ? "data_channel_client" : "data_channel_server",
+  }));
+  return [...consoleTimeline, ...dataTimeline]
+    .filter((entry) => entry.timestampMs !== null)
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+}
+
 export async function readGPTLiveTranscriptLines(page) {
   return page.locator(".gpt-live-transcript").evaluateAll((elements) => elements.map((element) => ({
     role: element.classList.contains("user") ? "user" : "assistant",

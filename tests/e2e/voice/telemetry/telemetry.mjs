@@ -10,6 +10,8 @@ export class VoiceTelemetry {
     costGuard = null,
     audioInputMode = "unknown",
     transcriptSource = "unknown",
+    engine = null,
+    provider = null,
     liveApiUsed = false,
     level = null,
     audioFixturePath = null,
@@ -22,6 +24,8 @@ export class VoiceTelemetry {
     this.costGuard = costGuard;
     this.audioInputMode = audioInputMode;
     this.transcriptSource = transcriptSource;
+    this.engine = engine;
+    this.provider = provider;
     this.liveApiUsed = liveApiUsed;
     this.level = level;
     this.audioFixturePath = audioFixturePath;
@@ -161,7 +165,15 @@ export class VoiceTelemetry {
         speechEndToTranscriptFinalMs: turn.response?.speechEndToTranscriptFinalMs ?? null,
         transcriptFinalToAssistantStartMs: turn.response?.transcriptFinalToAssistantStartMs ?? null,
         speechEndToAssistantStartMs: turn.response?.speechEndToAssistantStartMs ?? null,
+        segmentFinalToTurnCommitMs: turn.response?.segmentFinalToTurnCommitMs ?? null,
+        turnCommitToAckMs: turn.response?.turnCommitToAckMs ?? null,
+        ackToMainResponseMs: turn.response?.ackToMainResponseMs ?? null,
+        assistantResponseCount: turn.response?.assistantResponseCount ?? null,
+        ackCount: turn.response?.ackCount ?? null,
+        segmentFinalCount: turn.response?.segmentFinalCount ?? null,
       },
+      engine: turn.engine ?? this.engine,
+      provider: turn.provider ?? this.provider,
       realTiming: turn.realTiming ?? null,
       hardGate: {
         status: turn.hardGate?.status ?? null,
@@ -196,6 +208,8 @@ export class VoiceTelemetry {
       seed: this.seed,
       audioInputMode: this.audioInputMode,
       transcriptSource: this.transcriptSource,
+      engine: this.engine,
+      provider: this.provider,
       liveApiUsed: this.liveApiUsed,
       level: this.level,
       audioFixturePath: this.audioFixturePath,

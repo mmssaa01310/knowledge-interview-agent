@@ -62,6 +62,14 @@ export function readVoiceTestConfig(env = process.env) {
     audioFixturePath: env.VOICE_TEST_AUDIO_FIXTURE
       ? path.resolve(env.VOICE_TEST_AUDIO_FIXTURE)
       : null,
+    audioFixtureDirectory: env.VOICE_TEST_AUDIO_FIXTURE_DIR
+      ? path.resolve(env.VOICE_TEST_AUDIO_FIXTURE_DIR)
+      : null,
+    robustnessEnabled: booleanEnv(env.VOICE_TEST_ROBUSTNESS, false),
+    robustnessBehaviors: String(env.VOICE_TEST_ROBUSTNESS_BEHAVIORS || "")
+      .split(",")
+      .map((value) => value.trim().toUpperCase())
+      .filter(Boolean),
     startLocalStack: booleanEnv(env.VOICE_TEST_START_LOCAL_STACK, false),
     runBrowserAudio: booleanEnv(env.VOICE_TEST_RUN_BROWSER_AUDIO, true),
   };
