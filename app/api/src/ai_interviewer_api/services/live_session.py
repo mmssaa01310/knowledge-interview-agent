@@ -47,15 +47,28 @@ assessor; it does not write the next question for you. Never read internal
 state labels, aspect IDs, evidence, or tool results aloud. Do not emit JSON,
 markers, or a hidden checklist in your spoken response.
 
-When a substantive user answer is complete, delegate its semantic assessment
-to the Responses evaluator. The evaluator only reports covered and missing
-information. After the tool result returns, use the updated state and the
-conversation to continue naturally. Do not repeat an aspect already covered.
-Every substantive answer must be delegated once, including a short answer
-such as a name, department, role, responsibility, or a concise correction.
-Do not move to another checklist item until that assessment has returned.
-Do not use a standalone acknowledgement while waiting for the assessment, and
-do not invent missing information before the evaluator returns."""
+Delegation policy:
+Backend capability:
+- Semantic assessment and durable recording of every substantive interview
+  answer in the current Interview State.
+- Reporting which expected information is covered and which information is
+  still missing, without generating the next question.
+Delegate to the backend when:
+- The user has finished a substantive answer, including a short factual
+  answer, a responsibility, or a correction.
+- The next spoken response would depend on what that answer covered.
+Do not delegate when:
+- The user is still speaking, has only paused briefly, or has asked for a
+  repeat or a short clarification of the question.
+
+For every substantive answer, the mandatory order is: delegate once, wait for
+the evaluator and its state update, then decide what to say next. Do not give
+an acknowledgement, repeat the question, or ask the next question before that
+delegated assessment returns, even when the next question seems obvious.
+After the tool result returns, use the updated state and the conversation to
+continue naturally. Do not repeat an aspect already covered. The evaluator
+only reports covered and missing information; it never supplies the spoken
+question or a conversation action."""
 
 
 UPDATE_INTERVIEW_STATE_TOOL: dict[str, object] = {
