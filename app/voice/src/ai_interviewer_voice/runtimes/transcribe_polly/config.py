@@ -13,7 +13,10 @@ class TranscribePollyRuntimeConfig:
     transcribe_reconnect_attempts: int = 2
     reconnect_audio_buffer_ms: int = 3000
     vad_rms_threshold: int = 600
-    listen_ack_silence_ms: int = 500
+    # A normal clause pause is around the soft endpoint.  Wait longer before
+    # emitting a listen acknowledgement so a completed answer is not met with
+    # an untimely fixed phrase.
+    listen_ack_silence_ms: int = 1200
     normal_endpoint_ms: int = 600
     # ``hard_endpoint_ms`` and ``final_result_settle_ms`` remain as legacy
     # constructor inputs for tests/older callers.  Production wiring passes
@@ -48,6 +51,6 @@ class TranscribePollyRuntimeConfig:
     first_chunk_max_chars: int = 30
     following_chunk_min_chars: int = 20
     following_chunk_max_chars: int = 80
-    listen_ack_text: str = "はい。"
+    listen_ack_text: str = "なるほど。"
     processing_ack_text: str = "回答を確認しています。"
     long_processing_text: str = "確認に少し時間がかかっています。"

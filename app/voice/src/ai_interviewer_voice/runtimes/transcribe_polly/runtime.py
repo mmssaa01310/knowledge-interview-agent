@@ -85,7 +85,7 @@ def _transcript_digest(text: str | None) -> str:
         return ""
     return sha256(value.encode("utf-8")).hexdigest()[:16]
 
-LISTEN_ACK_TEXT = "はい。"
+LISTEN_ACK_TEXT = "なるほど。"
 PROCESSING_ACK_TEXT = "回答を確認しています。"
 LONG_PROCESSING_TEXT = "確認に少し時間がかかっています。"
 class InterviewAction(StrEnum):
@@ -1018,6 +1018,11 @@ class TranscribePollyRuntime:
         if not self._config.backchannel_enabled:
             return
         if self._listen_ack_played or self._assistant_speaking:
+            return
+        # Once Transcribe has produced a final segment, the user has finished
+        # an answer rather than pausing mid-sentence.  Do not insert a
+        # listen-time backchannel immediately before the formal response.
+        if self._has_final_transcript:
             return
         if self._voiced_duration_ms < self._config.listen_ack_min_speech_ms:
             return

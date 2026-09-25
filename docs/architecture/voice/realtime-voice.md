@@ -1029,7 +1029,7 @@ Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20ms�
 発話途中の相槌と処理中通知は、意図しない音声の割り込みを防ぐため既定で無効とする。
 `VOICE_ENABLE_BACKCHANNELS=true`を明示した場合だけ、次のタイミングで有効になる。
 
-* 500ms: 条件を満たす場合だけLISTEN_ACK
+* 1,200ms: 条件を満たす場合だけLISTEN_ACK。通常の短い区切りでは再生しない。
 * 600ms: VADの無音soft endpoint。入力ゲートを閉じず、final segment + stable prefixで非コミットLLM先行処理を開始
 * transcript更新停止300ms: 正式確定。final Resultを全文再構成し、正式Turn/Interview State/DB処理へ進む
 * soft endpoint後1,500ms: hard timeout。final/partial Transcriptがある場合はその時点の最善のTranscriptで強制確定し、どちらもない場合だけ`transcribe_final_timeout`を`NOT_HEARD`、`ASK_REPEAT`として通知

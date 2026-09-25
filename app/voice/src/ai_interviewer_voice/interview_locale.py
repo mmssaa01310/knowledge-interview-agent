@@ -73,7 +73,7 @@ def localized_runtime_texts(locale: str) -> dict[str, str]:
     return {
         "ja-JP": {
             "greeting": "これからインタビューを開始します。",
-            "listen_ack": "はい。",
+            "listen_ack": "なるほど。",
             "processing_ack": "回答を確認しています。",
             "long_processing": "確認に少し時間がかかっています。",
             "timeout": "処理に時間がかかっています。もう一度お願いします。",

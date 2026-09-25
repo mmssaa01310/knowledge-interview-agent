@@ -476,6 +476,35 @@ async def test_backchannels_are_disabled_by_default() -> None:
 
 
 @pytest.mark.anyio
+async def test_listen_ack_is_not_inserted_after_final_transcript() -> None:
+    polly = FakePolly()
+    runtime = TranscribePollyRuntime(
+        config=_config(),
+        interview_bridge=FakeBridge(),  # type: ignore[arg-type]
+        transcribe=FakeTranscribe(),
+        polly=polly,
+    )
+    await runtime.start(
+        VoiceRuntimeContext(
+            voice_session_id="vs-1",
+            record_id="record-1",
+            provider="transcribe_polly",
+        )
+    )
+    runtime._voiced_duration_ms = 1000
+    runtime._has_final_transcript = True
+
+    await runtime._maybe_play_listen_ack("プロジェクトリーダーです")
+
+    assert runtime._listen_ack_played is False
+    assert not any(
+        isinstance(event, AssistantBackchannel)
+        for event in runtime._events._queue
+    )
+    await runtime.close()
+
+
+@pytest.mark.anyio
 async def test_initial_reply_preload_is_reused_by_formal_audio() -> None:
     polly = FakePolly()
     runtime = TranscribePollyRuntime(
