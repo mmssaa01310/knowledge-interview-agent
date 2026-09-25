@@ -27,6 +27,7 @@ import {
   installVoiceAudioTrace,
   installVoiceDataChannelTrace,
   installWavFixtureMicrophone,
+  replayWavFixtureMicrophone,
   startWavFixtureMicrophone,
   readRealLiveTrace,
   readVoiceAudioTrace,
@@ -170,6 +171,22 @@ export function resolveRealAudioFixture({
     `Missing real speech fixture for ${normalized} variant ${variant + 1}. `
       + "Set VOICE_TEST_AUDIO_FIXTURE_DIR or VOICE_TEST_AUDIO_FIXTURE.",
   );
+}
+
+function resolveRealAudioFixtureSequence({ config, behavior, variant = 0 }) {
+  if (!config.audioFixtureDirectory || config.audioFixturePath) {
+    return [resolveRealAudioFixture({ config, behavior, variant })];
+  }
+  const available = [];
+  for (let candidateVariant = 0; candidateVariant < 10; candidateVariant += 1) {
+    const match = fixtureCandidates(config.audioFixtureDirectory, behavior, candidateVariant)
+      .find((candidate) => fs.existsSync(candidate));
+    if (match) available.push(path.resolve(match));
+  }
+  if (!available.length) {
+    return [resolveRealAudioFixture({ config, behavior, variant })];
+  }
+  return available.slice(variant).concat(available.slice(0, variant));
 }
 
 export function realBehaviorPlan({
@@ -333,7 +350,13 @@ export function collectAssistant(dataEntries, consoleEntries, provider) {
   const runtime = eventEntries(dataEntries, provider);
   const runtimeWithClientEvents = eventEntries(dataEntries, provider, { includeClient: true });
   const backchannels = runtime.filter((entry) => entry.type === "assistant_backchannel");
-  const runtimeMain = runtime.filter((entry) => entry.type === "assistant_speech_started");
+  const backchannelResponseIds = new Set(backchannels
+    .map((entry) => entry.event?.responseId ?? entry.event?.response_id)
+    .filter((value) => typeof value === "string" && value.length > 0));
+  const runtimeMain = runtime.filter((entry) => (
+    entry.type === "assistant_speech_started"
+      && !backchannelResponseIds.has(entry.event?.responseId ?? entry.event?.response_id)
+  ));
   const gptMain = [
     // Responses delegation emits nested response.created events inside a
     // response.event envelope. They are backend work, not Live speech.
@@ -395,6 +418,37 @@ export function collectAssistant(dataEntries, consoleEntries, provider) {
   };
 }
 
+function statePersistenceTimestamp(consoleTrace, turnStartedAt) {
+  return consoleEventEntries(consoleTrace)
+    .filter((entry) => (
+      (entry.logger === "gpt_live_state_persisted"
+        || entry.logger === "gpt_live_state_persistence_succeeded")
+      && (turnStartedAt === null
+        || number(entry.timestampMs, 0) >= number(turnStartedAt, 0))
+    ))
+    .map((entry) => number(entry.timestampMs, null))
+    .find((timestamp) => timestamp !== null) ?? null;
+}
+
+function assistantAfterBoundary(assistant, boundaryAt) {
+  if (boundaryAt === null) return assistant;
+  const starts = assistant.starts.filter((entry) => (
+    number(entry.timestampMs, 0) >= boundaryAt
+  ));
+  return {
+    ...assistant,
+    starts,
+    mainResponseCount: starts.length,
+  };
+}
+
+function liveOutputCompletedAfterBoundary(consoleTrace, boundaryAt) {
+  return consoleEventEntries(consoleTrace).some((entry) => (
+    entry.logger === "gpt_live_live_output_completed"
+      && (boundaryAt === null || number(entry.timestampMs, 0) >= boundaryAt)
+  ));
+}
+
 export function extractTiming({
   provider,
   dataTrace,
@@ -402,10 +456,40 @@ export function extractTiming({
   transcript,
   assistant,
   stateObservedAt,
+  turnStartedAt = null,
+  stateVersionAdvanced = false,
+  audioTrace = null,
+  responseBoundaryAt = null,
 }) {
-  const runtime = eventEntries(dataTrace, provider, { includeClient: true });
-  const consoleEvents = consoleEventEntries(consoleTrace);
-  const combined = [...runtime, ...consoleEvents].sort((left, right) => (
+  const isCurrentTurn = (entry) => (
+    turnStartedAt === null
+      || number(entry.timestampMs, 0) >= number(turnStartedAt, 0)
+  );
+  const runtime = eventEntries(dataTrace, provider, { includeClient: true })
+    .filter(isCurrentTurn);
+  const consoleEvents = consoleEventEntries(consoleTrace).filter(isCurrentTurn);
+  const audioEvents = (audioTrace?.events ?? [])
+    .filter(isCurrentTurn)
+    .map((entry) => ({
+      timestampMs: entry.timestampMs,
+      type: entry.kind ?? null,
+      logger: "browser_audio_trace",
+      details: entry.details ?? {},
+      provider,
+    }));
+  const inboundAudioStats = (audioTrace?.stats ?? [])
+    .filter(isCurrentTurn)
+    .filter((entry) => (entry.inboundRtp ?? []).some((item) => (
+      number(item?.packetsReceived, 0) > 0 || number(item?.bytesReceived, 0) > 0
+    )))
+    .map((entry) => ({
+      timestampMs: entry.timestampMs,
+      type: "inbound_audio_rtp",
+      logger: "browser_audio_trace",
+      details: { inboundRtp: entry.inboundRtp },
+      provider,
+    }));
+  const combined = [...runtime, ...consoleEvents, ...audioEvents, ...inboundAudioStats].sort((left, right) => (
     number(left.timestampMs, 0) - number(right.timestampMs, 0)
   ));
   const speechStart = findFirst(combined, (entry) => (
@@ -420,9 +504,14 @@ export function extractTiming({
       || entry.type === "session.input_audio_buffer.speech_stopped"
       || entry.type === "input_audio_buffer.speech_stopped"
   ));
-  const final = transcript.finalEntries[0] ?? findFirst(combined, (entry) => (
-    entry.type === "user_transcript_final"
-      || /input_(?:audio_)?transcript\.(?:completed|done)$/.test(entry.type ?? "")
+  const final = transcript.finalEntries.find((entry) => (
+    speechEnd?.timestampMs === undefined
+      || number(entry.timestampMs, 0) >= number(speechEnd.timestampMs, 0)
+  )) ?? findFirst(combined, (entry) => (
+    (entry.type === "user_transcript_final"
+      || /input_(?:audio_)?transcript\.(?:completed|done)$/.test(entry.type ?? ""))
+      && (speechEnd?.timestampMs === undefined
+        || number(entry.timestampMs, 0) >= number(speechEnd.timestampMs, 0))
   ));
   const finalAt = final?.timestampMs ?? null;
   const speechEndAt = speechEnd?.timestampMs ?? null;
@@ -431,13 +520,25 @@ export function extractTiming({
   const firstAudio = findFirst(combined, (entry) => (
     (entry.logger === "gpt_live_first_audio"
       || entry.type === "assistant_playback_started"
-      || entry.type === "audio_playing_started")
+      || entry.type === "audio_playing_started"
+      || entry.type === "inbound_audio_rtp"
+      || (entry.logger === "voice_startup_latency"
+        && entry.details?.event === "audio_playing_started"))
       && (speechEndAt === null || number(entry.timestampMs, 0) >= speechEndAt)
+      && (responseBoundaryAt === null || number(entry.timestampMs, 0) >= responseBoundaryAt)
   ));
   const firstAudioAt = firstAudio?.timestampMs ?? null;
-  const commitAt = consoleEvents.find((entry) => entry.logger === "gpt_live_state_persisted")?.timestampMs
-    ?? stateObservedAt
+  // The initial greeting can itself be delegated and persisted before the
+  // first user turn. Only a persistence event after this turn's speech end
+  // belongs to the turn being measured; otherwise that greeting is reported
+  // as TURN_COMMITTED_TOO_EARLY for the first answer.
+  const persistedAt = consoleEvents.find((entry) => (
+    entry.logger === "gpt_live_state_persisted"
+      && (speechEndAt === null || number(entry.timestampMs, 0) >= speechEndAt)
+  ))?.timestampMs
     ?? null;
+  const commitAt = persistedAt
+    ?? (stateVersionAdvanced ? stateObservedAt : null);
   const ackAt = assistant.backchannels[0]?.timestampMs ?? null;
   const mainAfterAck = assistant.starts.find((entry) => (
     ackAt === null || entry.timestampMs > ackAt
@@ -450,7 +551,10 @@ export function extractTiming({
     assistantSpeechStarted: assistantStartAt,
     firstAudio: firstAudioAt,
     assistantSpeechEnded: findFirst(combined, (entry) => (
-      entry.type === "assistant_speech_ended" || entry.logger === "gpt_live_response_done"
+      entry.type === "assistant_speech_ended"
+        || entry.logger === "gpt_live_response_done"
+        || entry.logger === "gpt_live_live_audio_completed"
+        || entry.logger === "gpt_live_live_output_completed"
     ))?.timestampMs ?? null,
     speechEndToTranscriptFinalMs: speechEndAt !== null && finalAt !== null
       ? Math.max(0, finalAt - speechEndAt) : null,
@@ -764,7 +868,12 @@ export async function runRealVoiceRobustnessSession({
   sessionIndex,
 }) {
   const normalizedBehavior = normalizeBehavior(behavior);
-  const fixturePath = resolveRealAudioFixture({ config, behavior: normalizedBehavior, variant });
+  const fixtureSequence = resolveRealAudioFixtureSequence({
+    config,
+    behavior: normalizedBehavior,
+    variant,
+  });
+  const fixturePath = fixtureSequence[0];
   const sessionId = robustnessSessionId({
     engine,
     seed: config.seed,
@@ -813,7 +922,9 @@ export async function runRealVoiceRobustnessSession({
   let finalTrace = { live: [], channel: [], audio: { events: [], stats: [] } };
   let evidenceWritten = false;
   let tracingStarted = false;
-  const turn = 1;
+  let turn = 0;
+  let lastTurnRecord = null;
+  let lastHardGate = null;
 
   try {
     try {
@@ -830,7 +941,7 @@ export async function runRealVoiceRobustnessSession({
     }
     await installRealLiveTrace(page);
     await installVoiceDataChannelTrace(page);
-    await installWavFixtureMicrophone(page, fixturePath);
+    await installWavFixtureMicrophone(page, fixtureSequence);
     await installVoiceAudioTrace(page);
     await resetVoiceDemo(request);
     contextData = await fetchInterviewContext(request);
@@ -935,11 +1046,54 @@ export async function runRealVoiceRobustnessSession({
           + String(microphoneStart.error || microphoneStart.mode),
       );
     }
+
+    const maxTurns = Math.max(1, Number(config.maxTurnsPerSession) || 1);
+    for (turn = 1; turn <= maxTurns; turn += 1) {
+      after = null;
+      const turnFixturePath = fixtureSequence[(turn - 1) % fixtureSequence.length];
+      const turnAudioMetadata = readWavMetadata(turnFixturePath);
+      if (turn > 1) {
+        before = await fetchInterviewState(request).catch(() => before);
+        currentField = fieldForQuestion(contextData, interviewState(before).currentQuestionId);
+        currentQuestionId = currentField ? liveQuestionId(currentField) : null;
+        currentQuestion = currentField ? questionText(currentField) : null;
+        const replay = await replayWavFixtureMicrophone(
+          page,
+          (turn - 1) % fixtureSequence.length,
+        );
+        telemetry.event("audio_fixture_replayed", {
+          turn,
+          fixturePath: turnFixturePath,
+          microphoneMode: replay.mode,
+          playCount: replay.playCount,
+        });
+        if (!replay.started && replay.mode !== "browser_fallback") {
+          throw new Error(
+            "real_voice_fixture_replay_failed: "
+              + String(replay.error || replay.mode),
+          );
+        }
+      }
+    const turnBaseline = await page.evaluate(() => ({
+      live: window.__kikioriVoiceLiveTrace?.entries ?? [],
+      channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
+      audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
+    })).catch(() => ({ live: [], channel: [], audio: { events: [], stats: [] } }));
+    const baselineTranscriptCount = collectTranscript(
+      turnBaseline.channel,
+      turnBaseline.live,
+      engine,
+    ).finalCount;
+    const baselineAssistantResponseCount = collectAssistant(
+      turnBaseline.channel,
+      turnBaseline.live,
+      engine,
+    ).mainResponseCount;
     turnStartedAt = Date.now();
     guard.startTurn(audioMetadata.durationSeconds);
     telemetry.event("audio_fixture_started", {
-      fixturePath,
-      metadata: audioMetadata,
+      fixturePath: turnFixturePath,
+      metadata: turnAudioMetadata,
       engine,
       microphoneMode: microphoneStart.mode,
     });
@@ -951,11 +1105,12 @@ export async function runRealVoiceRobustnessSession({
     const trace = await waitForTrace(page, (value) => {
       const runtime = eventEntries(value.channel, engine);
       const hasFinal = engine === ROBUSTNESS_ENGINE.transcribe_polly
-        ? runtime.some((entry) => entry.type === "user_transcript_final")
+        ? runtime.filter((entry) => entry.type === "user_transcript_final").length
+          > baselineTranscriptCount
         : value.live.some((entry) => (
           entry.args?.[0] === "gpt_live_event"
             && /(?:input_(?:audio_)?transcript|input_audio_transcription)\.(?:completed|done)$/.test(entry.args?.[1]?.type ?? "")
-        ));
+        )) && collectTranscript(value.channel, value.live, engine).finalCount > baselineTranscriptCount;
       return normalizedBehavior === "SILENCE" ? Date.now() - turnStartedAt > 8_000 : hasFinal;
     }, timeoutMs);
     finalTrace = trace;
@@ -1014,18 +1169,55 @@ export async function runRealVoiceRobustnessSession({
     const responseWaitBudgetMs = Math.max(0, timeoutMs - (Date.now() - turnStartedAt));
     if (preliminaryTranscript.finalCount > 0 && responseWaitBudgetMs > 0) {
       const responseWaitStartedAt = Date.now();
+      const observedStatePersistenceAt = engine === ROBUSTNESS_ENGINE.gpt_live
+        ? statePersistenceTimestamp(finalTrace.live, turnStartedAt)
+        : null;
+      const responseBoundaryAt = observedStatePersistenceAt ?? stateObservedAt;
       telemetry.event("assistant_response_wait_started", {
         budgetMs: responseWaitBudgetMs,
+        responseBoundaryAt,
       });
       const responseTrace = await waitForTrace(page, (value) => {
         const assistant = collectAssistant(value.channel, value.live, engine);
-        return assistant.mainResponseCount > 0;
+        if (engine === ROBUSTNESS_ENGINE.gpt_live) {
+          const stateAt = statePersistenceTimestamp(value.live, turnStartedAt)
+            ?? responseBoundaryAt;
+          return stateAt !== null && assistant.starts.some((entry) => (
+            number(entry.timestampMs, 0) >= stateAt
+          ));
+        }
+        return assistant.mainResponseCount > baselineAssistantResponseCount;
       }, responseWaitBudgetMs);
       finalTrace = responseTrace;
       telemetry.event("assistant_response_wait_completed", {
-        started: collectAssistant(responseTrace.channel, responseTrace.live, engine).mainResponseCount > 0,
+        started: engine === ROBUSTNESS_ENGINE.gpt_live
+          ? collectAssistant(responseTrace.channel, responseTrace.live, engine).starts.some((entry) => (
+            number(entry.timestampMs, 0) >= (statePersistenceTimestamp(responseTrace.live, turnStartedAt)
+              ?? stateObservedAt)
+          ))
+          : collectAssistant(responseTrace.channel, responseTrace.live, engine).mainResponseCount > 0,
         elapsedMs: Math.max(0, Date.now() - responseWaitStartedAt),
       });
+      if (engine === ROBUSTNESS_ENGINE.gpt_live) {
+        const drainBoundaryAt = statePersistenceTimestamp(responseTrace.live, turnStartedAt)
+          ?? responseBoundaryAt;
+        const drainBudgetMs = Math.max(0, Math.min(
+          5_000,
+          timeoutMs - (Date.now() - turnStartedAt),
+        ));
+        const drainTrace = drainBudgetMs > 0
+          ? await waitForTrace(page, (value) => liveOutputCompletedAfterBoundary(
+            value.live,
+            drainBoundaryAt,
+          ), drainBudgetMs)
+          : responseTrace;
+        finalTrace = drainTrace;
+        telemetry.event("assistant_response_drain_completed", {
+          completed: liveOutputCompletedAfterBoundary(drainTrace.live, drainBoundaryAt),
+          budgetMs: drainBudgetMs,
+          boundaryAt: drainBoundaryAt,
+        });
+      }
     }
 
     const afterTrace = await page.evaluate(() => ({
@@ -1038,7 +1230,13 @@ export async function runRealVoiceRobustnessSession({
     telemetry.setDataChannelTrace(afterTrace.channel);
     telemetry.setAudioTrace(afterTrace.audio);
     const transcript = collectTranscript(afterTrace.channel, afterTrace.live, engine);
-    const assistant = collectAssistant(afterTrace.channel, afterTrace.live, engine);
+    const responseBoundaryAt = engine === ROBUSTNESS_ENGINE.gpt_live
+      ? statePersistenceTimestamp(afterTrace.live, turnStartedAt) ?? stateObservedAt
+      : null;
+    const assistant = assistantAfterBoundary(
+      collectAssistant(afterTrace.channel, afterTrace.live, engine),
+      responseBoundaryAt,
+    );
     const timing = extractTiming({
       provider: engine,
       dataTrace: afterTrace.channel,
@@ -1046,6 +1244,10 @@ export async function runRealVoiceRobustnessSession({
       transcript,
       assistant,
       stateObservedAt,
+      turnStartedAt,
+      stateVersionAdvanced: stateVersion(after) > stateVersion(before),
+      audioTrace: afterTrace.audio,
+      responseBoundaryAt,
     });
     const answer = extractFieldAnswer(
       interviewState(after),
@@ -1071,7 +1273,10 @@ export async function runRealVoiceRobustnessSession({
     );
     const hardGateBase = evaluateHardGate({
       turn,
-      maxTurns: config.maxTurnsPerSession,
+      // Reaching the configured final turn is a successful bounded stop. The
+      // supervisor hard gate is evaluated after a turn, so give its stop
+      // threshold one extra slot for this final in-session observation.
+      maxTurns: turn >= maxTurns ? maxTurns + 1 : maxTurns,
       jevCalls: 0,
       maxJevCalls: undefined,
       state: interviewState(after),
@@ -1170,7 +1375,7 @@ export async function runRealVoiceRobustnessSession({
         durationMs: timing.speechStart !== null && timing.speechEnd !== null
           ? Math.max(0, timing.speechEnd - timing.speechStart)
           : null,
-        fixtureMetadata: audioMetadata,
+          fixtureMetadata: turnAudioMetadata,
       },
       transcription: {
         partialCount: transcript.partialCount,
@@ -1275,11 +1480,39 @@ export async function runRealVoiceRobustnessSession({
         tracingStarted = false;
       }
       fs.writeFileSync(path.join(evidenceDir, "playwright-trace-path.txt"), path.join(evidenceDir, "trace.zip") + "\n");
-    } else {
-      if (tracingStarted) {
-        await context.tracing.stop();
-        tracingStarted = false;
-      }
+      return {
+        sessionId,
+        index: sessionIndex,
+        engine,
+        provider: engine,
+        behavior: normalizedBehavior,
+        variant: variant + 1,
+        fixturePath,
+        status: "FAIL",
+        turn: turnRecord,
+        hardGate,
+        before,
+        state: after,
+        networkErrors,
+        telemetry,
+        evidenceWritten,
+      };
+    }
+
+    lastTurnRecord = turnRecord;
+    lastHardGate = hardGate;
+    if (turn < maxTurns) {
+      // WebRTC does not expose a per-response audio-complete DataChannel
+      // event. Give the just-started response a short drain window before
+      // replaying the next fixture so the next user turn cannot overlap the
+      // current assistant response.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    }
+
+    if (tracingStarted) {
+      await context.tracing.stop();
+      tracingStarted = false;
     }
     return {
       sessionId,
@@ -1289,9 +1522,9 @@ export async function runRealVoiceRobustnessSession({
       behavior: normalizedBehavior,
       variant: variant + 1,
       fixturePath,
-      status: hardGate.status === "FAIL" ? "FAIL" : "PASS",
-      turn: turnRecord,
-      hardGate,
+      status: lastHardGate?.status === "FAIL" ? "FAIL" : "PASS",
+      turn: lastTurnRecord,
+      hardGate: lastHardGate,
       before,
       state: after,
       networkErrors,

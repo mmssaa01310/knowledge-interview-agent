@@ -170,6 +170,40 @@ test("Responses delegation response.created events are not counted as Live speec
   expect(assistant.mainResponseCount).toBe(1);
 });
 
+test("Transcribe processing backchannels are not counted as duplicate main responses", () => {
+  const assistant = collectAssistant([
+    {
+      direction: "server",
+      timestampMs: 100,
+      event: {
+        type: "assistant_backchannel",
+        responseId: "processing-1",
+      },
+    },
+    {
+      direction: "server",
+      timestampMs: 100,
+      event: {
+        type: "assistant_speech_started",
+        responseId: "processing-1",
+      },
+    },
+    {
+      direction: "server",
+      timestampMs: 200,
+      event: {
+        type: "assistant_speech_started",
+        responseId: "main-1",
+      },
+    },
+  ], [], "transcribe_polly");
+
+  expect(assistant).toMatchObject({
+    mainResponseCount: 1,
+    ackCount: 1,
+  });
+});
+
 test("the application transcript boundary promotes GPT-Live deltas to a final transcript", () => {
   const transcript = collectTranscript([], [
     {
@@ -228,6 +262,117 @@ test("real turn latency uses the first audio event, not only response creation",
     firstAudio: 500,
     speechEndToFirstAudioMs: 200,
     fullTurnLatencyMs: 200,
+  });
+});
+
+test("real turn latency uses inbound WebRTC audio when no DataChannel audio event exists", () => {
+  const timing = extractTiming({
+    provider: "gpt_live",
+    dataTrace: [],
+    consoleTrace: [
+      { timestampMs: 100, args: ["gpt_live_user_speech_end", { turn_id: "turn-1" }] },
+      { timestampMs: 400, args: ["gpt_live_response_started", { turn_id: "turn-1" }] },
+    ],
+    transcript: {
+      finalEntries: [{ timestampMs: 200, args: ["gpt_live_input_transcript_final", {
+        transcript: "回答です",
+      }] }],
+    },
+    assistant: { starts: [{ timestampMs: 400 }], backchannels: [] },
+    stateObservedAt: 300,
+    audioTrace: {
+      events: [],
+      stats: [{
+        timestampMs: 650,
+        inboundRtp: [{ kind: "audio", packetsReceived: 1, bytesReceived: 160 }],
+      }],
+    },
+  });
+
+  expect(timing).toMatchObject({
+    firstAudio: 650,
+    speechEndToFirstAudioMs: 550,
+    fullTurnLatencyMs: 550,
+  });
+});
+
+test("real turn timing records the explicit Live audio completion event", () => {
+  const timing = extractTiming({
+    provider: "gpt_live",
+    dataTrace: [],
+    consoleTrace: [
+      { timestampMs: 100, args: ["gpt_live_user_speech_end", { turn_id: "turn-1" }] },
+      { timestampMs: 300, args: ["gpt_live_first_audio", { turn_id: "turn-1" }] },
+      { timestampMs: 900, args: ["gpt_live_live_audio_completed", {
+        turn_id: "turn-1", type: "response.output_audio.done",
+      }] },
+    ],
+    transcript: { finalEntries: [] },
+    assistant: { starts: [], backchannels: [] },
+    stateObservedAt: 400,
+  });
+
+  expect(timing).toMatchObject({
+    firstAudio: 300,
+    assistantSpeechEnded: 900,
+  });
+});
+
+test("turn timing ignores a delegated initial greeting persisted before user speech", () => {
+  const timing = extractTiming({
+    provider: "gpt_live",
+    dataTrace: [],
+    consoleTrace: [
+      { timestampMs: 100, args: ["gpt_live_state_persisted", { delegation_id: "greeting" }] },
+      { timestampMs: 200, args: ["gpt_live_user_speech_end", { turn_id: "turn-1" }] },
+      { timestampMs: 240, args: ["gpt_live_input_transcript_final", { transcript: "回答です" }] },
+      { timestampMs: 320, args: ["gpt_live_state_persisted", { delegation_id: "answer" }] },
+    ],
+    transcript: {
+      finalEntries: [{
+        timestampMs: 240,
+        args: ["gpt_live_input_transcript_final", { transcript: "回答です" }],
+      }],
+    },
+    assistant: { starts: [], backchannels: [] },
+    stateObservedAt: 330,
+  });
+
+  expect(timing).toMatchObject({
+    speechEnd: 200,
+    transcriptFinal: 240,
+    turnCommit: 320,
+    segmentFinalToTurnCommitMs: 80,
+  });
+});
+
+test("turn timing does not attribute an earlier turn commit to a later replay", () => {
+  const timing = extractTiming({
+    provider: "gpt_live",
+    dataTrace: [],
+    consoleTrace: [
+      { timestampMs: 100, args: ["gpt_live_user_speech_end", { turn_id: "turn-1" }] },
+      { timestampMs: 120, args: ["gpt_live_state_persisted", { delegation_id: "turn-1" }] },
+      { timestampMs: 1_015, args: ["gpt_live_input_transcript_final", { transcript: "同じ回答" }] },
+      { timestampMs: 1_010, args: ["gpt_live_user_speech_end", { turn_id: "turn-2" }] },
+      { timestampMs: 1_020, args: ["gpt_live_response_started", { turn_id: "turn-2" }] },
+    ],
+    transcript: {
+      finalEntries: [{
+        timestampMs: 1_015,
+        args: ["gpt_live_input_transcript_final", { transcript: "同じ回答" }],
+      }],
+    },
+    assistant: { starts: [{ timestampMs: 1_020 }], backchannels: [] },
+    stateObservedAt: 1_030,
+    turnStartedAt: 1_000,
+    stateVersionAdvanced: false,
+  });
+
+  expect(timing).toMatchObject({
+    speechEnd: 1_010,
+    transcriptFinal: 1_015,
+    turnCommit: null,
   });
 });
 

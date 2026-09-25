@@ -65,6 +65,10 @@ For every substantive answer, the mandatory order is: delegate once, wait for
 the evaluator and its state update, then decide what to say next. Do not give
 an acknowledgement, repeat the question, or ask the next question before that
 delegated assessment returns, even when the next question seems obvious.
+Once delegation has started, yield the turn completely: do not begin a spoken
+response, including a brief thanks or a partial question, while the evaluator
+is running. Silence is preferable to an unfinished acknowledgement. Resume
+only after the persisted result has returned to the Live conversation.
 After the tool result returns, use the updated state and the conversation to
 continue naturally. Do not repeat an aspect already covered. The evaluator
 only reports covered and missing information; it never supplies the spoken
@@ -367,11 +371,19 @@ def create_live_session(
                         interview_context,
                     ),
                     "tools": [UPDATE_INTERVIEW_STATE_TOOL],
-                    "tool_choice": {
-                        "type": "function",
-                        "name": "update_interview_state",
-                    },
+                    # The evaluator is instructed to call the state tool for
+                    # substantive answers, but the continuation after the
+                    # function result must be allowed to complete without
+                    # being forced into another tool call.
+                    "tool_choice": "auto",
                     "parallel_tool_calls": False,
+                    # The evaluator returns a small structured assessment.
+                    # Keeping the delegated continuation bounded is important:
+                    # after the state tool result, the Live model must regain
+                    # the conversation promptly instead of waiting for an
+                    # unbounded reasoning response from the Responses model.
+                    "reasoning": {"effort": "low"},
+                    "max_output_tokens": 600,
                 },
             }
         external_started_at = monotonic()

@@ -153,6 +153,12 @@ export async function installVoiceAudioTrace(page) {
           });
         });
       }
+      connection.addEventListener("track", (event) => {
+        record("remote_track_received", {
+          track: trackDetails(event.track),
+          streamIds: event.streams?.map((stream) => stream?.id ?? null) ?? [],
+        });
+      });
       record("peer_connection_observed", {
         connectionState: connection.connectionState,
         iceConnectionState: connection.iceConnectionState,
@@ -229,18 +235,30 @@ export async function installVoiceAudioTrace(page) {
         if (!connection || connection.connectionState === "closed") continue;
         Promise.resolve(connection.getStats?.()).then((report) => {
           const outboundRtp = [];
+          const inboundRtp = [];
           if (report?.forEach) {
             report.forEach((item) => {
-              if (item?.type !== "outbound-rtp"
-                || (item.kind ?? item.mediaType) !== "audio") return;
-              outboundRtp.push({
-                id: item.id ?? null,
-                kind: item.kind ?? item.mediaType ?? null,
-                packetsSent: item.packetsSent ?? 0,
-                bytesSent: item.bytesSent ?? 0,
-                totalSamplesSent: item.totalSamplesSent ?? null,
-                timestamp: item.timestamp ?? null,
-              });
+              const kind = item.kind ?? item.mediaType;
+              if (kind !== "audio") return;
+              if (item?.type === "outbound-rtp") {
+                outboundRtp.push({
+                  id: item.id ?? null,
+                  kind,
+                  packetsSent: item.packetsSent ?? 0,
+                  bytesSent: item.bytesSent ?? 0,
+                  totalSamplesSent: item.totalSamplesSent ?? null,
+                  timestamp: item.timestamp ?? null,
+                });
+              } else if (item?.type === "inbound-rtp") {
+                inboundRtp.push({
+                  id: item.id ?? null,
+                  kind,
+                  packetsReceived: item.packetsReceived ?? 0,
+                  bytesReceived: item.bytesReceived ?? 0,
+                  totalSamplesReceived: item.totalSamplesReceived ?? null,
+                  timestamp: item.timestamp ?? null,
+                });
+              }
             });
           }
           trace.stats.push({
@@ -250,6 +268,7 @@ export async function installVoiceAudioTrace(page) {
             iceConnectionState: connection.iceConnectionState,
             tracks: connection.getSenders?.().map((sender) => trackDetails(sender.track)) ?? [],
             outboundRtp,
+            inboundRtp,
           });
         }).catch((error) => record("get_stats_failed", {
           message: error?.message ?? String(error),
@@ -268,8 +287,9 @@ export async function installVoiceAudioTrace(page) {
  * from producing a speech_started/speech_stopped pair.
  */
 export async function installWavFixtureMicrophone(page, fixturePath) {
-  const wavBase64 = fs.readFileSync(fixturePath).toString("base64");
-  await page.addInitScript(({ encodedWav }) => {
+  const fixturePaths = Array.isArray(fixturePath) ? fixturePath : [fixturePath];
+  const encodedWavs = fixturePaths.map((fixture) => fs.readFileSync(fixture).toString("base64"));
+  await page.addInitScript(({ encodedWavs: initialEncodedWavs }) => {
     const state = {
       mode: "pending",
       ready: false,
@@ -280,6 +300,9 @@ export async function installWavFixtureMicrophone(page, fixturePath) {
       endedAt: null,
       error: null,
       start: null,
+      replay: null,
+      playCount: 0,
+      currentFixtureIndex: 0,
     };
     window.__kikioriVoiceFixtureMicrophone = state;
     const recordFixtureEvent = (kind, details = {}) => {
@@ -329,36 +352,69 @@ export async function installWavFixtureMicrophone(page, fixturePath) {
           await audioContext.close().catch(() => undefined);
           return originalGetUserMedia(constraints);
         }
-        const decoded = await audioContext.decodeAudioData(decodeBase64(encodedWav));
+        const decoded = await Promise.all(initialEncodedWavs.map((encodedWav) => (
+          audioContext.decodeAudioData(decodeBase64(encodedWav))
+        )));
         const destination = audioContext.createMediaStreamDestination();
-        const source = audioContext.createBufferSource();
-        source.buffer = decoded;
-        source.connect(destination);
-        source.addEventListener("ended", () => {
-          state.ended = true;
-          state.endedAt = Date.now();
-          recordFixtureEvent("wav_fixture_ended", { fixtureDurationSeconds: decoded.duration });
-        });
+        let source = null;
+        const createSource = () => {
+          source = audioContext.createBufferSource();
+          source.buffer = decoded[state.currentFixtureIndex] ?? decoded[0];
+          source.connect(destination);
+          source.addEventListener("ended", () => {
+            state.ended = true;
+            state.endedAt = Date.now();
+            recordFixtureEvent("wav_fixture_ended", {
+              fixtureDurationSeconds: source.buffer?.duration ?? null,
+              playCount: state.playCount,
+              fixtureIndex: state.currentFixtureIndex,
+            });
+          });
+          return source;
+        };
+        createSource();
         state.mode = "controlled_wav";
         state.ready = true;
         recordFixtureEvent("wav_fixture_ready", {
-          durationSeconds: decoded.duration,
-          sampleRate: decoded.sampleRate,
-          channelCount: decoded.numberOfChannels,
+          durationSeconds: decoded[0]?.duration ?? null,
+          sampleRate: decoded[0]?.sampleRate ?? null,
+          channelCount: decoded[0]?.numberOfChannels ?? null,
         });
-        state.start = async () => {
-          if (state.started) return true;
+        state.replay = async (fixtureIndex) => {
+          if (state.started && !state.ended) {
+            await new Promise((resolve) => {
+              const deadline = Date.now() + 30_000;
+              const waitForEnd = () => {
+                if (state.ended || Date.now() >= deadline) {
+                  resolve();
+                  return;
+                }
+                window.setTimeout(waitForEnd, 50);
+              };
+              waitForEnd();
+            });
+          }
           await audioContext.resume();
-          source.start(0);
+          if (Number.isInteger(fixtureIndex)
+            && fixtureIndex >= 0
+            && fixtureIndex < decoded.length) {
+            state.currentFixtureIndex = fixtureIndex;
+          }
+          createSource().start(0);
           state.started = true;
+          state.ended = false;
           state.startedAt = Date.now();
+          state.playCount += 1;
           recordFixtureEvent("wav_fixture_started", {
-            durationSeconds: decoded.duration,
-            sampleRate: decoded.sampleRate,
-            channelCount: decoded.numberOfChannels,
+            durationSeconds: source.buffer?.duration ?? null,
+            sampleRate: source.buffer?.sampleRate ?? null,
+            channelCount: source.buffer?.numberOfChannels ?? null,
+            fixtureIndex: state.currentFixtureIndex,
+            playCount: state.playCount,
           });
           return true;
         };
+        state.start = state.replay;
         return destination.stream;
       } catch (error) {
         state.mode = "decode_failed";
@@ -367,7 +423,7 @@ export async function installWavFixtureMicrophone(page, fixturePath) {
         return originalGetUserMedia(constraints);
       }
     };
-  }, { encodedWav: wavBase64 });
+  }, { encodedWavs });
 }
 
 export async function startWavFixtureMicrophone(page) {
@@ -383,6 +439,24 @@ export async function startWavFixtureMicrophone(page) {
       error: controller.error,
     };
   });
+}
+
+export async function replayWavFixtureMicrophone(page, fixtureIndex) {
+  return page.evaluate(async (requestedFixtureIndex) => {
+    const controller = window.__kikioriVoiceFixtureMicrophone;
+    if (!controller) return { started: false, mode: "missing" };
+    if (typeof controller.replay === "function") {
+      await controller.replay(requestedFixtureIndex);
+    } else if (typeof controller.start === "function") {
+      await controller.start();
+    }
+    return {
+      started: Boolean(controller.started),
+      mode: controller.mode,
+      playCount: controller.playCount ?? null,
+      error: controller.error,
+    };
+  }, fixtureIndex);
 }
 
 export async function readVoiceAudioTrace(page) {

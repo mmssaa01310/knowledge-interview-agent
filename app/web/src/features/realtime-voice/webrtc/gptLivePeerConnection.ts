@@ -133,13 +133,7 @@ export async function createGPTLivePeerConnection(
         return;
       }
       remoteStream = event.streams[0] ?? new MediaStream([event.track]);
-      if (options.remoteAudioElement) {
-        options.remoteAudioElement.srcObject = remoteStream;
-      }
       remoteAudioTrackReceivedAt = performance.now();
-      markStartup("remote_audio_track_received", startupSessionId, {
-        track_id: event.track.id,
-      });
       if (options.remoteAudioElement) {
         options.remoteAudioElement.onplaying = () => {
           const receivedAt = remoteAudioTrackReceivedAt;
@@ -150,7 +144,16 @@ export async function createGPTLivePeerConnection(
           });
           options.onRemoteAudioPlaying?.();
         };
+        options.remoteAudioElement.srcObject = remoteStream;
+        void options.remoteAudioElement.play().catch((error) => {
+          console.warn("gpt_live_remote_audio_play_failed", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
+      markStartup("remote_audio_track_received", startupSessionId, {
+        track_id: event.track.id,
+      });
       options.onStatsChange({
         microphoneTrackLive: microphoneStream?.getAudioTracks().some((track) => track.readyState === "live") ?? false,
         remoteAudioTrackReceived: true,
@@ -238,6 +241,11 @@ export async function createGPTLivePeerConnection(
       type: "answer",
       sdp: liveSession.transport.sdp,
     });
+    const audioNegotiation = summarizeAudioNegotiation(
+      peerConnection.localDescription?.sdp,
+      peerConnection.remoteDescription?.sdp,
+    );
+    console.info("gpt_live_audio_negotiation", audioNegotiation);
     markStartup("remote_description_set", liveSession.session.id);
 
     // Live sessions are already started by the HTTP create call. The
@@ -283,6 +291,32 @@ function parseDataChannelEvent(data: unknown): GPTLiveEvent | null {
     console.warn("gpt_live_invalid_data_channel_event");
     return null;
   }
+}
+
+function summarizeAudioNegotiation(localSdp?: string, remoteSdp?: string) {
+  return {
+    local: summarizeAudioSdp(localSdp),
+    remote: summarizeAudioSdp(remoteSdp),
+  };
+}
+
+function summarizeAudioSdp(sdp?: string) {
+  if (typeof sdp !== "string") {
+    return null;
+  }
+  const lines = sdp.split(/\r?\n/);
+  const audioStart = lines.findIndex((line) => line.startsWith("m=audio "));
+  if (audioStart < 0) {
+    return null;
+  }
+  const nextMedia = lines.findIndex((line, index) => index > audioStart && line.startsWith("m="));
+  const audioLines = lines.slice(audioStart, nextMedia < 0 ? lines.length : nextMedia);
+  return {
+    mediaLine: audioLines[0],
+    direction: audioLines.find((line) => /^a=(sendrecv|sendonly|recvonly|inactive)$/.test(line)) ?? null,
+    mid: audioLines.find((line) => line.startsWith("a=mid=")) ?? null,
+    msid: audioLines.find((line) => line.startsWith("a=msid=")) ?? null,
+  };
 }
 
 function waitForMediaStream(

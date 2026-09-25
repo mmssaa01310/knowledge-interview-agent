@@ -60,6 +60,14 @@ const EMPTY_STATS: VoiceConnectionStats = {
 const GPT_LIVE_START_TIMEOUT_MS = 30000;
 const GPT_LIVE_RESPONSE_START_TIMEOUT_MS = 5000;
 const GPT_LIVE_WAIT_NOTICE_TIMEOUT_MS = 2500;
+// The delegation-created event can arrive after the first response watchdog
+// interval. Keep the fallback response from racing a late Responses handoff
+// for two intervals; once the delegation exists, its terminal event releases
+// the pending guard instead of creating a competing response.
+const GPT_LIVE_DELEGATION_WAIT_ATTEMPTS = 2;
+const GPT_LIVE_STATE_RESUME_RETRY_TIMEOUT_MS = 1000;
+const GPT_LIVE_STATE_RESUME_COMMENTARY =
+  "先ほどの回答を踏まえて、取得済みの内容は繰り返さず、必要な確認は一つだけ行うか、次の質問へ進んでください。";
 // Live transcript deltas do not guarantee a corresponding speech-stopped or
 // transcript.done event. This is only a transport fallback boundary; it does
 // not infer utterance completeness from punctuation or specific words.
@@ -99,23 +107,51 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const userSpeechActiveRef = useRef(false);
   const transcriptIdleTimeoutIdRef = useRef<number | undefined>();
   const responseObservedRevisionRef = useRef(-1);
+  const liveOutputActiveRevisionRef = useRef<number | null>(null);
+  const liveOutputInterruptRevisionRef = useRef<number | null>(null);
+  const liveOutputInterruptEventIdRef = useRef<string | null>(null);
   const activeTurnRef = useRef<{
     turnId: string;
+    transcriptRevision: number;
     speechEndedAt: number;
     responseStarted: boolean;
+    liveResponseActive: boolean;
+    responseInterruptRequested: boolean;
+    responseInterruptEventId?: string;
+    postDelegationResponseStarted: boolean;
     responseObserved: boolean;
     firstAudio: boolean;
     waitNoticeSent: boolean;
     continuationSent: boolean;
+    delegationResumeSent: boolean;
+    delegationHandoffCompleted: boolean;
+    resumeCommentaryAcknowledged: boolean;
+    resumeCommentaryEventId?: string;
+    resumeCommentaryRetryEventId?: string;
+    resumeCommentaryDelegationId?: string;
+    delegationObserved: boolean;
+    delegationWaitAttempts: number;
     responseStartTimeoutId?: number;
     waitNoticeTimeoutId?: number;
+    resumeCommentaryRetryTimeoutId?: number;
   } | null>(null);
   const turnSequenceRef = useRef(0);
   const handledToolCallIdsRef = useRef(new Set<string>());
   const delegationToolCallSeenRef = useRef(new Set<string>());
   const delegatedResponseIdsRef = useRef(new Map<string, string>());
+  const delegationInitialResponseIdsRef = useRef(new Map<string, string>());
+  const delegationContinuationResponseIdsRef = useRef(new Map<string, string>());
+  const delegationCallIdsRef = useRef(new Map<string, string>());
+  const delegationStateOutputsRef = useRef(new Map<string, unknown>());
   const pendingDelegationIdsRef = useRef(new Set<string>());
+  const delegatedResponsesInFlightRef = useRef(new Set<string>());
+  const delegationTranscriptRevisionsRef = useRef(new Map<string, number>());
   const delegationTranscriptSnapshotsRef = useRef(new Map<string, DelegationTranscriptSnapshot>());
+  const pendingStateResumeRef = useRef<{
+    delegationId: string;
+    stateOutput: unknown;
+  } | null>(null);
+  const flushPendingStateResumeRef = useRef<(() => void) | null>(null);
   const stateUpdateQueueRef = useRef(Promise.resolve());
   const stateUpdateAbortControllersRef = useRef(new Set<AbortController>());
   const currentRecordRef = useRef(recordId);
@@ -145,8 +181,12 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     if (turn.waitNoticeTimeoutId !== undefined) {
       window.clearTimeout(turn.waitNoticeTimeoutId);
     }
+    if (turn.resumeCommentaryRetryTimeoutId !== undefined) {
+      window.clearTimeout(turn.resumeCommentaryRetryTimeoutId);
+    }
     turn.responseStartTimeoutId = undefined;
     turn.waitNoticeTimeoutId = undefined;
+    turn.resumeCommentaryRetryTimeoutId = undefined;
   }, []);
 
   const clearTranscriptIdleTimer = useCallback(() => {
@@ -189,11 +229,21 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     finalizedTranscriptRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
     responseObservedRevisionRef.current = -1;
+    liveOutputActiveRevisionRef.current = null;
+    liveOutputInterruptRevisionRef.current = null;
+    liveOutputInterruptEventIdRef.current = null;
     handledToolCallIdsRef.current.clear();
     delegationToolCallSeenRef.current.clear();
     delegatedResponseIdsRef.current.clear();
+    delegationInitialResponseIdsRef.current.clear();
+    delegationContinuationResponseIdsRef.current.clear();
+    delegationCallIdsRef.current.clear();
+    delegationStateOutputsRef.current.clear();
     pendingDelegationIdsRef.current.clear();
+    delegatedResponsesInFlightRef.current.clear();
+    delegationTranscriptRevisionsRef.current.clear();
     delegationTranscriptSnapshotsRef.current.clear();
+    pendingStateResumeRef.current = null;
     for (const controller of stateUpdateAbortControllersRef.current) {
       controller.abort();
     }
@@ -216,15 +266,119 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     startupStartedAtRef.current = null;
   }, [clearActiveTurnTimers, clearTranscriptIdleTimer, remoteAudioRef]);
 
+  const interruptActiveLiveResponse = useCallback((source: string) => {
+    const turn = activeTurnRef.current;
+    const peer = peerRef.current;
+    const transcriptRevision = turn?.transcriptRevision ?? userTranscriptRevisionRef.current;
+    const hasTurnOutput = Boolean(turn?.liveResponseActive);
+    const hasUnassignedOutput = liveOutputActiveRevisionRef.current === transcriptRevision;
+    if (!peer || transcriptRevision <= 0 || (!hasTurnOutput && !hasUnassignedOutput)) {
+      return false;
+    }
+    if (turn?.responseInterruptRequested
+      || liveOutputInterruptRevisionRef.current === transcriptRevision) {
+      return false;
+    }
+    const eventId = `gpt_live_response_interrupt_${turn?.turnId ?? `revision-${transcriptRevision}`}`;
+    const sent = peer.sendEvent({
+      type: "session.instructions.append",
+      event_id: eventId,
+      delegation_id: null,
+      content: "現在の応答を中断し、新しいユーザー発話を優先してください。この指示自体には発話で応答しないでください。",
+    });
+    if (sent) {
+      // Do not wait for the append acknowledgement before accepting the new
+      // transcript. The instruction is the supported GPT-Live interruption
+      // path, and the old output may continue to drain while it is applied.
+      liveOutputActiveRevisionRef.current = null;
+      liveOutputInterruptRevisionRef.current = transcriptRevision;
+      liveOutputInterruptEventIdRef.current = eventId;
+      if (turn) {
+        turn.liveResponseActive = false;
+        turn.responseInterruptRequested = true;
+        turn.responseInterruptEventId = eventId;
+      }
+    }
+    console.info("gpt_live_response_interrupt_requested", {
+      session_id: sessionIdRef.current,
+      turn_id: turn?.turnId,
+      transcript_revision: transcriptRevision,
+      type: "session.instructions.append",
+      event_id: eventId,
+      delegation_id: null,
+      sent: Boolean(sent),
+      source,
+    });
+    return Boolean(sent);
+  }, []);
+
   const markResponseStarted = useCallback((source: string) => {
     if (userTranscriptRevisionRef.current > 0) {
       responseObservedRevisionRef.current = userTranscriptRevisionRef.current;
+      liveOutputActiveRevisionRef.current = userTranscriptRevisionRef.current;
     }
     const turn = activeTurnRef.current;
-    if (!turn || turn.responseStarted) {
+    if (!turn) {
+      const pendingDelegationForTranscript = [
+        ...pendingDelegationIdsRef.current,
+        ...delegatedResponsesInFlightRef.current,
+      ].some((delegationId) => (
+        delegationTranscriptRevisionsRef.current.get(delegationId)
+          === userTranscriptRevisionRef.current
+      ));
+      if (pendingDelegationForTranscript) {
+        interruptActiveLiveResponse("responses_delegation_pending_without_turn");
+      }
+      return;
+    }
+    if (!turn || (turn.responseStarted && !turn.delegationHandoffCompleted)) {
+      return;
+    }
+    if (turn.delegationHandoffCompleted && turn.postDelegationResponseStarted) {
+      return;
+    }
+    // The wait notice is a transport-level UX message sent when Live has not
+    // started its substantive response yet. It can itself produce an output
+    // transcript, but that output must not close the watchdog or suppress a
+    // late Responses delegation. Once a continuation or the Responses handoff
+    // is active, subsequent output is the actual interview response again.
+    if (turn.waitNoticeSent && !turn.continuationSent && !turn.delegationHandoffCompleted) {
+      console.info("gpt_live_wait_notice_output_started", {
+        session_id: sessionIdRef.current,
+        turn_id: turn.turnId,
+        source,
+      });
+      return;
+    }
+    const pendingDelegationForTurn = [
+      ...pendingDelegationIdsRef.current,
+      ...delegatedResponsesInFlightRef.current,
+    ].some((delegationId) => (
+      delegationTranscriptRevisionsRef.current.get(delegationId) === turn.transcriptRevision
+    ));
+    if (!turn.delegationHandoffCompleted && pendingDelegationForTurn) {
+      // Live may start a short acknowledgement while the Responses evaluator
+      // is still processing. GPT-Live and delegated work are allowed to run
+      // concurrently; do not interrupt this response from the application.
+      // An instruction append does not cancel or complete the Live response,
+      // and leaving that response in an interrupted state prevents the later
+      // post-persistence commentary from reaching the model.
+      turn.liveResponseActive = true;
+      console.info("gpt_live_live_output_deferred", {
+        session_id: sessionIdRef.current,
+        turn_id: turn.turnId,
+        source,
+        reason: "responses_delegation_pending",
+      });
       return;
     }
     turn.responseStarted = true;
+    turn.liveResponseActive = true;
+    turn.responseInterruptRequested = false;
+    turn.responseInterruptEventId = undefined;
+    if (turn.delegationHandoffCompleted) {
+      turn.postDelegationResponseStarted = true;
+    }
     turn.responseObserved = true;
     if (turn.responseStartTimeoutId !== undefined) {
       window.clearTimeout(turn.responseStartTimeoutId);
@@ -234,13 +388,24 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       window.clearTimeout(turn.waitNoticeTimeoutId);
       turn.waitNoticeTimeoutId = undefined;
     }
+    if (turn.resumeCommentaryRetryTimeoutId !== undefined) {
+      window.clearTimeout(turn.resumeCommentaryRetryTimeoutId);
+      turn.resumeCommentaryRetryTimeoutId = undefined;
+    }
     console.info("gpt_live_response_started", {
       session_id: sessionIdRef.current,
       turn_id: turn.turnId,
       source,
+      phase: turn.delegationHandoffCompleted ? "post_delegation" : "pre_delegation",
       speech_end_to_response_start_ms: Math.round(performance.now() - turn.speechEndedAt),
     });
-  }, []);
+    console.info("gpt_live_live_output_started", {
+      session_id: sessionIdRef.current,
+      turn_id: turn.turnId,
+      source,
+      phase: turn.delegationHandoffCompleted ? "post_delegation" : "pre_delegation",
+    });
+  }, [interruptActiveLiveResponse]);
 
   const markFirstAudio = useCallback(() => {
     const turn = activeTurnRef.current;
@@ -256,6 +421,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       session_id: sessionIdRef.current,
       turn_id: turn.turnId,
       speech_end_to_first_audio_ms: Math.round(performance.now() - turn.speechEndedAt),
+    });
+    console.info("gpt_live_live_audio_started", {
+      session_id: sessionIdRef.current,
+      turn_id: turn.turnId,
     });
   }, []);
 
@@ -285,24 +454,86 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         || active.continuationSent) {
         return;
       }
-      if (pendingDelegationIdsRef.current.size > 0) {
+      const pendingForTurn = [...pendingDelegationIdsRef.current]
+        .filter((delegationId) => (
+          delegationTranscriptRevisionsRef.current.get(delegationId) === active.transcriptRevision
+        ));
+      if (pendingForTurn.length > 0) {
         console.info("gpt_live_continuation_deferred", {
           session_id: sessionIdRef.current,
           turn_id: active.turnId,
-          pending_delegations: pendingDelegationIdsRef.current.size,
+          pending_delegations: pendingForTurn.length,
         });
         scheduleResponseStartWatchdog(active);
         return;
       }
+      const inFlightForTurn = [...delegatedResponsesInFlightRef.current]
+        .filter((delegationId) => (
+          delegationTranscriptRevisionsRef.current.get(delegationId) === active.transcriptRevision
+        ));
+      if (inFlightForTurn.length > 0) {
+        console.info("gpt_live_continuation_deferred", {
+          session_id: sessionIdRef.current,
+          turn_id: active.turnId,
+          in_flight_delegations: inFlightForTurn.length,
+        });
+        scheduleResponseStartWatchdog(active);
+        return;
+      }
+      if (!active.delegationObserved
+        && active.delegationWaitAttempts < GPT_LIVE_DELEGATION_WAIT_ATTEMPTS) {
+        active.delegationWaitAttempts += 1;
+        console.info("gpt_live_continuation_deferred", {
+          session_id: sessionIdRef.current,
+          turn_id: active.turnId,
+          reason: "await_delegation_created",
+          wait_attempt: active.delegationWaitAttempts,
+        });
+        scheduleResponseStartWatchdog(active);
+        return;
+      }
+      if (active.delegationResumeSent) {
+        if (userSpeechActiveRef.current) {
+          console.info("gpt_live_continuation_deferred", {
+            session_id: sessionIdRef.current,
+            turn_id: active.turnId,
+            reason: "await_user_transcript_final",
+          });
+          scheduleResponseStartWatchdog(active);
+          return;
+        }
+        active.continuationSent = true;
+        const eventId = `gpt_live_continuation_${active.turnId}`;
+        const sent = peerRef.current?.sendEvent({
+          type: "session.commentary.append",
+          event_id: eventId,
+          delegation_id: null,
+          content: GPT_LIVE_STATE_RESUME_COMMENTARY,
+        });
+        console.info("gpt_live_continuation_trigger", {
+          session_id: sessionIdRef.current,
+          turn_id: active.turnId,
+          sent: Boolean(sent),
+          type: "session.commentary.append",
+          event_id: eventId,
+          delegation_id: null,
+          content_length: GPT_LIVE_STATE_RESUME_COMMENTARY.length,
+          speech_end_to_continuation_ms: Math.round(performance.now() - active.speechEndedAt),
+        });
+        return;
+      }
       active.continuationSent = true;
+      const eventId = `gpt_live_continuation_${active.turnId}`;
       const sent = peerRef.current?.sendEvent({
         type: "response.create",
-        event_id: `gpt_live_continuation_${active.turnId}`,
+        event_id: eventId,
       });
       console.info("gpt_live_continuation_trigger", {
         session_id: sessionIdRef.current,
         turn_id: active.turnId,
         sent: Boolean(sent),
+        type: "response.create",
+        event_id: eventId,
         speech_end_to_continuation_ms: Math.round(performance.now() - active.speechEndedAt),
       });
     }, GPT_LIVE_RESPONSE_START_TIMEOUT_MS);
@@ -325,12 +556,24 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     turnSequenceRef.current += 1;
     const turn: NonNullable<typeof activeTurnRef.current> = {
       turnId: `gpt-live-turn-${connectionGenerationRef.current}-${turnSequenceRef.current}`,
+      transcriptRevision,
       speechEndedAt: performance.now(),
       responseStarted: false,
+      liveResponseActive: liveOutputActiveRevisionRef.current === transcriptRevision,
+      responseInterruptRequested: liveOutputInterruptRevisionRef.current === transcriptRevision,
+      responseInterruptEventId: liveOutputInterruptRevisionRef.current === transcriptRevision
+        ? liveOutputInterruptEventIdRef.current ?? undefined
+        : undefined,
+      postDelegationResponseStarted: false,
       responseObserved: responseObservedRevisionRef.current === transcriptRevision,
       firstAudio: false,
       waitNoticeSent: false,
       continuationSent: false,
+      delegationResumeSent: false,
+      delegationHandoffCompleted: false,
+      resumeCommentaryAcknowledged: false,
+      delegationObserved: false,
+      delegationWaitAttempts: 0,
     };
     activeTurnRef.current = turn;
     console.info("gpt_live_user_speech_end", {
@@ -342,6 +585,23 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const active = activeTurnRef.current;
       if (!active || active.turnId !== turn.turnId || active.responseStarted
         || active.responseObserved || active.firstAudio || active.waitNoticeSent) {
+        return;
+      }
+      const delegationPending = [
+        ...pendingDelegationIdsRef.current,
+        ...delegatedResponsesInFlightRef.current,
+      ].some((delegationId) => (
+        delegationTranscriptRevisionsRef.current.get(delegationId) === active.transcriptRevision
+      ));
+      if (active.delegationObserved || delegationPending) {
+        // A Delegation is an in-flight semantic evaluation, not a slow Live
+        // response. Sending a wait notice here creates another Live output
+        // which can occupy the session when the persisted result is returned.
+        console.info("gpt_live_wait_notice_deferred", {
+          session_id: sessionIdRef.current,
+          turn_id: active.turnId,
+          reason: "responses_delegation_pending",
+        });
         return;
       }
       active.waitNoticeSent = true;
@@ -372,6 +632,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       }
       userSpeechActiveRef.current = false;
       markUserTranscriptFinal("transcript_idle");
+      flushPendingStateResumeRef.current?.();
       console.info("gpt_live_transcript_idle_boundary", {
         session_id: sessionIdRef.current,
         transcript_revision: transcriptRevision,
@@ -431,11 +692,29 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
     handledToolCallIdsRef.current.add(callId);
-    const delegationId = eventDelegationId ?? `delegation-${callId}`;
+    if (!eventDelegationId) {
+      console.warn("gpt_live_delegation_id_missing", {
+        session_id: sessionIdRef.current,
+        call_id: callId,
+        response_id: readResponseId(event),
+      });
+      return;
+    }
+    const delegationId = eventDelegationId;
+    delegationCallIdsRef.current.set(delegationId, callId);
+    const transcriptSnapshot = delegationTranscriptSnapshotsRef.current.get(delegationId);
+    if (activeTurnRef.current && !transcriptSnapshot?.sealed) {
+      delegationTranscriptRevisionsRef.current.set(
+        delegationId,
+        activeTurnRef.current.transcriptRevision,
+      );
+    }
     delegationToolCallSeenRef.current.add(delegationId);
     const responseId = readResponseId(event)
       ?? delegatedResponseIdsRef.current.get(delegationId);
-    const transcriptSnapshot = delegationTranscriptSnapshotsRef.current.get(delegationId);
+    if (responseId && !delegationInitialResponseIdsRef.current.has(delegationId)) {
+      delegationInitialResponseIdsRef.current.set(delegationId, responseId);
+    }
     const delegatedTranscript = transcriptSnapshot?.transcript.trim()
       || latestUserTranscriptRef.current.trim();
     console.info("gpt_live_responses_function_call", {
@@ -497,12 +776,26 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
           ? argumentsValue.evidence as { aspect_id: string; text: string }[]
           : [],
       };
+      console.info("gpt_live_state_update_prepared", {
+        session_id: sessionIdRef.current,
+        delegation_id: delegationId,
+        call_id: callId,
+        turn_id: stateUpdatePayload.turn_id,
+        question_id: stateUpdatePayload.question_id,
+        base_state_version: stateUpdatePayload.base_state_version,
+      });
       stateUpdateAbortController = new AbortController();
       stateUpdateAbortControllersRef.current.add(stateUpdateAbortController);
       const persist = async () => {
         if (!isCurrentLiveCall()) {
           return;
         }
+        console.info("gpt_live_state_persistence_request", {
+          session_id: sessionIdRef.current,
+          delegation_id: delegationId,
+          call_id: callId,
+          turn_id: stateUpdatePayload.turn_id,
+        });
         output = await submitGPTLiveStateUpdateWithRetry(
           stateUpdateRecordId,
           stateUpdatePayload,
@@ -525,6 +818,14 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         session_id: sessionIdRef.current,
         delegation_id: delegationId,
         call_id: callId,
+        status: (output as { status?: string })?.status,
+      });
+      console.info("gpt_live_state_persistence_succeeded", {
+        session_id: sessionIdRef.current,
+        delegation_id: delegationId,
+        call_id: callId,
+        turn_id: stateUpdatePayload.turn_id,
+        state_version: acknowledgedStateVersion,
         status: (output as { status?: string })?.status,
       });
       if ((output as { status?: unknown })?.status !== "error") {
@@ -553,25 +854,88 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
     delegationTranscriptSnapshotsRef.current.delete(delegationId);
-    delegationToolCallSeenRef.current.delete(delegationId);
-    pendingDelegationIdsRef.current.delete(delegationId);
     const peer = peerRef.current;
     if (!peer) {
       return;
     }
+    // The State Store response also contains the complete persisted checklist
+    // for the UI refresh. That record is not the delegation result the Live
+    // model needs. Returning it verbatim makes the follow-up Responses turn
+    // re-reason over the whole interview state and can delay the Live reply
+    // long enough for the response watchdog to fire. Keep the tool result at
+    // the semantic state boundary: status, revision, current question, and
+    // the aspect delta used by the Live interviewer.
+    const functionOutput = JSON.stringify(compactLiveStateUpdateOutput(output));
+    delegationStateOutputsRef.current.set(delegationId, output);
+    const toolResultEventId = `gpt_live_state_tool_result_${callId}`;
+    console.info("gpt_live_delegation_result_prepared", {
+      session_id: sessionIdRef.current,
+      delegation_id: delegationId,
+      call_id: callId,
+      type: "response.item.create",
+      event_id: toolResultEventId,
+      content_length: functionOutput.length,
+    });
     const outputSent = peer.sendEvent({
       type: "response.item.create",
-      event_id: `gpt_live_state_tool_result_${callId}`,
+      event_id: toolResultEventId,
       item: {
         type: "function_call_output",
         call_id: callId,
-        output: JSON.stringify(output),
+        output: functionOutput,
       },
     });
+    console.info("gpt_live_delegation_result_sent", {
+      session_id: sessionIdRef.current,
+      delegation_id: delegationId,
+      call_id: callId,
+      type: "response.item.create",
+      event_id: toolResultEventId,
+      sent: Boolean(outputSent),
+      content_length: functionOutput.length,
+    });
+    const continueEventId = `gpt_live_state_tool_continue_${callId}`;
     const responseRequested = outputSent && peer.sendEvent({
       type: "response.create",
-      event_id: `gpt_live_state_tool_continue_${callId}`,
+      event_id: continueEventId,
     });
+    if (responseRequested) {
+      delegatedResponsesInFlightRef.current.add(delegationId);
+      delegationContinuationResponseIdsRef.current.delete(delegationId);
+      if (!delegationTranscriptRevisionsRef.current.has(delegationId)
+        && activeTurnRef.current) {
+        delegationTranscriptRevisionsRef.current.set(
+          delegationId,
+          activeTurnRef.current.transcriptRevision,
+        );
+      }
+    }
+    console.info("gpt_live_delegation_result_sent", {
+      session_id: sessionIdRef.current,
+      delegation_id: delegationId,
+      call_id: callId,
+      type: "response.create",
+      event_id: continueEventId,
+      sent: Boolean(responseRequested),
+      content_length: 0,
+    });
+    if (!responseRequested) {
+      pendingDelegationIdsRef.current.delete(delegationId);
+      delegationTranscriptRevisionsRef.current.delete(delegationId);
+      delegationTranscriptSnapshotsRef.current.delete(delegationId);
+      delegationToolCallSeenRef.current.delete(delegationId);
+      delegationInitialResponseIdsRef.current.delete(delegationId);
+      delegationContinuationResponseIdsRef.current.delete(delegationId);
+      delegationCallIdsRef.current.delete(delegationId);
+      delegationStateOutputsRef.current.delete(delegationId);
+      delegatedResponseIdsRef.current.delete(delegationId);
+    } else {
+      console.info("gpt_live_live_update_deferred", {
+        session_id: sessionIdRef.current,
+        related_delegation_id: delegationId,
+        reason: "await_responses_handoff_completion",
+      });
+    }
     console.info("gpt_live_delegation_completed", {
       session_id: sessionIdRef.current,
       delegation_id: delegationId,
@@ -581,6 +945,210 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       response_requested: Boolean(responseRequested),
     });
   }, []);
+
+  const sendResumeCommentary = useCallback((
+    delegationId: string,
+    commentaryEventId: string,
+    turnId: string,
+    transcriptRevision: number,
+  ) => {
+    const currentTurn = activeTurnRef.current;
+    const peer = peerRef.current;
+    if (!currentTurn || !peer || currentTurn.turnId !== turnId
+      || currentTurn.transcriptRevision !== transcriptRevision
+      || currentTurn.postDelegationResponseStarted
+      || currentTurn.resumeCommentaryAcknowledged) {
+      return false;
+    }
+    if (currentTurn.resumeCommentaryRetryEventId) {
+      return false;
+    }
+    console.info("gpt_live_live_update_prepared", {
+      session_id: sessionIdRef.current,
+      related_delegation_id: delegationId,
+      delegation_id: null,
+      type: "session.commentary.append",
+      event_id: commentaryEventId,
+      content_length: GPT_LIVE_STATE_RESUME_COMMENTARY.length,
+      after_responses_handoff: true,
+    });
+    const commentarySent = peer.sendEvent({
+      type: "session.commentary.append",
+      event_id: commentaryEventId,
+      delegation_id: null,
+      content: GPT_LIVE_STATE_RESUME_COMMENTARY,
+    });
+    console.info("gpt_live_live_update_sent", {
+      session_id: sessionIdRef.current,
+      related_delegation_id: delegationId,
+      delegation_id: null,
+      type: "session.commentary.append",
+      event_id: commentaryEventId,
+      sent: Boolean(commentarySent),
+      content_length: GPT_LIVE_STATE_RESUME_COMMENTARY.length,
+      after_responses_handoff: true,
+    });
+    if (commentarySent) {
+      currentTurn.resumeCommentaryRetryTimeoutId = window.setTimeout(() => {
+        const retryTurn = activeTurnRef.current;
+        if (!retryTurn || retryTurn.turnId !== turnId
+          || retryTurn.transcriptRevision !== transcriptRevision
+          || retryTurn.postDelegationResponseStarted
+          || retryTurn.resumeCommentaryRetryEventId) {
+          return;
+        }
+        const retryEventId = `${commentaryEventId}_retry`;
+        retryTurn.resumeCommentaryRetryEventId = retryEventId;
+        console.info("gpt_live_live_update_retry_prepared", {
+          session_id: sessionIdRef.current,
+          related_delegation_id: delegationId,
+          delegation_id: null,
+          type: "session.commentary.append",
+          event_id: retryEventId,
+          original_event_id: commentaryEventId,
+          content_length: GPT_LIVE_STATE_RESUME_COMMENTARY.length,
+        });
+        const retrySent = peer.sendEvent({
+          type: "session.commentary.append",
+          event_id: retryEventId,
+          delegation_id: null,
+          content: GPT_LIVE_STATE_RESUME_COMMENTARY,
+        });
+        console.info("gpt_live_live_update_retry_sent", {
+          session_id: sessionIdRef.current,
+          related_delegation_id: delegationId,
+          delegation_id: null,
+          type: "session.commentary.append",
+          event_id: retryEventId,
+          original_event_id: commentaryEventId,
+          sent: Boolean(retrySent),
+          content_length: GPT_LIVE_STATE_RESUME_COMMENTARY.length,
+        });
+      }, GPT_LIVE_STATE_RESUME_RETRY_TIMEOUT_MS);
+    }
+    return Boolean(commentarySent);
+  }, []);
+
+  const sendStateResumeCommentary = useCallback((
+    delegationId: string,
+    stateOutput: unknown,
+  ) => {
+    const activeTurn = activeTurnRef.current;
+    const peer = peerRef.current;
+    if (!activeTurn || !peer || activeTurn.postDelegationResponseStarted || activeTurn.continuationSent) {
+      return false;
+    }
+    const delegationRevision = delegationTranscriptRevisionsRef.current.get(delegationId);
+    if (delegationRevision !== undefined && delegationRevision !== activeTurn.transcriptRevision) {
+      console.info("gpt_live_live_update_skipped_stale_turn", {
+        session_id: sessionIdRef.current,
+        related_delegation_id: delegationId,
+        active_transcript_revision: activeTurn.transcriptRevision,
+        delegation_transcript_revision: delegationRevision,
+      });
+      return false;
+    }
+    if (userSpeechActiveRef.current) {
+      activeTurn.delegationResumeSent = true;
+      pendingStateResumeRef.current = { delegationId, stateOutput };
+      console.info("gpt_live_live_update_deferred", {
+        session_id: sessionIdRef.current,
+        related_delegation_id: delegationId,
+        reason: "await_user_transcript_final",
+      });
+      return true;
+    }
+    const callId = delegationCallIdsRef.current.get(delegationId) ?? delegationId;
+    const commentaryEventId = `gpt_live_state_resume_${callId}`;
+    const turnId = activeTurn.turnId;
+    const transcriptRevision = activeTurn.transcriptRevision;
+    activeTurn.delegationResumeSent = true;
+    activeTurn.continuationSent = true;
+    activeTurn.resumeCommentaryEventId = commentaryEventId;
+    activeTurn.resumeCommentaryDelegationId = delegationId;
+
+    const stateContextEventId = `${commentaryEventId}_state`;
+    const stateContext = compactLiveStateUpdateOutput(stateOutput);
+    const stateContextContent = [
+      "Private application state update; do not read these labels aloud.",
+      `status=${String(stateContext.status ?? "unknown")}`,
+      `state_version=${String(stateContext.stateVersion ?? "unknown")}`,
+      `current_question_id=${String(stateContext.currentQuestionId ?? "")}`,
+      `covered_aspects=${JSON.stringify(stateContext.coveredAspects ?? [])}`,
+      `missing_aspects=${JSON.stringify(stateContext.missingAspects ?? [])}`,
+    ].join(" ");
+
+    // The Responses continuation is not itself spoken by GPT-Live. Feed the
+    // persisted semantic state back as private context, then use commentary
+    // to request the user-facing continuation. The two channels have
+    // different responsibilities: state is not spoken, while commentary is
+    // the only text the Live model should turn into speech here.
+    window.setTimeout(() => {
+      const currentTurn = activeTurnRef.current;
+      if (!currentTurn || currentTurn.turnId !== turnId
+        || currentTurn.transcriptRevision !== transcriptRevision
+        || currentTurn.postDelegationResponseStarted) {
+        console.info("gpt_live_live_update_skipped_stale_turn", {
+          session_id: sessionIdRef.current,
+          related_delegation_id: delegationId,
+        type: "session.thinking.append",
+        event_id: stateContextEventId,
+        reason: "state_resume_context_after_turn_change",
+        });
+        return;
+      }
+      console.info("gpt_live_live_update_prepared", {
+        session_id: sessionIdRef.current,
+        related_delegation_id: delegationId,
+        delegation_id: null,
+        type: "session.thinking.append",
+        event_id: stateContextEventId,
+        content_length: stateContextContent.length,
+        after_responses_handoff: true,
+      });
+      const stateContextSent = peer.sendEvent({
+        type: "session.thinking.append",
+        event_id: stateContextEventId,
+        delegation_id: null,
+        content: stateContextContent,
+      });
+      console.info("gpt_live_live_update_sent", {
+        session_id: sessionIdRef.current,
+        related_delegation_id: delegationId,
+        delegation_id: null,
+        type: "session.thinking.append",
+        event_id: stateContextEventId,
+        sent: Boolean(stateContextSent),
+        content_length: stateContextContent.length,
+        after_responses_handoff: true,
+      });
+      // An append acknowledgement only confirms that the context reached the
+      // Live timeline; it does not mean that Live will start speaking. Send
+      // the speakable continuation in the same turn instead of waiting for an
+      // acknowledgement that may remain pending while the timeline is idle.
+      console.info("gpt_live_state_context_ready_for_commentary", {
+        session_id: sessionIdRef.current,
+        related_delegation_id: delegationId,
+        state_context_event_id: stateContextEventId,
+        reason: stateContextSent ? "state_context_sent" : "state_context_send_failed",
+      });
+      sendResumeCommentary(delegationId, commentaryEventId, turnId, transcriptRevision);
+    }, 0);
+    return true;
+  }, [sendResumeCommentary]);
+
+  const flushPendingStateResume = useCallback(() => {
+    if (userSpeechActiveRef.current) {
+      return;
+    }
+    const pending = pendingStateResumeRef.current;
+    if (!pending) {
+      return;
+    }
+    pendingStateResumeRef.current = null;
+    sendStateResumeCommentary(pending.delegationId, pending.stateOutput);
+  }, [sendStateResumeCommentary]);
+  flushPendingStateResumeRef.current = flushPendingStateResume;
 
   const handleEvent = useCallback((event: GPTLiveEvent) => {
     const eventType = typeof event.type === "string" ? event.type : "unknown";
@@ -617,6 +1185,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const delegationId = readDelegationId(event);
       const responseId = readResponseId(event);
       if (delegationId && responseId) {
+        const initialResponseId = delegationInitialResponseIdsRef.current.get(delegationId);
+        if (delegatedResponsesInFlightRef.current.has(delegationId)
+          && responseId !== initialResponseId) {
+          delegationContinuationResponseIdsRef.current.set(delegationId, responseId);
+        }
         delegatedResponseIdsRef.current.set(delegationId, responseId);
       }
       console.info("gpt_live_responses_backend_started", {
@@ -628,11 +1201,60 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     if (isResponseStartEvent(eventType)) {
       markResponseStarted(eventType);
     }
-    if (isResponseDoneEvent(eventType)) {
+    const responseDoneType = isResponseDoneEvent(eventType)
+      ? eventType
+      : isResponseDoneEvent(nestedType)
+        ? nestedType
+        : undefined;
+    if (responseDoneType) {
       clearActiveTurnTimers();
+      if (eventType !== "response.event") {
+        const activeTurn = activeTurnRef.current;
+        if (activeTurn
+          && [
+            "response.done",
+            "response.output_audio.done",
+            "session.output_audio.done",
+            "response.audio.done",
+          ].includes(responseDoneType)) {
+          activeTurn.liveResponseActive = false;
+        }
+        if (liveOutputActiveRevisionRef.current === activeTurn?.transcriptRevision
+          || !activeTurn) {
+          liveOutputActiveRevisionRef.current = null;
+        }
+      }
       console.info("gpt_live_response_done", {
         session_id: eventSessionId,
         turn_id: activeTurnRef.current?.turnId,
+        type: responseDoneType,
+      });
+      if (["response.output_audio.done", "session.output_audio.done", "response.audio.done"].includes(responseDoneType)) {
+        console.info("gpt_live_live_audio_completed", {
+          session_id: eventSessionId,
+          turn_id: activeTurnRef.current?.turnId,
+          type: responseDoneType,
+        });
+      }
+      // A nested Responses response.done is backend work, not the Live
+      // assistant's output completion. Only the top-level Live event closes
+      // the user-facing output lifecycle.
+      if (eventType === "response.done") {
+        console.info("gpt_live_live_output_completed", {
+          session_id: eventSessionId,
+          turn_id: activeTurnRef.current?.turnId,
+          type: responseDoneType,
+        });
+      }
+    }
+    if (eventType === "response.cancelled" || eventType === "response.canceled") {
+      const activeTurn = activeTurnRef.current;
+      if (activeTurn) {
+        activeTurn.liveResponseActive = false;
+      }
+      console.info("gpt_live_live_output_cancelled", {
+        session_id: eventSessionId,
+        turn_id: activeTurn?.turnId,
         type: eventType,
       });
     }
@@ -658,7 +1280,79 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
 
     if (isDelegatedResponseTerminalEvent(nestedType)) {
       const delegationId = readDelegationId(event);
-      if (delegationId && !delegationToolCallSeenRef.current.has(delegationId)) {
+      const responseId = readResponseId(event);
+      const initialResponseId = delegationId
+        ? delegationInitialResponseIdsRef.current.get(delegationId)
+        : undefined;
+      const continuationResponseId = delegationId
+        ? delegationContinuationResponseIdsRef.current.get(delegationId)
+        : undefined;
+      const isContinuationTerminal = Boolean(
+        delegationId
+        && delegatedResponsesInFlightRef.current.has(delegationId)
+        && ((responseId && responseId === continuationResponseId)
+          || (!responseId && Boolean(continuationResponseId))),
+      );
+      if (isContinuationTerminal && delegationId) {
+        delegatedResponsesInFlightRef.current.delete(delegationId);
+        pendingDelegationIdsRef.current.delete(delegationId);
+        const delegationRevision = delegationTranscriptRevisionsRef.current.get(delegationId);
+        const activeTurn = activeTurnRef.current;
+        if (activeTurn && delegationRevision === activeTurn.transcriptRevision) {
+          activeTurn.delegationHandoffCompleted = true;
+        }
+        sendStateResumeCommentary(
+          delegationId,
+          delegationStateOutputsRef.current.get(delegationId),
+        );
+        delegationTranscriptSnapshotsRef.current.delete(delegationId);
+        delegationToolCallSeenRef.current.delete(delegationId);
+        delegationTranscriptRevisionsRef.current.delete(delegationId);
+        delegationInitialResponseIdsRef.current.delete(delegationId);
+        delegationContinuationResponseIdsRef.current.delete(delegationId);
+        delegationCallIdsRef.current.delete(delegationId);
+        delegationStateOutputsRef.current.delete(delegationId);
+        delegatedResponseIdsRef.current.delete(delegationId);
+        console.info("gpt_live_delegation_result_acknowledged", {
+          session_id: eventSessionId,
+          delegation_id: delegationId,
+          response_id: responseId ?? continuationResponseId,
+          response_event: nestedType,
+          transcript_revision: delegationRevision,
+        });
+        console.info("gpt_live_responses_backend_completed", {
+          session_id: eventSessionId,
+          delegation_id: delegationId,
+          response_event: nestedType,
+        });
+      } else if (delegationId && responseId && responseId === initialResponseId) {
+        console.info("gpt_live_responses_initial_backend_completed", {
+          session_id: eventSessionId,
+          delegation_id: delegationId,
+          response_id: responseId,
+          response_event: nestedType,
+        });
+        // A Responses delegation may complete without requesting the state
+        // tool. It is still a terminal delegation result; leaving it in the
+        // pending set makes the response watchdog defer forever and prevents
+        // Live from continuing the conversation.
+        if (!delegationToolCallSeenRef.current.has(delegationId)) {
+          pendingDelegationIdsRef.current.delete(delegationId);
+          delegationTranscriptSnapshotsRef.current.delete(delegationId);
+          delegationTranscriptRevisionsRef.current.delete(delegationId);
+          delegationInitialResponseIdsRef.current.delete(delegationId);
+          delegationContinuationResponseIdsRef.current.delete(delegationId);
+          delegationCallIdsRef.current.delete(delegationId);
+          delegationStateOutputsRef.current.delete(delegationId);
+          delegatedResponseIdsRef.current.delete(delegationId);
+          delegationToolCallSeenRef.current.delete(delegationId);
+          console.warn("gpt_live_delegation_finished_without_state_tool", {
+            session_id: eventSessionId,
+            delegation_id: delegationId,
+            response_event: nestedType,
+          });
+        }
+      } else if (delegationId && !delegationToolCallSeenRef.current.has(delegationId)) {
         pendingDelegationIdsRef.current.delete(delegationId);
         delegationTranscriptSnapshotsRef.current.delete(delegationId);
         console.warn("gpt_live_delegation_finished_without_state_tool", {
@@ -705,6 +1399,15 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     if (eventType === "session.instructions.appended") {
       const acknowledgedEventId = readClientEventId(event);
       const initialGreetingInstructionId = initialGreetingInstructionIdRef.current;
+      const activeTurn = activeTurnRef.current;
+      if (activeTurn && activeTurn.responseInterruptEventId === acknowledgedEventId) {
+        console.info("gpt_live_response_interrupt_acknowledged", {
+          session_id: eventSessionId,
+          turn_id: activeTurn.turnId,
+          type: eventType,
+          client_event_id: acknowledgedEventId,
+        });
+      }
       if (initialGreetingInstructionId && acknowledgedEventId === initialGreetingInstructionId) {
         markStartup("initial_response_request_started", {
           request_type: "session.commentary.append",
@@ -733,6 +1436,31 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return;
     }
 
+    if (eventType === "session.thinking.appended") {
+      const acknowledgedEventId = readClientEventId(event);
+      const activeTurn = activeTurnRef.current;
+      // The ACK is telemetry only. The commentary is sent immediately after
+      // the thinking append so an idle Live timeline cannot delay the spoken
+      // continuation.
+      return;
+    }
+
+    if (eventType === "session.commentary.appended") {
+      const acknowledgedEventId = readClientEventId(event);
+      const activeTurn = activeTurnRef.current;
+      if (activeTurn && acknowledgedEventId
+        && [activeTurn.resumeCommentaryEventId, activeTurn.resumeCommentaryRetryEventId]
+          .includes(acknowledgedEventId)) {
+        activeTurn.resumeCommentaryAcknowledged = true;
+      }
+      console.info("gpt_live_live_update_acknowledged", {
+        session_id: eventSessionId,
+        type: eventType,
+        client_event_id: acknowledgedEventId,
+      });
+      return;
+    }
+
     if (eventType === "transport.closed") {
       console.info("gpt_live_transport_closed", { session_id: eventSessionId });
       cleanup();
@@ -743,6 +1471,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
 
     if (isUserSpeechStartEvent(eventType)) {
       clearTranscriptIdleTimer();
+      interruptActiveLiveResponse("user_speech_started");
       for (const snapshot of delegationTranscriptSnapshotsRef.current.values()) {
         snapshot.sealed = true;
       }
@@ -761,6 +1490,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       if (!delta) {
         return;
       }
+      // Some GPT-Live sessions do not emit input_audio_buffer.speech_started
+      // over the browser DataChannel. The first input transcript is still a
+      // reliable indication that the user has started a new utterance, so use
+      // it to stop a previous Live output before the next delegation resumes.
+      interruptActiveLiveResponse("input_transcript_delta");
       console.info("gpt_live_input_transcript_delta", {
         session_id: eventSessionId,
         delta_length: delta.length,
@@ -813,6 +1547,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       clearTranscriptIdleTimer();
       userSpeechActiveRef.current = false;
       markUserTranscriptFinal("provider_event");
+      flushPendingStateResumeRef.current?.();
       beginUserTurnWatchdog("provider_event");
       return;
     }
@@ -821,10 +1556,31 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const delegationId = readDelegationId(event);
       const responseId = readResponseId(event);
       if (delegationId && responseId) {
+        delegationInitialResponseIdsRef.current.set(delegationId, responseId);
         delegatedResponseIdsRef.current.set(delegationId, responseId);
       }
       if (delegationId) {
         pendingDelegationIdsRef.current.add(delegationId);
+        delegationTranscriptRevisionsRef.current.set(
+          delegationId,
+          userTranscriptRevisionRef.current,
+        );
+        // Responses delegation can be created before GPT-Live emits a
+        // provider speech-end event (the browser may only receive transcript
+        // deltas). Establish the application turn at this boundary so the
+        // persisted result and the following Live response remain attached to
+        // the same user utterance. This is not an utterance-completeness
+        // decision; the delegated evaluator is still the source of semantic
+        // state, while the delegation event is only the transport correlation
+        // boundary.
+        if (!activeTurnRef.current) {
+          beginUserTurnWatchdog("delegation_created");
+        }
+        const activeTurn = activeTurnRef.current;
+        if (activeTurn
+          && activeTurn.transcriptRevision === userTranscriptRevisionRef.current) {
+          activeTurn.delegationObserved = true;
+        }
         const transcript = userSpeechActiveRef.current
           ? latestUserTranscriptRef.current
           : completedUserTranscriptRef.current || latestUserTranscriptRef.current;
@@ -837,6 +1593,9 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         session_id: eventSessionId,
         delegation_id: delegationId,
         response_id: responseId,
+        target: event.delegation && typeof event.delegation === "object"
+          ? (event.delegation as Record<string, unknown>).target
+          : undefined,
       });
       void captureRef.current?.flush();
       return;
@@ -865,8 +1624,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     markFirstAudio,
     markUserTranscriptFinal,
     markResponseStarted,
+    interruptActiveLiveResponse,
     remoteAudioRef,
     scheduleTranscriptIdleBoundary,
+    sendResumeCommentary,
+    sendStateResumeCommentary,
     t,
   ]);
 
@@ -893,13 +1655,23 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     userSpeechActiveRef.current = false;
     clearTranscriptIdleTimer();
     responseObservedRevisionRef.current = -1;
+    liveOutputActiveRevisionRef.current = null;
+    liveOutputInterruptRevisionRef.current = null;
+    liveOutputInterruptEventIdRef.current = null;
     turnSequenceRef.current = 0;
     activeTurnRef.current = null;
     handledToolCallIdsRef.current.clear();
     delegationToolCallSeenRef.current.clear();
     delegatedResponseIdsRef.current.clear();
+    delegationInitialResponseIdsRef.current.clear();
+    delegationContinuationResponseIdsRef.current.clear();
+    delegationCallIdsRef.current.clear();
+    delegationStateOutputsRef.current.clear();
     pendingDelegationIdsRef.current.clear();
+    delegatedResponsesInFlightRef.current.clear();
+    delegationTranscriptRevisionsRef.current.clear();
     delegationTranscriptSnapshotsRef.current.clear();
+    pendingStateResumeRef.current = null;
     setConnectionState("connecting");
     setStatus("connecting");
     const startAbortController = new AbortController();
@@ -1100,6 +1872,22 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
 }
 
 type GPTLiveStateUpdatePayload = Parameters<typeof submitGPTLiveStateUpdate>[1];
+
+function compactLiveStateUpdateOutput(output: unknown): Record<string, unknown> {
+  if (!output || typeof output !== "object") {
+    return { status: "error", code: "invalid_state_update_result" };
+  }
+  const value = output as Record<string, unknown>;
+  return {
+    ...(typeof value.status === "string" ? { status: value.status } : {}),
+    ...(typeof value.stateVersion === "number" ? { stateVersion: value.stateVersion } : {}),
+    ...(typeof value.currentQuestionId === "string" || value.currentQuestionId === null
+      ? { currentQuestionId: value.currentQuestionId }
+      : {}),
+    ...(Array.isArray(value.coveredAspects) ? { coveredAspects: value.coveredAspects } : {}),
+    ...(Array.isArray(value.missingAspects) ? { missingAspects: value.missingAspects } : {}),
+  };
+}
 
 async function submitGPTLiveStateUpdateWithRetry(
   recordId: string,
