@@ -58,6 +58,14 @@ export class VoiceTelemetry {
     this.liveTrace = Array.isArray(entries) ? entries : [];
   }
 
+  setDataChannelTrace(entries) {
+    this.dataChannelTrace = Array.isArray(entries) ? entries : [];
+  }
+
+  setAudioTrace(trace) {
+    this.audioTrace = trace && typeof trace === "object" ? trace : { events: [], stats: [] };
+  }
+
   error(error) {
     const item = { message: error instanceof Error ? error.message : String(error) };
     this.errors.push(item);
@@ -90,6 +98,7 @@ export class VoiceTelemetry {
       resourceType: entry?.resourceType ?? null,
       status: entry?.status ?? null,
       failure: entry?.failure ?? null,
+      postData: entry?.postData ?? null,
       expectedCancellation: Boolean(entry?.expectedCancellation),
       timestampMs: entry?.timestampMs ?? Date.now(),
     };
@@ -223,6 +232,8 @@ export class VoiceTelemetry {
       networkLog: this.networkLog,
       dataChannelErrors: this.dataChannelErrors,
       liveTrace: this.liveTrace ?? [],
+      dataChannelTrace: this.dataChannelTrace ?? [],
+      audioTrace: this.audioTrace ?? { events: [], stats: [] },
       costGuard: this.costGuard?.snapshot() ?? null,
       jsonlPath: this.jsonlPath,
     };
@@ -275,6 +286,14 @@ export async function writeEvidencePackage({
   );
   fs.writeFileSync(path.join(evidenceDir, "timeline.json"), JSON.stringify(snapshot.timeline, null, 2));
   fs.writeFileSync(path.join(evidenceDir, "live-trace.json"), JSON.stringify(snapshot.liveTrace ?? [], null, 2));
+  fs.writeFileSync(
+    path.join(evidenceDir, "data-channel-trace.json"),
+    JSON.stringify(snapshot.dataChannelTrace ?? [], null, 2),
+  );
+  fs.writeFileSync(
+    path.join(evidenceDir, "audio-trace.json"),
+    JSON.stringify(snapshot.audioTrace ?? { events: [], stats: [] }, null, 2),
+  );
   fs.writeFileSync(
     path.join(evidenceDir, "state-timeline.json"),
     JSON.stringify(snapshot.timeline.filter((item) => /state|question|answer/i.test(item.event)), null, 2),

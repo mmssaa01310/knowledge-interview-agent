@@ -158,3 +158,42 @@ test("joins one telemetry stream to supervisor sessions by sessionIndex", () => 
     fs.rmSync(runDir, { recursive: true, force: true });
   }
 });
+
+test("keeps concrete turn sessions when aggregated runs reuse sessionIndex", () => {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "kikiori-voice-report-"));
+  try {
+    writeJson(path.join(runDir, "summary.json"), {
+      runId: "aggregated-runs-fixture",
+      sessions: [
+        { sessionId: "run-a-session-1", index: 1, level: 3, engine: "gpt_live", turns: [] },
+      ],
+    });
+    writeJson(path.join(runDir, "run-b", "telemetry.json"), {
+      sessionId: "run-b-container",
+      level: 3,
+      engine: "transcribe_polly",
+      turns: [{
+        sessionId: "run-b-session-1",
+        sessionIndex: 1,
+        turn: 1,
+        behavior: "NORMAL",
+        engine: "transcribe_polly",
+        transcription: { finalText: "二つ目の実行" },
+        hardGate: { status: "FAIL", codes: ["ANSWER_NOT_PERSISTED"] },
+      }],
+    });
+
+    generateVoiceReportForRun({ runDir, runId: "aggregated-runs-fixture" });
+    const sessions = fs.readFileSync(path.join(runDir, "sessions.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(sessions.map((session) => session.sessionId)).toEqual([
+      "run-a-session-1",
+      "run-b-session-1",
+    ]);
+    expect(sessions.find((session) => session.sessionId === "run-b-session-1")?.turns).toHaveLength(1);
+  } finally {
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
+});

@@ -4,7 +4,7 @@ import path from "node:path";
 import {
   extractFieldAnswer,
 } from "../assertions/invariants.mjs";
-import { readWavDurationSeconds } from "../fixtures/wavFixture.mjs";
+import { readWavMetadata } from "../fixtures/wavFixture.mjs";
 import { observePageNetwork } from "../drivers/appRoutes.mjs";
 import {
   fetchInterviewContext,
@@ -22,9 +22,12 @@ import {
 } from "../scenarios/scenarios.mjs";
 import {
   dataChannelEventType,
+  dataChannelEventPayload,
   installRealLiveTrace,
+  installVoiceAudioTrace,
   installVoiceDataChannelTrace,
   readRealLiveTrace,
+  readVoiceAudioTrace,
   readVoiceDataChannelTrace,
   realRuntimeTimeline,
 } from "./realLiveTrace.mjs";
@@ -216,7 +219,9 @@ function eventEntries(dataTrace, provider) {
   return dataTrace.filter((entry) => entry.direction === "server").map((entry) => ({
     timestampMs: entry.timestampMs,
     type: dataChannelEventType(entry),
-    event: entry.event ?? {},
+    event: dataChannelEventPayload(entry),
+    envelope: entry.event ?? {},
+    delegationId: entry.event?.delegation_id ?? null,
     provider,
   }));
 }
@@ -238,26 +243,35 @@ function findFirst(entries, predicate) {
 function collectTranscript(dataEntries, consoleEntries, provider) {
   const runtime = eventEntries(dataEntries, provider);
   const finals = runtime.filter((entry) => entry.type === "user_transcript_final");
-  const gptFinals = consoleEntries.filter((entry) => (
+  const gptFinals = runtime.filter((entry) => (
+    /(?:^|\.)input_(?:audio_)?transcript\.(?:completed|done)$/.test(entry.type ?? "")
+      || /(?:^|\.)input_audio_transcription\.completed$/.test(entry.type ?? "")
+  ));
+  const consoleGptFinals = consoleEntries.filter((entry) => (
     entry.args?.[0] === "gpt_live_event"
       && typeof entry.args?.[1]?.type === "string"
       && /input_(?:audio_)?transcript\.(?:completed|done)$/.test(entry.args[1].type)
   ));
-  const allFinals = provider === ROBUSTNESS_ENGINE.gpt_live ? gptFinals : finals;
+  const allFinals = provider === ROBUSTNESS_ENGINE.gpt_live
+    ? (gptFinals.length ? gptFinals : consoleGptFinals)
+    : finals;
   const texts = allFinals.map((entry) => (
     entry.event?.transcript ?? entry.args?.[1]?.transcript ?? entry.event?.text ?? ""
   )).filter(hasText);
   const partials = runtime.filter((entry) => entry.type === "user_transcript_partial");
-  const gptDeltas = consoleEntries.filter((entry) => (
+  const gptDeltas = runtime.filter((entry) => entry.type === "session.input_transcript.delta");
+  const consoleGptDeltas = consoleEntries.filter((entry) => (
     entry.args?.[0] === "gpt_live_event"
       && entry.args?.[1]?.type === "session.input_transcript.delta"
   ));
+  const deltaText = gptDeltas.map((entry) => entry.event?.delta).filter(hasText).join("").trim();
   return {
     finalText: texts.join(" ").trim(),
     finalCount: allFinals.length,
-    partialCount: partials.length + gptDeltas.length,
+    partialText: deltaText,
+    partialCount: partials.length + gptDeltas.length + consoleGptDeltas.length,
     finalEntries: allFinals,
-    partialEntries: partials,
+    partialEntries: [...partials, ...gptDeltas],
   };
 }
 
@@ -265,10 +279,13 @@ function collectAssistant(dataEntries, consoleEntries, provider) {
   const runtime = eventEntries(dataEntries, provider);
   const backchannels = runtime.filter((entry) => entry.type === "assistant_backchannel");
   const runtimeMain = runtime.filter((entry) => entry.type === "assistant_speech_started");
-  const gptMain = consoleEntries.filter((entry) => (
+  const gptMain = [
+    ...runtime.filter((entry) => entry.type === "response.created" || entry.type === "session.output_transcript.delta"),
+    ...consoleEntries.filter((entry) => (
     entry.args?.[0] === "gpt_live_response_started"
       || (entry.args?.[0] === "gpt_live_event" && entry.args?.[1]?.type === "response.created")
-  ));
+    )),
+  ];
   const allStarts = provider === ROBUSTNESS_ENGINE.gpt_live ? gptMain : runtimeMain;
   const speechEnd = [...runtime, ...consoleEntries.map((entry) => ({
     timestampMs: entry.timestampMs,
@@ -283,9 +300,9 @@ function collectAssistant(dataEntries, consoleEntries, provider) {
     ? backchannels
     : backchannels.filter((entry) => number(entry.timestampMs, 0) >= speechEnd);
   const transcriptLines = runtime
-    .filter((entry) => entry.type === "assistant_transcript_final")
+    .filter((entry) => entry.type === "assistant_transcript_final" || entry.type === "session.output_transcript.delta")
     .filter((entry) => speechEnd === null || number(entry.timestampMs, 0) >= speechEnd)
-    .map((entry) => entry.event?.text)
+    .map((entry) => entry.event?.text ?? entry.event?.delta)
     .filter(hasText);
   return {
     starts,
@@ -404,6 +421,131 @@ function responseIds(dataTrace, consoleTrace) {
   return ids;
 }
 
+function consoleHasEvent(consoleTrace, eventName) {
+  return consoleTrace.some((entry) => (
+    entry.args?.[0] === eventName
+      || (entry.args?.[0] === "gpt_live_event" && entry.args?.[1]?.type === eventName)
+  ));
+}
+
+function audioActuallySent({ engine, audioTrace, networkLog = [] }) {
+  if (engine === ROBUSTNESS_ENGINE.gpt_live) {
+    return (audioTrace?.stats ?? []).some((sample) => (
+      (sample.outboundRtp ?? []).some((stream) => (
+        Number(stream.packetsSent) > 0 || Number(stream.bytesSent) > 0
+      ))
+    ));
+  }
+  return networkLog.some((entry) => (
+    entry.direction === "websocket_frame_sent"
+      && Number(entry.frameSize) > 0
+  ));
+}
+
+function harnessValidity({
+  engine,
+  audioTrace,
+  networkLog,
+  dataTrace,
+  consoleTrace,
+  transcript,
+  assistant,
+  timing,
+  stateVersionAdvanced,
+}) {
+  const runtime = eventEntries(dataTrace, engine);
+  const sessionEstablished = engine === ROBUSTNESS_ENGINE.gpt_live
+    ? consoleHasEvent(consoleTrace, "session.started")
+      || consoleHasEvent(consoleTrace, "live_session_started")
+      || runtime.some((entry) => entry.type === "session.started")
+    : consoleHasEvent(consoleTrace, "voice_runtime_ready")
+      || runtime.some((entry) => entry.type === "runtime_ready");
+  const speechWasDetected = timing.speechStart !== null || timing.speechEnd !== null;
+  const transcriptReceived = hasText(transcript.finalText) || hasText(transcript.partialText);
+  const atLeastOneTurnCommitted = stateVersionAdvanced
+    || consoleHasEvent(consoleTrace, "gpt_live_state_persisted")
+    || runtime.some((entry) => ["user_turn_committed", "turn_committed"].includes(entry.type));
+  const assistantMainResponseReceived = Boolean(
+    timing.speechEnd !== null && assistant.mainResponseCount > 0,
+  );
+  const checks = {
+    sessionEstablished,
+    audioActuallySent: audioActuallySent({ engine, audioTrace, networkLog }),
+    speechDetected: speechWasDetected,
+    transcriptReceived,
+    atLeastOneTurnCommitted,
+    assistantMainResponseReceived,
+  };
+  const missing = Object.entries(checks)
+    .filter(([key, value]) => key !== "speechDetected" && !value)
+    .map(([key]) => key);
+  if (!speechWasDetected) missing.push("speechDetected");
+  return {
+    status: missing.length ? "INVALID" : "VALID",
+    classification: missing.length ? "TEST_INFRA_FAILURE" : null,
+    checks,
+    missing,
+  };
+}
+
+function errorTypes(dataTrace, consoleTrace, networkErrors = []) {
+  const runtime = eventEntries(dataTrace, "gpt_live");
+  const values = [
+    ...runtime.map((entry) => `${entry.type ?? ""} ${entry.event?.error?.code ?? ""} ${entry.event?.error?.message ?? ""}`),
+    ...consoleTrace.map((entry) => `${entry.args?.[0] ?? ""} ${entry.args?.[1]?.type ?? ""} ${entry.args?.[1]?.code ?? ""} ${entry.args?.[1]?.message ?? ""}`),
+    ...networkErrors.map((entry) => `${entry?.failure ?? ""} ${entry?.status ?? ""}`),
+  ];
+  return values.filter((value) => /error|unknown_parameter|5\d\d|websocket|data.?channel/i.test(value));
+}
+
+function failureAnalysis({
+  engine,
+  harness,
+  transcript,
+  timing,
+  persisted,
+  advanced,
+  assistant,
+  dataTrace,
+  consoleTrace,
+  networkErrors,
+}) {
+  const errors = errorTypes(dataTrace, consoleTrace, networkErrors);
+  let rootFailure = null;
+  if (!harness.checks.sessionEstablished) rootFailure = "SESSION_NOT_ESTABLISHED";
+  else if (!harness.checks.audioActuallySent) rootFailure = "AUDIO_NOT_SENT";
+  else if (!harness.checks.speechDetected) rootFailure = "UTTERANCE_END_NOT_DETECTED";
+  else if (errors.some((value) => /unknown_parameter/i.test(value))) {
+    rootFailure = "GPT_LIVE_PROTOCOL_ERROR";
+  } else if (errors.some((value) => /5\d\d/i.test(value))) {
+    rootFailure = "API_5XX";
+  } else if (errors.some((value) => /websocket/i.test(value))) {
+    rootFailure = "WEBSOCKET_ERROR";
+  } else if (errors.some((value) => /data.?channel/i.test(value))) {
+    rootFailure = "DATACHANNEL_ERROR";
+  } else if (!hasText(transcript.finalText)) rootFailure = "TRANSCRIPT_FINAL_MISSING";
+  else if (!persisted) rootFailure = "ANSWER_NOT_PERSISTED";
+  else if (!advanced) rootFailure = "QUESTION_NOT_ADVANCED";
+  else if (assistant.mainResponseCount === 0) rootFailure = "ASSISTANT_RESPONSE_MISSING";
+
+  const observedFailures = [];
+  if (!hasText(transcript.finalText)) observedFailures.push("TRANSCRIPT_FINAL_MISSING");
+  if (!persisted) observedFailures.push("ANSWER_NOT_PERSISTED");
+  if (!advanced) observedFailures.push("QUESTION_NOT_ADVANCED");
+  if (assistant.mainResponseCount === 0) observedFailures.push("RESPONSE_TIMEOUT");
+  if (timing.turnCommit !== null && timing.transcriptFinal !== null
+    && timing.turnCommit < timing.transcriptFinal) {
+    observedFailures.push("TURN_COMMITTED_TOO_EARLY");
+  }
+  const cascadeFailures = [...new Set(observedFailures.filter((failure) => failure !== rootFailure))];
+  return {
+    classification: harness.classification || (rootFailure ? "PRODUCT_OR_RUNTIME_FAILURE" : null),
+    rootFailure,
+    cascadeFailures,
+    errorEvidence: errors,
+  };
+}
+
 function failureCodes({ behavior, engine, hardGate, transcript, assistant, dataTrace, consoleTrace }) {
   const codes = [...(hardGate?.codes ?? [])];
   const types = eventTypes(dataTrace, consoleTrace);
@@ -434,8 +576,16 @@ function questionAdvanced({ before, after, currentField, assistant, dataTrace })
   return false;
 }
 
-export function robustnessSessionId({ engine, seed, index, behavior, variant }) {
-  return `robust-${engine}-${seed}-session-${index}-${behavior.toLowerCase()}-${variant + 1}`;
+function sessionRunToken(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function robustnessSessionId({ engine, seed, index, behavior, variant, runId = null }) {
+  const runToken = sessionRunToken(runId);
+  return `robust-${engine}-${seed}${runToken ? `-${runToken}` : ""}-session-${index}-${behavior.toLowerCase()}-${variant + 1}`;
 }
 
 export async function runRealVoiceRobustnessSession({
@@ -457,6 +607,7 @@ export async function runRealVoiceRobustnessSession({
     index: sessionIndex,
     behavior: normalizedBehavior,
     variant,
+    runId: config.runId,
   });
   const sessionDir = path.join(config.outputDir, "robustness", engine, `session-${sessionIndex}-${normalizedBehavior.toLowerCase()}`);
   const evidenceDir = path.join(sessionDir, "evidence");

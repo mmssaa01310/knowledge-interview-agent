@@ -47,11 +47,16 @@ export function observePageNetwork(page, telemetry) {
   const now = () => Date.now();
 
   page.on("request", (request) => {
+    const url = request.url();
+    const postData = /\/api\/live\/(?:state-updates|captures)/.test(url)
+      ? request.postData()?.slice(0, 50_000) ?? null
+      : null;
     telemetry.networkEvent({
       direction: "request",
       method: request.method(),
-      url: request.url(),
+      url,
       resourceType: request.resourceType(),
+      postData,
       timestampMs: now(),
     });
   });

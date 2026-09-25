@@ -47,6 +47,10 @@ export function ensureVoiceFixtureWav(
 }
 
 export function readWavDurationSeconds(filePath) {
+  return readWavMetadata(filePath).durationSeconds;
+}
+
+export function readWavMetadata(filePath) {
   const buffer = fs.readFileSync(path.resolve(filePath));
   if (buffer.length < 12 || buffer.toString("ascii", 0, 4) !== "RIFF"
     || buffer.toString("ascii", 8, 12) !== "WAVE") {
@@ -55,6 +59,10 @@ export function readWavDurationSeconds(filePath) {
   let offset = 12;
   let byteRate = 0;
   let dataSize = 0;
+  let audioFormat = 0;
+  let channels = 0;
+  let sampleRate = 0;
+  let bitsPerSample = 0;
   while (offset + 8 <= buffer.length) {
     const chunkSize = buffer.readUInt32LE(offset + 4);
     const chunkStart = offset + 8;
@@ -62,17 +70,30 @@ export function readWavDurationSeconds(filePath) {
     if (chunkEnd > buffer.length) break;
     const chunkId = buffer.toString("ascii", offset, offset + 4);
     if (chunkId === "fmt " && chunkSize >= 12) {
+      audioFormat = buffer.readUInt16LE(chunkStart);
+      channels = buffer.readUInt16LE(chunkStart + 2);
+      sampleRate = buffer.readUInt32LE(chunkStart + 4);
       byteRate = buffer.readUInt32LE(chunkStart + 8);
+      if (chunkSize >= 16) bitsPerSample = buffer.readUInt16LE(chunkStart + 14);
     } else if (chunkId === "data") {
       dataSize = chunkSize;
-      break;
     }
     // RIFF chunks are word aligned. Some speech synthesizers emit an
     // extended fmt chunk, so fixed offsets are not safe here.
     offset = chunkEnd + (chunkSize % 2);
   }
-  if (!byteRate || !dataSize) {
+  if (!byteRate || !dataSize || !channels || !sampleRate) {
     throw new Error("VOICE_TEST_AUDIO_FIXTURE has no measurable PCM duration: " + filePath);
   }
-  return dataSize / byteRate;
+  return {
+    filePath: path.resolve(filePath),
+    container: "RIFF/WAVE",
+    audioFormat,
+    channels,
+    sampleRate,
+    bitsPerSample,
+    byteRate,
+    dataBytes: dataSize,
+    durationSeconds: dataSize / byteRate,
+  };
 }

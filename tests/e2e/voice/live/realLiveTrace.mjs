@@ -87,8 +87,172 @@ export async function readVoiceDataChannelTrace(page) {
   return page.evaluate(() => window.__kikioriVoiceDataChannelTrace?.entries ?? []);
 }
 
+/**
+ * Record enough browser media information to prove whether the fixture reached
+ * the WebRTC sender. This is test-only instrumentation; it does not alter the
+ * application media path.
+ */
+export async function installVoiceAudioTrace(page) {
+  await page.addInitScript(() => {
+    const trace = { events: [], stats: [] };
+    const connections = new Set();
+    const observedConnections = new WeakSet();
+    const record = (kind, details = {}) => {
+      trace.events.push({
+        kind,
+        timestampMs: Date.now(),
+        performanceMs: Math.round(performance.now()),
+        details,
+      });
+    };
+    const trackDetails = (track) => ({
+      id: track?.id ?? null,
+      kind: track?.kind ?? null,
+      enabled: track?.enabled ?? null,
+      muted: track?.muted ?? null,
+      readyState: track?.readyState ?? null,
+    });
+    const observeConnection = (connection) => {
+      if (!connection || observedConnections.has(connection)) return;
+      observedConnections.add(connection);
+      connections.add(connection);
+      for (const eventName of [
+        "connectionstatechange",
+        "iceconnectionstatechange",
+        "icegatheringstatechange",
+        "signalingstatechange",
+      ]) {
+        connection.addEventListener(eventName, () => {
+          record(eventName, {
+            connectionState: connection.connectionState,
+            iceConnectionState: connection.iceConnectionState,
+            iceGatheringState: connection.iceGatheringState,
+            signalingState: connection.signalingState,
+          });
+        });
+      }
+      record("peer_connection_observed", {
+        connectionState: connection.connectionState,
+        iceConnectionState: connection.iceConnectionState,
+      });
+    };
+    window.__kikioriVoiceAudioTrace = trace;
+
+    const mediaDevices = navigator.mediaDevices;
+    const originalGetUserMedia = mediaDevices?.getUserMedia?.bind(mediaDevices);
+    if (originalGetUserMedia) {
+      mediaDevices.getUserMedia = async (constraints) => {
+        record("get_user_media_requested", { constraints });
+        try {
+          const stream = await originalGetUserMedia(constraints);
+          record("get_user_media_ready", {
+            id: stream.id,
+            tracks: stream.getTracks().map(trackDetails),
+          });
+          for (const track of stream.getTracks()) {
+            track.addEventListener("ended", () => record("track_ended", trackDetails(track)));
+          }
+          return stream;
+        } catch (error) {
+          record("get_user_media_failed", {
+            name: error?.name ?? null,
+            message: error?.message ?? String(error),
+          });
+          throw error;
+        }
+      };
+    }
+
+    const peerPrototype = window.RTCPeerConnection?.prototype;
+    if (peerPrototype) {
+      const originalAddTrack = peerPrototype.addTrack;
+      peerPrototype.addTrack = function (...args) {
+        observeConnection(this);
+        record("track_added", {
+          track: trackDetails(args[0]),
+          streamIds: args.slice(1).map((stream) => stream?.id ?? null),
+        });
+        return originalAddTrack.apply(this, args);
+      };
+      for (const methodName of ["createOffer", "setLocalDescription", "setRemoteDescription"]) {
+        const original = peerPrototype[methodName];
+        if (typeof original !== "function") continue;
+        peerPrototype[methodName] = async function (...args) {
+          observeConnection(this);
+          record(methodName + "_started", {
+            type: args[0]?.type ?? null,
+            hasSdp: Boolean(args[0]?.sdp),
+          });
+          try {
+            const result = await original.apply(this, args);
+            record(methodName + "_completed", {
+              connectionState: this.connectionState,
+              iceConnectionState: this.iceConnectionState,
+              hasLocalSdp: Boolean(this.localDescription?.sdp),
+              hasRemoteSdp: Boolean(this.remoteDescription?.sdp),
+            });
+            return result;
+          } catch (error) {
+            record(methodName + "_failed", {
+              message: error?.message ?? String(error),
+            });
+            throw error;
+          }
+        };
+      }
+    }
+
+    window.setInterval(() => {
+      for (const connection of connections) {
+        if (!connection || connection.connectionState === "closed") continue;
+        Promise.resolve(connection.getStats?.()).then((report) => {
+          const outboundRtp = [];
+          if (report?.forEach) {
+            report.forEach((item) => {
+              if (item?.type !== "outbound-rtp"
+                || (item.kind ?? item.mediaType) !== "audio") return;
+              outboundRtp.push({
+                id: item.id ?? null,
+                kind: item.kind ?? item.mediaType ?? null,
+                packetsSent: item.packetsSent ?? 0,
+                bytesSent: item.bytesSent ?? 0,
+                totalSamplesSent: item.totalSamplesSent ?? null,
+                timestamp: item.timestamp ?? null,
+              });
+            });
+          }
+          trace.stats.push({
+            timestampMs: Date.now(),
+            performanceMs: Math.round(performance.now()),
+            connectionState: connection.connectionState,
+            iceConnectionState: connection.iceConnectionState,
+            tracks: connection.getSenders?.().map((sender) => trackDetails(sender.track)) ?? [],
+            outboundRtp,
+          });
+        }).catch((error) => record("get_stats_failed", {
+          message: error?.message ?? String(error),
+        }));
+      }
+    }, 500);
+  });
+}
+
+export async function readVoiceAudioTrace(page) {
+  return page.evaluate(() => window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] });
+}
+
+export function dataChannelEventPayload(entry) {
+  const event = entry?.event;
+  if (!event || typeof event !== "object") return {};
+  if (event.type === "response.event" && event.event && typeof event.event === "object") {
+    return event.event;
+  }
+  return event;
+}
+
 export function dataChannelEventType(entry) {
-  return typeof entry?.event?.type === "string" ? entry.event.type : null;
+  const payload = dataChannelEventPayload(entry);
+  return typeof payload.type === "string" ? payload.type : null;
 }
 
 export function realRuntimeTimeline({ consoleEntries = [], dataChannelEntries = [] } = {}) {
@@ -103,7 +267,7 @@ export function realRuntimeTimeline({ consoleEntries = [], dataChannelEntries = 
     event: dataChannelEventType(entry) || "data_channel_message",
     timestampMs: entry.timestampMs ?? null,
     performanceMs: entry.performanceMs ?? null,
-    details: entry.event ?? { raw: entry.raw },
+    details: dataChannelEventPayload(entry) || { raw: entry.raw },
     source: entry.direction === "client" ? "data_channel_client" : "data_channel_server",
   }));
   return [...consoleTimeline, ...dataTimeline]

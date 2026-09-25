@@ -608,7 +608,10 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
         : [...sessions.values()].find((candidate) => (
           Number(candidate.index) === Number(turn.sessionIndex)
         ));
-      const targetSessionId = indexedSession?.sessionId ?? turn.sessionId ?? snapshot.sessionId;
+      // A report can aggregate several independent Playwright runs. Their
+      // sessionIndex values commonly restart at 1, so a per-turn sessionId
+      // must win over the index when the snapshot provides one.
+      const targetSessionId = turn.sessionId ?? indexedSession?.sessionId ?? snapshot.sessionId;
       const session = ensureSession(targetSessionId, {
         ...snapshotDefaults,
         sessionId: targetSessionId,
@@ -635,7 +638,7 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
             Number(candidate.index) === Number(turn.sessionIndex)
           ));
         return ensureSession(
-          indexedSession?.sessionId ?? turn.sessionId ?? snapshot.sessionId,
+          turn.sessionId ?? indexedSession?.sessionId ?? snapshot.sessionId,
           snapshotDefaults,
         );
       });
@@ -659,7 +662,12 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
           : [...sessions.values()].find((candidate) => (
             Number(candidate.index) === Number(record.sessionIndex)
           ));
-        const targetSessionId = indexedSession?.sessionId ?? record.sessionId;
+        // A snapshot has already established the concrete per-turn session
+        // when available. Keep the old index-based fallback for supervisor
+        // streams whose sessionId is only a shared telemetry container.
+        const targetSessionId = sessions.has(record.sessionId)
+          ? record.sessionId
+          : indexedSession?.sessionId ?? record.sessionId;
         const session = ensureSession(targetSessionId, {
           level: record.level ?? levelFromPath(filePath),
           seed: record.seed,
