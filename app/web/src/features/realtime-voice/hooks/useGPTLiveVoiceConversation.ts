@@ -60,19 +60,10 @@ const EMPTY_STATS: VoiceConnectionStats = {
 const GPT_LIVE_START_TIMEOUT_MS = 30000;
 const GPT_LIVE_RESPONSE_START_TIMEOUT_MS = 5000;
 const GPT_LIVE_WAIT_NOTICE_TIMEOUT_MS = 2500;
-const GPT_LIVE_CONTINUE_INSTRUCTIONS =
-  "Continue the interview now using the latest persisted state and conversation. "
-  + "You are the sole interviewer. Decide the next conversational action yourself: "
-  + "ask one relevant question, request only needed clarification, or close if the "
-  + "required information is complete. If the interview's final additional-information "
-  + "step is still pending, follow that step and wait for its answer before closing. "
-  + "Do not close while the persisted state is in progress. Produce the next "
-  + "user-facing turn now; do not stop at an intermediate conversational transition "
-  + "or an acknowledgement alone.";
-const GPT_LIVE_STATE_UPDATE_FAILED_INSTRUCTIONS =
-  "The interview state update did not complete. Do not advance to another checklist "
-  + "item or claim that the answer was saved. Stay on the current interview question "
-  + "and briefly ask the user to repeat or clarify their latest answer.";
+// Live transcript deltas do not guarantee a corresponding speech-stopped or
+// transcript.done event. This is only a transport fallback boundary; it does
+// not infer utterance completeness from punctuation or specific words.
+const GPT_LIVE_TRANSCRIPT_IDLE_TIMEOUT_MS = 2500;
 
 export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArgs) {
   const {
@@ -105,10 +96,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const userTranscriptRevisionRef = useRef(0);
   const handledSpeechEndRevisionRef = useRef(-1);
   const userSpeechActiveRef = useRef(false);
+  const transcriptIdleTimeoutIdRef = useRef<number | undefined>();
+  const responseObservedRevisionRef = useRef(-1);
   const activeTurnRef = useRef<{
     turnId: string;
     speechEndedAt: number;
     responseStarted: boolean;
+    responseObserved: boolean;
     firstAudio: boolean;
     waitNoticeSent: boolean;
     continuationSent: boolean;
@@ -154,6 +148,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     turn.waitNoticeTimeoutId = undefined;
   }, []);
 
+  const clearTranscriptIdleTimer = useCallback(() => {
+    if (transcriptIdleTimeoutIdRef.current !== undefined) {
+      window.clearTimeout(transcriptIdleTimeoutIdRef.current);
+      transcriptIdleTimeoutIdRef.current = undefined;
+    }
+  }, []);
+
   const appendTranscriptDelta = useCallback((role: GPTLiveTranscriptLine["role"], delta: string) => {
     if (!delta) {
       return;
@@ -178,12 +179,14 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
 
   const cleanup = useCallback(() => {
     clearActiveTurnTimers();
+    clearTranscriptIdleTimer();
     activeTurnRef.current = null;
     latestUserTranscriptRef.current = "";
     completedUserTranscriptRef.current = "";
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
+    responseObservedRevisionRef.current = -1;
     handledToolCallIdsRef.current.clear();
     delegationToolCallSeenRef.current.clear();
     delegatedResponseIdsRef.current.clear();
@@ -209,14 +212,18 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     setStats(EMPTY_STATS);
     setRequiresManualPlayback(false);
     startupStartedAtRef.current = null;
-  }, [clearActiveTurnTimers, remoteAudioRef]);
+  }, [clearActiveTurnTimers, clearTranscriptIdleTimer, remoteAudioRef]);
 
   const markResponseStarted = useCallback((source: string) => {
+    if (userTranscriptRevisionRef.current > 0) {
+      responseObservedRevisionRef.current = userTranscriptRevisionRef.current;
+    }
     const turn = activeTurnRef.current;
     if (!turn || turn.responseStarted) {
       return;
     }
     turn.responseStarted = true;
+    turn.responseObserved = true;
     if (turn.responseStartTimeoutId !== undefined) {
       window.clearTimeout(turn.responseStartTimeoutId);
       turn.responseStartTimeoutId = undefined;
@@ -270,9 +277,6 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const sent = peerRef.current?.sendEvent({
         type: "response.create",
         event_id: `gpt_live_continuation_${active.turnId}`,
-        response: {
-          instructions: GPT_LIVE_CONTINUE_INSTRUCTIONS,
-        },
       });
       console.info("gpt_live_continuation_trigger", {
         session_id: sessionIdRef.current,
@@ -283,7 +287,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }, GPT_LIVE_RESPONSE_START_TIMEOUT_MS);
   }, []);
 
-  const beginUserTurnWatchdog = useCallback(() => {
+  const beginUserTurnWatchdog = useCallback((source = "provider_event") => {
     if (!peerRef.current || !sessionStartedRef.current) {
       return;
     }
@@ -302,6 +306,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       turnId: `gpt-live-turn-${connectionGenerationRef.current}-${turnSequenceRef.current}`,
       speechEndedAt: performance.now(),
       responseStarted: false,
+      responseObserved: responseObservedRevisionRef.current === transcriptRevision,
       firstAudio: false,
       waitNoticeSent: false,
       continuationSent: false,
@@ -310,11 +315,12 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     console.info("gpt_live_user_speech_end", {
       session_id: sessionIdRef.current,
       turn_id: turn.turnId,
+      source,
     });
     turn.waitNoticeTimeoutId = window.setTimeout(() => {
       const active = activeTurnRef.current;
       if (!active || active.turnId !== turn.turnId || active.responseStarted
-        || active.firstAudio || active.waitNoticeSent) {
+        || active.responseObserved || active.firstAudio || active.waitNoticeSent) {
         return;
       }
       active.waitNoticeSent = true;
@@ -333,6 +339,26 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }, GPT_LIVE_WAIT_NOTICE_TIMEOUT_MS);
     scheduleResponseStartWatchdog(turn);
   }, [clearActiveTurnTimers, scheduleResponseStartWatchdog]);
+
+  const scheduleTranscriptIdleBoundary = useCallback(() => {
+    clearTranscriptIdleTimer();
+    const transcriptRevision = userTranscriptRevisionRef.current;
+    transcriptIdleTimeoutIdRef.current = window.setTimeout(() => {
+      transcriptIdleTimeoutIdRef.current = undefined;
+      if (userTranscriptRevisionRef.current !== transcriptRevision
+        || !latestUserTranscriptRef.current.trim()) {
+        return;
+      }
+      userSpeechActiveRef.current = false;
+      completedUserTranscriptRef.current = latestUserTranscriptRef.current;
+      console.info("gpt_live_transcript_idle_boundary", {
+        session_id: sessionIdRef.current,
+        transcript_revision: transcriptRevision,
+        idle_timeout_ms: GPT_LIVE_TRANSCRIPT_IDLE_TIMEOUT_MS,
+      });
+      beginUserTurnWatchdog("transcript_idle");
+    }, GPT_LIVE_TRANSCRIPT_IDLE_TIMEOUT_MS);
+  }, [beginUserTurnWatchdog, clearTranscriptIdleTimer]);
 
   const handleDelegatedFunctionCall = useCallback(async (
     event: GPTLiveEvent,
@@ -521,15 +547,9 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         output: JSON.stringify(output),
       },
     });
-    const stateUpdateFailed = (output as { status?: unknown })?.status === "error";
     const responseRequested = outputSent && peer.sendEvent({
       type: "response.create",
       event_id: `gpt_live_state_tool_continue_${callId}`,
-      response: {
-        instructions: stateUpdateFailed
-          ? GPT_LIVE_STATE_UPDATE_FAILED_INSTRUCTIONS
-          : GPT_LIVE_CONTINUE_INSTRUCTIONS,
-      },
     });
     console.info("gpt_live_delegation_completed", {
       session_id: sessionIdRef.current,
@@ -701,6 +721,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }
 
     if (isUserSpeechStartEvent(eventType)) {
+      clearTranscriptIdleTimer();
       for (const snapshot of delegationTranscriptSnapshotsRef.current.values()) {
         snapshot.sealed = true;
       }
@@ -710,21 +731,31 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       }
       userSpeechActiveRef.current = true;
       latestUserTranscriptRef.current = "";
+      responseObservedRevisionRef.current = -1;
       return;
     }
 
     if (isInputTranscriptDelta(eventType)) {
       const delta = typeof event.delta === "string" ? event.delta : "";
+      if (!delta) {
+        return;
+      }
       console.info("gpt_live_input_transcript_delta", {
         session_id: eventSessionId,
         delta_length: delta.length,
       });
       const wasSpeechActive = userSpeechActiveRef.current;
       if (!wasSpeechActive) {
+        clearTranscriptIdleTimer();
+        for (const snapshot of delegationTranscriptSnapshotsRef.current.values()) {
+          snapshot.sealed = true;
+        }
         latestUserTranscriptRef.current = "";
         if (activeTurnRef.current && !activeTurnRef.current.responseStarted) {
-          completedUserTranscriptRef.current += delta;
+          clearActiveTurnTimers();
+          activeTurnRef.current = null;
         }
+        responseObservedRevisionRef.current = -1;
       }
       userSpeechActiveRef.current = true;
       userTranscriptRevisionRef.current += 1;
@@ -742,6 +773,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         }
       }
       captureRef.current?.append({ role: "user", text: delta, ...transcriptTiming(event) });
+      scheduleTranscriptIdleBoundary();
       return;
     }
 
@@ -757,9 +789,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }
 
     if (isUserSpeechEndEvent(eventType)) {
+      clearTranscriptIdleTimer();
       userSpeechActiveRef.current = false;
       completedUserTranscriptRef.current = latestUserTranscriptRef.current;
-      beginUserTurnWatchdog();
+      beginUserTurnWatchdog("provider_event");
       return;
     }
 
@@ -805,11 +838,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     appendTranscriptDelta,
     beginUserTurnWatchdog,
     clearActiveTurnTimers,
+    clearTranscriptIdleTimer,
     cleanup,
     handleDelegatedFunctionCall,
     markFirstAudio,
     markResponseStarted,
     remoteAudioRef,
+    scheduleTranscriptIdleBoundary,
     t,
   ]);
 
@@ -833,6 +868,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
+    clearTranscriptIdleTimer();
+    responseObservedRevisionRef.current = -1;
     turnSequenceRef.current = 0;
     activeTurnRef.current = null;
     handledToolCallIdsRef.current.clear();
@@ -985,7 +1022,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       }
       startingRef.current = false;
     }
-  }, [cleanup, enabled, handleEvent, markFirstAudio, recordId, remoteAudioRef, t]);
+  }, [cleanup, clearTranscriptIdleTimer, enabled, handleEvent, markFirstAudio, recordId, remoteAudioRef, t]);
 
   const stop = useCallback(() => {
     if (stoppingRef.current) {

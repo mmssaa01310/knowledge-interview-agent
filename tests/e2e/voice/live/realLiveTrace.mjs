@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 /**
  * Capture the structured arguments passed to the GPT Live browser logger.
  * The production transport stays untouched; this is installed only in a
@@ -75,6 +77,26 @@ export async function installVoiceDataChannelTrace(page) {
         record("client", value);
         return originalSend(value);
       };
+      const recordLifecycle = (type, details = {}) => {
+        trace.push({
+          direction: "client",
+          timestampMs: Date.now(),
+          performanceMs: Math.round(performance.now()),
+          raw: null,
+          event: {
+            type,
+            label: channel.label ?? null,
+            id: channel.id ?? null,
+            readyState: channel.readyState ?? null,
+            ...details,
+          },
+        });
+      };
+      channel.addEventListener("open", () => recordLifecycle("data_channel.open"));
+      channel.addEventListener("close", () => recordLifecycle("data_channel.close"));
+      channel.addEventListener("error", (event) => recordLifecycle("data_channel.error", {
+        message: event?.error?.message ?? null,
+      }));
       channel.addEventListener("message", (event) => {
         record("server", event.data);
       });
@@ -237,6 +259,132 @@ export async function installVoiceAudioTrace(page) {
   });
 }
 
+/**
+ * Install a test-only MediaStream microphone whose recorded WAV starts only
+ * after the runner explicitly calls the controller. Chromium's
+ * --use-file-for-fake-audio-capture starts playback when getUserMedia is
+ * requested, which is before the Live session and the initial question are
+ * ready. That loses the beginning of a real answer and can prevent server VAD
+ * from producing a speech_started/speech_stopped pair.
+ */
+export async function installWavFixtureMicrophone(page, fixturePath) {
+  const wavBase64 = fs.readFileSync(fixturePath).toString("base64");
+  await page.addInitScript(({ encodedWav }) => {
+    const state = {
+      mode: "pending",
+      ready: false,
+      started: false,
+      ended: false,
+      requestedAt: null,
+      startedAt: null,
+      endedAt: null,
+      error: null,
+      start: null,
+    };
+    window.__kikioriVoiceFixtureMicrophone = state;
+    const recordFixtureEvent = (kind, details = {}) => {
+      const trace = window.__kikioriVoiceAudioTrace;
+      if (!trace?.events) return;
+      trace.events.push({
+        kind,
+        timestampMs: Date.now(),
+        performanceMs: Math.round(performance.now()),
+        details,
+      });
+    };
+
+    const mediaDevices = navigator.mediaDevices;
+    const originalGetUserMedia = mediaDevices?.getUserMedia?.bind(mediaDevices);
+    if (!mediaDevices || !originalGetUserMedia) {
+      state.mode = "unavailable";
+      recordFixtureEvent("wav_fixture_unavailable");
+      return;
+    }
+
+    const decodeBase64 = (value) => {
+      const binary = atob(value);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes.buffer;
+    };
+
+    mediaDevices.getUserMedia = async (constraints) => {
+      if (!constraints?.audio) return originalGetUserMedia(constraints);
+      state.requestedAt = Date.now();
+      recordFixtureEvent("wav_fixture_requested", { constraints });
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        state.mode = "browser_fallback";
+        recordFixtureEvent("wav_fixture_fallback", { reason: "audio_context_unavailable" });
+        return originalGetUserMedia(constraints);
+      }
+
+      try {
+        const audioContext = new AudioContextClass();
+        if (typeof audioContext.createMediaStreamDestination !== "function") {
+          state.mode = "browser_fallback";
+          recordFixtureEvent("wav_fixture_fallback", { reason: "media_stream_destination_unavailable" });
+          await audioContext.close().catch(() => undefined);
+          return originalGetUserMedia(constraints);
+        }
+        const decoded = await audioContext.decodeAudioData(decodeBase64(encodedWav));
+        const destination = audioContext.createMediaStreamDestination();
+        const source = audioContext.createBufferSource();
+        source.buffer = decoded;
+        source.connect(destination);
+        source.addEventListener("ended", () => {
+          state.ended = true;
+          state.endedAt = Date.now();
+          recordFixtureEvent("wav_fixture_ended", { fixtureDurationSeconds: decoded.duration });
+        });
+        state.mode = "controlled_wav";
+        state.ready = true;
+        recordFixtureEvent("wav_fixture_ready", {
+          durationSeconds: decoded.duration,
+          sampleRate: decoded.sampleRate,
+          channelCount: decoded.numberOfChannels,
+        });
+        state.start = async () => {
+          if (state.started) return true;
+          await audioContext.resume();
+          source.start(0);
+          state.started = true;
+          state.startedAt = Date.now();
+          recordFixtureEvent("wav_fixture_started", {
+            durationSeconds: decoded.duration,
+            sampleRate: decoded.sampleRate,
+            channelCount: decoded.numberOfChannels,
+          });
+          return true;
+        };
+        return destination.stream;
+      } catch (error) {
+        state.mode = "decode_failed";
+        state.error = error?.message ?? String(error);
+        recordFixtureEvent("wav_fixture_decode_failed", { message: state.error });
+        return originalGetUserMedia(constraints);
+      }
+    };
+  }, { encodedWav: wavBase64 });
+}
+
+export async function startWavFixtureMicrophone(page) {
+  return page.evaluate(async () => {
+    const controller = window.__kikioriVoiceFixtureMicrophone;
+    if (!controller) return { started: false, mode: "missing" };
+    if (typeof controller.start === "function") {
+      await controller.start();
+    }
+    return {
+      started: Boolean(controller.started),
+      mode: controller.mode,
+      error: controller.error,
+    };
+  });
+}
+
 export async function readVoiceAudioTrace(page) {
   return page.evaluate(() => window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] });
 }
@@ -255,7 +403,12 @@ export function dataChannelEventType(entry) {
   return typeof payload.type === "string" ? payload.type : null;
 }
 
-export function realRuntimeTimeline({ consoleEntries = [], dataChannelEntries = [] } = {}) {
+export function realRuntimeTimeline({
+  consoleEntries = [],
+  dataChannelEntries = [],
+  audioTrace = null,
+  networkEntries = [],
+} = {}) {
   const consoleTimeline = (consoleEntries ?? []).map((entry) => ({
     event: loggerName(entry) || liveEventType(entry) || "browser_log",
     timestampMs: entry.timestampMs ?? null,
@@ -270,7 +423,45 @@ export function realRuntimeTimeline({ consoleEntries = [], dataChannelEntries = 
     details: dataChannelEventPayload(entry) || { raw: entry.raw },
     source: entry.direction === "client" ? "data_channel_client" : "data_channel_server",
   }));
-  return [...consoleTimeline, ...dataTimeline]
+  const audioTimeline = (audioTrace?.events ?? []).map((entry) => ({
+    event: entry.kind || "browser_audio_event",
+    timestampMs: entry.timestampMs ?? null,
+    performanceMs: entry.performanceMs ?? null,
+    details: entry.details ?? {},
+    source: "browser_audio_trace",
+  }));
+  const networkTimeline = (networkEntries ?? [])
+    .filter((entry) => (
+      entry.direction === "request"
+      || entry.direction === "response"
+      || entry.direction === "websocket_open"
+      || entry.direction === "websocket_close"
+      || entry.direction === "websocket_error"
+      || entry.direction === "websocket_frame_sent"
+      || entry.direction === "websocket_frame_received"
+    ))
+    .map((entry) => ({
+      event: /\/api\/live\/state-updates/.test(entry.url ?? "")
+        ? (entry.direction === "request" ? "state_update_request" : "state_update_response")
+        : /\/api\/live\/sessions/.test(entry.url ?? "")
+          ? (entry.direction === "request" ? "live_session_request" : "live_session_response")
+        : entry.frameEventType
+          || entry.direction
+          || "network_event",
+      timestampMs: entry.timestampMs ?? null,
+      performanceMs: null,
+      details: {
+        url: entry.url ?? null,
+        method: entry.method ?? null,
+        status: entry.status ?? null,
+        responseBody: entry.responseBody ?? null,
+        frameSize: entry.frameSize ?? null,
+        frameType: entry.frameType ?? null,
+        postData: entry.postData ?? null,
+      },
+      source: "network",
+    }));
+  return [...consoleTimeline, ...dataTimeline, ...audioTimeline, ...networkTimeline]
     .filter((entry) => entry.timestampMs !== null)
     .sort((left, right) => left.timestampMs - right.timestampMs);
 }

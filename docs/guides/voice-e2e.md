@@ -164,6 +164,7 @@ Jevモードの探索上限は`config.mjs`が別途適用します。環境変�
 | VOICE_TEST_REAL_API_ENABLED | false | 実APIテストの明示許可 |
 | VOICE_TEST_REAL_PROVIDER | gpt_live | Level 3で使う実プロバイダ（`gpt_live` / `transcribe_polly`） |
 | VOICE_TEST_AUDIO_FIXTURE | 未指定 | 仮想マイクへ入力する録音済みWAVの絶対パス |
+| VOICE_TEST_REAL_INITIAL_RESPONSE_IDLE_MS | 2500 | GPT-Liveの初回出力transcriptを受信してから、録音fixtureを開始するまでのアイドル判定時間（ミリ秒） |
 | VOICE_TEST_MAX_SESSIONS | 3（決定論的） / 10（Jev） | 1実行で許可するセッション数 |
 | VOICE_TEST_MAX_TURNS_PER_SESSION | 8 | セッションごとの最大ターン数 |
 | VOICE_TEST_MAX_AUDIO_SECONDS_PER_SESSION | 120 | セッションごとの音声秒数 |
@@ -209,7 +210,7 @@ Playwrightの各Run終了時に、外部サーバーやCDNを使わない静的�
 
     test-results/voice-runs/<run-id>/report.html
 
-ブラウザで直接開ける`file://`形式で、日本語の実行概要、回答パターン別の成功・失敗、失敗内容と影響、Level 2 / Level 3のレイテンシ（p50 / p95 / p99）、Jev・LLM Judge・音声APIの利用状況、失敗の詳細を確認できます。失敗項目は展開すると、AIの質問、ユーザーの文字起こし、AIの返答、期待結果 / 実際の結果、Interview State、タイムラインと証拠ファイルへの相対リンクを表示します。内部コードは原因調査用に併記します。回答パターン、結果、実行レベル、失敗種別のフィルタもレポート内だけで動作します。
+ブラウザで直接開ける`file://`形式で、日本語の実行概要、回答パターン別の成功・失敗、失敗内容と影響、Level 2 / Level 3のレイテンシ（p50 / p95 / p99）、Jev・LLM Judge・音声APIの利用状況、失敗の詳細を確認できます。失敗の概要には実際に発生した失敗だけを表示し、根本原因と連鎖症状を分けて示します。失敗項目は展開すると、AIの質問、ユーザーの文字起こし、AIの返答、期待結果 / 実際の結果、Interview State、タイムラインと証拠ファイルへの相対リンクを表示します。内部コードは原因調査用に併記します。回答パターン、結果、実行レベル、失敗種別のフィルタもレポート内だけで動作します。
 
 入力データが存在する場合は`summary.json`、`sessions.jsonl`、`metrics.json`、`failures.json`を利用します。従来の`exploration-summary.json`、`level3-summary.json`、`telemetry.json` / `telemetry.jsonl`も読み込み、必要な正規化済み入力をRunディレクトリへ出力します。レポート生成に失敗してもE2E本体の成否は変更せず、警告を出力します。
 

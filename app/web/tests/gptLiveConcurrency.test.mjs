@@ -264,6 +264,45 @@ test("response watchdog emits one wait notice and one continuation at most", asy
   app.hook.stop();
 });
 
+test("transcript idle boundary starts the watchdog when Live omits speech-end events", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "発話終了イベントのない回答です。" });
+
+  app.advance(2499);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 0);
+
+  // The idle boundary creates the same response watchdog as the provider's
+  // speech-stopped event. It does not immediately emit a second response.
+  app.advance(1);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("wait_notice")).length, 0);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 0);
+
+  app.advance(2500);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("wait_notice")).length, 1);
+  app.advance(2500);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
+  app.hook.stop();
+});
+
+test("an already observed Live response suppresses the duplicate wait notice but keeps recovery bounded", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答後の状態保存が必要です。" });
+  app.receive({ type: "session.output_transcript.delta", delta: "次の質問です。" });
+
+  app.advance(2500);
+  app.advance(2500);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("wait_notice")).length, 0);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 0);
+
+  app.advance(2500);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
+  app.advance(10000);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
+  app.hook.stop();
+});
+
 test("response start cancels the watchdog before it can send a second prompt", async () => {
   const app = setup();
   await app.hook.start();
@@ -341,7 +380,7 @@ test("Responses function call is persisted and resumed without backend question 
   assert.equal(app.sent.filter((event) => event.type === "response.item.create").length, 1);
   const continuation = app.sent.find((event) => event.type === "response.create");
   assert.ok(continuation);
-  assert.match(continuation.response?.instructions ?? "", /latest persisted state/);
+  assert.equal(continuation.response, undefined);
   app.hook.stop();
 });
 
@@ -551,8 +590,7 @@ test("a state update error resumes Live without advancing the checklist", async 
     (event) => event.event_id === "gpt_live_state_tool_continue_call-state-error",
   );
   assert.ok(continuation);
-  assert.match(continuation.response.instructions, /state update did not complete/);
-  assert.doesNotMatch(continuation.response.instructions, /latest persisted state/);
+  assert.equal(continuation.response, undefined);
   assert.equal(app.stateRequests.length, 2, "network failures may still use the bounded retry");
   app.hook.stop();
 });

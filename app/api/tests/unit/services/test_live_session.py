@@ -158,6 +158,9 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
     assert "glossary" in captured["session"]["instructions"]
     assert "After delegation, wait" not in captured["session"]["instructions"]
     assert "Every substantive answer must be delegated once" in captured["session"]["instructions"]
+    assert "exact itemId from the current question's" in delegation["responses"]["instructions"]
+    assert "questionDefinition" in delegation["responses"]["instructions"]
+    assert "never the human" in delegation["responses"]["instructions"]
 
 
 def test_create_live_session_requires_server_key(monkeypatch) -> None:

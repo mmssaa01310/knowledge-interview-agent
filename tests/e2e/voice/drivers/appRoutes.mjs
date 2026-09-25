@@ -45,12 +45,48 @@ export async function installLocalApiRoutes(
 export function observePageNetwork(page, telemetry) {
   const errors = [];
   const now = () => Date.now();
+  const websocketFrame = (direction, url, payload) => {
+    const isString = typeof payload === "string";
+    let eventType = null;
+    if (isString) {
+      try {
+        const parsed = JSON.parse(payload);
+        eventType = typeof parsed?.type === "string" ? parsed.type : null;
+      } catch {
+        // Audio/binary frames and non-JSON protocol frames are intentionally
+        // recorded only by size. Never persist their contents in telemetry.
+      }
+    }
+    const frameSize = isString
+      ? payload.length
+      : payload?.byteLength ?? payload?.length ?? null;
+    telemetry.networkEvent({
+      direction,
+      url,
+      frameSize,
+      frameType: isString ? "text" : "binary",
+      frameEventType: eventType,
+      timestampMs: now(),
+    });
+  };
 
   page.on("request", (request) => {
     const url = request.url();
-    const postData = /\/api\/live\/(?:state-updates|captures)/.test(url)
-      ? request.postData()?.slice(0, 50_000) ?? null
-      : null;
+    let postData = null;
+    if (/\/api\/live\/(?:state-updates|captures)/.test(url)) {
+      try {
+        postData = request.postData()?.slice(0, 50_000) ?? null;
+      } catch {
+        postData = null;
+      }
+      if (!postData) {
+        try {
+          postData = request.postDataBuffer()?.toString("utf8").slice(0, 50_000) ?? null;
+        } catch {
+          postData = null;
+        }
+      }
+    }
     telemetry.networkEvent({
       direction: "request",
       method: request.method(),
@@ -95,7 +131,18 @@ export function observePageNetwork(page, telemetry) {
       status: response.status(),
       timestampMs: now(),
     };
-    telemetry.networkEvent({ direction: "response", ...item });
+    const captureBody = /\/api\/live\/(?:state-updates|captures)/.test(item.url);
+    void (async () => {
+      let responseBody = null;
+      if (captureBody) {
+        try {
+          responseBody = (await response.text()).slice(0, 50_000);
+        } catch {
+          responseBody = null;
+        }
+      }
+      telemetry.networkEvent({ direction: "response", ...item, responseBody });
+    })();
     if (response.status() >= 500) {
       const error = { url: item.url, status: item.status, timestampMs: item.timestampMs };
       errors.push(error);
@@ -150,6 +197,12 @@ export function observePageNetwork(page, telemetry) {
         failure: message,
         timestampMs: item.timestampMs,
       });
+    });
+    websocket.on("framesent", (payload) => {
+      websocketFrame("websocket_frame_sent", url, payload);
+    });
+    websocket.on("framereceived", (payload) => {
+      websocketFrame("websocket_frame_received", url, payload);
     });
     websocket.on("close", () => {
       telemetry.networkEvent({

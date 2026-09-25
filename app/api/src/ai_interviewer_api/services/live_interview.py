@@ -289,6 +289,23 @@ def process_live_state_update(
         evidence = _unique_evidence_map(payload.evidence)
         invalid_aspects = (set(covered) | set(missing) | set(evidence)) - set(allowed_aspects)
         if invalid_aspects:
+            logger.warning(
+                "gpt_live_state_update_invalid_aspect record_id=%s delegation_id=%s "
+                "call_id=%s turn_id=%s question_id=%s base_state_version=%s "
+                "invalid_aspects=%s allowed_aspects=%s covered_aspects=%s "
+                "missing_aspects=%s evidence_aspects=%s",
+                record_id,
+                payload.delegation_id,
+                payload.call_id,
+                payload.turn_id,
+                payload.question_id,
+                payload.base_state_version,
+                sorted(invalid_aspects),
+                sorted(allowed_aspects),
+                sorted(covered),
+                sorted(missing),
+                sorted(evidence),
+            )
             raise HTTPException(status_code=422, detail="live_aspect_id_unknown")
         if set(covered) & set(missing):
             raise HTTPException(status_code=422, detail="live_aspect_coverage_conflict")

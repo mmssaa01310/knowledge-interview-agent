@@ -41,6 +41,16 @@ export const REPORT_FAILURE_TYPES = Object.freeze([
   "API_5XX",
   "WebSocket/DataChannel error",
   "ACK_DUPLICATE",
+  "TEST_INFRA_FAILURE",
+  "ROBUSTNESS_RUN_INVALID",
+  "SESSION_NOT_ESTABLISHED",
+  "MICROPHONE_TRACK_NOT_READY",
+  "AUDIO_NOT_SENT",
+  "UTTERANCE_END_NOT_DETECTED",
+  "GPT_LIVE_PROTOCOL_ERROR",
+  "DATACHANNEL_ERROR",
+  "WEBSOCKET_ERROR",
+  "ASSISTANT_RESPONSE_MISSING",
 ]);
 
 export const REPORT_BEHAVIOR_INFO = Object.freeze({
@@ -125,6 +135,46 @@ export const REPORT_FAILURE_INFO = Object.freeze({
     label: "待機案内が重複",
     description: "同一ターンに待機案内が複数回発生しています。",
   },
+  TEST_INFRA_FAILURE: {
+    label: "テスト基盤の失敗",
+    description: "音声入力・セッション・ターン確定など、会話品質を判定する前提条件が成立していません。",
+  },
+  ROBUSTNESS_RUN_INVALID: {
+    label: "ロバストネス実行が無効",
+    description: "複数ターンを想定した実行で、セッション数とターン数が同数になっています。",
+  },
+  SESSION_NOT_ESTABLISHED: {
+    label: "音声セッション未確立",
+    description: "GPT-Liveまたは音声runtimeのセッション確立イベントを確認できません。",
+  },
+  MICROPHONE_TRACK_NOT_READY: {
+    label: "マイク音声トラック未準備",
+    description: "マイクのaudio trackがlive状態になっていません。",
+  },
+  AUDIO_NOT_SENT: {
+    label: "音声が送信されていない",
+    description: "WebRTCの音声送信統計で、送信パケットまたは送信バイトを確認できません。",
+  },
+  UTTERANCE_END_NOT_DETECTED: {
+    label: "発話終了を検出できない",
+    description: "音声は送信されていますが、音声モデルの発話開始／終了イベントを確認できません。",
+  },
+  GPT_LIVE_PROTOCOL_ERROR: {
+    label: "GPT-Liveプロトコルエラー",
+    description: "GPT-Liveへのイベント形式がAPI仕様と一致していません。",
+  },
+  DATACHANNEL_ERROR: {
+    label: "DataChannelエラー",
+    description: "WebRTC DataChannelのエラーまたは切断を検出しました。",
+  },
+  WEBSOCKET_ERROR: {
+    label: "WebSocketエラー",
+    description: "WebSocketのエラーまたは切断を検出しました。",
+  },
+  ASSISTANT_RESPONSE_MISSING: {
+    label: "AIの本応答がない",
+    description: "ユーザー発話後にAIの本応答開始イベントを確認できません。",
+  },
   ERROR: {
     label: "未分類のエラー",
     description: "エラーは記録されていますが、既知の失敗分類に対応していません。",
@@ -135,6 +185,7 @@ const REPORT_LATENCY_INFO = Object.freeze({
   speechEndToTranscriptFinalMs: "発話終了 → 文字起こし確定",
   transcriptFinalToAssistantStartMs: "文字起こし確定 → AI応答開始",
   speechEndToAssistantStartMs: "発話終了 → AI応答開始",
+  speechEndToFirstAudioMs: "発話終了 → AI音声再生開始",
   fullTurnLatencyMs: "1ターン全体の応答時間",
   segmentFinalToTurnCommitMs: "文字起こしsegment確定 → ターン保存",
   turnCommitToAckMs: "ターン保存 → 待機案内",
@@ -153,6 +204,7 @@ const LATENCY_METRICS = Object.freeze([
   "speechEndToTranscriptFinalMs",
   "transcriptFinalToAssistantStartMs",
   "speechEndToAssistantStartMs",
+  "speechEndToFirstAudioMs",
   "fullTurnLatencyMs",
   "segmentFinalToTurnCommitMs",
   "turnCommitToAckMs",
@@ -293,6 +345,7 @@ function issueCode(value) {
       : value,
   ).trim();
   if (!raw) return null;
+  if (REPORT_FAILURE_TYPES.includes(raw)) return raw;
   if (/websocket|data.?channel/i.test(raw)) return "WebSocket/DataChannel error";
   if (/inappropriate.?clarification|clarification.*inappropriate/i.test(raw)) {
     return "inappropriate clarification";
@@ -312,6 +365,9 @@ function turnIssues(turn) {
     turn?.hardGateAnomalies,
     hardGate.expectationViolations,
     turn?.expectationViolations,
+    turn?.failureAnalysis?.rootFailure,
+    turn?.failureAnalysis?.cascadeFailures,
+    turn?.harnessGate?.classification === "TEST_INFRA_FAILURE" ? ["TEST_INFRA_FAILURE"] : [],
   ];
   return unique(sources.flatMap((items) => array(items).map(issueCode))).filter(Boolean);
 }
@@ -850,6 +906,8 @@ function buildFailureRecords(data, sessions) {
         turn?.llmJudge?.reason,
         turn?.semanticJudge?.reason,
       ),
+      harnessGate: raw?.harnessGate ?? turn?.harnessGate ?? null,
+      failureAnalysis: raw?.failureAnalysis ?? turn?.failureAnalysis ?? null,
       timeline: raw?.timeline ?? turn?.timeline ?? [],
       evidence: raw?.evidence ?? session?.evidence ?? null,
       raw,
@@ -1070,6 +1128,47 @@ function buildUsage(data, sessions) {
   };
 }
 
+function countFailureCodes(values) {
+  const counts = {};
+  for (const value of values) {
+    const code = issueCode(value);
+    if (!code) continue;
+    counts[code] = (counts[code] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function buildFailureAnalysisSummary(sessions) {
+  const roots = [];
+  const cascades = [];
+  for (const session of sessions) {
+    for (const turn of session.turns) {
+      const analysis = turn.failureAnalysis;
+      if (!isObject(analysis)) continue;
+      if (analysis.rootFailure) roots.push(analysis.rootFailure);
+      cascades.push(...array(analysis.cascadeFailures));
+    }
+  }
+  return {
+    rootFailureSummary: countFailureCodes(roots),
+    cascadeFailureSummary: countFailureCodes(cascades),
+  };
+}
+
+function buildRunValidity(data, sessions, turns) {
+  if (isObject(data.summary?.runValidity)) return data.summary.runValidity;
+  const runMode = text(data.summary?.runMode).trim().toLowerCase();
+  const maxTurns = number(data.summary?.limits?.maxTurnsPerSession, null);
+  if (runMode === "robustness" && maxTurns !== null && maxTurns > 1
+    && sessions.length > 0 && sessions.length === turns.length) {
+    return {
+      status: "ROBUSTNESS_RUN_INVALID",
+      reason: "複数ターン設定なのに、1セッションあたり1ターンしか実行されていません。",
+    };
+  }
+  return { status: "VALID" };
+}
+
 function buildSummary(
   data,
   sessions,
@@ -1086,6 +1185,15 @@ function buildSummary(
   const passTurns = turns.filter((turn) => turn.status !== "FAIL").length;
   const failTurns = turns.length - passTurns;
   const usage = buildUsage(data, sessions);
+  const failureAnalysisSummary = buildFailureAnalysisSummary(sessions);
+  const runValidity = buildRunValidity(data, sessions, turns);
+  const failureSummary = Object.fromEntries(REPORT_FAILURE_TYPES.map((type) => [
+    type,
+    failures.filter((failure) => failure.issueType === type).length,
+  ]));
+  if (runValidity.status === "ROBUSTNESS_RUN_INVALID") {
+    failureSummary.ROBUSTNESS_RUN_INVALID = 1;
+  }
   return {
     runId: data.runId,
     generatedAt: data.generatedAt,
@@ -1101,10 +1209,7 @@ function buildSummary(
     level3Sessions: sessions.filter((session) => session.level === 3).length,
     behaviorCoverage,
     failures,
-    failureSummary: Object.fromEntries(REPORT_FAILURE_TYPES.map((type) => [
-      type,
-      failures.filter((failure) => failure.issueType === type).length,
-    ])),
+    failureSummary,
     latency,
     latencyByEngine,
     engineComparison,
@@ -1112,6 +1217,9 @@ function buildSummary(
     transcribePollyPassRate: engineComparison.transcribe_polly?.successRate ?? null,
     quality,
     usage,
+    runMode: data.summary?.runMode ?? null,
+    runValidity,
+    ...failureAnalysisSummary,
   };
 }
 
@@ -1266,6 +1374,9 @@ details.failure summary::before { content: "▸"; margin-right: 8px; color: #647
 details.failure[open] summary::before { content: "▾"; }
 .failure-body { padding: 0 13px 14px; border-top: 1px solid #e5eaf2; }
 .failure-explanation { margin: 12px 0 0; color: #334155; }
+.root-cause { border-left: 4px solid #b91c1c; background: #fff7ed; padding: 11px 13px; margin-bottom: 12px; }
+.cascade { border-left: 4px solid #d97706; background: #fffbeb; padding: 11px 13px; margin-bottom: 12px; }
+.run-warning { border-left: 4px solid #b45309; background: #fffbeb; padding: 11px 13px; margin-bottom: 12px; }
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-top: 12px; }
 .detail-box { background: #f8fafc; border-radius: 8px; padding: 10px; }
 .detail-box h3 { font-size: 13px; margin: 0 0 6px; color: #475569; }
@@ -1285,7 +1396,7 @@ svg.spark { width: 100%; height: 46px; }
   <section><h2>実行概要</h2><div id="dashboard" class="cards"></div></section>
   <section><h2>実行方式別比較</h2><div class="panel"><div id="engine-comparison"></div></div></section>
   <section><h2>回答パターンの網羅状況</h2><div class="panel"><div id="behavior-coverage"></div></div></section>
-  <section><h2>失敗の概要</h2><div class="panel"><div id="failure-summary"></div></div></section>
+  <section><h2>失敗の概要</h2><div class="panel"><div id="run-validity"></div><h3>根本原因</h3><div id="root-failure-summary"></div><h3>連鎖症状</h3><div id="cascade-failure-summary"></div><h3>発生した失敗</h3><div id="failure-summary"></div></div></section>
   <section><h2>会話品質（LLM Judge）</h2><div class="panel"><div id="quality"></div></div></section>
   <section><h2>応答時間</h2><div class="panel"><div id="latency"></div></div></section>
   <section><h2>API利用状況・コスト</h2><div class="panel"><div id="usage"></div></div></section>
@@ -1329,6 +1440,15 @@ svg.spark { width: 100%; height: 46px; }
     : '<span class="level2">Level 2（ローカル・無料）</span>';
   const code = (value) => '<span class="muted small">（コード: ' + esc(value) + '）</span>';
   const card = (label, value) => '<div class="card"><span class="label">' + esc(label) + '</span><span class="value">' + value + '</span></div>';
+  const failureSummaryTable = (values, emptyText) => {
+    const entries = Object.entries(values || {}).sort((left, right) => right[1] - left[1]);
+    if (!entries.length) return '<div class="empty">' + esc(emptyText) + '</div>';
+    return '<table><thead><tr><th>分類</th><th class="num">件数</th></tr></thead><tbody>'
+      + entries.map(([key, count]) => {
+        const itemInfo = failureInfo(key);
+        return '<tr><td><strong>' + esc(itemInfo.label) + '</strong><div>' + esc(itemInfo.description) + '</div>' + code(key) + '</td><td class="num fail">' + fmt(count) + '</td></tr>';
+      }).join("") + '</tbody></table>';
+  };
   document.getElementById("run-meta").innerHTML = [
     "実行ID: <strong>" + esc(summary.runId) + "</strong>",
     "実行日時: " + date(summary.runDate),
@@ -1369,11 +1489,27 @@ svg.spark { width: 100%; height: 46px; }
       + '<td class="num">' + rate(item.passRate) + '</td><td><div class="bar"><span style="width:' + width + '%"></span></div></td></tr>';
   }).join("");
   document.getElementById("behavior-coverage").innerHTML = '<table><thead><tr><th>回答パターン</th><th class="num">実行回数</th><th class="num">成功</th><th class="num">失敗</th><th class="num">成功率</th><th>実行状況</th></tr></thead><tbody>' + behaviorRows + '</tbody></table>';
-  const failureRows = Object.entries(summary.failureSummary || {}).map(([key, count]) => {
+  const failureEntries = Object.entries(summary.failureSummary || {})
+    .filter(([, count]) => Number(count) > 0);
+  const failureRows = failureEntries.map(([key, count]) => {
     const itemInfo = failureInfo(key);
     return '<tr><td><strong>' + esc(itemInfo.label) + '</strong><div>' + esc(itemInfo.description) + '</div>' + code(key) + '</td><td class="num ' + (count ? 'fail' : '') + '">' + fmt(count) + '</td></tr>';
   }).join("");
-  document.getElementById("failure-summary").innerHTML = '<table><thead><tr><th>何が起きたか</th><th class="num">件数</th></tr></thead><tbody>' + failureRows + '</tbody></table>';
+  document.getElementById("failure-summary").innerHTML = failureRows
+    ? '<table><thead><tr><th>何が失敗したか</th><th class="num">件数</th></tr></thead><tbody>' + failureRows + '</tbody></table>'
+    : '<div class="empty">失敗はありません。</div>';
+  const runValidity = summary.runValidity || {};
+  document.getElementById("run-validity").innerHTML = runValidity.status === "ROBUSTNESS_RUN_INVALID"
+    ? '<div class="run-warning"><strong>実行の妥当性に問題があります</strong><br>' + esc(runValidity.reason || "ロバストネス実行が無効です。") + code(runValidity.status) + '</div>'
+    : '';
+  document.getElementById("root-failure-summary").innerHTML = failureSummaryTable(
+    summary.rootFailureSummary,
+    "根本原因は記録されていません。",
+  );
+  document.getElementById("cascade-failure-summary").innerHTML = failureSummaryTable(
+    summary.cascadeFailureSummary,
+    "連鎖症状は記録されていません。",
+  );
   const qualityRows = Object.values(summary.quality || {}).filter((item) => item.count).map((item) => '<tr><td>' + esc(qualityLabel(item.key)) + code(item.key) + '</td><td class="num">' + fmt(item.count) + '</td><td class="num pass">' + fmt(item.pass) + '</td><td class="num fail">' + fmt(item.fail) + '</td><td class="num">' + rate(item.passRate) + '</td></tr>').join("");
   document.getElementById("quality").innerHTML = qualityRows ? '<table><thead><tr><th>判定項目</th><th class="num">件数</th><th class="num">成功</th><th class="num">失敗</th><th class="num">成功率</th></tr></thead><tbody>' + qualityRows + '</tbody></table>' : '<div class="empty">LLM Judgeの結果はありません。</div>';
   const latencyRows = LATENCY_METRICS_PLACEHOLDER(data).map((name) => {
@@ -1385,7 +1521,7 @@ svg.spark { width: 100%; height: 46px; }
   ).join("");
   document.getElementById("latency").innerHTML = '<h3>実行レベル別</h3><table><thead><tr><th>計測項目</th><th>Level 2（p50 / p95 / p99）</th><th>Level 3（p50 / p95 / p99）</th></tr></thead><tbody>' + latencyRows + '</tbody></table>'
     + '<h3>実行方式別（実音声）</h3><table><thead><tr><th>実行方式</th><th>計測項目</th><th>p50 / p95 / p99</th></tr></thead><tbody>' + (engineLatencyRows || '<tr><td colspan="3">実音声の計測結果はありません。</td></tr>') + '</tbody></table>';
-  function LATENCY_METRICS_PLACEHOLDER() { return ["speechEndToTranscriptFinalMs", "transcriptFinalToAssistantStartMs", "speechEndToAssistantStartMs", "fullTurnLatencyMs", "segmentFinalToTurnCommitMs", "turnCommitToAckMs", "ackToMainResponseMs"]; }
+  function LATENCY_METRICS_PLACEHOLDER() { return ["speechEndToTranscriptFinalMs", "transcriptFinalToAssistantStartMs", "speechEndToAssistantStartMs", "speechEndToFirstAudioMs", "fullTurnLatencyMs", "segmentFinalToTurnCommitMs", "turnCommitToAckMs", "ackToMainResponseMs"]; }
   function latencyCell(item) { return item && item.count ? fmt(item.p50, "ms") + " / " + fmt(item.p95, "ms") + " / " + fmt(item.p99, "ms") + ' <span class="muted small">（' + fmt(item.count) + '件）</span>' : "—"; }
   const usage = summary.usage || {};
   const usageRows = [
@@ -1424,10 +1560,13 @@ svg.spark { width: 100%; height: 46px; }
     document.getElementById("failure-list").innerHTML = filtered.length ? filtered.map((failure) => {
       const behavior = behaviorInfo(failure.behavior || "");
       const failureType = failureInfo(failure.issueType);
-      const evidenceLabels = { screenshot: "スクリーンショット", telemetry: "Telemetry", trace: "Playwright trace" };
+      const evidenceLabels = { screenshot: "スクリーンショット", telemetry: "実行記録", trace: "Playwrightトレース" };
       const links = failure.evidence ? Object.entries(failure.evidence).map(([key, value]) => '<a href="' + esc(value) + '">' + esc(evidenceLabels[key] || key) + '</a>').join("") : '<span class="muted">証拠ファイルなし</span>';
       const engineLabel = labels.engines?.[failure.engine]?.label || failure.engine || "実行方式不明";
-      return '<details class="failure"><summary><strong>' + esc(failure.failureId) + '</strong> · ' + esc(failureType.label) + ' · ' + esc(behavior.label || "回答パターン不明") + ' · ターン ' + fmt(failure.turn) + ' · ' + esc(engineLabel) + ' · ' + level(failure.level) + '</summary><div class="failure-body"><p class="failure-explanation"><strong>' + esc(failureType.description) + '</strong><br>' + code(failure.issueType) + '　' + statusLabel(failure.status) + '</p><div class="detail-grid">' + detailBox("実行方式", engineLabel) + detailBox("seed", failure.seed) + detailBox("会話", failure.conversation) + detailBox("AIの質問", failure.aiQuestion) + detailBox("ユーザーの文字起こし", failure.userTranscript) + detailBox("AIの返答", failure.aiResponse) + detailBox("期待結果", failure.expected) + detailBox("実際の結果", failure.actual) + detailBox("インタビュー状態", failure.interviewState) + detailBox("Judge理由", failure.judgeReason) + '</div><p><strong>関連タイムライン</strong></p><pre>' + json(failure.timeline) + '</pre><p class="evidence"><strong>証拠ファイル：</strong> ' + links + '</p></div></details>';
+      const analysis = failure.failureAnalysis || {};
+      const root = analysis.rootFailure ? '<div class="root-cause"><strong>根本原因</strong><br>' + esc(failureInfo(analysis.rootFailure).label) + code(analysis.rootFailure) + '</div>' : '';
+      const cascade = arrayValue(analysis.cascadeFailures).length ? '<div class="cascade"><strong>連鎖症状</strong><br>' + arrayValue(analysis.cascadeFailures).map((item) => esc(failureInfo(item).label) + code(item)).join('、') + '</div>' : '';
+      return '<details class="failure"><summary><strong>' + esc(failure.failureId) + '</strong> · ' + esc(failureType.label) + ' · ' + esc(behavior.label || "回答パターン不明") + ' · ターン ' + fmt(failure.turn) + ' · ' + esc(engineLabel) + ' · ' + level(failure.level) + '</summary><div class="failure-body"><p class="failure-explanation"><strong>何が起きたか</strong><br>' + esc(failureType.description) + '<br>' + code(failure.issueType) + '　' + statusLabel(failure.status) + '</p>' + root + cascade + '<div class="detail-grid">' + detailBox("実行方式", engineLabel) + detailBox("再現用seed", failure.seed) + detailBox("会話", failure.conversation) + detailBox("AIの質問", failure.aiQuestion) + detailBox("ユーザーの文字起こし", failure.userTranscript) + detailBox("AIの返答", failure.aiResponse) + detailBox("期待結果", failure.expected) + detailBox("実際の結果", failure.actual) + detailBox("インタビュー状態", failure.interviewState) + detailBox("テスト基盤の判定", failure.harnessGate) + detailBox("意味評価の理由", failure.judgeReason) + '</div><p><strong>関連タイムライン</strong></p><pre>' + json(failure.timeline) + '</pre><p class="evidence"><strong>証拠ファイル：</strong> ' + links + '</p></div></details>';
     }).join("") : '<div class="empty">条件に一致する失敗はありません。</div>';
   }
   function detailBox(label, value) { return '<div class="detail-box"><h3>' + esc(label) + '</h3><pre>' + (typeof value === "object" ? json(value) : esc(value ?? "—")) + '</pre></div>'; }

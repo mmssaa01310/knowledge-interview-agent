@@ -36,6 +36,7 @@ export function readVoiceTestConfig(env = process.env) {
   );
   const config = {
     runId: String(env.VOICE_TEST_RUN_ID || DEFAULT_RUN_ID),
+    runMode: String(env.VOICE_TEST_RUN_MODE || "robustness").trim().toLowerCase(),
     realApiEnabled: booleanEnv(env.VOICE_TEST_REAL_API_ENABLED, false),
     realProvider: ["gpt_live", "transcribe_polly"].includes(requestedProvider)
       ? requestedProvider

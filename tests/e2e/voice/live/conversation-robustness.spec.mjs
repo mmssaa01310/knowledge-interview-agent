@@ -42,6 +42,8 @@ function sessionRecord(result) {
     scenario: result.behavior,
     behavior: result.behavior,
     variant: result.variant,
+    harnessGate: result.turn?.harnessGate ?? null,
+    failureAnalysis: result.turn?.failureAnalysis ?? null,
     status: result.status,
     error: result.error ?? null,
     fixturePath: result.fixturePath,
@@ -116,6 +118,7 @@ test.describe("voice robustness: real GPT-Live / Transcribe + Polly", () => {
       startedAt,
       completedAt: new Date().toISOString(),
       level: 3,
+      runMode: config.runMode,
       engine: config.realProvider,
       provider: config.realProvider,
       liveApiUsed: true,
@@ -135,6 +138,15 @@ test.describe("voice robustness: real GPT-Live / Transcribe + Polly", () => {
         websocketErrors: turns.filter((turn) => (turn.hardGate?.codes ?? []).includes("WEBSOCKET_ERROR")).length,
         dataChannelErrors: turns.filter((turn) => (turn.hardGate?.codes ?? []).includes("DATACHANNEL_ERROR")).length,
       },
+      runValidity: config.runMode === "robustness"
+        && config.maxTurnsPerSession > 1
+        && sessions.length > 0
+        && sessions.length === turns.length
+        ? {
+            status: "ROBUSTNESS_RUN_INVALID",
+            reason: "複数ターン設定なのに、1セッションあたり1ターンしか実行されていません。",
+          }
+        : { status: "VALID" },
       costGuard: guard.snapshot(),
       replay: robustnessReplayCommand({
         config: guardConfig,

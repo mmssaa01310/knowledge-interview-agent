@@ -197,3 +197,55 @@ test("keeps concrete turn sessions when aggregated runs reuse sessionIndex", () 
     fs.rmSync(runDir, { recursive: true, force: true });
   }
 });
+
+test("reports root failure, cascaded symptoms, and invalid robustness runs in Japanese", () => {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "kikiori-voice-report-"));
+  try {
+    writeJson(path.join(runDir, "summary.json"), {
+      runId: "root-cause-fixture",
+      runMode: "robustness",
+      limits: { maxTurnsPerSession: 5 },
+      runValidity: {
+        status: "ROBUSTNESS_RUN_INVALID",
+        reason: "複数ターン設定なのに、1セッションあたり1ターンしか実行されていません。",
+      },
+      sessions: [{
+        sessionId: "root-session",
+        index: 1,
+        level: 3,
+        engine: "gpt_live",
+        status: "FAIL",
+        turns: [{
+          turn: 1,
+          behavior: "NORMAL",
+          status: "FAIL",
+          failureAnalysis: {
+            classification: "TEST_INFRA_FAILURE",
+            rootFailure: "AUDIO_NOT_SENT",
+            cascadeFailures: ["TRANSCRIPT_FINAL_MISSING", "ANSWER_NOT_PERSISTED"],
+          },
+          harnessGate: {
+            status: "INVALID",
+            classification: "TEST_INFRA_FAILURE",
+            missing: ["audioActuallySent"],
+          },
+          anomalies: ["AUDIO_NOT_SENT", "TRANSCRIPT_FINAL_MISSING", "ANSWER_NOT_PERSISTED"],
+        }],
+      }],
+    });
+
+    const reportPath = generateVoiceReportForRun({ runDir, runId: "root-cause-fixture", testStatus: "failed" });
+    const html = fs.readFileSync(reportPath, "utf8");
+    expect(html).toContain("根本原因");
+    expect(html).toContain("連鎖症状");
+    expect(html).toContain("発生した失敗");
+    expect(html).toContain("何が失敗したか");
+    expect(html).toContain("音声が送信されていない");
+    expect(html).toContain("確定文字起こしがない");
+    expect(html).toContain("回答が保存されていない");
+    expect(html).toContain("ロバストネス実行が無効");
+    expect(html).toContain("実行の妥当性に問題があります");
+  } finally {
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
+});

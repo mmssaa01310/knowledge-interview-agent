@@ -137,6 +137,11 @@ grounded evidence from the user's answer. Preserve previously covered aspects
 and report only genuinely missing aspects. If an aspect is explicitly answered
 negatively (for example, no support is needed), mark it covered with that
 evidence. Do not invent facts, question text, probes, next actions, or replies.
+For every aspect reference, use the exact itemId from the current question's
+questionDefinition. This applies to covered_aspects[].aspect_id,
+missing_aspects[], and evidence[].aspect_id; use the itemId, never the human
+readable label or description. If the definition says itemId="name" and
+label="お名前", the value is "name".
 Do not decide which question the interviewer should ask next. The Live model
 does that after receiving the stored state.
 
