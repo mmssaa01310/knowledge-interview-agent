@@ -72,7 +72,8 @@ test("GPT-Live transcript deltas stay observational", () => {
   assert.match(hookSource, /gpt_live_output_transcript_delta/);
   assert.doesNotMatch(hookSource, /setPartialTranscript|process_turn/);
   assert.match(hookSource, /submitGPTLiveStateUpdate/);
-  assert.doesNotMatch(hookSource, /type: "session\.thinking\.append"/);
+  assert.match(hookSource, /type: "session\.thinking\.append"/);
+  assert.match(hookSource, /Private application state update; do not read these labels aloud\./);
   assert.match(hookSource, /session\.delegation\.created/);
   assert.match(eventHandlingSource, /response\.output_item\.done/);
   assert.match(eventHandlingSource, /response\.item\.create/);

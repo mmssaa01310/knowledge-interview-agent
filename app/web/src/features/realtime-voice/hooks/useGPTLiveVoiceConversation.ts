@@ -67,7 +67,7 @@ const GPT_LIVE_WAIT_NOTICE_TIMEOUT_MS = 2500;
 const GPT_LIVE_DELEGATION_WAIT_ATTEMPTS = 2;
 const GPT_LIVE_STATE_RESUME_RETRY_TIMEOUT_MS = 1000;
 const GPT_LIVE_STATE_RESUME_COMMENTARY =
-  "先ほどの回答を踏まえて、取得済みの内容は繰り返さず、必要な確認は一つだけ行うか、次の質問へ進んでください。";
+  "保存された最新のチェックリストを確認し、取得済みの内容は繰り返さず、必要な確認は一つだけ行うか、現在の質問が完了していれば次の質問へ進んでください。相槌だけで終わらず、続けて一つの質問をしてください。";
 // Live transcript deltas do not guarantee a corresponding speech-stopped or
 // transcript.done event. This is only a transport fallback boundary; it does
 // not infer utterance completeness from punctuation or specific words.
@@ -826,6 +826,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         call_id: callId,
         turn_id: stateUpdatePayload.turn_id,
         state_version: acknowledgedStateVersion,
+        current_question_id: (output as { currentQuestionId?: unknown })?.currentQuestionId,
+        answer_status: stateUpdatePayload.answer_status,
         status: (output as { status?: string })?.status,
       });
       if ((output as { status?: unknown })?.status !== "error") {
@@ -1076,6 +1078,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       `current_question_id=${String(stateContext.currentQuestionId ?? "")}`,
       `covered_aspects=${JSON.stringify(stateContext.coveredAspects ?? [])}`,
       `missing_aspects=${JSON.stringify(stateContext.missingAspects ?? [])}`,
+      `checklist=${JSON.stringify(stateContext.checklist ?? [])}`,
+      `current=${JSON.stringify(stateContext.current ?? null)}`,
     ].join(" ");
 
     // The Responses continuation is not itself spoken by GPT-Live. Feed the
@@ -1878,6 +1882,21 @@ function compactLiveStateUpdateOutput(output: unknown): Record<string, unknown> 
     return { status: "error", code: "invalid_state_update_result" };
   }
   const value = output as Record<string, unknown>;
+  const checklist = Array.isArray(value.checklist)
+    ? value.checklist
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+      .map((item) => ({
+        ...(typeof item.id === "string" ? { id: item.id } : {}),
+        ...(typeof item.question_id === "string" ? { question_id: item.question_id } : {}),
+        ...(typeof item.answer_state === "string" ? { answer_state: item.answer_state } : {}),
+        ...(Array.isArray(item.missing_required_items)
+          ? { missing_required_items: item.missing_required_items }
+          : {}),
+      }))
+    : [];
+  const current = value.current && typeof value.current === "object"
+    ? value.current as Record<string, unknown>
+    : null;
   return {
     ...(typeof value.status === "string" ? { status: value.status } : {}),
     ...(typeof value.stateVersion === "number" ? { stateVersion: value.stateVersion } : {}),
@@ -1886,6 +1905,31 @@ function compactLiveStateUpdateOutput(output: unknown): Record<string, unknown> 
       : {}),
     ...(Array.isArray(value.coveredAspects) ? { coveredAspects: value.coveredAspects } : {}),
     ...(Array.isArray(value.missingAspects) ? { missingAspects: value.missingAspects } : {}),
+    ...(checklist.length > 0 ? { checklist } : {}),
+    ...(current
+      ? {
+        current: {
+          ...(typeof current.field_id === "string" || current.field_id === null
+            ? { field_id: current.field_id }
+            : {}),
+          ...(typeof current.question_id === "string" || current.question_id === null
+            ? { question_id: current.question_id }
+            : {}),
+          ...(typeof current.state_version === "number"
+            ? { state_version: current.state_version }
+            : {}),
+          ...(typeof current.answer_evaluation === "string" || current.answer_evaluation === null
+            ? { answer_evaluation: current.answer_evaluation }
+            : {}),
+          ...(typeof current.clarification_kind === "string"
+            ? { clarification_kind: current.clarification_kind }
+            : {}),
+          ...(typeof current.clarification_target === "string" || current.clarification_target === null
+            ? { clarification_target: current.clarification_target }
+            : {}),
+        },
+      }
+      : {}),
   };
 }
 

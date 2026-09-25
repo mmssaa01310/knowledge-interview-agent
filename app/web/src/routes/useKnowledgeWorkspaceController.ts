@@ -293,6 +293,11 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         version,
       );
     }
+    console.info("interview_state_applied", {
+      record_id: selectedRecordIdRef.current ?? null,
+      state_version: Number.isFinite(version) ? version : null,
+      current_question_id: nextState.currentQuestionId ?? null,
+    });
     setInterviewState(nextState);
     return true;
   }

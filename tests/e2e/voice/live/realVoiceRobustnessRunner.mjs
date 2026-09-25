@@ -48,6 +48,7 @@ const RECORD_URL = "/knowledge-dbs/dev-voice-demo-db/knowledges/"
   + "dev-voice-demo-knowledge/records/dev-voice-demo-record";
 const DEFAULT_TURN_TIMEOUT_MS = 35_000;
 const DEFAULT_GPT_LIVE_INITIAL_RESPONSE_IDLE_MS = 2_500;
+const DEFAULT_GPT_LIVE_OUTPUT_IDLE_MS = 2_000;
 const BEHAVIOR_FIXTURE_RE = /^(.*?)(?:[-_](\d+))?\.wav$/i;
 
 const ANSWER_BEHAVIORS = new Set([
@@ -400,8 +401,11 @@ export function collectAssistant(dataEntries, consoleEntries, provider) {
   const transcriptLines = runtime
     .filter((entry) => entry.type === "assistant_transcript_final" || entry.type === "session.output_transcript.delta")
     .filter((entry) => responseBoundary === null || number(entry.timestampMs, 0) >= responseBoundary)
-    .map((entry) => entry.event?.text ?? entry.event?.delta)
-    .filter(hasText);
+    .map((entry) => ({
+      timestampMs: number(entry.timestampMs, null),
+      text: entry.event?.text ?? entry.event?.delta,
+    }))
+    .filter((entry) => hasText(entry.text));
   const playbackStarts = runtimeWithClientEvents.filter((entry) => (
     entry.type === "assistant_playback_started" || entry.type === "audio_playing_started"
   ));
@@ -410,9 +414,9 @@ export function collectAssistant(dataEntries, consoleEntries, provider) {
     backchannels: backchannelsAfterSpeech,
     mainResponseCount: starts.length,
     ackCount: backchannelsAfterSpeech.length,
-    text: transcriptLines.join(" ").trim(),
-    transcriptStartedAt: outputTranscriptEntries[0]?.timestampMs
-      ?? assistantTranscriptEntries[0]?.timestampMs
+    text: transcriptLines.map((entry) => entry.text).join(" ").trim(),
+    transcriptEntries: transcriptLines,
+    transcriptStartedAt: transcriptLines[0]?.timestampMs
       ?? null,
     playbackStartedAt: playbackStarts[0]?.timestampMs ?? null,
   };
@@ -430,23 +434,236 @@ function statePersistenceTimestamp(consoleTrace, turnStartedAt) {
     .find((timestamp) => timestamp !== null) ?? null;
 }
 
-function assistantAfterBoundary(assistant, boundaryAt) {
+function parseJsonObject(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function loggerEntriesAfter(consoleTrace, logger, turnStartedAt) {
+  return consoleEventEntries(consoleTrace)
+    .filter((entry) => entry.logger === logger)
+    .filter((entry) => turnStartedAt === null
+      || number(entry.timestampMs, 0) >= number(turnStartedAt, 0))
+    .sort((left, right) => number(left.timestampMs, 0) - number(right.timestampMs, 0));
+}
+
+export function liveStateUpdateLifecycle({ consoleTrace = [], networkLog = [], turnStartedAt = null } = {}) {
+  const prepared = loggerEntriesAfter(
+    consoleTrace,
+    "gpt_live_state_update_prepared",
+    turnStartedAt,
+  ).at(-1) ?? null;
+  const preparedDetails = prepared?.details ?? {};
+  const delegationCreated = loggerEntriesAfter(
+    consoleTrace,
+    "gpt_live_delegation_created",
+    turnStartedAt,
+  ).at(-1) ?? null;
+  const delegationDetails = delegationCreated?.details ?? {};
+  const requestCandidates = (networkLog ?? [])
+    .filter((entry) => entry.direction === "request")
+    .filter((entry) => /\/api\/live\/state-updates(?:\?|$)/.test(entry.url ?? ""))
+    .filter((entry) => turnStartedAt === null
+      || number(entry.timestampMs, 0) >= number(turnStartedAt, 0))
+    .sort((left, right) => number(left.timestampMs, 0) - number(right.timestampMs, 0));
+  const requestEntry = [...requestCandidates].reverse().find((entry) => {
+    const body = parseJsonObject(entry.postData);
+    if (!body) return false;
+    if (preparedDetails.call_id && body.call_id !== preparedDetails.call_id) return false;
+    if (preparedDetails.delegation_id && body.delegation_id !== preparedDetails.delegation_id) return false;
+    return true;
+  }) ?? requestCandidates.at(-1) ?? null;
+  const requestBody = parseJsonObject(requestEntry?.postData) ?? {};
+  const responseCandidates = (networkLog ?? [])
+    .filter((entry) => entry.direction === "response")
+    .filter((entry) => /\/api\/live\/state-updates(?:\?|$)/.test(entry.url ?? ""))
+    .filter((entry) => turnStartedAt === null
+      || number(entry.timestampMs, 0) >= number(turnStartedAt, 0))
+    .sort((left, right) => number(left.timestampMs, 0) - number(right.timestampMs, 0));
+  const responseEntry = [...responseCandidates].reverse().find((entry) => (
+    requestEntry === null || number(entry.timestampMs, 0) >= number(requestEntry.timestampMs, 0)
+  )) ?? null;
+  const responseBody = parseJsonObject(responseEntry?.responseBody) ?? {};
+  const persistence = loggerEntriesAfter(
+    consoleTrace,
+    "gpt_live_state_persistence_succeeded",
+    turnStartedAt,
+  ).at(-1) ?? null;
+  const persistenceDetails = persistence?.details ?? {};
+  const delegationId = requestBody.delegation_id
+    ?? preparedDetails.delegation_id
+    ?? delegationDetails.delegation_id
+    ?? null;
+  return {
+    delegationId,
+    callId: requestBody.call_id ?? preparedDetails.call_id ?? null,
+    turnId: requestBody.turn_id ?? preparedDetails.turn_id ?? null,
+    request: {
+      questionId: requestBody.question_id ?? preparedDetails.question_id ?? null,
+      candidateAnswer: requestBody.candidate_answer ?? null,
+      recordAnswer: requestBody.record_answer ?? null,
+      answerState: requestBody.answer_state ?? null,
+      answerStatus: requestBody.answer_status ?? null,
+      expectedStateVersion: requestBody.base_state_version
+        ?? preparedDetails.base_state_version
+        ?? null,
+      coveredAspects: requestBody.covered_aspects ?? [],
+      missingAspects: requestBody.missing_aspects ?? [],
+      evidence: requestBody.evidence ?? [],
+      transcript: requestBody.transcript ?? null,
+      timestampMs: requestEntry?.timestampMs ?? prepared?.timestampMs ?? null,
+    },
+    response: {
+      status: responseBody.status ?? persistenceDetails.status ?? null,
+      stateVersion: responseBody.stateVersion ?? persistenceDetails.state_version ?? null,
+      currentQuestionId: responseBody.currentQuestionId
+        ?? persistenceDetails.current_question_id
+        ?? null,
+      timestampMs: responseEntry?.timestampMs ?? persistence?.timestampMs ?? null,
+    },
+  };
+}
+
+function latestInterviewStateApplied(consoleTrace, turnStartedAt) {
+  const entry = loggerEntriesAfter(
+    consoleTrace,
+    "interview_state_applied",
+    turnStartedAt,
+  ).at(-1) ?? null;
+  return {
+    stateVersion: entry?.details?.state_version ?? null,
+    currentQuestionId: entry?.details?.current_question_id ?? null,
+    recordId: entry?.details?.record_id ?? null,
+    timestampMs: entry?.timestampMs ?? null,
+  };
+}
+
+function fieldAnswerIsComplete(interview, field) {
+  const fieldState = interview?.fieldStates?.[field.id] ?? {};
+  const questionAnswer = Object.values(interview?.questionAnswers ?? {}).find(
+    (answer) => answer?.fieldId === field.id,
+  ) ?? {};
+  return new Set(
+    Array.isArray(interview?.completedFieldIds) ? interview.completedFieldIds : [],
+  ).has(field.id)
+    || [fieldState.answerState, questionAnswer.answerStatus]
+      .some((status) => ["CONFIRMED", "ANSWERED"].includes(String(status ?? "").toUpperCase()));
+}
+
+function nextUnansweredField(context, state) {
+  const interview = interviewState(state);
+  return sortedFields(context).find((field) => (
+    !fieldAnswerIsComplete(interview, field)
+    && field.id !== String(interview.currentQuestionId ?? "").replace(/^live-field-/, "")
+  )) ?? null;
+}
+
+export function assistantAfterBoundary(assistant, boundaryAt) {
   if (boundaryAt === null) return assistant;
   const starts = assistant.starts.filter((entry) => (
     number(entry.timestampMs, 0) >= boundaryAt
   ));
+  const backchannels = (assistant.backchannels ?? []).filter((entry) => (
+    number(entry.timestampMs, 0) >= boundaryAt
+  ));
+  const transcriptEntries = (assistant.transcriptEntries ?? []).filter((entry) => (
+    number(entry.timestampMs, 0) >= boundaryAt
+  ));
+  const playbackStartedAt = assistant.playbackStartedAt !== null
+    && number(assistant.playbackStartedAt, 0) >= boundaryAt
+    ? assistant.playbackStartedAt
+    : null;
   return {
     ...assistant,
     starts,
+    backchannels,
+    ackCount: backchannels.length,
     mainResponseCount: starts.length,
+    text: transcriptEntries.map((entry) => entry.text).join(" ").trim(),
+    transcriptEntries,
+    transcriptStartedAt: transcriptEntries[0]?.timestampMs ?? null,
+    playbackStartedAt,
   };
 }
 
-function liveOutputCompletedAfterBoundary(consoleTrace, boundaryAt) {
-  return consoleEventEntries(consoleTrace).some((entry) => (
-    entry.logger === "gpt_live_live_output_completed"
-      && (boundaryAt === null || number(entry.timestampMs, 0) >= boundaryAt)
-  ));
+function inboundAudioBytes(statsEntry) {
+  return (statsEntry?.inboundRtp ?? []).reduce((total, item) => (
+    total + Math.max(0, number(item?.bytesReceived, 0))
+  ), 0);
+}
+
+/**
+ * GPT-Live has no per-response audio-complete event.  The browser receives a
+ * continuous WebRTC MediaStream, so the only useful test boundary is an
+ * observed period in which both the output caption and inbound audio stop
+ * advancing after a response has started.  This is deliberately based on
+ * transport observations, not a fixed post-turn sleep or response text.
+ */
+export function gptLiveOutputPlaybackIdleStatus({
+  dataTrace = [],
+  audioTrace = { events: [], stats: [] },
+  boundaryAt = null,
+  idleMs = DEFAULT_GPT_LIVE_OUTPUT_IDLE_MS,
+  nowMs = Date.now(),
+} = {}) {
+  const boundary = boundaryAt === null ? null : number(boundaryAt, null);
+  const outputEntries = (dataTrace ?? [])
+    .filter((entry) => entry.direction === "server")
+    .filter((entry) => dataChannelEventType(entry) === "session.output_transcript.delta")
+    .filter((entry) => boundary === null || number(entry.timestampMs, 0) >= boundary)
+    .sort((left, right) => number(left.timestampMs, 0) - number(right.timestampMs, 0));
+  const stats = [...(audioTrace?.stats ?? [])]
+    .filter((entry) => boundary === null || number(entry.timestampMs, 0) >= boundary)
+    .sort((left, right) => number(left.timestampMs, 0) - number(right.timestampMs, 0));
+  const allStats = [...(audioTrace?.stats ?? [])]
+    .sort((left, right) => number(left.timestampMs, 0) - number(right.timestampMs, 0));
+  let previousBytes = 0;
+  let firstAudioAt = null;
+  let lastAudioActivityAt = null;
+  for (const entry of allStats) {
+    const bytes = inboundAudioBytes(entry);
+    const timestamp = number(entry.timestampMs, null);
+    if (timestamp === null) continue;
+    const advanced = bytes > previousBytes;
+    if (timestamp >= (boundary ?? Number.NEGATIVE_INFINITY) && advanced) {
+      firstAudioAt ??= timestamp;
+      lastAudioActivityAt = timestamp;
+    }
+    previousBytes = Math.max(previousBytes, bytes);
+  }
+  const firstOutputAt = outputEntries[0]?.timestampMs ?? null;
+  const lastOutputAt = outputEntries.at(-1)?.timestampMs ?? null;
+  const lastActivityAt = [lastAudioActivityAt, lastOutputAt]
+    .filter((value) => value !== null)
+    .reduce((latest, value) => Math.max(latest, value), null);
+  const outputStarted = firstOutputAt !== null || firstAudioAt !== null;
+  const currentTime = number(nowMs, Date.now());
+  const idle = Number(idleMs);
+  const settled = outputStarted
+    && firstAudioAt !== null
+    && lastActivityAt !== null
+    && Number.isFinite(idle)
+    && idle >= 0
+    && currentTime - lastActivityAt >= idle;
+  return {
+    settled,
+    outputStarted,
+    firstOutputAt,
+    firstAudioAt,
+    lastOutputAt,
+    lastAudioActivityAt,
+    lastActivityAt,
+    idleMs: idle,
+    idleForMs: lastActivityAt === null ? null : Math.max(0, currentTime - lastActivityAt),
+    statsCount: stats.length,
+    outputTranscriptDeltaCount: outputEntries.length,
+  };
 }
 
 export function extractTiming({
@@ -591,6 +808,50 @@ async function waitForTrace(page, predicate, timeoutMs) {
     channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
     audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
   })).catch(() => ({ live: [], channel: [] }));
+}
+
+async function waitForGPTLiveOutputPlaybackIdle(
+  page,
+  { boundaryAt, timeoutMs, idleMs },
+) {
+  const startedAt = Date.now();
+  let latest = { live: [], channel: [], audio: { events: [], stats: [] } };
+  let status = gptLiveOutputPlaybackIdleStatus({
+    dataTrace: latest.channel,
+    audioTrace: latest.audio,
+    boundaryAt,
+    idleMs,
+    nowMs: startedAt,
+  });
+  while (Date.now() - startedAt < timeoutMs) {
+    latest = await page.evaluate(() => ({
+      live: window.__kikioriVoiceLiveTrace?.entries ?? [],
+      channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
+      audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
+    })).catch(() => latest);
+    status = gptLiveOutputPlaybackIdleStatus({
+      dataTrace: latest.channel,
+      audioTrace: latest.audio,
+      boundaryAt,
+      idleMs,
+      nowMs: Date.now(),
+    });
+    if (status.settled) return { ...latest, status };
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  latest = await page.evaluate(() => ({
+    live: window.__kikioriVoiceLiveTrace?.entries ?? [],
+    channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
+    audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
+  })).catch(() => latest);
+  status = gptLiveOutputPlaybackIdleStatus({
+    dataTrace: latest.channel,
+    audioTrace: latest.audio,
+    boundaryAt,
+    idleMs,
+    nowMs: Date.now(),
+  });
+  return { ...latest, status };
 }
 
 function eventTypes(dataTrace, consoleTrace) {
@@ -814,6 +1075,31 @@ export function questionAdvanceExpected({ expectations, answer }) {
     || (answer?.answerState == null && hasText(answer?.confirmed));
 }
 
+/**
+ * In GPT-Live, currentQuestionId identifies the basic question whose answer
+ * was most recently assessed.  Live may already be speaking the next basic
+ * question while the State Store still points at that answer target.  Require
+ * progression on the next semantic update only when the previous target was
+ * already complete; do not treat a same-turn persisted ID as the next spoken
+ * question.
+ */
+export function questionAdvanceRequiredForTurn({
+  expectations,
+  beforeAnswer,
+  beforeQuestionId,
+  beforeState,
+}) {
+  if (expectations?.questionAdvance !== "required" || !beforeQuestionId) return false;
+  const state = beforeState ?? {};
+  if (state.status === "completed" || state.currentTurnType === "PROBE") return false;
+  const answerState = String(beforeAnswer?.answerState ?? "").toUpperCase();
+  return answerState === "CONFIRMED"
+    || answerState === "ANSWERED"
+    || (beforeAnswer?.answerState == null
+      && hasText(beforeAnswer?.confirmed)
+      && !hasText(beforeAnswer?.candidate));
+}
+
 function failureCodes({ behavior, engine, hardGate, transcript, assistant, dataTrace, consoleTrace }) {
   const codes = [...(hardGate?.codes ?? [])];
   const types = eventTypes(dataTrace, consoleTrace);
@@ -831,17 +1117,21 @@ function failureCodes({ behavior, engine, hardGate, transcript, assistant, dataT
   return [...new Set(codes)];
 }
 
-function questionAdvanced({ before, after, currentField, assistant, dataTrace }) {
+export function questionAdvanced({
+  before,
+  after,
+  requestedQuestionId,
+  expectedQuestionId,
+}) {
   const beforeInterview = interviewState(before);
   const afterInterview = interviewState(after);
-  // The application uses q-### in runtime events and live-field-* in the
-  // context payload. Compare the persisted State IDs only; a transcript
-  // event's questionId is the question being answered, not evidence that the
-  // checklist advanced.
-  if (beforeInterview.currentQuestionId !== afterInterview.currentQuestionId) {
-    return beforeInterview.currentQuestionId !== null && afterInterview.currentQuestionId !== null;
+  const expectedId = String(expectedQuestionId ?? "").trim();
+  const selectedQuestionId = String(requestedQuestionId ?? "").trim();
+  if (!beforeInterview.currentQuestionId || !expectedId || !selectedQuestionId) return false;
+  if (selectedQuestionId !== expectedId || expectedId === beforeInterview.currentQuestionId) {
+    return false;
   }
-  return false;
+  return afterInterview.currentQuestionId === expectedId;
 }
 
 function sessionRunToken(value) {
@@ -1107,10 +1397,7 @@ export async function runRealVoiceRobustnessSession({
       const hasFinal = engine === ROBUSTNESS_ENGINE.transcribe_polly
         ? runtime.filter((entry) => entry.type === "user_transcript_final").length
           > baselineTranscriptCount
-        : value.live.some((entry) => (
-          entry.args?.[0] === "gpt_live_event"
-            && /(?:input_(?:audio_)?transcript|input_audio_transcription)\.(?:completed|done)$/.test(entry.args?.[1]?.type ?? "")
-        )) && collectTranscript(value.channel, value.live, engine).finalCount > baselineTranscriptCount;
+        : collectTranscript(value.channel, value.live, engine).finalCount > baselineTranscriptCount;
       return normalizedBehavior === "SILENCE" ? Date.now() - turnStartedAt > 8_000 : hasFinal;
     }, timeoutMs);
     finalTrace = trace;
@@ -1129,6 +1416,8 @@ export async function runRealVoiceRobustnessSession({
     // the failure evidence bounded and let the hard gate classify it.
     const stateWaitMs = normalizedBehavior === "SILENCE"
       ? 8_000
+      : engine === ROBUSTNESS_ENGINE.gpt_live
+        ? Math.min(timeoutMs, 5_000)
       : preliminaryTranscript.finalCount > 0
         ? timeoutMs
         : Math.min(timeoutMs, 3_000);
@@ -1167,6 +1456,7 @@ export async function runRealVoiceRobustnessSession({
     // response started; otherwise a delayed Polly/Live response is reported
     // as a false immediate failure and its actual response window is lost.
     const responseWaitBudgetMs = Math.max(0, timeoutMs - (Date.now() - turnStartedAt));
+    let outputPlaybackStatus = null;
     if (preliminaryTranscript.finalCount > 0 && responseWaitBudgetMs > 0) {
       const responseWaitStartedAt = Date.now();
       const observedStatePersistenceAt = engine === ROBUSTNESS_ENGINE.gpt_live
@@ -1201,22 +1491,89 @@ export async function runRealVoiceRobustnessSession({
       if (engine === ROBUSTNESS_ENGINE.gpt_live) {
         const drainBoundaryAt = statePersistenceTimestamp(responseTrace.live, turnStartedAt)
           ?? responseBoundaryAt;
+        const configuredOutputIdleMs = Number.parseInt(
+          process.env.VOICE_TEST_REAL_OUTPUT_IDLE_MS || String(DEFAULT_GPT_LIVE_OUTPUT_IDLE_MS),
+          10,
+        );
+        const outputIdleMs = Number.isFinite(configuredOutputIdleMs)
+          && configuredOutputIdleMs >= 0
+          ? configuredOutputIdleMs
+          : DEFAULT_GPT_LIVE_OUTPUT_IDLE_MS;
+        const configuredDrainTimeoutMs = Number.parseInt(
+          process.env.VOICE_TEST_REAL_OUTPUT_DRAIN_TIMEOUT_MS || "15000",
+          10,
+        );
+        const drainTimeoutMs = Number.isFinite(configuredDrainTimeoutMs)
+          && configuredDrainTimeoutMs > 0
+          ? configuredDrainTimeoutMs
+          : 15000;
         const drainBudgetMs = Math.max(0, Math.min(
-          5_000,
+          drainTimeoutMs,
           timeoutMs - (Date.now() - turnStartedAt),
         ));
         const drainTrace = drainBudgetMs > 0
-          ? await waitForTrace(page, (value) => liveOutputCompletedAfterBoundary(
-            value.live,
-            drainBoundaryAt,
-          ), drainBudgetMs)
-          : responseTrace;
+          ? await waitForGPTLiveOutputPlaybackIdle(page, {
+            boundaryAt: drainBoundaryAt,
+            timeoutMs: drainBudgetMs,
+            idleMs: outputIdleMs,
+          })
+          : {
+            ...responseTrace,
+            status: {
+              settled: false,
+              outputStarted: false,
+              idleMs: outputIdleMs,
+              idleForMs: 0,
+              reason: "turn_timeout_budget_exhausted",
+            },
+          };
         finalTrace = drainTrace;
+        outputPlaybackStatus = drainTrace.status ?? null;
         telemetry.event("assistant_response_drain_completed", {
-          completed: liveOutputCompletedAfterBoundary(drainTrace.live, drainBoundaryAt),
+          completed: Boolean(drainTrace.status?.settled),
+          source: drainTrace.status?.settled
+            ? "browser_inbound_rtp_and_transcript_idle"
+            : "not_observed",
+          outputStarted: Boolean(drainTrace.status?.outputStarted),
+          firstAudioAt: drainTrace.status?.firstAudioAt ?? null,
+          lastActivityAt: drainTrace.status?.lastActivityAt ?? null,
+          idleForMs: drainTrace.status?.idleForMs ?? null,
+          idleMs: outputIdleMs,
           budgetMs: drainBudgetMs,
           boundaryAt: drainBoundaryAt,
         });
+      }
+    }
+
+    // The Live state-update response is the persistence acknowledgement, but
+    // the separate snapshot endpoint may become visible later. Do not block
+    // Live's response on that read. Once the response has drained, give the
+    // snapshot read the remainder of the turn budget to catch up so that the
+    // answer assertion still uses the durable state rather than a stale read.
+    const preliminaryStateUpdateLifecycle = engine === ROBUSTNESS_ENGINE.gpt_live
+      ? liveStateUpdateLifecycle({
+        consoleTrace: finalTrace.live,
+        networkLog: telemetry.networkLog,
+        turnStartedAt,
+      })
+      : null;
+    const persistedStateVersion = number(
+      preliminaryStateUpdateLifecycle?.response?.stateVersion,
+      null,
+    );
+    if (engine === ROBUSTNESS_ENGINE.gpt_live
+      && preliminaryTranscript.finalCount > 0
+      && (!after || stateVersion(after) < (persistedStateVersion ?? stateVersion(before) + 1))) {
+      const stateRefreshDeadline = turnStartedAt + timeoutMs;
+      while (Date.now() < stateRefreshDeadline) {
+        const candidateState = await fetchInterviewState(request).catch(() => null);
+        const minimumVersion = persistedStateVersion ?? stateVersion(before) + 1;
+        if (candidateState && stateVersion(candidateState) >= minimumVersion) {
+          after = candidateState;
+          stateObservedAt = Date.now();
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
 
@@ -1249,20 +1606,44 @@ export async function runRealVoiceRobustnessSession({
       audioTrace: afterTrace.audio,
       responseBoundaryAt,
     });
+    const stateUpdateLifecycle = engine === ROBUSTNESS_ENGINE.gpt_live
+      ? liveStateUpdateLifecycle({
+        consoleTrace: afterTrace.live,
+        networkLog: telemetry.networkLog,
+        turnStartedAt,
+      })
+      : null;
+    const requestedQuestionId = stateUpdateLifecycle?.request?.questionId
+      || interviewState(after).currentQuestionId
+      || currentQuestionId;
+    const answerField = fieldForQuestion(contextData, requestedQuestionId) ?? currentField;
     const answer = extractFieldAnswer(
       interviewState(after),
+      answerField?.id,
+    );
+    const beforeAnswer = extractFieldAnswer(
+      interviewState(before),
       currentField?.id,
     );
-    const shouldAdvance = questionAdvanceExpected({ expectations, answer });
+    const beforeQuestionId = interviewState(before).currentQuestionId ?? currentQuestionId;
+    const expectedNextFieldBefore = nextUnansweredField(contextData, before);
+    const expectedNextQuestionId = expectedNextFieldBefore
+      ? liveQuestionId(expectedNextFieldBefore)
+      : null;
+    const shouldAdvance = questionAdvanceRequiredForTurn({
+      expectations,
+      beforeAnswer,
+      beforeQuestionId,
+      beforeState: interviewState(before),
+    }) && Boolean(expectedNextQuestionId);
     const effectiveExpectations = shouldAdvance || expectations.questionAdvance !== "required"
       ? expectations
       : { ...expectations, questionAdvance: "optional" };
     const advanced = questionAdvanced({
       before,
       after,
-      currentField,
-      assistant,
-      dataTrace: afterTrace.channel,
+      requestedQuestionId,
+      expectedQuestionId: expectedNextQuestionId,
     });
     const responseIdsValue = responseIds(afterTrace.channel, afterTrace.live);
     const runtimeEvents = eventTypes(afterTrace.channel, afterTrace.live);
@@ -1280,8 +1661,8 @@ export async function runRealVoiceRobustnessSession({
       jevCalls: 0,
       maxJevCalls: undefined,
       state: interviewState(after),
-      fieldId: currentField?.id,
-      expectedQuestionId: currentQuestionId,
+      fieldId: answerField?.id,
+      expectedQuestionId: beforeQuestionId,
       finalText: transcript.finalText,
       responseIds: responseIdsValue,
       eventTypes: runtimeEvents,
@@ -1309,6 +1690,12 @@ export async function runRealVoiceRobustnessSession({
       dataTrace: afterTrace.channel,
       consoleTrace: afterTrace.live,
     });
+    if (engine === ROBUSTNESS_ENGINE.gpt_live
+      && preliminaryTranscript.finalCount > 0
+      && outputPlaybackStatus
+      && !outputPlaybackStatus.settled) {
+      extraFailures.push("ASSISTANT_OUTPUT_COMPLETION_UNOBSERVED");
+    }
     const harness = harnessValidity({
       engine,
       audioTrace: afterTrace.audio,
@@ -1356,6 +1743,64 @@ export async function runRealVoiceRobustnessSession({
     });
     telemetry.event("harness_validity", harness);
     telemetry.event("failure_analysis", analysis);
+    const frontendStateApplied = latestInterviewStateApplied(afterTrace.live, turnStartedAt);
+    const expectedNextField = expectedNextFieldBefore;
+    const followingQuestionField = nextUnansweredField(contextData, after);
+    const persistedResponse = stateUpdateLifecycle?.response
+      ? {
+        ...stateUpdateLifecycle.response,
+        answerState: answer.answerState ?? null,
+        candidateAnswerExists: hasText(answer.candidate),
+        confirmedAnswerExists: hasText(answer.confirmed),
+      }
+      : null;
+    const questionLifecycle = {
+      before: {
+        questionId: beforeQuestionId,
+        questionText: currentQuestion,
+        answerState: beforeAnswer.answerState ?? null,
+        candidate: beforeAnswer.candidate ?? null,
+        confirmed: beforeAnswer.confirmed ?? null,
+        stateVersion: stateVersion(before),
+      },
+      userTranscriptFinal: transcript.finalText || null,
+      delegationId: stateUpdateLifecycle?.delegationId ?? null,
+      statePersistenceRequest: stateUpdateLifecycle?.request ?? null,
+      statePersistenceResponse: persistedResponse,
+      backendSelectedQuestionId: null,
+      backendSelectedQuestionText: null,
+      nextQuestionDetermination: {
+        owner: "gpt_live",
+        reason: "application_backend_persists_answer_target_only",
+        answerTargetQuestionId: requestedQuestionId ?? null,
+        selectedForThisTurnQuestionId: requestedQuestionId ?? null,
+        selectedForThisTurnQuestionText: answerField ? questionText(answerField) : null,
+        expectedNextQuestionId: expectedNextQuestionId,
+        expectedNextQuestionText: expectedNextFieldBefore
+          ? questionText(expectedNextFieldBefore)
+          : null,
+        selectedQuestionMatchesExpected: shouldAdvance
+          ? requestedQuestionId === expectedNextQuestionId
+          : null,
+        spokenText: assistant.text || null,
+      },
+      frontendStateApplied,
+      after: {
+        questionId: interviewState(after).currentQuestionId ?? null,
+        questionText: fieldForQuestion(
+          contextData,
+          interviewState(after).currentQuestionId,
+        ) ? questionText(fieldForQuestion(
+          contextData,
+          interviewState(after).currentQuestionId,
+        )) : null,
+        answerState: answer.answerState ?? null,
+        candidate: answer.candidate ?? null,
+        confirmed: answer.confirmed ?? null,
+        stateVersion: stateVersion(after),
+      },
+    };
+    telemetry.event("question_lifecycle", questionLifecycle);
     const timeline = realRuntimeTimeline({
       consoleEntries: afterTrace.live,
       dataChannelEntries: afterTrace.channel,
@@ -1396,6 +1841,10 @@ export async function runRealVoiceRobustnessSession({
         stateVersionAdvanced: stateVersion(after) > stateVersion(before),
         questionAdvanced: advanced,
         assistantResponseCount: assistant.mainResponseCount,
+        assistantPlaybackSettled: Boolean(outputPlaybackStatus?.settled),
+        assistantPlaybackCompletionSource: outputPlaybackStatus?.settled
+          ? "browser_inbound_rtp_and_transcript_idle"
+          : null,
         ackCount: assistant.ackCount,
         harnessValidity: harness,
         failureAnalysis: analysis,
@@ -1404,7 +1853,7 @@ export async function runRealVoiceRobustnessSession({
       expectationResult: hardGate.expectationResult,
       expectationViolations: hardGate.expectationViolations,
       interview: {
-        questionId: currentQuestionId,
+        questionId: requestedQuestionId ?? currentQuestionId,
         currentQuestionText: currentQuestion,
         candidate: answer.candidate,
         confirmed: answer.confirmed,
@@ -1413,12 +1862,19 @@ export async function runRealVoiceRobustnessSession({
         stateVersionAfter: stateVersion(after),
         currentQuestionBefore: interviewState(before).currentQuestionId ?? null,
         currentQuestionAfter: interviewState(after).currentQuestionId ?? null,
-        nextQuestionId: interviewState(after).currentQuestionId ?? null,
-        nextQuestionText: assistant.text || null,
+        nextQuestionId: expectedNextField ? liveQuestionId(expectedNextField) : null,
+        nextQuestionText: expectedNextField ? questionText(expectedNextField) : null,
+        followingQuestionId: followingQuestionField ? liveQuestionId(followingQuestionField) : null,
+        followingQuestionText: followingQuestionField ? questionText(followingQuestionField) : null,
+        questionLifecycle,
       },
       response: {
         assistantSpeechStarted: assistant.mainResponseCount > 0,
         assistantSpeechEnded: timing.assistantSpeechEnded !== null,
+        assistantPlaybackSettled: Boolean(outputPlaybackStatus?.settled),
+        assistantPlaybackCompletionSource: outputPlaybackStatus?.settled
+          ? "browser_inbound_rtp_and_transcript_idle"
+          : null,
         assistantTranscript: assistant.text || null,
         firstAudioLatencyMs: timing.speechEndToFirstAudioMs,
         firstAudioAt: timing.firstAudio,

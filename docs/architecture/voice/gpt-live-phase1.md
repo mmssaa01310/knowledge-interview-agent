@@ -36,7 +36,7 @@ Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、Dat
 }
 ```
 
-`GPT_LIVE_RESPONSES_MODEL`の既定値は`gpt-5.6-terra`。GPT LiveにはJSONや特殊マーカーを発話させず、Liveの自然言語から正規表現でStateを抽出しない。
+`GPT_LIVE_RESPONSES_MODEL`の既定値は`gpt-5.6-luna`。GPT LiveにはJSONや特殊マーカーを発話させず、Liveの自然言語から正規表現でStateを抽出しない。これはResponses Delegationの意味評価モデルであり、GPT-Live音声セッションのモデル設定ではない。
 
 ## Browserの接続順
 

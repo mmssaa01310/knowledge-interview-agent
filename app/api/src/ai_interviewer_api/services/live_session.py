@@ -8,7 +8,10 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.core.config import (
+    DEFAULT_GPT_LIVE_RESPONSES_MODEL,
+    settings,
+)
 from ai_interviewer_api.schemas.live import (
     LiveSessionCreate,
     LiveSessionInfo,
@@ -365,7 +368,7 @@ def create_live_session(
                     "model": getattr(
                         settings,
                         "gpt_live_responses_model",
-                        "gpt-5.6-terra",
+                        DEFAULT_GPT_LIVE_RESPONSES_MODEL,
                     ),
                     "instructions": build_responses_delegation_instructions(
                         interview_context,

@@ -649,6 +649,100 @@ test("a persisted Responses result steers Live without duplicating the backend c
   app.hook.stop();
 });
 
+test("post-delegation resume includes the latest checklist state for Live progression", async () => {
+  const app = setup(() => {}, () => Promise.resolve({
+    status: "applied",
+    stateVersion: 3,
+    currentQuestionId: "question-1",
+    coveredAspects: ["name", "department", "role"],
+    missingAspects: [],
+    checklist: [
+      {
+        id: "field-1",
+        question_id: "question-1",
+        label: "基本プロフィール",
+        description: "お名前、所属、役職を教えてください。",
+        answer_state: "CONFIRMED",
+        answer_resolution: "CONFIRMED",
+        needs_confirmation: false,
+        captured_items: ["氏名", "所属部署", "役職"],
+        missing_required_items: [],
+      },
+      {
+        id: "field-2",
+        question_id: "question-2",
+        label: "現在の役割",
+        description: "現在の役割と責任を教えてください。",
+        answer_state: "UNANSWERED",
+        answer_resolution: null,
+        needs_confirmation: true,
+        captured_items: [],
+        missing_required_items: ["役割"],
+      },
+    ],
+    current: {
+      field_id: "field-1",
+      question_id: "question-1",
+      state_version: 3,
+      answer_evaluation: "ANSWERED",
+      clarification_kind: "NONE",
+      clarification_target: null,
+    },
+  }));
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "プロフィールへの回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-checklist", target: "responses" },
+    response_id: "response-checklist",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-checklist",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-checklist",
+        arguments: JSON.stringify({
+          turn_id: "turn-checklist", base_state_version: 2, question_id: "question-1",
+          answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.advance(5000);
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-checklist",
+    event: {
+      type: "response.created",
+      response: { id: "response-checklist-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-checklist",
+    event: {
+      type: "response.completed",
+      response: { id: "response-checklist-continuation" },
+    },
+  });
+  app.advance(0);
+
+  const stateContext = app.sent.find((event) => event.type === "session.thinking.append");
+  assert.ok(stateContext);
+  assert.match(stateContext.content, /question-1/);
+  assert.match(stateContext.content, /question-2/);
+  assert.match(stateContext.content, /"answer_state":"CONFIRMED"/);
+  assert.match(stateContext.content, /"answer_state":"UNANSWERED"/);
+  assert.match(stateContext.content, /"missing_required_items":\["役割"\]/);
+  app.hook.stop();
+});
+
 test("a missing Live steering acknowledgement is retried once without duplicating the Responses continuation", async () => {
   const app = setup();
   await app.hook.start();

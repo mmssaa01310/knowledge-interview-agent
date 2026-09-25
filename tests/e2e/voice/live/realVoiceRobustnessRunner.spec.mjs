@@ -1,12 +1,16 @@
 import { expect, test } from "@playwright/test";
 
 import {
+  assistantAfterBoundary,
   collectAssistant,
   collectTranscript,
   extractTiming,
   failureAnalysis,
+  gptLiveOutputPlaybackIdleStatus,
   harnessValidity,
   isGPTLiveInitialResponseReady,
+  questionAdvanced,
+  questionAdvanceRequiredForTurn,
   questionAdvanceExpected,
 } from "./realVoiceRobustnessRunner.mjs";
 
@@ -421,6 +425,66 @@ test("does not turn GPT output transcript into a response-created event", () => 
   });
 });
 
+test("assistant output is correlated after the State persistence boundary", () => {
+  const assistant = collectAssistant([
+    {
+      direction: "server",
+      timestampMs: 100,
+      event: { type: "session.output_transcript.delta", delta: "前ターンの残り" },
+    },
+    {
+      direction: "server",
+      timestampMs: 200,
+      event: { type: "session.output_transcript.delta", delta: "今ターンの質問" },
+    },
+  ], [
+    { timestampMs: 90, args: ["gpt_live_response_started", { turn_id: "old" }] },
+    { timestampMs: 190, args: ["gpt_live_response_started", { turn_id: "new" }] },
+  ], "gpt_live");
+
+  expect(assistantAfterBoundary(assistant, 150)).toMatchObject({
+    mainResponseCount: 1,
+    text: "今ターンの質問",
+    transcriptStartedAt: 200,
+  });
+});
+
+test("same-turn answer target is not mistaken for the next question", () => {
+  expect(questionAdvanced({
+    before: {
+      interviewState: {
+        currentQuestionId: "live-field-q1",
+        stateVersion: 3,
+      },
+    },
+    after: {
+      interviewState: {
+        currentQuestionId: "live-field-q1",
+        stateVersion: 4,
+      },
+    },
+    requestedQuestionId: "live-field-q1",
+    expectedQuestionId: "live-field-q2",
+  })).toBe(false);
+
+  expect(questionAdvanced({
+    before: {
+      interviewState: {
+        currentQuestionId: "live-field-q1",
+        stateVersion: 3,
+      },
+    },
+    after: {
+      interviewState: {
+        currentQuestionId: "live-field-q2",
+        stateVersion: 4,
+      },
+    },
+    requestedQuestionId: "live-field-q2",
+    expectedQuestionId: "live-field-q2",
+  })).toBe(true);
+});
+
 test("GPT-Live initial readiness uses output transcript idle, not response.done", () => {
   const output = [
     { timestampMs: 1_000, args: ["gpt_live_event", {
@@ -438,6 +502,45 @@ test("GPT-Live initial readiness uses output transcript idle, not response.done"
 
 test("GPT-Live initial readiness requires an observed output transcript", () => {
   expect(isGPTLiveInitialResponseReady([], { nowMs: 4_000, idleMs: 2_500 })).toBe(false);
+});
+
+test("GPT-Live output drain uses inbound audio idle when no completion event exists", () => {
+  const audioTrace = {
+    events: [],
+    stats: [
+      { timestampMs: 1_000, inboundRtp: [{ bytesReceived: 0, packetsReceived: 0 }] },
+      { timestampMs: 1_500, inboundRtp: [{ bytesReceived: 100, packetsReceived: 1 }] },
+      { timestampMs: 1_800, inboundRtp: [{ bytesReceived: 200, packetsReceived: 2 }] },
+    ],
+  };
+  const dataTrace = [{
+    direction: "server",
+    timestampMs: 1_200,
+    event: { type: "session.output_transcript.delta", delta: "次の質問です" },
+  }];
+
+  expect(gptLiveOutputPlaybackIdleStatus({
+    dataTrace,
+    audioTrace,
+    boundaryAt: 1_000,
+    idleMs: 500,
+    nowMs: 2_100,
+  })).toMatchObject({
+    outputStarted: true,
+    firstAudioAt: 1_500,
+    lastAudioActivityAt: 1_800,
+    settled: false,
+  });
+  expect(gptLiveOutputPlaybackIdleStatus({
+    dataTrace,
+    audioTrace,
+    boundaryAt: 1_000,
+    idleMs: 500,
+    nowMs: 2_400,
+  })).toMatchObject({
+    settled: true,
+    idleForMs: 600,
+  });
 });
 
 test("does not require a question transition while the current answer is pending", () => {
@@ -474,4 +577,26 @@ test("does not require a question transition while the current answer is pending
   });
   expect(analysis.rootFailure).toBeNull();
   expect(analysis.cascadeFailures).not.toContain("QUESTION_NOT_ADVANCED");
+});
+
+test("question progression is required only when the previous target was already complete", () => {
+  const expectations = { questionAdvance: "required" };
+  expect(questionAdvanceRequiredForTurn({
+    expectations,
+    beforeQuestionId: "live-field-q1",
+    beforeAnswer: { answerState: "CANDIDATE_PENDING", candidate: "回答" },
+    beforeState: {},
+  })).toBe(false);
+  expect(questionAdvanceRequiredForTurn({
+    expectations,
+    beforeQuestionId: "live-field-q1",
+    beforeAnswer: { answerState: "CONFIRMED", confirmed: "回答" },
+    beforeState: {},
+  })).toBe(true);
+  expect(questionAdvanceRequiredForTurn({
+    expectations,
+    beforeQuestionId: "live-field-q1",
+    beforeAnswer: { answerState: "CONFIRMED", confirmed: "回答" },
+    beforeState: { currentTurnType: "PROBE" },
+  })).toBe(false);
 });

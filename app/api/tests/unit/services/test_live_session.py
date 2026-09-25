@@ -139,7 +139,7 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
 
     delegation = captured["session"]["delegation"]
     assert delegation["type"] == "responses"
-    assert delegation["responses"]["model"] == "gpt-5.6-terra"
+    assert delegation["responses"]["model"] == "gpt-5.6-luna"
     assert delegation["responses"]["tool_choice"] == "auto"
     assert delegation["responses"]["reasoning"] == {"effort": "low"}
     assert delegation["responses"]["max_output_tokens"] == 600

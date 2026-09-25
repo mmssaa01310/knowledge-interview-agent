@@ -45,7 +45,7 @@ services:
       # GPT-Live and the legacy OpenAI Realtime runtime share this server-side
       # key. Never expose it through a VITE_* variable.
       OPENAI_SECRET_KEY: ${OPENAI_SECRET_KEY:-}
-      GPT_LIVE_RESPONSES_MODEL: ${GPT_LIVE_RESPONSES_MODEL:-gpt-5.6-terra}
+      GPT_LIVE_RESPONSES_MODEL: ${GPT_LIVE_RESPONSES_MODEL:-gpt-5.6-luna}
       DEV_AUTO_SEED_VOICE_DEMO: ${DEV_AUTO_SEED_VOICE_DEMO:-true}
       DEV_AUTO_SEED_MAINTENANCE_DEMO: ${DEV_AUTO_SEED_MAINTENANCE_DEMO:-true}
       DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO: ${DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO:-true}
