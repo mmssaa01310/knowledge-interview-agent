@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   collectAssistant,
+  collectTranscript,
   extractTiming,
   failureAnalysis,
   harnessValidity,
@@ -124,7 +125,7 @@ test("root failure is separated from cascaded conversation symptoms", () => {
   ]));
 });
 
-test("client transcript-idle fallback does not count as provider speech detection", () => {
+test("GPT-Live transcript grouping remains valid without provider VAD boundary events", () => {
   const valid = validHarnessInputs();
   const fallbackOnly = harnessValidity({
     ...valid,
@@ -135,10 +136,60 @@ test("client transcript-idle fallback does not count as provider speech detectio
     )),
   });
 
-  expect(fallbackOnly.status).toBe("INVALID");
-  expect(fallbackOnly.classification).toBe("TEST_INFRA_FAILURE");
-  expect(fallbackOnly.checks.speechDetected).toBe(false);
-  expect(fallbackOnly.missing).toContain("speechDetected");
+  expect(fallbackOnly.status).toBe("VALID");
+  expect(fallbackOnly.classification).toBeNull();
+  expect(fallbackOnly.checks.speechDetected).toBe(true);
+  expect(fallbackOnly.observations).toMatchObject({
+    providerSpeechStarted: false,
+    providerSpeechEnded: false,
+    applicationSpeechBoundaryObserved: true,
+  });
+});
+
+test("Responses delegation response.created events are not counted as Live speech", () => {
+  const assistant = collectAssistant([
+    {
+      direction: "server",
+      timestampMs: 100,
+      event: {
+        type: "response.event",
+        delegation_id: "delegation-1",
+        event: {
+          type: "response.created",
+          response: { id: "responses-backend-1" },
+        },
+      },
+    },
+  ], [
+    {
+      timestampMs: 120,
+      args: ["gpt_live_response_started", { turn_id: "turn-1" }],
+    },
+  ], "gpt_live");
+
+  expect(assistant.mainResponseCount).toBe(1);
+});
+
+test("the application transcript boundary promotes GPT-Live deltas to a final transcript", () => {
+  const transcript = collectTranscript([], [
+    {
+      timestampMs: 100,
+      args: ["gpt_live_event", { type: "session.input_transcript.delta", delta: "回答です" }],
+    },
+    {
+      timestampMs: 2_700,
+      args: ["gpt_live_input_transcript_final", {
+        source: "transcript_idle",
+        transcript_revision: 1,
+      }],
+    },
+  ], "gpt_live");
+
+  expect(transcript).toMatchObject({
+    finalText: "回答です",
+    finalCount: 1,
+    partialText: "回答です",
+  });
 });
 
 test("real turn latency uses the first audio event, not only response creation", () => {

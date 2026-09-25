@@ -78,7 +78,7 @@ export function detectTurnAnomalies({
     anomalies.push(ANOMALIES.WEBSOCKET_ERROR);
   }
   if (dataChannelErrors.length
-    || eventTypes.some((type) => /data[_-]?channel(?:[_-]?error)?/i.test(type))) {
+    || eventTypes.some((type) => /data[_-]?channel.*(?:error|closed|failed)/i.test(type))) {
     anomalies.push(ANOMALIES.DATACHANNEL_ERROR);
   }
   if (apiStatuses.some((status) => Number(status) >= 500)) anomalies.push(ANOMALIES.API_5XX);

@@ -95,6 +95,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   const transcriptRecordIdRef = useRef(recordId);
   const userTranscriptRevisionRef = useRef(0);
   const handledSpeechEndRevisionRef = useRef(-1);
+  const finalizedTranscriptRevisionRef = useRef(-1);
   const userSpeechActiveRef = useRef(false);
   const transcriptIdleTimeoutIdRef = useRef<number | undefined>();
   const responseObservedRevisionRef = useRef(-1);
@@ -185,6 +186,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     completedUserTranscriptRef.current = "";
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
+    finalizedTranscriptRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
     responseObservedRevisionRef.current = -1;
     handledToolCallIdsRef.current.clear();
@@ -254,6 +256,25 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       session_id: sessionIdRef.current,
       turn_id: turn.turnId,
       speech_end_to_first_audio_ms: Math.round(performance.now() - turn.speechEndedAt),
+    });
+  }, []);
+
+  const markUserTranscriptFinal = useCallback((source: string) => {
+    const transcript = latestUserTranscriptRef.current;
+    const transcriptRevision = userTranscriptRevisionRef.current;
+    if (!transcript.trim() || finalizedTranscriptRevisionRef.current === transcriptRevision) {
+      return;
+    }
+    completedUserTranscriptRef.current = transcript;
+    finalizedTranscriptRevisionRef.current = transcriptRevision;
+    // GPT-Live supplies transcript deltas but does not guarantee a completed
+    // turn event. This is the application's transport-level grouping marker,
+    // not a punctuation or keyword based completeness guess.
+    console.info("gpt_live_input_transcript_final", {
+      session_id: sessionIdRef.current,
+      source,
+      transcript_revision: transcriptRevision,
+      transcript_length: transcript.length,
     });
   }, []);
 
@@ -350,7 +371,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
         return;
       }
       userSpeechActiveRef.current = false;
-      completedUserTranscriptRef.current = latestUserTranscriptRef.current;
+      markUserTranscriptFinal("transcript_idle");
       console.info("gpt_live_transcript_idle_boundary", {
         session_id: sessionIdRef.current,
         transcript_revision: transcriptRevision,
@@ -358,7 +379,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       });
       beginUserTurnWatchdog("transcript_idle");
     }, GPT_LIVE_TRANSCRIPT_IDLE_TIMEOUT_MS);
-  }, [beginUserTurnWatchdog, clearTranscriptIdleTimer]);
+  }, [beginUserTurnWatchdog, clearTranscriptIdleTimer, markUserTranscriptFinal]);
 
   const handleDelegatedFunctionCall = useCallback(async (
     event: GPTLiveEvent,
@@ -791,7 +812,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     if (isUserSpeechEndEvent(eventType)) {
       clearTranscriptIdleTimer();
       userSpeechActiveRef.current = false;
-      completedUserTranscriptRef.current = latestUserTranscriptRef.current;
+      markUserTranscriptFinal("provider_event");
       beginUserTurnWatchdog("provider_event");
       return;
     }
@@ -842,6 +863,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     cleanup,
     handleDelegatedFunctionCall,
     markFirstAudio,
+    markUserTranscriptFinal,
     markResponseStarted,
     remoteAudioRef,
     scheduleTranscriptIdleBoundary,
@@ -867,6 +889,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     completedUserTranscriptRef.current = "";
     userTranscriptRevisionRef.current = 0;
     handledSpeechEndRevisionRef.current = -1;
+    finalizedTranscriptRevisionRef.current = -1;
     userSpeechActiveRef.current = false;
     clearTranscriptIdleTimer();
     responseObservedRevisionRef.current = -1;

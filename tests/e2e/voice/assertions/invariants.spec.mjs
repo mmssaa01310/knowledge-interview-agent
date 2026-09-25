@@ -38,3 +38,16 @@ test("missing final transcript is detected separately from persistence", () => {
 
   expect(anomalies).toEqual([ANOMALIES.TRANSCRIPT_FINAL_MISSING]);
 });
+
+test("an open DataChannel is not a DataChannel error", () => {
+  const anomalies = detectTurnAnomalies({
+    finalText: "回答です",
+    state: { fieldStates: { field: { answerState: "CONFIRMED", confirmed: "回答です" } } },
+    fieldId: "field",
+    expectedQuestionId: "q-1",
+    eventTypes: ["data_channel.open"],
+    responseStarted: true,
+  });
+
+  expect(anomalies).not.toContain(ANOMALIES.DATACHANNEL_ERROR);
+});

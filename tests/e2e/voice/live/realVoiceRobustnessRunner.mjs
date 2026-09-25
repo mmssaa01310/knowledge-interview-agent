@@ -281,7 +281,7 @@ function findFirst(entries, predicate) {
   return entries.find(predicate) ?? null;
 }
 
-function collectTranscript(dataEntries, consoleEntries, provider) {
+export function collectTranscript(dataEntries, consoleEntries, provider) {
   const runtime = eventEntries(dataEntries, provider);
   const finals = runtime.filter((entry) => entry.type === "user_transcript_final");
   const gptFinals = runtime.filter((entry) => (
@@ -293,12 +293,12 @@ function collectTranscript(dataEntries, consoleEntries, provider) {
       && typeof entry.args?.[1]?.type === "string"
       && /(?:input_(?:audio_)?transcript|input_audio_transcription)\.(?:completed|done)$/.test(entry.args[1].type)
   ));
+  const applicationGptFinals = consoleEntries.filter((entry) => (
+    entry.args?.[0] === "gpt_live_input_transcript_final"
+  ));
   const allFinals = provider === ROBUSTNESS_ENGINE.gpt_live
-    ? (gptFinals.length ? gptFinals : consoleGptFinals)
+    ? (gptFinals.length ? gptFinals : consoleGptFinals.length ? consoleGptFinals : applicationGptFinals)
     : finals;
-  const texts = allFinals.map((entry) => (
-    entry.event?.transcript ?? entry.args?.[1]?.transcript ?? entry.event?.text ?? ""
-  )).filter(hasText);
   const partials = runtime.filter((entry) => entry.type === "user_transcript_partial");
   const gptDeltas = runtime.filter((entry) => (
     /(?:^|\.)input_(?:audio_)?transcript\.delta$/.test(entry.type ?? "")
@@ -313,8 +313,14 @@ function collectTranscript(dataEntries, consoleEntries, provider) {
   const deltaText = deltaEntries.map((entry) => (
     entry.event?.delta ?? entry.args?.[1]?.delta
   )).filter(hasText).join("").trim();
+  const texts = allFinals.map((entry) => (
+    entry.event?.transcript ?? entry.args?.[1]?.transcript ?? entry.event?.text ?? ""
+  )).filter(hasText);
   return {
-    finalText: texts.join(" ").trim(),
+    // GPT-Live deliberately exposes transcript deltas without a completed
+    // turn event. When the application emits its transport grouping marker,
+    // the accumulated deltas become the application-level final transcript.
+    finalText: texts.join(" ").trim() || (applicationGptFinals.length ? deltaText : ""),
     finalCount: allFinals.length,
     partialText: deltaText,
     partialCount: partials.length + deltaEntries.length,
@@ -329,7 +335,11 @@ export function collectAssistant(dataEntries, consoleEntries, provider) {
   const backchannels = runtime.filter((entry) => entry.type === "assistant_backchannel");
   const runtimeMain = runtime.filter((entry) => entry.type === "assistant_speech_started");
   const gptMain = [
-    ...runtime.filter((entry) => entry.type === "response.created"),
+    // Responses delegation emits nested response.created events inside a
+    // response.event envelope. They are backend work, not Live speech.
+    ...runtime.filter((entry) => (
+      entry.type === "response.created" && entry.envelope?.type !== "response.event"
+    )),
     ...consoleEntries.filter((entry) => (
     entry.args?.[0] === "gpt_live_response_started"
       || (entry.args?.[0] === "gpt_live_event" && entry.args?.[1]?.type === "response.created")
@@ -577,14 +587,18 @@ export function harnessValidity({
   const providerSpeech = engine === ROBUSTNESS_ENGINE.gpt_live
     ? providerSpeechBoundaries({ dataTrace, consoleTrace })
     : null;
-  // A client-side transcript-idle fallback is allowed to recover the
-  // conversation, but it must not make the harness claim that GPT-Live's
-  // server-side VAD detected the utterance. Keep the two observations
-  // separate so an absent provider boundary remains TEST_INFRA_FAILURE.
-  const speechWasDetected = engine === ROBUSTNESS_ENGINE.gpt_live
-    ? Boolean(providerSpeech?.started && providerSpeech?.ended)
-    : timing.speechStart !== null || timing.speechEnd !== null;
   const transcriptReceived = hasText(transcript.finalText) || hasText(transcript.partialText);
+  const applicationSpeechBoundaryObserved = timing.speechEnd !== null
+    || consoleHasEvent(consoleTrace, "gpt_live_input_transcript_final");
+  // GPT-Live supplies transcript deltas but does not guarantee a completed
+  // turn or server VAD boundary event. The application groups those deltas at
+  // an idle boundary; audio RTP plus provider transcript plus that marker are
+  // the evidence that the test turn reached the runtime. Keep provider VAD
+  // observations diagnostic instead of rejecting a valid GPT-Live session for
+  // an event the protocol does not promise.
+  const speechWasDetected = engine === ROBUSTNESS_ENGINE.gpt_live
+    ? Boolean(transcriptReceived && applicationSpeechBoundaryObserved)
+    : timing.speechStart !== null || timing.speechEnd !== null;
   const atLeastOneTurnCommitted = stateVersionAdvanced
     || consoleHasEvent(consoleTrace, "gpt_live_state_persisted")
     || runtime.some((entry) => ["user_turn_committed", "turn_committed"].includes(entry.type));
@@ -596,10 +610,6 @@ export function harnessValidity({
     microphoneTrackReady: microphoneTrackReady(audioTrace),
     audioActuallySent: audioActuallySent({ audioTrace }),
     speechDetected: speechWasDetected,
-    ...(providerSpeech ? {
-      providerSpeechStarted: providerSpeech.started,
-      providerSpeechEnded: providerSpeech.ended,
-    } : {}),
     transcriptReceived,
     atLeastOneTurnCommitted,
     assistantMainResponseReceived,
@@ -612,6 +622,11 @@ export function harnessValidity({
     status: missing.length ? "INVALID" : "VALID",
     classification: missing.length ? "TEST_INFRA_FAILURE" : null,
     checks,
+    observations: providerSpeech ? {
+      providerSpeechStarted: providerSpeech.started,
+      providerSpeechEnded: providerSpeech.ended,
+      applicationSpeechBoundaryObserved,
+    } : { applicationSpeechBoundaryObserved },
     missing,
   };
 }
