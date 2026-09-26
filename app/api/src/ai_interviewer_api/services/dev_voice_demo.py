@@ -11,6 +11,7 @@ Relations:
 
 from __future__ import annotations
 
+from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.models.domain import (
     InterviewRecord,
     Knowledge,
@@ -88,7 +89,7 @@ def ensure_dev_voice_demo() -> dict[str, str]:
                 defaultModelId="apac.amazon.nova-pro-v1:0",
                 interviewPlan=InterviewPlan(
                     profile="fixed_form",
-                    modelId="global.openai.gpt-5.6-terra",
+                    modelId=settings.structured_interview_model_id,
                 ),
             ).model_dump(),
         )

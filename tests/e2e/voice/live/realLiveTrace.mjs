@@ -256,6 +256,13 @@ export async function installVoiceAudioTrace(page) {
                   packetsReceived: item.packetsReceived ?? 0,
                   bytesReceived: item.bytesReceived ?? 0,
                   totalSamplesReceived: item.totalSamplesReceived ?? null,
+                  audioLevel: typeof item.audioLevel === "number" ? item.audioLevel : null,
+                  totalAudioEnergy: typeof item.totalAudioEnergy === "number"
+                    ? item.totalAudioEnergy
+                    : null,
+                  totalSamplesDuration: typeof item.totalSamplesDuration === "number"
+                    ? item.totalSamplesDuration
+                    : null,
                   timestamp: item.timestamp ?? null,
                 });
               }

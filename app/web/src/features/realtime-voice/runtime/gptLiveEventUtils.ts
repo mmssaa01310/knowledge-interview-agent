@@ -56,8 +56,12 @@ export function isResponseDoneEvent(type: string | undefined): boolean {
 }
 
 export function isResponseFunctionCallEvent(type: string | undefined): boolean {
-  return type === "response.output_item.done"
-    || type === "response.function_call_arguments.done";
+  // Arguments-done only signals that the JSON argument stream ended. The
+  // completed function-call item is the protocol boundary at which it is
+  // safe to execute the tool and submit its result. Waiting for this event
+  // avoids racing response.item.create/response.create against the still
+  // open Responses output item.
+  return type === "response.output_item.done";
 }
 
 export function isDelegatedResponseTerminalEvent(type: string | undefined): boolean {

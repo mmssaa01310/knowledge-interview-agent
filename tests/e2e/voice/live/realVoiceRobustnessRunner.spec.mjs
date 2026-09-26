@@ -12,6 +12,7 @@ import {
   questionAdvanced,
   questionAdvanceRequiredForTurn,
   questionAdvanceExpected,
+  verifyLiveQuestionProgression,
 } from "./realVoiceRobustnessRunner.mjs";
 
 function validHarnessInputs() {
@@ -174,6 +175,58 @@ test("Responses delegation response.created events are not counted as Live speec
   expect(assistant.mainResponseCount).toBe(1);
 });
 
+test("direct Responses delegation response.created events are not counted as Live speech", () => {
+  const assistant = collectAssistant([
+    {
+      direction: "server",
+      timestampMs: 100,
+      event: {
+        type: "response.created",
+        delegation_id: "delegation-1",
+        response: { id: "responses-backend-1", model: "gpt-5.6-luna" },
+      },
+    },
+  ], [
+    {
+      timestampMs: 120,
+      args: ["gpt_live_response_started", { turn_id: "turn-1" }],
+    },
+  ], "gpt_live");
+
+  expect(assistant.mainResponseCount).toBe(1);
+});
+
+test("GPT-Live assistant output is bounded to the current turn", () => {
+  const assistant = collectAssistant([
+    {
+      direction: "server",
+      timestampMs: 110,
+      event: { type: "session.input_transcript.delta", delta: "今の回答" },
+    },
+    {
+      direction: "server",
+      timestampMs: 300,
+      event: { type: "session.input_transcript.delta", delta: "次の回答" },
+    },
+    {
+      direction: "server",
+      timestampMs: 410,
+      event: { type: "session.output_transcript.delta", delta: "次の質問" },
+    },
+  ], [
+    { timestampMs: 200, args: ["gpt_live_response_started", { turn_id: "turn-1" }] },
+    { timestampMs: 400, args: ["gpt_live_response_started", { turn_id: "turn-2" }] },
+  ], "gpt_live", {
+    boundaryAt: 100,
+    inputEndAt: 150,
+  });
+
+  expect(assistant).toMatchObject({
+    mainResponseCount: 1,
+    starts: [{ timestampMs: 200 }],
+  });
+});
+
 test("Transcribe processing backchannels are not counted as duplicate main responses", () => {
   const assistant = collectAssistant([
     {
@@ -227,6 +280,35 @@ test("the application transcript boundary promotes GPT-Live deltas to a final tr
     finalText: "回答です",
     finalCount: 1,
     partialText: "回答です",
+  });
+});
+
+test("per-turn GPT-Live transcript telemetry excludes earlier user turns", () => {
+  const transcript = collectTranscript([
+    {
+      direction: "server",
+      timestampMs: 100,
+      event: { type: "session.input_transcript.delta", delta: "前の回答" },
+    },
+    {
+      direction: "server",
+      timestampMs: 300,
+      event: { type: "session.input_transcript.delta", delta: "今の回答" },
+    },
+  ], [
+    {
+      timestampMs: 400,
+      args: ["gpt_live_input_transcript_final", {
+        source: "transcript_idle",
+        transcript_revision: 2,
+      }],
+    },
+  ], "gpt_live", { boundaryAt: 250 });
+
+  expect(transcript).toMatchObject({
+    finalText: "今の回答",
+    partialText: "今の回答",
+    partialCount: 1,
   });
 });
 
@@ -504,7 +586,7 @@ test("GPT-Live initial readiness requires an observed output transcript", () => 
   expect(isGPTLiveInitialResponseReady([], { nowMs: 4_000, idleMs: 2_500 })).toBe(false);
 });
 
-test("GPT-Live output drain uses inbound audio idle when no completion event exists", () => {
+test("GPT-Live output drain uses output-transcript idle while treating RTP as media evidence", () => {
   const audioTrace = {
     events: [],
     stats: [
@@ -517,6 +599,10 @@ test("GPT-Live output drain uses inbound audio idle when no completion event exi
     direction: "server",
     timestampMs: 1_200,
     event: { type: "session.output_transcript.delta", delta: "次の質問です" },
+  }, {
+    direction: "server",
+    timestampMs: 1_800,
+    event: { type: "session.output_transcript.delta", delta: "続きです" },
   }];
 
   expect(gptLiveOutputPlaybackIdleStatus({
@@ -540,6 +626,33 @@ test("GPT-Live output drain uses inbound audio idle when no completion event exi
   })).toMatchObject({
     settled: true,
     idleForMs: 600,
+    settlementSource: "output_transcript_idle_with_post_output_rtp",
+  });
+});
+
+test("GPT-Live first audio does not use RTP received before the Live response", () => {
+  const timing = extractTiming({
+    provider: "gpt_live",
+    dataTrace: [],
+    consoleTrace: [
+      { timestampMs: 100, args: ["gpt_live_user_speech_end", { turn_id: "turn-1" }] },
+      { timestampMs: 400, args: ["gpt_live_response_started", { turn_id: "turn-1" }] },
+    ],
+    transcript: { finalEntries: [] },
+    assistant: { starts: [{ timestampMs: 400 }], backchannels: [] },
+    stateObservedAt: 300,
+    audioTrace: {
+      events: [],
+      stats: [
+        { timestampMs: 300, inboundRtp: [{ packetsReceived: 10, bytesReceived: 1_000 }] },
+        { timestampMs: 500, inboundRtp: [{ packetsReceived: 20, bytesReceived: 2_000 }] },
+      ],
+    },
+  });
+
+  expect(timing).toMatchObject({
+    firstAudio: 500,
+    firstAudioSource: "inbound_audio_rtp",
   });
 });
 
@@ -599,4 +712,55 @@ test("question progression is required only when the previous target was already
     beforeAnswer: { answerState: "CONFIRMED", confirmed: "回答" },
     beforeState: { currentTurnType: "PROBE" },
   })).toBe(false);
+});
+
+test("GPT-Live does not require a same-turn currentQuestionId transition", () => {
+  expect(questionAdvanceRequiredForTurn({
+    expectations: { questionAdvance: "required" },
+    engine: "gpt_live",
+    beforeQuestionId: "live-field-q1",
+    beforeAnswer: { answerState: "CONFIRMED", confirmed: "回答" },
+    beforeState: {},
+  })).toBe(false);
+});
+
+test("GPT-Live verifies the next question at the following answer-target boundary", () => {
+  const previousTurn = {
+    turn: 2,
+    interview: {
+      questionLifecycle: {
+        nextQuestionDetermination: {
+          expectedNextQuestionId: "live-field-q2",
+        },
+      },
+    },
+  };
+  expect(verifyLiveQuestionProgression({
+    previousTurn,
+    currentTurn: {
+      interview: {
+        questionLifecycle: {
+          statePersistenceRequest: { questionId: "live-field-q2" },
+        },
+      },
+    },
+  })).toMatchObject({
+    status: "VERIFIED",
+    expectedQuestionId: "live-field-q2",
+    observedQuestionId: "live-field-q2",
+  });
+  expect(verifyLiveQuestionProgression({
+    previousTurn,
+    currentTurn: {
+      interview: {
+        questionLifecycle: {
+          statePersistenceRequest: { questionId: "live-field-q1" },
+        },
+      },
+    },
+  })).toMatchObject({
+    status: "MISMATCH",
+    expectedQuestionId: "live-field-q2",
+    observedQuestionId: "live-field-q1",
+  });
 });

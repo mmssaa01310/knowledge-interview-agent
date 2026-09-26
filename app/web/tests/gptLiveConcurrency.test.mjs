@@ -260,6 +260,28 @@ test("response watchdog emits one wait notice and one continuation at most", asy
   app.advance(2500);
   app.advance(10000);
   app.advance(5000);
+  app.advance(5000);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
+  app.hook.stop();
+});
+
+test("watchdog gives one bounded delegation grace after sending a wait notice", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "待機案内後に遅れて評価される回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+
+  app.advance(2500);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("wait_notice")).length, 1);
+
+  // Two normal delegation waits are followed by one extra interval only
+  // because the Live wait notice has already been sent.
+  app.advance(2500);
+  app.advance(5000);
+  app.advance(5000);
+  assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 0);
+
+  app.advance(5000);
   assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
   app.hook.stop();
 });
@@ -332,6 +354,90 @@ test("a Live acknowledgement is allowed to finish while Responses delegation run
     app.sent.filter((event) => event.type === "session.instructions.append"
       && event.event_id?.startsWith("gpt_live_response_interrupt_")).length,
     0,
+  );
+  app.hook.stop();
+});
+
+test("the first user transcript interrupts an initial greeting that started before a turn", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.output_transcript.delta", delta: "最初のご案内です。" });
+  app.receive({ type: "session.input_transcript.delta", delta: "最初の回答です。" });
+
+  const interruptions = app.sent.filter((event) => (
+    event.type === "session.instructions.append"
+      && event.event_id?.startsWith("gpt_live_response_interrupt_")
+  ));
+  assert.equal(interruptions.length, 1);
+  assert.equal(interruptions[0].delegation_id, null);
+  app.hook.stop();
+});
+
+test("a pre-delegation Live acknowledgement is interrupted before the persisted-state resume", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "先行応答が残っている回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "session.output_transcript.delta", delta: "回答を確認しています。" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-pre-output", target: "responses" },
+    response_id: "response-pre-output",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-pre-output",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-pre-output",
+        arguments: JSON.stringify({
+          turn_id: "turn-pre-output", base_state_version: 1,
+          question_id: "question-1", answer_status: "ANSWERED",
+          covered_aspects: [], missing_aspects: [], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-pre-output",
+    response_id: "response-pre-output-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-pre-output-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-pre-output",
+    response_id: "response-pre-output-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-pre-output-continuation" },
+    },
+  });
+  app.advance(0);
+
+  assert.equal(
+    app.sent.some((event) => (
+      event.type === "session.instructions.append"
+        && event.event_id === "gpt_live_state_resume_call-pre-output_interrupt"
+    )),
+    true,
+    "a pre-delegation Live response must be interrupted before the state handoff",
+  );
+  app.receive({
+    type: "session.instructions.appended",
+    client_event_id: "gpt_live_state_resume_call-pre-output_interrupt",
+  });
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-pre-output").length,
+    1,
   );
   app.hook.stop();
 });
@@ -449,6 +555,86 @@ test("watchdog keeps the second delegation wait from racing a late handoff", asy
   app.hook.stop();
 });
 
+test("a late Delegation keeps one post-state Live resume without a second interrupt", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "watchdog後に評価される回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+
+  // No Delegation exists when the bounded watchdog expires, so the initial
+  // fallback response is emitted. The semantic handoff then arrives late.
+  app.advance(5000);
+  app.advance(5000);
+  app.advance(5000);
+  app.advance(5000);
+  const initialContinuation = app.sent.find((event) => (
+    event.type === "response.create"
+      && event.event_id?.startsWith("gpt_live_continuation_")
+  ));
+  assert.ok(initialContinuation);
+
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-late-recovery", target: "responses" },
+    response_id: "response-late-recovery",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-late-recovery",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-late-recovery",
+        arguments: JSON.stringify({
+          turn_id: "turn-late-recovery", base_state_version: 1,
+          question_id: "question-1", answer_status: "ANSWERED",
+          covered_aspects: [], missing_aspects: [], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-late-recovery",
+    response_id: "response-late-recovery-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-late-recovery-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-late-recovery",
+    response_id: "response-late-recovery-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-late-recovery-continuation" },
+    },
+  });
+  app.advance(0);
+
+  const interrupt = app.sent.filter((event) => (
+    event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-late-recovery_interrupt"
+  ));
+  assert.equal(interrupt.length, 0);
+  const resume = app.sent.filter((event) => (
+    event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-late-recovery"
+  ));
+  assert.equal(resume.length, 1);
+  assert.equal(
+    app.sent.filter((event) => event.type === "response.create"
+      && event.event_id?.startsWith("gpt_live_state_resume_call-late-recovery")).length,
+    0,
+    "a late watchdog race must not create a second semantic response",
+  );
+  app.hook.stop();
+});
+
 test("transcript idle boundary starts the watchdog when Live omits speech-end events", async () => {
   const app = setup();
   await app.hook.start();
@@ -468,6 +654,7 @@ test("transcript idle boundary starts the watchdog when Live omits speech-end ev
   app.advance(2500);
   assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 0);
   app.advance(10000);
+  app.advance(5000);
   app.advance(5000);
   assert.equal(app.sent.filter((event) => event.event_id?.includes("continuation")).length, 1);
   app.hook.stop();
@@ -522,6 +709,7 @@ test("watchdog starts a new turn after a previous Live response", async () => {
 
   app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.advance(5000);
   app.advance(5000);
   app.advance(5000);
   app.advance(5000);
@@ -736,10 +924,11 @@ test("post-delegation resume includes the latest checklist state for Live progre
   const stateContext = app.sent.find((event) => event.type === "session.thinking.append");
   assert.ok(stateContext);
   assert.match(stateContext.content, /question-1/);
-  assert.match(stateContext.content, /question-2/);
-  assert.match(stateContext.content, /"answer_state":"CONFIRMED"/);
-  assert.match(stateContext.content, /"answer_state":"UNANSWERED"/);
-  assert.match(stateContext.content, /"missing_required_items":\["役割"\]/);
+  assert.match(stateContext.content, /state_version=3/);
+  assert.match(stateContext.content, /covered_aspects=\["name","department","role"\]/);
+  assert.match(stateContext.content, /missing_aspects=\[\]/);
+  assert.doesNotMatch(stateContext.content, /checklist=/);
+  assert.ok(stateContext.content.length < 1000, "Live state context stays within the append payload budget");
   app.hook.stop();
 });
 
@@ -927,20 +1116,58 @@ test("standard function-call completion events update the interview state", asyn
   await app.hook.start();
   app.receive({ type: "session.input_transcript.delta", delta: "所属と役職です。" });
   app.receive({
-    type: "response.function_call_arguments.done",
+    type: "response.output_item.done",
     delegation_id: "delegation-standard-call",
-    name: "update_interview_state",
-    call_id: "call-standard-call",
-    arguments: JSON.stringify({
-      turn_id: "turn-standard-call", base_state_version: 1, question_id: "question-1",
-      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
-    }),
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-standard-call",
+      arguments: JSON.stringify({
+        turn_id: "turn-standard-call", base_state_version: 1, question_id: "question-1",
+        answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+      }),
+    },
   });
   await flush();
 
   assert.equal(app.stateRequests.length, 1);
   assert.equal(app.stateRequests[0].args[1].call_id, "call-standard-call");
   assert.equal(app.sent.filter((event) => event.type === "response.item.create").length, 1);
+  app.hook.stop();
+});
+
+test("function-call arguments completion alone does not persist before the output item is complete", async () => {
+  const app = setup();
+  await app.hook.start();
+  const argumentsValue = JSON.stringify({
+    turn_id: "turn-output-item-boundary", base_state_version: 1,
+    question_id: "question-1", answer_status: "ANSWERED",
+    covered_aspects: [], missing_aspects: [], evidence: [],
+  });
+
+  app.receive({
+    type: "response.function_call_arguments.done",
+    delegation_id: "delegation-output-item-boundary",
+    name: "update_interview_state",
+    call_id: "call-output-item-boundary",
+    arguments: argumentsValue,
+  });
+  await flush();
+  assert.equal(app.stateRequests.length, 0);
+
+  app.receive({
+    type: "response.output_item.done",
+    delegation_id: "delegation-output-item-boundary",
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-output-item-boundary",
+      arguments: argumentsValue,
+    },
+  });
+  await flush();
+  assert.equal(app.stateRequests.length, 1);
+  assert.equal(app.sent.filter((event) => event.type === "response.create").length, 1);
   app.hook.stop();
 });
 
@@ -954,25 +1181,31 @@ test("each Live assessment keeps the evaluator state version as its concurrency 
   }));
   await app.hook.start();
   app.receive({
-    type: "response.function_call_arguments.done",
+    type: "response.output_item.done",
     delegation_id: "delegation-version-1",
-    name: "update_interview_state",
-    call_id: "call-version-1",
-    arguments: JSON.stringify({
-      turn_id: "turn-version-1", base_state_version: 0, question_id: "question-1",
-      answer_status: "PARTIAL", covered_aspects: [], missing_aspects: [], evidence: [],
-    }),
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-version-1",
+      arguments: JSON.stringify({
+        turn_id: "turn-version-1", base_state_version: 0, question_id: "question-1",
+        answer_status: "PARTIAL", covered_aspects: [], missing_aspects: [], evidence: [],
+      }),
+    },
   });
   await flush();
   app.receive({
-    type: "response.function_call_arguments.done",
+    type: "response.output_item.done",
     delegation_id: "delegation-version-2",
-    name: "update_interview_state",
-    call_id: "call-version-2",
-    arguments: JSON.stringify({
-      turn_id: "turn-version-2", base_state_version: 0, question_id: "question-1",
-      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
-    }),
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-version-2",
+      arguments: JSON.stringify({
+        turn_id: "turn-version-2", base_state_version: 0, question_id: "question-1",
+        answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+      }),
+    },
   });
   await flush();
 
@@ -994,14 +1227,17 @@ test("a stale state response is returned to Live without rebasing the old assess
   });
   await app.hook.start();
   app.receive({
-    type: "response.function_call_arguments.done",
+    type: "response.output_item.done",
     delegation_id: "delegation-stale-retry",
-    name: "update_interview_state",
-    call_id: "call-stale-retry",
-    arguments: JSON.stringify({
-      turn_id: "turn-stale-retry", base_state_version: 0, question_id: "question-1",
-      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
-    }),
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-stale-retry",
+      arguments: JSON.stringify({
+        turn_id: "turn-stale-retry", base_state_version: 0, question_id: "question-1",
+        answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+      }),
+    },
   });
   await flush();
 
@@ -1018,14 +1254,17 @@ test("an in-flight Live state update cannot write into a restarted session", asy
   }));
   await app.hook.start();
   app.receive({
-    type: "response.function_call_arguments.done",
+    type: "response.output_item.done",
     delegation_id: "delegation-old-session",
-    name: "update_interview_state",
-    call_id: "call-old-session",
-    arguments: JSON.stringify({
-      turn_id: "turn-old-session", base_state_version: 0, question_id: "question-1",
-      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
-    }),
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-old-session",
+      arguments: JSON.stringify({
+        turn_id: "turn-old-session", base_state_version: 0, question_id: "question-1",
+        answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+      }),
+    },
   });
   await flush();
   assert.equal(app.stateRequests.length, 1);
@@ -1053,19 +1292,23 @@ test("standard function-call events correlate by response id when delegation id 
     response_id: "response-correlated",
   });
   app.receive({
-    type: "response.function_call_arguments.done",
+    type: "response.output_item.done",
     response_id: "response-correlated",
-    name: "update_interview_state",
-    call_id: "call-correlated",
-    arguments: JSON.stringify({
-      turn_id: "turn-correlated", base_state_version: 1, question_id: "question-1",
-      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
-    }),
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-correlated",
+      arguments: JSON.stringify({
+        turn_id: "turn-correlated", base_state_version: 1, question_id: "question-1",
+        answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+      }),
+    },
   });
   await flush();
 
   app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.advance(5000);
   app.advance(5000);
   app.advance(5000);
   app.advance(5000);
@@ -1115,14 +1358,17 @@ test("a state update error resumes Live without advancing the checklist", async 
   const app = setup(undefined, () => Promise.reject(new Error("state unavailable")));
   await app.hook.start();
   app.receive({
-    type: "response.function_call_arguments.done",
+    type: "response.output_item.done",
     delegation_id: "delegation-state-error",
-    name: "update_interview_state",
-    call_id: "call-state-error",
-    arguments: JSON.stringify({
-      turn_id: "turn-state-error", base_state_version: 0, question_id: "question-1",
-      answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
-    }),
+    item: {
+      type: "function_call",
+      name: "update_interview_state",
+      call_id: "call-state-error",
+      arguments: JSON.stringify({
+        turn_id: "turn-state-error", base_state_version: 0, question_id: "question-1",
+        answer_status: "ANSWERED", covered_aspects: [], missing_aspects: [], evidence: [],
+      }),
+    },
   });
   await flush();
 
