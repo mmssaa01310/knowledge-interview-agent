@@ -205,12 +205,24 @@ export function realBehaviorPlan({
   if (!selected.length) return [];
   const requested = Number(sessions);
   const count = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : selected.length;
-  return Array.from({ length: count }, (_, index) => ({
-    behavior: selected[index % selected.length],
-    variant: Math.floor(index / selected.length) % 3,
-    ordinal: index + 1,
-    fixtureText: realVoiceFixtureText(selected[index % selected.length], Math.floor(index / selected.length) % 3),
-  }));
+  return Array.from({ length: count }, (_, index) => {
+    const behavior = selected[index % selected.length];
+    // A multi-turn fixture directory is an ordered conversation, not a set
+    // of interchangeable opening utterances. When a run repeats one
+    // behavior (for example NORMAL x 3 sessions), every session must start
+    // from the first fixture so its question lifecycle is comparable. Keep
+    // rotation for a repeated behavior matrix with multiple behaviors, where
+    // a later pass may intentionally use another deterministic variant.
+    const variant = selected.length === 1
+      ? 0
+      : Math.floor(index / selected.length) % 3;
+    return {
+      behavior,
+      variant,
+      ordinal: index + 1,
+      fixtureText: realVoiceFixtureText(behavior, variant),
+    };
+  });
 }
 
 function behaviorExpectations(behavior, engine) {

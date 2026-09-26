@@ -3,6 +3,8 @@ import os
 
 
 DEFAULT_GPT_LIVE_RESPONSES_MODEL = "gpt-5.6-luna"
+DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID = "global.openai.gpt-5.6-luna"
+DEFAULT_QUESTION_DESIGN_MODEL_ID = DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,7 @@ class Settings:
     bedrock_temperature: float = float(os.getenv("BEDROCK_TEMPERATURE", "0.2"))
     structured_interview_model_id: str = os.getenv(
         "STRUCTURED_INTERVIEW_MODEL_ID",
-        "global.openai.gpt-5.6-luna",
+        DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID,
     )
     structured_interview_fast_path_enabled: bool = (
         os.getenv("STRUCTURED_INTERVIEW_FAST_PATH_ENABLED", "false").lower()
@@ -77,7 +79,7 @@ class Settings:
     )
     structured_interview_fast_model_id: str = os.getenv(
         "STRUCTURED_INTERVIEW_FAST_MODEL_ID",
-        "global.openai.gpt-5.6-luna",
+        DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID,
     )
     structured_interview_fast_reasoning_effort: str = os.getenv(
         "STRUCTURED_INTERVIEW_FAST_REASONING_EFFORT",
@@ -116,7 +118,7 @@ class Settings:
     )
     question_design_model_id: str = os.getenv(
         "QUESTION_DESIGN_MODEL_ID",
-        "global.openai.gpt-5.6-luna",
+        DEFAULT_QUESTION_DESIGN_MODEL_ID,
     )
     question_design_reasoning_effort: str = os.getenv(
         "QUESTION_DESIGN_REASONING_EFFORT",

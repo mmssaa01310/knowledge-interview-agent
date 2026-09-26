@@ -24,7 +24,10 @@ from ai_interviewer_api.agents.question_design.service import (
     run_question_design,
 )
 from ai_interviewer_api.auth.deps import UserContext
-from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.core.config import (
+    DEFAULT_QUESTION_DESIGN_MODEL_ID,
+    settings,
+)
 from ai_interviewer_api.models.interview_plan import STRUCTURED_INTERVIEW_MODEL_IDS
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest
 from ai_interviewer_api.services.question_design_retrieval import (
@@ -33,8 +36,6 @@ from ai_interviewer_api.services.question_design_retrieval import (
 from ai_interviewer_api.services.prior_knowledge import build_prior_knowledge_context
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_QUESTION_DESIGN_MODEL_ID = "global.openai.gpt-5.6-luna"
 
 
 def suggest_fields_with_bedrock(

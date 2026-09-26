@@ -9,11 +9,24 @@ import {
   gptLiveOutputPlaybackIdleStatus,
   harnessValidity,
   isGPTLiveInitialResponseReady,
+  realBehaviorPlan,
   questionAdvanced,
   questionAdvanceRequiredForTurn,
   questionAdvanceExpected,
   verifyLiveQuestionProgression,
 } from "./realVoiceRobustnessRunner.mjs";
+
+test("repeated NORMAL sessions restart the ordered fixture sequence", () => {
+  expect(realBehaviorPlan({
+    engine: "gpt_live",
+    behaviors: ["NORMAL"],
+    sessions: 3,
+  })).toEqual([
+    expect.objectContaining({ behavior: "NORMAL", variant: 0, ordinal: 1 }),
+    expect.objectContaining({ behavior: "NORMAL", variant: 0, ordinal: 2 }),
+    expect.objectContaining({ behavior: "NORMAL", variant: 0, ordinal: 3 }),
+  ]);
+});
 
 function validHarnessInputs() {
   const audioTrace = {
