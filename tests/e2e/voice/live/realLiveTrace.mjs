@@ -521,6 +521,25 @@ export async function installWavFixtureMicrophone(page, fixturePath) {
           audioContext.decodeAudioData(decodeBase64(encodedWav))
         )));
         const destination = audioContext.createMediaStreamDestination();
+        // Keep the WebRTC input timeline alive after a finite fixture ends.
+        // A MediaStreamTrack can remain `live` while the source has stopped
+        // producing RTP packets; that is not equivalent to a real microphone
+        // carrying silence. Mix a looping zero-valued buffer into the same
+        // destination so the test continues to send silent audio while the
+        // Live/Responses handoff is being evaluated.
+        const silenceBuffer = audioContext.createBuffer(
+          1,
+          Math.max(1, Math.round(audioContext.sampleRate)),
+          audioContext.sampleRate,
+        );
+        const silenceSource = audioContext.createBufferSource();
+        silenceSource.buffer = silenceBuffer;
+        silenceSource.loop = true;
+        silenceSource.connect(destination);
+        silenceSource.start(0);
+        recordFixtureEvent("wav_fixture_silence_started", {
+          sampleRate: audioContext.sampleRate,
+        });
         let source = null;
         const createSource = () => {
           source = audioContext.createBufferSource();
