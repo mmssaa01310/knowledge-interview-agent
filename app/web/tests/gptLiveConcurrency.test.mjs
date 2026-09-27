@@ -320,9 +320,10 @@ test("new transcript interrupts an active Live output once before the next turn"
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
   app.receive({ type: "session.output_transcript.delta", delta: "次の質問です。" });
 
-  // GPT-Live can omit speech_started while the browser already has the next
-  // utterance. The first input transcript must still interrupt the stale
-  // response before the new Responses handoff returns to Live.
+  // The provider speech boundary interrupts the stale response before the
+  // new Responses handoff returns to Live. A transcript delta alone is only
+  // an observation and must not add a second application boundary.
+  app.receive({ type: "input_audio_buffer.speech_started" });
   app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
   app.receive({ type: "session.input_transcript.delta", delta: "続きです。" });
 
@@ -331,6 +332,93 @@ test("new transcript interrupts an active Live output once before the next turn"
   assert.equal(interruptions.length, 1);
   assert.equal(interruptions[0].delegation_id, null);
   assert.match(interruptions[0].event_id, /^gpt_live_response_interrupt_/);
+  app.hook.stop();
+});
+
+test("a late PARTIAL handoff resumes without a second interruption boundary", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "前の回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "session.output_transcript.delta", delta: "前の質問です。" });
+  app.receive({ type: "response.done" });
+
+  // The previous turn has ended, but its activeTurn record is still present.
+  // The next input must detach that record before a late Responses delegation
+  // can produce Live output for the new transcript revision.
+  app.receive({ type: "session.input_transcript.delta", delta: "宮崎です。" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-partial-new-turn", target: "responses" },
+    response_id: "response-partial-new-turn",
+  });
+  app.receive({ type: "session.output_transcript.delta", delta: "はい、承知しました。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+
+  const liveInterrupts = app.sent.filter((event) => event.type === "session.instructions.append"
+    && event.event_id?.startsWith("gpt_live_response_interrupt_"));
+  assert.equal(
+    liveInterrupts.length,
+    0,
+    "a completed prior Live response does not need a new interruption boundary",
+  );
+
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-partial-new-turn",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-partial-new-turn",
+        arguments: JSON.stringify({
+          turn_id: "turn-partial-new-turn", base_state_version: 1,
+          question_id: "question-1", answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          missing_aspects: ["department"], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-partial-new-turn",
+    response_id: "response-partial-new-turn-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-partial-new-turn-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-partial-new-turn",
+    response_id: "response-partial-new-turn-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-partial-new-turn-continuation" },
+    },
+  });
+  app.advance(0);
+  app.advance(1000);
+
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-partial-new-turn_interrupt").length,
+    0,
+    "the persisted Responses result must not add a second handoff boundary",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.thinking.append"
+      && event.event_id === "gpt_live_state_resume_call-partial-new-turn_state").length,
+    1,
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-partial-new-turn").length,
+    1,
+  );
   app.hook.stop();
 });
 
@@ -358,22 +446,222 @@ test("a Live acknowledgement is allowed to finish while Responses delegation run
   app.hook.stop();
 });
 
-test("the first user transcript interrupts an initial greeting that started before a turn", async () => {
+test("the first user transcript does not add an application boundary to the initial greeting", async () => {
   const app = setup();
   await app.hook.start();
   app.receive({ type: "session.output_transcript.delta", delta: "最初のご案内です。" });
+  app.receive({ type: "input_audio_buffer.speech_started" });
   app.receive({ type: "session.input_transcript.delta", delta: "最初の回答です。" });
 
   const interruptions = app.sent.filter((event) => (
     event.type === "session.instructions.append"
       && event.event_id?.startsWith("gpt_live_response_interrupt_")
   ));
-  assert.equal(interruptions.length, 1);
-  assert.equal(interruptions[0].delegation_id, null);
+  assert.equal(interruptions.length, 0);
   app.hook.stop();
 });
 
-test("a pre-delegation Live acknowledgement is interrupted before the persisted-state resume", async () => {
+test("an input interruption is followed by one State resume for a PARTIAL handoff", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "最初の回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "session.output_transcript.delta", delta: "次の質問です。" });
+  app.receive({ type: "input_audio_buffer.speech_started" });
+  app.receive({ type: "session.input_transcript.delta", delta: "宮崎です。" });
+
+  const inputInterrupt = app.sent.find((event) => (
+    event.type === "session.instructions.append"
+      && event.event_id?.startsWith("gpt_live_response_interrupt_")
+  ));
+  assert.ok(inputInterrupt);
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-next-partial", target: "responses" },
+    response_id: "response-next-partial",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-next-partial",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-next-partial",
+        arguments: JSON.stringify({
+          turn_id: "turn-next-partial", base_state_version: 1,
+          question_id: "question-1", answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          missing_aspects: ["department"], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  assert.equal(app.stateRequests.length, 1);
+  assert.equal(app.stateRequests[0].args[1].answer_status, "PARTIAL");
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-next-partial",
+    response_id: "response-next-partial-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-next-partial-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-next-partial",
+    response_id: "response-next-partial-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-next-partial-continuation" },
+    },
+  });
+  app.advance(0);
+
+  assert.equal(
+    app.sent.filter((event) => (
+      (event.type === "session.thinking.append"
+        && event.event_id === "gpt_live_state_resume_call-next-partial_state")
+      || (event.type === "session.commentary.append"
+        && event.event_id === "gpt_live_state_resume_call-next-partial")
+    )).length,
+    0,
+    "State resume waits for the requested input boundary ACK",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-next-partial_interrupt").length,
+    0,
+    "State resume waits for the input boundary ACK",
+  );
+  app.receive({
+    type: "session.instructions.appended",
+    client_event_id: inputInterrupt.event_id,
+  });
+  app.advance(1000);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-next-partial_interrupt").length,
+    0,
+    "the State handoff does not add a second interruption boundary",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.thinking.append"
+      && event.event_id === "gpt_live_state_resume_call-next-partial_state").length,
+    1,
+    "State context is sent after the input boundary ACK",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-next-partial").length,
+    1,
+  );
+  app.hook.stop();
+});
+
+test("a transcript-only input boundary is followed by one State resume", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "最初の回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({ type: "session.output_transcript.delta", delta: "前の質問です。" });
+
+  // Some browser sessions omit speech_started. When an existing Live output
+  // is still active, the first transcript delta supplies the one input-side
+  // boundary so the next user turn can be processed.
+  app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
+  const inputInterrupt = app.sent.find((event) => event.type === "session.instructions.append"
+    && event.event_id?.startsWith("gpt_live_response_interrupt_"));
+  assert.ok(inputInterrupt);
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-transcript-only", target: "responses" },
+    response_id: "response-transcript-only",
+  });
+  // A delayed fragment from the old Live response can arrive after the new
+  // transcript starts. It must not create a second input-side boundary.
+  app.receive({ type: "session.output_transcript.delta", delta: "遅延した前の応答です。" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-transcript-only",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-transcript-only",
+        arguments: JSON.stringify({
+          turn_id: "turn-transcript-only", base_state_version: 1,
+          question_id: "question-1", answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "name", evidence: "次の回答です" }],
+          missing_aspects: ["department"], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-transcript-only",
+    response_id: "response-transcript-only-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-transcript-only-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-transcript-only",
+    response_id: "response-transcript-only-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-transcript-only-continuation" },
+    },
+  });
+  app.advance(0);
+
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id?.startsWith("gpt_live_response_interrupt_")).length,
+    1,
+    "the transcript boundary is sent once for the new user utterance",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-transcript-only_interrupt").length,
+    0,
+    "State resume does not add a second interruption boundary",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-transcript-only").length,
+    0,
+  );
+  app.receive({
+    type: "session.instructions.appended",
+    client_event_id: inputInterrupt.event_id,
+  });
+  app.advance(1000);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-transcript-only_interrupt").length,
+    0,
+    "State resume keeps the single transcript boundary",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-transcript-only").length,
+    1,
+  );
+  app.hook.stop();
+});
+
+test("a pre-delegation Live acknowledgement is drained before persisted-state resume", async () => {
   const app = setup();
   await app.hook.start();
   app.receive({ type: "session.input_transcript.delta", delta: "先行応答が残っている回答です。" });
@@ -421,22 +709,168 @@ test("a pre-delegation Live acknowledgement is interrupted before the persisted-
     },
   });
   app.advance(0);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-pre-output").length,
+    0,
+  );
+  app.advance(1000);
 
   assert.equal(
     app.sent.some((event) => (
       event.type === "session.instructions.append"
         && event.event_id === "gpt_live_state_resume_call-pre-output_interrupt"
     )),
-    true,
-    "a pre-delegation Live response must be interrupted before the state handoff",
+    false,
+    "an unfinished Live response does not get a second handoff boundary",
   );
-  app.receive({
-    type: "session.instructions.appended",
-    client_event_id: "gpt_live_state_resume_call-pre-output_interrupt",
-  });
   assert.equal(
     app.sent.filter((event) => event.type === "session.commentary.append"
       && event.event_id === "gpt_live_state_resume_call-pre-output").length,
+    1,
+  );
+  app.hook.stop();
+});
+
+test("late output during delegation keeps the State resume correlated", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "中断後に遅延出力が届く回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-stale-output", target: "responses" },
+    response_id: "response-stale-output",
+  });
+
+  // These are Live output fragments that arrive while the Responses
+  // delegation is pending. They are not a new user utterance, so they must
+  // not cause an input-side interruption by themselves.
+  app.receive({ type: "session.output_transcript.delta", delta: "確認中です。" });
+  app.receive({ type: "session.output_transcript.delta", delta: "遅延した古い出力です。" });
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id?.startsWith("gpt_live_response_interrupt_")).length,
+    0,
+  );
+
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-stale-output",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-stale-output",
+        arguments: JSON.stringify({
+          turn_id: "turn-stale-output", base_state_version: 1,
+          question_id: "question-1", answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          missing_aspects: ["department"], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-stale-output",
+    response_id: "response-stale-output-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-stale-output-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-stale-output",
+    response_id: "response-stale-output-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-stale-output-continuation" },
+    },
+  });
+  app.advance(0);
+  app.advance(1000);
+
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-stale-output_interrupt").length,
+    0,
+    "the state handoff does not add a second boundary for the still-active response",
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-stale-output").length,
+    1,
+  );
+  app.hook.stop();
+});
+
+test("post-delegation Live output does not discard the pending State resume", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "不足情報を確認してください。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-post-output", target: "responses" },
+    response_id: "response-post-output",
+  });
+  app.receive({ type: "session.output_transcript.delta", delta: "確認中です。" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-post-output",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-post-output",
+        arguments: JSON.stringify({
+          turn_id: "turn-post-output", base_state_version: 1,
+          question_id: "question-1", answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          missing_aspects: ["department"], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-post-output",
+    response_id: "response-post-output-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-post-output-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-post-output",
+    response_id: "response-post-output-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-post-output-continuation" },
+    },
+  });
+  app.advance(0);
+  app.receive({
+    type: "session.output_transcript.delta",
+    delta: "保存後の短い接続表現です。",
+  });
+  app.advance(1000);
+
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.thinking.append"
+      && event.event_id === "gpt_live_state_resume_call-post-output_state").length,
+    1,
+  );
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-post-output").length,
     1,
   );
   app.hook.stop();
@@ -555,23 +989,35 @@ test("watchdog keeps the second delegation wait from racing a late handoff", asy
   app.hook.stop();
 });
 
-test("a late Delegation keeps one post-state Live resume without a second interrupt", async () => {
+test("a late PARTIAL Delegation keeps the watchdog bounded and sends one Live recovery", async () => {
   const app = setup();
   await app.hook.start();
-  app.receive({ type: "session.input_transcript.delta", delta: "watchdog後に評価される回答です。" });
+  app.receive({ type: "session.input_transcript.delta", delta: "宮崎です" });
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
 
-  // No Delegation exists when the bounded watchdog expires, so the initial
-  // fallback response is emitted. The semantic handoff then arrives late.
-  app.advance(5000);
+  // Reproduce the race: the wait notice is spoken first, the Responses
+  // delegation is still late, and the bounded watchdog starts one Live-only
+  // recovery before the delegation is created. It must not use response.create
+  // because that command is for the Responses backend, not Live speech.
+  app.advance(2500);
+  app.receive({
+    type: "session.output_transcript.delta",
+    delta: "少々お待ちください。",
+  });
+  app.advance(2500);
   app.advance(5000);
   app.advance(5000);
   app.advance(5000);
   const initialContinuation = app.sent.find((event) => (
-    event.type === "response.create"
+    event.type === "session.commentary.append"
       && event.event_id?.startsWith("gpt_live_continuation_")
   ));
   assert.ok(initialContinuation);
+  assert.equal(
+    app.sent.filter((event) => event.type === "response.create"
+      && event.event_id?.startsWith("gpt_live_continuation_")).length,
+    0,
+  );
 
   app.receive({
     type: "session.delegation.created",
@@ -589,8 +1035,10 @@ test("a late Delegation keeps one post-state Live resume without a second interr
         call_id: "call-late-recovery",
         arguments: JSON.stringify({
           turn_id: "turn-late-recovery", base_state_version: 1,
-          question_id: "question-1", answer_status: "ANSWERED",
-          covered_aspects: [], missing_aspects: [], evidence: [],
+          question_id: "question-1", answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          missing_aspects: ["department"],
+          evidence: [{ aspect_id: "name", text: "宮崎です" }],
         }),
       },
     },
@@ -620,17 +1068,204 @@ test("a late Delegation keeps one post-state Live resume without a second interr
     event.type === "session.instructions.append"
       && event.event_id === "gpt_live_state_resume_call-late-recovery_interrupt"
   ));
-  assert.equal(interrupt.length, 0);
+  assert.equal(
+    interrupt.length,
+    0,
+    "a wait notice is not an active interview response and needs no second boundary",
+  );
+  app.advance(0);
   const resume = app.sent.filter((event) => (
     event.type === "session.commentary.append"
       && event.event_id === "gpt_live_state_resume_call-late-recovery"
   ));
   assert.equal(resume.length, 1);
+  assert.equal(app.stateRequests[0].args[1].answer_status, "PARTIAL");
   assert.equal(
     app.sent.filter((event) => event.type === "response.create"
       && event.event_id?.startsWith("gpt_live_state_resume_call-late-recovery")).length,
     0,
     "a late watchdog race must not create a second semantic response",
+  );
+  app.hook.stop();
+});
+
+test("a watchdog Live recovery is not treated as Live output before a Live delta", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "保存待ちのPARTIAL回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+
+  // The bounded watchdog uses a Live commentary recovery when no delegation
+  // has been observed. Sending response.create here would start/continue the
+  // Responses backend instead of requesting a spoken Live response.
+  app.advance(2500);
+  app.advance(2500);
+  app.advance(5000);
+  app.advance(5000);
+  app.advance(5000);
+  assert.ok(app.sent.some((event) => (
+    event.type === "session.commentary.append"
+      && event.event_id?.startsWith("gpt_live_continuation_")
+  )));
+  assert.equal(app.sent.filter((event) => (
+    event.type === "response.create"
+      && event.event_id?.startsWith("gpt_live_continuation_")
+  )).length, 0);
+
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-watchdog-only", target: "responses" },
+    response_id: "response-watchdog-only",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-watchdog-only",
+    event: {
+      type: "response.output_item.done",
+      item: {
+        type: "function_call",
+        name: "update_interview_state",
+        call_id: "call-watchdog-only",
+        arguments: JSON.stringify({
+          turn_id: "turn-watchdog-only", base_state_version: 1,
+          question_id: "question-1", answer_status: "PARTIAL",
+          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          missing_aspects: ["department"], evidence: [],
+        }),
+      },
+    },
+  });
+  await flush();
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-watchdog-only",
+    response_id: "response-watchdog-only-continuation",
+    event: {
+      type: "response.created",
+      response: { id: "response-watchdog-only-continuation" },
+    },
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-watchdog-only",
+    response_id: "response-watchdog-only-continuation",
+    event: {
+      type: "response.completed",
+      response: { id: "response-watchdog-only-continuation" },
+    },
+  });
+  app.advance(0);
+
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-watchdog-only_interrupt").length,
+    0,
+    "a Responses-only event must not create a fake Live interruption",
+  );
+  assert.ok(app.sent.some((event) => (
+    event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_state_resume_call-watchdog-only"
+  )));
+  app.hook.stop();
+});
+
+test("a no-state delegation resumes behind one Live boundary when an old output is active", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "評価結果を待っている回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-without-state-tool", target: "responses" },
+    response_id: "response-without-state-tool",
+  });
+  app.receive({ type: "session.output_transcript.delta", delta: "確認中です。" });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-without-state-tool",
+    response_id: "response-without-state-tool",
+    event: {
+      type: "response.completed",
+      response: { id: "response-without-state-tool" },
+    },
+  });
+
+  const boundary = app.sent.filter((event) => (
+    event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_continuation_gpt-live-turn-1-1_interrupt"
+  ));
+  assert.equal(boundary.length, 1);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_continuation_gpt-live-turn-1-1").length,
+    0,
+    "the speakable continuation waits for the boundary ACK",
+  );
+  app.advance(1000);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_continuation_gpt-live-turn-1-1").length,
+    1,
+    "a missing Live boundary ACK must not leave a no-state delegation silent",
+  );
+  assert.equal(app.sent.filter((event) => event.type === "response.create").length, 0);
+
+  app.receive({
+    type: "session.instructions.appended",
+    client_event_id: "gpt_live_continuation_gpt-live-turn-1-1_interrupt",
+  });
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_continuation_gpt-live-turn-1-1").length,
+    1,
+  );
+  app.hook.stop();
+});
+
+test("a protocol response without user-facing output does not block no-state recovery", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "まだ音声が始まっていない回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "response.created",
+    response: { id: "live-response-created-only" },
+  });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "delegation-created-without-state", target: "responses" },
+    response_id: "responses-without-state",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "delegation-created-without-state",
+    response_id: "responses-without-state",
+    event: {
+      type: "response.completed",
+      response: { id: "responses-without-state" },
+    },
+  });
+
+  const boundary = app.sent.filter((event) => (
+    event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_continuation_gpt-live-turn-1-1_interrupt"
+  ));
+  assert.equal(boundary.length, 1);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_continuation_gpt-live-turn-1-1").length,
+    0,
+    "the recovery waits for the single Live boundary ACK",
+  );
+
+  app.receive({
+    type: "session.instructions.appended",
+    client_event_id: "gpt_live_continuation_gpt-live-turn-1-1_interrupt",
+  });
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.commentary.append"
+      && event.event_id === "gpt_live_continuation_gpt-live-turn-1-1").length,
+    1,
   );
   app.hook.stop();
 });
@@ -707,8 +1342,18 @@ test("watchdog starts a new turn after a previous Live response", async () => {
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
   app.receive({ type: "response.created", response_id: "response-1" });
 
+  app.receive({ type: "input_audio_buffer.speech_started" });
   app.receive({ type: "session.input_transcript.delta", delta: "次の回答です。" });
+  const inputInterrupt = app.sent.find((event) => (
+    event.type === "session.instructions.append"
+      && event.event_id?.startsWith("gpt_live_response_interrupt_")
+  ));
+  assert.ok(inputInterrupt);
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "session.instructions.appended",
+    client_event_id: inputInterrupt.event_id,
+  });
   app.advance(5000);
   app.advance(5000);
   app.advance(5000);
@@ -830,6 +1475,12 @@ test("a persisted Responses result steers Live without duplicating the backend c
   app.advance(0);
   assert.equal(app.sent.filter((event) => event.type === "response.create").length, 1);
   assert.equal(app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length, 0);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.instructions.append"
+      && event.event_id === "gpt_live_state_resume_call-resume_interrupt").length,
+    0,
+    "the persisted-state handoff uses one direct Live update",
+  );
   assert.equal(
     app.sent.find((event) => event.event_id === "gpt_live_state_resume_call-resume")?.type,
     "session.commentary.append",
@@ -985,6 +1636,12 @@ test("a missing Live steering acknowledgement is retried once without duplicatin
   assert.equal(resumeEvents().length, 1);
   app.advance(1);
   assert.equal(resumeEvents().length, 2);
+  assert.equal(
+    app.sent.filter((event) => event.type === "session.thinking.append"
+      && event.event_id?.startsWith("gpt_live_state_resume_call-retry_state")).length,
+    2,
+    "the private State context is retried together with the spoken continuation",
+  );
   assert.equal(app.sent.filter((event) => event.type === "response.create").length, 1);
 
   app.receive({
@@ -1047,14 +1704,18 @@ test("a Live steering acknowledgement does not suppress retry before user-facing
   ));
   assert.equal(resumeEvents().length, 1);
 
-  app.receive({
-    type: "session.commentary.appended",
-    client_event_id: "gpt_live_state_resume_call-ack-no-output",
-  });
+  // A delayed output fragment before the commentary ACK is still ambiguous;
+  // it must not cancel the bounded retry or count as the post-handoff answer.
+  app.receive({ type: "session.output_transcript.delta", delta: "古い応答の遅延断片です。" });
   app.advance(999);
   assert.equal(resumeEvents().length, 1);
   app.advance(1);
   assert.equal(resumeEvents().length, 2);
+
+  app.receive({
+    type: "session.commentary.appended",
+    client_event_id: "gpt_live_state_resume_call-ack-no-output",
+  });
   assert.equal(app.sent.filter((event) => event.type === "response.create").length, 1);
 
   // Only an actual Live response start cancels the bounded recovery retry.
@@ -1571,7 +2232,34 @@ test("a completed delegation without a state tool does not block continuation", 
   });
 
   app.advance(5000);
-  assert.equal(app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length, 1);
+  const continuation = app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_"));
+  assert.equal(continuation.length, 1);
+  assert.equal(continuation[0].type, "session.commentary.append");
+  assert.equal(continuation[0].delegation_id, null);
+  assert.equal(app.sent.filter((event) => event.type === "response.create").length, 0);
+  app.hook.stop();
+});
+
+test("a protocol-only Live response is recoverable when no delegation is observed", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "Delegationが届かない回答です。" });
+  app.receive({ type: "session.input_audio_buffer.speech_stopped" });
+  app.receive({
+    type: "response.created",
+    response: { id: "live-response-created-without-delegation" },
+  });
+
+  app.advance(5000);
+  app.advance(5000);
+  app.advance(5000);
+  app.advance(5000);
+
+  const continuation = app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_"));
+  assert.equal(continuation.length, 1);
+  assert.equal(continuation[0].type, "session.commentary.append");
+  assert.equal(continuation[0].delegation_id, null);
+  assert.equal(app.sent.filter((event) => event.type === "response.create").length, 0);
   app.hook.stop();
 });
 

@@ -51,6 +51,16 @@ export const REPORT_FAILURE_TYPES = Object.freeze([
   "DATACHANNEL_ERROR",
   "WEBSOCKET_ERROR",
   "ASSISTANT_RESPONSE_MISSING",
+  "CONVERSATION_QUALITY_FAILURE",
+  "EXPECTATION_FAILURE",
+  "PRODUCT_FAILURE",
+]);
+
+export const REPORT_FAILURE_CATEGORIES = Object.freeze([
+  "TEST_INFRA_FAILURE",
+  "PRODUCT_FAILURE",
+  "CONVERSATION_QUALITY_FAILURE",
+  "EXPECTATION_FAILURE",
 ]);
 
 export const REPORT_BEHAVIOR_INFO = Object.freeze({
@@ -174,6 +184,18 @@ export const REPORT_FAILURE_INFO = Object.freeze({
   ASSISTANT_RESPONSE_MISSING: {
     label: "AIの本応答がない",
     description: "ユーザー発話後にAIの本応答開始イベントを確認できません。",
+  },
+  CONVERSATION_QUALITY_FAILURE: {
+    label: "会話品質の失敗",
+    description: "決定論的な通信・保存条件は成立しましたが、セッション後の意味評価で会話品質に問題がありました。",
+  },
+  EXPECTATION_FAILURE: {
+    label: "期待結果の失敗",
+    description: "テストシナリオで定義した期待条件を満たしませんでした。",
+  },
+  PRODUCT_FAILURE: {
+    label: "プロダクト動作の失敗",
+    description: "テスト基盤の問題ではなく、インタビュー処理の期待動作を満たしませんでした。",
   },
   ERROR: {
     label: "未分類のエラー",
@@ -367,7 +389,11 @@ function turnIssues(turn) {
     turn?.expectationViolations,
     turn?.failureAnalysis?.rootFailure,
     turn?.failureAnalysis?.cascadeFailures,
-    turn?.harnessGate?.classification === "TEST_INFRA_FAILURE" ? ["TEST_INFRA_FAILURE"] : [],
+    turn?.failureAnalysis?.classification
+      ? [turn.failureAnalysis.classification]
+      : (turn?.harnessGate?.classification === "TEST_INFRA_FAILURE"
+        ? ["TEST_INFRA_FAILURE"]
+        : []),
   ];
   return unique(sources.flatMap((items) => array(items).map(issueCode))).filter(Boolean);
 }
@@ -383,6 +409,7 @@ function normalizeTurn(raw, {
   const interview = isObject(source.interview) ? source.interview : {};
   const response = isObject(source.response) ? source.response : {};
   const hardGate = isObject(source.hardGate) ? source.hardGate : {};
+  const harnessGate = isObject(source.harnessGate) ? source.harnessGate : {};
   const transcription = isObject(source.transcription) ? source.transcription : {};
   const behavior = normalizeBehavior(
     source.behavior ?? source.nextUserBehavior ?? defaultBehavior,
@@ -425,6 +452,19 @@ function normalizeTurn(raw, {
   const observed = source.observed ?? hardGate.observed ?? null;
   const expected = source.expected ?? source.expectedConditions ?? hardGate.expectedConditions ?? expectations;
   const realTiming = source.realTiming ?? source.timing ?? source.latency ?? null;
+  const failureAnalysis = isObject(source.failureAnalysis)
+    ? { ...source.failureAnalysis }
+    : null;
+  if (failureAnalysis?.classification === "TEST_INFRA_FAILURE"
+    && failureAnalysis.rootFailure === "ASSISTANT_RESPONSE_MISSING"
+    && harnessGate?.checks?.sessionEstablished
+    && harnessGate?.checks?.microphoneTrackReady
+    && harnessGate?.checks?.audioActuallySent
+    && harnessGate?.checks?.speechDetected
+    && harnessGate?.checks?.transcriptReceived
+    && harnessGate?.checks?.atLeastOneTurnCommitted) {
+    failureAnalysis.classification = "PRODUCT_FAILURE";
+  }
   return {
     ...source,
     sessionId: source.sessionId ?? sessionId ?? null,
@@ -445,6 +485,8 @@ function normalizeTurn(raw, {
     expectations,
     observed,
     hardGate,
+    harnessGate,
+    failureAnalysis,
     response,
     transcription,
     realTiming,
@@ -553,6 +595,10 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
         path: defaults.path ?? null,
         testedBehaviors: [...array(defaults.testedBehaviors)],
         liveApiUsed: Boolean(defaults.liveApiUsed),
+        liveModel: defaults.liveModel ?? null,
+        responsesModels: [...array(defaults.responsesModels)],
+        semanticJudge: defaults.semanticJudge ?? null,
+        failureType: defaults.failureType ?? null,
         transcriptSource: defaults.transcriptSource ?? null,
         engine: defaults.engine ?? defaults.provider ?? null,
         provider: defaults.provider ?? defaults.engine ?? null,
@@ -570,6 +616,13 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
         error: current.error ?? defaults.error ?? null,
         path: current.path ?? defaults.path ?? null,
         liveApiUsed: current.liveApiUsed || Boolean(defaults.liveApiUsed),
+        liveModel: current.liveModel ?? defaults.liveModel ?? null,
+        responsesModels: unique([
+          ...array(current.responsesModels),
+          ...array(defaults.responsesModels),
+        ]),
+        semanticJudge: current.semanticJudge ?? defaults.semanticJudge ?? null,
+        failureType: current.failureType ?? defaults.failureType ?? null,
         transcriptSource: current.transcriptSource ?? defaults.transcriptSource ?? null,
         engine: current.engine ?? defaults.engine ?? defaults.provider ?? null,
         provider: current.provider ?? defaults.provider ?? defaults.engine ?? null,
@@ -645,6 +698,9 @@ export function loadVoiceRunData({ runDir, runId = null } = {}) {
       transcriptSource: snapshot.transcriptSource,
       engine: snapshot.engine ?? snapshot.provider,
       provider: snapshot.provider ?? snapshot.engine,
+      liveModel: snapshot.liveModel ?? null,
+      responsesModels: snapshot.responsesModels ?? [],
+      semanticJudge: snapshot.semanticJudge ?? null,
       sourcePath: filePath,
     };
     const snapshotEvidence = evidenceMap.get(snapshot.sessionId) ?? null;
@@ -836,11 +892,17 @@ function rawMetricSummary(metrics, level, name) {
 }
 
 function qualityValue(turn, key) {
-  const source = turn?.conversationQuality
+  return qualityValueFromSource(
+    turn?.conversationQuality
     ?? turn?.llmJudge
     ?? turn?.judge
     ?? turn?.quality
-    ?? turn?.semanticJudge;
+    ?? turn?.semanticJudge,
+    key,
+  );
+}
+
+function qualityValueFromSource(source, key) {
   if (!isObject(source) || source[key] === undefined) return null;
   return boolean(source[key], null);
 }
@@ -877,6 +939,12 @@ function buildFailureRecords(data, sessions) {
   const seen = new Set();
   const add = (raw, session, turn, issue) => {
     const issueType = failureTypeForIssue(issue ?? raw?.issueType ?? raw?.type ?? raw?.error);
+    const derivedFailureAnalysis = turn?.failureAnalysis ?? raw?.failureAnalysis ?? null;
+    const derivedCategory = derivedFailureAnalysis?.classification
+      ?? raw?.failureCategory
+      ?? raw?.category
+      ?? session?.failureType
+      ?? null;
     const key = [session?.sessionId, turn?.turn ?? raw?.turn ?? null, issueType].join("|");
     if (seen.has(key)) return;
     seen.add(key);
@@ -905,9 +973,14 @@ function buildFailureRecords(data, sessions) {
         turn?.judgeReason,
         turn?.llmJudge?.reason,
         turn?.semanticJudge?.reason,
+        session?.semanticJudge?.result?.reason,
+        session?.semanticJudge?.reason,
       ),
       harnessGate: raw?.harnessGate ?? turn?.harnessGate ?? null,
-      failureAnalysis: raw?.failureAnalysis ?? turn?.failureAnalysis ?? null,
+      failureAnalysis: derivedFailureAnalysis,
+      failureCategory: firstText(
+        derivedCategory,
+      ),
       timeline: raw?.timeline ?? turn?.timeline ?? [],
       evidence: raw?.evidence ?? session?.evidence ?? null,
       raw,
@@ -917,6 +990,9 @@ function buildFailureRecords(data, sessions) {
   for (const raw of data.explicitFailures) {
     const session = sessions.find((item) => item.sessionId === raw?.sessionId);
     const turn = session?.turns.find((item) => item.turn === number(raw?.turn, null));
+    // The runner already records hard-gate, root, and cascade evidence on the
+    // concrete turn. Do not count a generated failures.json copy again.
+    if (turn?.failureAnalysis && turn?.hardGate) continue;
     add(raw, session, turn, raw?.issueType ?? raw?.type ?? raw?.error);
   }
   for (const session of sessions) {
@@ -924,7 +1000,12 @@ function buildFailureRecords(data, sessions) {
       for (const issue of turn.issues) add({}, session, turn, issue);
     }
     if (sessionStatus(session) === "FAIL" && !session.turns.some((turn) => turn.status === "FAIL")) {
-      add({ error: session.error }, session, null, session.error || "ERROR");
+      add(
+        { error: session.failureType || session.error },
+        session,
+        null,
+        session.failureType || session.error || "ERROR",
+      );
     }
   }
   return result;
@@ -1050,6 +1131,16 @@ function buildQuality(sessions, metrics) {
     passRate: null,
   }]));
   for (const session of sessions) {
+    const sessionJudge = session.semanticJudge?.result ?? session.semanticJudge;
+    if (session.semanticJudge?.status === "evaluated" && isObject(sessionJudge)) {
+      for (const key of QUALITY_METRICS) {
+        const value = qualityValueFromSource(sessionJudge, key);
+        if (value === null) continue;
+        result[key].count += 1;
+        if (value) result[key].pass += 1;
+        else result[key].fail += 1;
+      }
+    }
     for (const turn of session.turns) {
       for (const key of QUALITY_METRICS) {
         const value = qualityValue(turn, key);
@@ -1104,8 +1195,9 @@ function buildUsage(data, sessions) {
   );
   const judgeCalls = number(
     totals.llmJudgeCalls ?? counters.llmJudgeCalls,
-    sessions.flatMap((session) => session.turns)
-      .filter((turn) => turn.llmJudge?.called || turn.semanticJudge?.called).length,
+    sessions.filter((session) => session.semanticJudge?.called).length
+      + sessions.flatMap((session) => session.turns)
+        .filter((turn) => turn.llmJudge?.called || turn.semanticJudge?.called).length,
   );
   const gptLiveSessions = sessions.filter((session) => session.level === 3 || session.liveApiUsed).length;
   const transcribeUsage = totals.transcribeUsage
@@ -1116,6 +1208,14 @@ function buildUsage(data, sessions) {
     ?? data.summary?.usage?.polly
     ?? data.metrics?.usage?.polly
     ?? null;
+  const responsesModels = unique([
+    ...array(data.summary?.responsesModels),
+    ...sessions.flatMap((session) => array(session.responsesModels)),
+  ]);
+  const liveModels = unique([
+    ...array(data.summary?.liveModels),
+    ...sessions.map((session) => session.liveModel).filter(Boolean),
+  ]);
   return {
     jevCalls,
     jevCacheHits: cacheHits,
@@ -1124,6 +1224,8 @@ function buildUsage(data, sessions) {
     gptLiveSessions,
     transcribeUsage,
     pollyUsage,
+    responsesModels,
+    liveModels,
     estimatedCost: null,
   };
 }
@@ -1191,6 +1293,19 @@ function buildSummary(
     type,
     failures.filter((failure) => failure.issueType === type).length,
   ]));
+  const categoryKeys = new Set();
+  for (const failure of failures) {
+    if (!REPORT_FAILURE_CATEGORIES.includes(failure.failureCategory)) continue;
+    categoryKeys.add([
+      failure.sessionId ?? "unknown-session",
+      failure.turn ?? "unknown-turn",
+      failure.failureCategory,
+    ].join("|"));
+  }
+  const failureCategorySummary = Object.fromEntries(REPORT_FAILURE_CATEGORIES.map((category) => [
+    category,
+    [...categoryKeys].filter((key) => key.endsWith(`|${category}`)).length,
+  ]));
   if (runValidity.status === "ROBUSTNESS_RUN_INVALID") {
     failureSummary.ROBUSTNESS_RUN_INVALID = 1;
   }
@@ -1210,6 +1325,7 @@ function buildSummary(
     behaviorCoverage,
     failures,
     failureSummary,
+    failureCategorySummary,
     latency,
     latencyByEngine,
     engineComparison,
@@ -1217,6 +1333,8 @@ function buildSummary(
     transcribePollyPassRate: engineComparison.transcribe_polly?.successRate ?? null,
     quality,
     usage,
+    responsesModels: usage.responsesModels,
+    liveModels: usage.liveModels,
     runMode: data.summary?.runMode ?? null,
     runValidity,
     ...failureAnalysisSummary,
@@ -1396,7 +1514,7 @@ svg.spark { width: 100%; height: 46px; }
   <section><h2>実行概要</h2><div id="dashboard" class="cards"></div></section>
   <section><h2>実行方式別比較</h2><div class="panel"><div id="engine-comparison"></div></div></section>
   <section><h2>回答パターンの網羅状況</h2><div class="panel"><div id="behavior-coverage"></div></div></section>
-  <section><h2>失敗の概要</h2><div class="panel"><div id="run-validity"></div><h3>根本原因</h3><div id="root-failure-summary"></div><h3>連鎖症状</h3><div id="cascade-failure-summary"></div><h3>発生した失敗</h3><div id="failure-summary"></div></div></section>
+  <section><h2>失敗の概要</h2><div class="panel"><div id="run-validity"></div><h3>失敗カテゴリ</h3><div id="failure-category-summary"></div><h3>根本原因</h3><div id="root-failure-summary"></div><h3>連鎖症状</h3><div id="cascade-failure-summary"></div><h3>発生した失敗</h3><div id="failure-summary"></div></div></section>
   <section><h2>会話品質（LLM Judge）</h2><div class="panel"><div id="quality"></div></div></section>
   <section><h2>応答時間</h2><div class="panel"><div id="latency"></div></div></section>
   <section><h2>API利用状況・コスト</h2><div class="panel"><div id="usage"></div></div></section>
@@ -1498,6 +1616,13 @@ svg.spark { width: 100%; height: 46px; }
   document.getElementById("failure-summary").innerHTML = failureRows
     ? '<table><thead><tr><th>何が失敗したか</th><th class="num">件数</th></tr></thead><tbody>' + failureRows + '</tbody></table>'
     : '<div class="empty">失敗はありません。</div>';
+  const failureCategoryRows = Object.entries(summary.failureCategorySummary || {})
+    .filter(([, count]) => Number(count) > 0)
+    .map(([category, count]) => '<tr><td><strong>' + esc(category) + '</strong></td><td class="num fail">' + fmt(count) + '</td></tr>')
+    .join("");
+  document.getElementById("failure-category-summary").innerHTML = failureCategoryRows
+    ? '<table><thead><tr><th>分類</th><th class="num">件数</th></tr></thead><tbody>' + failureCategoryRows + '</tbody></table>'
+    : '<div class="empty">カテゴリ別の失敗はありません。</div>';
   const runValidity = summary.runValidity || {};
   document.getElementById("run-validity").innerHTML = runValidity.status === "ROBUSTNESS_RUN_INVALID"
     ? '<div class="run-warning"><strong>実行の妥当性に問題があります</strong><br>' + esc(runValidity.reason || "ロバストネス実行が無効です。") + code(runValidity.status) + '</div>'
@@ -1527,6 +1652,8 @@ svg.spark { width: 100%; height: 46px; }
   const usageRows = [
     ["Jev呼び出し回数", usage.jevCalls], ["Jevキャッシュヒット", usage.jevCacheHits], ["Jevキャッシュミス", usage.jevCacheMisses],
     ["LLM Judge呼び出し回数", usage.llmJudgeCalls], ["GPT Liveセッション数", usage.gptLiveSessions],
+    ["GPT-Live音声モデル", usage.liveModels?.join(", ") || null],
+    ["Responses APIモデル", usage.responsesModels?.join(", ") || null],
     ["Transcribe利用量", usage.transcribeUsage], ["Polly利用量", usage.pollyUsage], ["推測費用", null],
   ].map(([label, value]) => '<tr><td>' + esc(label) + '</td><td class="num">' + (value === null || value === undefined ? '<span class="muted">記録なし</span>' : fmt(value)) + '</td></tr>').join("");
   document.getElementById("usage").innerHTML = '<table><thead><tr><th>項目</th><th class="num">記録値</th></tr></thead><tbody>' + usageRows + '</tbody></table><p class="muted small">金額を正確に算出できないため、推測費用は表示していません。</p>';

@@ -47,6 +47,8 @@ export function readVoiceTestConfig(env = process.env) {
     maxJevCalls: maxJevCallsTotal,
     maxJevCallsTotal,
     maxLlmJudgeCalls: integerEnv(env.VOICE_TEST_MAX_LLM_JUDGE_CALLS, 5),
+    llmJudgeEnabled: booleanEnv(env.VOICE_TEST_LLM_JUDGE_ENABLED, false),
+    llmJudgeModel: String(env.VOICE_TEST_LLM_JUDGE_MODEL || "gpt-5.6-luna").trim(),
     maxRetries: integerEnv(env.VOICE_TEST_MAX_RETRIES, jevMode ? 0 : 1),
     maxLevel3Sessions: integerEnv(env.VOICE_TEST_MAX_LEVEL3_SESSIONS, 5),
     maxLevel3TurnsPerSession: integerEnv(env.VOICE_TEST_MAX_LEVEL3_TURNS_PER_SESSION, 6),

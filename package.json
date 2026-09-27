@@ -9,6 +9,8 @@
     "lint:web": "pnpm --dir app/web lint",
     "test:e2e:voice": "playwright test tests/e2e/voice --project=chromium",
     "voice-test": "node tests/e2e/voice/cli.mjs",
+    "voice:fixtures": "node tests/e2e/voice/fixtures/generateRealVoiceFixtures.mjs",
+    "voice:fixtures:partial": "node tests/e2e/voice/fixtures/generateRealVoiceFixtures.mjs PARTIAL_ANSWER",
     "voice-self-heal": "node tests/e2e/voice/selfHealing/cli.mjs",
     "docker:config": "docker compose -f infra/docker-compose.yml config",
     "docker:build": "docker compose -f infra/docker-compose.yml build",

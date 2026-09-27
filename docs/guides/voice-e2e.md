@@ -59,6 +59,24 @@ Jev探索後は、Level 2の`exploration-summary.json`から、再現価値の�
 
 Level 3では、Level 2と同じseed・候補情報を使い、Chromiumの仮想マイクへ指定した録音済みWAVを入力します。生成されるトーンWAVは音声認識用ではないため、Level 3では使用しません。WAVに複数ターンを含める場合も、1セッション6ターンを上限にします。
 
+#### シナリオfixtureとWAVの同期
+
+シナリオ本文から生成した音声fixtureを使う場合は、WAVと同じディレクトリに
+`real-voice-fixtures.json`を置きます。metadataにはシナリオ本文、fixture ID、シナリオのハッシュ、
+WAVのSHA-256を保存します。現在の`NORMAL`と`PARTIAL_ANSWER` fixtureは同じmetadataで管理し、
+`PARTIAL_ANSWER`は役割だけを回答して責任範囲を残す`partial-role-only-v2`です。
+
+AWS Polly（Kazuha / neural）で`PARTIAL_ANSWER`を再生成する例:
+
+    set -a; . ./.env; set +a
+    VOICE_TEST_AUDIO_FIXTURE_DIR="$PWD/test-results/voice-fixtures/robustness-inputs" \
+      pnpm voice:fixtures:partial
+
+実APIのRobustness Testで`PARTIAL_ANSWER`を選ぶ場合、開始前にscenario本文とmetadata、WAVの
+ハッシュ、登録されているファイル名を照合します。不一致、metadata欠落、未登録の古い
+`PARTIAL_ANSWER-*.wav`がある場合は`STALE_AUDIO_FIXTURE`として、GPT-LiveやTranscribeへ接続する前に
+失敗します。過去のEvidence Package内に保存されたWAVは検証対象外で、過去の証跡として保持します。
+
 実行例:
 
     VOICE_TEST_REAL_API_ENABLED=true \

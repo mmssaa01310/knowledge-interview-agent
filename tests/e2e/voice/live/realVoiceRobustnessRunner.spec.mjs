@@ -4,12 +4,15 @@ import {
   assistantAfterBoundary,
   collectAssistant,
   collectTranscript,
+  delegationLifecycle,
   extractTiming,
   failureAnalysis,
+  gptLiveResponseBoundary,
   gptLiveOutputPlaybackIdleStatus,
   harnessValidity,
   isGPTLiveInitialResponseReady,
   realBehaviorPlan,
+  realConversationPlan,
   questionAdvanced,
   questionAdvanceRequiredForTurn,
   questionAdvanceExpected,
@@ -26,6 +29,111 @@ test("repeated NORMAL sessions restart the ordered fixture sequence", () => {
     expect.objectContaining({ behavior: "NORMAL", variant: 0, ordinal: 2 }),
     expect.objectContaining({ behavior: "NORMAL", variant: 0, ordinal: 3 }),
   ]);
+});
+
+test("PARTIAL_ANSWER answers only the next question's first aspect after the baseline answer", () => {
+  const [plan] = realConversationPlan({
+    engine: "gpt_live",
+    behaviors: ["PARTIAL_ANSWER"],
+    sessions: 1,
+    maxTurns: 5,
+  });
+
+  expect(plan.turns).toEqual(expect.arrayContaining([
+    expect.objectContaining({ behavior: "NORMAL", variant: 0 }),
+    expect.objectContaining({ behavior: "PARTIAL_ANSWER", variant: 0 }),
+  ]));
+  expect(plan.fixtureText[0]).toContain("スマート技術開発部");
+  expect(plan.fixtureText[0]).toContain("シニアエンジニア");
+  expect(plan.fixtureText[1]).toContain("プロジェクトリーダー");
+  expect(plan.fixtureText[1]).not.toContain("メンバー");
+});
+
+test("delegation lifecycle distinguishes no delegation from a delegation without the State Tool", () => {
+  expect(delegationLifecycle({
+    consoleTrace: [],
+    dataTrace: [],
+    turnStartedAt: 100,
+  })).toMatchObject({
+    status: "NOT_OBSERVED",
+    observed: false,
+    stateToolCalled: false,
+  });
+
+  expect(delegationLifecycle({
+    consoleTrace: [
+      {
+        timestampMs: 110,
+        args: ["gpt_live_delegation_created", {
+          delegation_id: "delegation-without-state",
+        }],
+      },
+      {
+        timestampMs: 120,
+        args: ["gpt_live_responses_initial_backend_completed", {
+          delegation_id: "delegation-without-state",
+        }],
+      },
+    ],
+    dataTrace: [],
+    turnStartedAt: 100,
+  })).toMatchObject({
+    status: "OBSERVED_WITHOUT_STATE_TOOL",
+    observed: true,
+    stateToolCalled: false,
+    delegationIds: ["delegation-without-state"],
+    backendCompleted: true,
+  });
+
+  expect(delegationLifecycle({
+    consoleTrace: [
+      {
+        timestampMs: 110,
+        args: ["gpt_live_delegation_created", {
+          delegation_id: "delegation-with-state",
+        }],
+      },
+      {
+        timestampMs: 120,
+        args: ["gpt_live_responses_function_call", {
+          delegation_id: "delegation-with-state",
+        }],
+      },
+      {
+        timestampMs: 130,
+        args: ["gpt_live_delegation_result_sent", {
+          delegation_id: "delegation-with-state",
+          type: "response.item.create",
+        }],
+      },
+      {
+        timestampMs: 140,
+        args: ["gpt_live_delegation_result_sent", {
+          delegation_id: "delegation-with-state",
+          type: "response.create",
+        }],
+      },
+    ],
+    dataTrace: [],
+    turnStartedAt: 100,
+  })).toMatchObject({
+    status: "STATE_TOOL_CALLED",
+    observed: true,
+    stateToolCalled: true,
+    functionResultSent: true,
+    responsesContinuationSent: true,
+  });
+});
+
+test("GPT-Live response observation falls back to the user-turn boundary without State persistence", () => {
+  expect(gptLiveResponseBoundary({
+    statePersistenceAt: 250,
+    turnStartedAt: 100,
+  })).toBe(250);
+  expect(gptLiveResponseBoundary({
+    statePersistenceAt: null,
+    turnStartedAt: 100,
+  })).toBe(100);
 });
 
 function validHarnessInputs() {

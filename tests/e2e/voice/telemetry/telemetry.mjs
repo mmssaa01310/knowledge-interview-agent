@@ -16,6 +16,8 @@ export class VoiceTelemetry {
     level = null,
     audioFixturePath = null,
     promotionCandidate = null,
+    liveModel = null,
+    responsesModels = [],
   }) {
     this.outputDir = outputDir;
     this.sessionId = sessionId;
@@ -30,6 +32,12 @@ export class VoiceTelemetry {
     this.level = level;
     this.audioFixturePath = audioFixturePath;
     this.promotionCandidate = promotionCandidate;
+    this.liveModel = liveModel;
+    this.responsesModels = [...new Set(
+      (Array.isArray(responsesModels) ? responsesModels : [])
+        .filter((model) => typeof model === "string" && model.trim()),
+    )];
+    this.semanticJudge = null;
     this.timeline = [];
     this.turns = [];
     this.transcripts = [];
@@ -64,6 +72,18 @@ export class VoiceTelemetry {
 
   setAudioTrace(trace) {
     this.audioTrace = trace && typeof trace === "object" ? trace : { events: [], stats: [] };
+  }
+
+  setModelObservation({ liveModel = null, responsesModels = [] } = {}) {
+    if (typeof liveModel === "string" && liveModel.trim()) this.liveModel = liveModel;
+    this.responsesModels = [...new Set([
+      ...this.responsesModels,
+      ...(Array.isArray(responsesModels) ? responsesModels : []),
+    ].filter((model) => typeof model === "string" && model.trim()))];
+  }
+
+  setSemanticJudge(result) {
+    this.semanticJudge = result ?? null;
   }
 
   error(error) {
@@ -182,6 +202,7 @@ export class VoiceTelemetry {
         simulatedTurnLatencyMs: turn.response?.simulatedTurnLatencyMs ?? null,
         firstAudioLatencyMs: turn.response?.firstAudioLatencyMs ?? null,
         firstAudioAt: turn.response?.firstAudioAt ?? null,
+        transcriptFinalLastAt: turn.response?.transcriptFinalLastAt ?? null,
         speechEndToTranscriptFinalMs: turn.response?.speechEndToTranscriptFinalMs ?? null,
         transcriptFinalToAssistantStartMs: turn.response?.transcriptFinalToAssistantStartMs ?? null,
         speechEndToAssistantStartMs: turn.response?.speechEndToAssistantStartMs ?? null,
@@ -232,6 +253,9 @@ export class VoiceTelemetry {
       transcriptSource: this.transcriptSource,
       engine: this.engine,
       provider: this.provider,
+      liveModel: this.liveModel,
+      responsesModels: this.responsesModels,
+      semanticJudge: this.semanticJudge,
       liveApiUsed: this.liveApiUsed,
       level: this.level,
       audioFixturePath: this.audioFixturePath,
