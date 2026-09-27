@@ -92,6 +92,39 @@ function number(value, fallback = null) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function diagnosticDataChannelPolicy(engine) {
+  if (engine !== ROBUSTNESS_ENGINE.gpt_live) {
+    return {};
+  }
+  const suppressTypes = String(process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_SUPPRESS_TYPES ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const prependInstruction = String(
+    process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_PREPEND_INSTRUCTION ?? "",
+  ).toLowerCase() === "true";
+  const gateAppendsAfterInstruction = String(
+    process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_GATE_AFTER_INSTRUCTION ?? "",
+  ).toLowerCase() === "true";
+  const instructionOnDelegation = String(
+    process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_INSTRUCTION_ON_DELEGATION ?? "",
+  ).toLowerCase() === "true";
+  const prependInstructionDelayMs = Number(process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_PREPEND_DELAY_MS);
+  return {
+    suppressTypes,
+    prependInstructionBeforeTypes: prependInstruction
+      ? ["session.thinking.append"]
+      : [],
+    prependInstructionOnServerTypes: instructionOnDelegation
+      ? ["session.delegation.created"]
+      : [],
+    gateAppendsAfterInstruction,
+    prependInstructionDelayMs: Number.isFinite(prependInstructionDelayMs)
+      ? Math.max(0, prependInstructionDelayMs)
+      : 0,
+  };
+}
+
 function stateVersion(state) {
   return number(state?.interviewState?.stateVersion, 0);
 }
@@ -1787,7 +1820,7 @@ export async function runRealVoiceRobustnessSession({
       }
     }
     await installRealLiveTrace(page);
-    await installVoiceDataChannelTrace(page);
+    await installVoiceDataChannelTrace(page, diagnosticDataChannelPolicy(engine));
     await installWavFixtureMicrophone(page, fixtureSequence);
     await installVoiceAudioTrace(page);
     await resetVoiceDemo(request);

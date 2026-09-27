@@ -48,9 +48,30 @@ export async function readRealLiveTrace(page) {
  * its runtime events only through this channel.  The observer is installed in
  * the page before the application creates its peer connection.
  */
-export async function installVoiceDataChannelTrace(page) {
-  await page.addInitScript(() => {
+export async function installVoiceDataChannelTrace(page, policy = {}) {
+  await page.addInitScript(({ dataChannelPolicy }) => {
     const trace = [];
+    const policy = dataChannelPolicy && typeof dataChannelPolicy === "object"
+      ? dataChannelPolicy
+      : {};
+    const prependInstructionBeforeTypes = new Set(
+      Array.isArray(policy.prependInstructionBeforeTypes)
+        ? policy.prependInstructionBeforeTypes
+        : [],
+    );
+    const prependInstructionOnServerTypes = new Set(
+      Array.isArray(policy.prependInstructionOnServerTypes)
+        ? policy.prependInstructionOnServerTypes
+        : [],
+    );
+    const suppressTypes = new Set(
+      Array.isArray(policy.suppressTypes) ? policy.suppressTypes : [],
+    );
+    const gateAppendsAfterInstruction = policy.gateAppendsAfterInstruction === true;
+    const prependInstructionDelayMs = Number.isFinite(Number(policy.prependInstructionDelayMs))
+      ? Math.max(0, Number(policy.prependInstructionDelayMs))
+      : 0;
+    let prependInstructionCount = 0;
     const record = (direction, value) => {
       let parsed = null;
       if (typeof value === "string") {
@@ -67,14 +88,102 @@ export async function installVoiceDataChannelTrace(page) {
         raw: typeof value === "string" ? value : null,
         event: parsed,
       });
+      const audioTrace = window.__kikioriVoiceAudioTrace;
+      if (audioTrace?.mark && parsed?.type) {
+        audioTrace.mark(`data_channel_${direction}_${parsed.type}`, {
+          eventId: parsed.event_id ?? null,
+          clientEventId: parsed.client_event_id ?? null,
+          delegationId: parsed.delegation_id ?? null,
+        });
+      }
     };
-    window.__kikioriVoiceDataChannelTrace = { entries: trace };
+    window.__kikioriVoiceDataChannelTrace = {
+      entries: trace,
+      policy: {
+        suppressTypes: [...suppressTypes],
+        prependInstructionBeforeTypes: [...prependInstructionBeforeTypes],
+        prependInstructionOnServerTypes: [...prependInstructionOnServerTypes],
+        gateAppendsAfterInstruction,
+        prependInstructionDelayMs,
+      },
+    };
     const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
     RTCPeerConnection.prototype.createDataChannel = function (...args) {
       const channel = originalCreateDataChannel.apply(this, args);
       const originalSend = channel.send.bind(channel);
+      const gatedValues = [];
+      let instructionGateEventId = null;
+      let instructionGateAcknowledged = false;
       channel.send = (value) => {
         record("client", value);
+        let parsed = null;
+        if (typeof value === "string") {
+          try {
+            parsed = JSON.parse(value);
+          } catch {
+            parsed = null;
+          }
+        }
+        if (parsed?.type && prependInstructionBeforeTypes.has(parsed.type)
+          && prependInstructionCount < 1) {
+          prependInstructionCount += 1;
+          instructionGateEventId = gateAppendsAfterInstruction
+            ? `voice_diagnostic_resume_boundary_${Date.now()}`
+            : null;
+          const instruction = JSON.stringify({
+            type: "session.instructions.append",
+            event_id: instructionGateEventId
+              ?? `voice_diagnostic_resume_boundary_${Date.now()}`,
+            delegation_id: null,
+            content: "現在の保留中の応答を終了し、直前のユーザー発話への応答を続けてください。",
+          });
+          const sendInstruction = () => {
+            record("client", instruction);
+            originalSend(instruction);
+          };
+          if (prependInstructionDelayMs > 0) {
+            trace.push({
+              direction: "client",
+              timestampMs: Date.now(),
+              performanceMs: Math.round(performance.now()),
+              raw: null,
+              event: {
+                type: "voice_diagnostic_instruction_scheduled",
+                event_id: instructionGateEventId,
+                delay_ms: prependInstructionDelayMs,
+              },
+            });
+            window.setTimeout(sendInstruction, prependInstructionDelayMs);
+          } else {
+            sendInstruction();
+          }
+        }
+        if (gateAppendsAfterInstruction && instructionGateEventId && !instructionGateAcknowledged
+          && (parsed?.type === "session.thinking.append"
+            || parsed?.type === "session.commentary.append")) {
+          gatedValues.push(value);
+          trace.push({
+            direction: "client",
+            timestampMs: Date.now(),
+            performanceMs: Math.round(performance.now()),
+            raw: typeof value === "string" ? value : null,
+            event: parsed,
+            blockedByPolicy: true,
+            gatedByInstructionAck: true,
+          });
+          return undefined;
+        }
+        if (parsed?.type && suppressTypes.has(parsed.type)) {
+          trace.push({
+            direction: "client",
+            timestampMs: Date.now(),
+            performanceMs: Math.round(performance.now()),
+            raw: typeof value === "string" ? value : null,
+            event: parsed,
+            blockedByPolicy: true,
+          });
+          return undefined;
+        }
         return originalSend(value);
       };
       const recordLifecycle = (type, details = {}) => {
@@ -99,10 +208,48 @@ export async function installVoiceDataChannelTrace(page) {
       }));
       channel.addEventListener("message", (event) => {
         record("server", event.data);
+        let parsed = null;
+        if (typeof event.data === "string") {
+          try {
+            parsed = JSON.parse(event.data);
+          } catch {
+            parsed = null;
+          }
+        }
+        if (parsed?.type && prependInstructionOnServerTypes.has(parsed.type)
+          && prependInstructionCount < 1) {
+          prependInstructionCount += 1;
+          const eventId = `voice_diagnostic_resume_boundary_${Date.now()}`;
+          const instruction = JSON.stringify({
+            type: "session.instructions.append",
+            event_id: eventId,
+            delegation_id: null,
+            content: "現在の保留中の応答を終了し、直前のユーザー発話への応答を続けてください。",
+          });
+          record("client", instruction);
+          originalSend(instruction);
+        }
+        if (parsed?.type === "session.instructions.appended"
+          && parsed.client_event_id === instructionGateEventId) {
+          instructionGateAcknowledged = true;
+          trace.push({
+            direction: "client",
+            timestampMs: Date.now(),
+            performanceMs: Math.round(performance.now()),
+            raw: null,
+            event: {
+              type: "voice_diagnostic_instruction_gate_released",
+              client_event_id: instructionGateEventId,
+              queued_count: gatedValues.length,
+            },
+          });
+          const queued = gatedValues.splice(0, gatedValues.length);
+          queued.forEach((queuedValue) => originalSend(queuedValue));
+        }
       });
       return channel;
     };
-  });
+  }, { dataChannelPolicy: policy });
 }
 
 export async function readVoiceDataChannelTrace(page) {
@@ -126,6 +273,16 @@ export async function installVoiceAudioTrace(page) {
         performanceMs: Math.round(performance.now()),
         details,
       });
+    };
+    const mark = (label, details = {}) => {
+      const connectionsSnapshot = [...connections].map((connection) => ({
+        connectionState: connection?.connectionState ?? null,
+        iceConnectionState: connection?.iceConnectionState ?? null,
+        signalingState: connection?.signalingState ?? null,
+        dataChannels: [],
+        tracks: connection?.getSenders?.().map((sender) => trackDetails(sender.track)) ?? [],
+      }));
+      record("marker", { label, connections: connectionsSnapshot, ...details });
     };
     const trackDetails = (track) => ({
       id: track?.id ?? null,
@@ -164,6 +321,7 @@ export async function installVoiceAudioTrace(page) {
         iceConnectionState: connection.iceConnectionState,
       });
     };
+    trace.mark = mark;
     window.__kikioriVoiceAudioTrace = trace;
 
     const mediaDevices = navigator.mediaDevices;

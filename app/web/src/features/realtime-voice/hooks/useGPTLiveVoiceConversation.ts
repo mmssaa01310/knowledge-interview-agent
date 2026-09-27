@@ -149,6 +149,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     waitNoticeSent: boolean;
     continuationSent: boolean;
     delegationResumeSent: boolean;
+    resumedDelegationIds: Set<string>;
     delegationHandoffCompleted: boolean;
     resumeCommentaryAcknowledged: boolean;
     resumeCommentaryEventId?: string;
@@ -992,6 +993,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       waitNoticeSent: false,
       continuationSent: false,
       delegationResumeSent: false,
+      resumedDelegationIds: new Set(),
       delegationHandoffCompleted: false,
       resumeCommentaryAcknowledged: false,
       delegationObserved: false,
@@ -1544,9 +1546,22 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   ) => {
     const activeTurn = activeTurnRef.current;
     const peer = peerRef.current;
-    if (!activeTurn || !peer || (activeTurn.delegationResumeSent && activeTurn.resumeCommentaryEventId)
-      || activeTurn.postDelegationResponseStarted
-      || (activeTurn.continuationSent && activeTurn.resumeCommentaryEventId)) {
+    if (!activeTurn || !peer || activeTurn.postDelegationResponseStarted) {
+      return false;
+    }
+    // A single user turn can legitimately produce more than one Responses
+    // delegation while the Live transcript is still settling: for example,
+    // the first semantic snapshot may be PARTIAL and a later snapshot may
+    // contain the remaining answer. De-duplicate by delegation ID, not by
+    // the whole turn. The previous turn-wide guard silently dropped the
+    // second handoff and left Live without a user-facing response.
+    if (activeTurn.resumedDelegationIds.has(delegationId)) {
+      console.info("gpt_live_live_update_skipped_duplicate_delegation", {
+        session_id: sessionIdRef.current,
+        related_delegation_id: delegationId,
+        turn_id: activeTurn.turnId,
+        transcript_revision: activeTurn.transcriptRevision,
+      });
       return false;
     }
     const delegationRevision = delegationTranscriptRevisionsRef.current.get(delegationId);
@@ -1596,6 +1611,13 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     const turnId = activeTurn.turnId;
     const transcriptRevision = activeTurn.transcriptRevision;
     activeTurn.delegationResumeSent = true;
+    activeTurn.resumedDelegationIds.add(delegationId);
+    if (activeTurn.resumeCommentaryRetryTimeoutId !== undefined) {
+      window.clearTimeout(activeTurn.resumeCommentaryRetryTimeoutId);
+      activeTurn.resumeCommentaryRetryTimeoutId = undefined;
+    }
+    activeTurn.resumeCommentaryRetryEventId = undefined;
+    activeTurn.resumeCommentaryAcknowledged = false;
     activeTurn.continuationSent = true;
     activeTurn.resumeCommentaryEventId = commentaryEventId;
     activeTurn.resumeCommentaryDelegationId = delegationId;
