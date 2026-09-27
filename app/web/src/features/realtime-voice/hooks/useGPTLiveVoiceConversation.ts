@@ -180,6 +180,11 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     stateOutput: unknown;
     callId?: string;
   } | null>(null);
+  const pendingLiveContinuationRef = useRef<{
+    reason: string;
+    relatedDelegationId?: string;
+  } | null>(null);
+  const flushPendingLiveContinuationRef = useRef<(() => void) | null>(null);
   const pendingLiveResumeAfterInterruptRef = useRef<{
     eventId: string;
     flush: () => void;
@@ -410,6 +415,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     }
     delegationTranscriptWaitersRef.current.clear();
     pendingStateResumeRef.current = null;
+    pendingLiveContinuationRef.current = null;
+    flushPendingLiveContinuationRef.current = null;
     pendingLiveResumeAfterInterruptRef.current = null;
     for (const controller of stateUpdateAbortControllersRef.current) {
       controller.abort();
@@ -688,6 +695,7 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       transcript_revision: transcriptRevision,
       transcript_length: transcript.length,
     });
+    flushPendingLiveContinuationRef.current?.();
   }, [resolveDelegationTranscriptWaiters]);
 
   const sendLiveConversationContinuation = useCallback((
@@ -696,7 +704,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
   ) => {
     const activeTurn = activeTurnRef.current;
     const peer = peerRef.current;
-    if (!activeTurn || !peer || activeTurn.continuationSent || activeTurn.userFacingOutputObserved) {
+    if (!activeTurn || !peer || activeTurn.continuationSent
+      || activeTurn.userFacingOutputObserved) {
       console.info("gpt_live_live_continuation_skipped", {
         session_id: sessionIdRef.current,
         turn_id: activeTurn?.turnId,
@@ -712,6 +721,10 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       return false;
     }
     if (userSpeechActiveRef.current) {
+      pendingLiveContinuationRef.current = {
+        reason,
+        relatedDelegationId,
+      };
       console.info("gpt_live_live_continuation_deferred", {
         session_id: sessionIdRef.current,
         turn_id: activeTurn.turnId,
@@ -735,7 +748,8 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
       const currentTurn = activeTurnRef.current;
       if (!currentTurn || currentTurn.turnId !== turnId
         || currentTurn.transcriptRevision !== transcriptRevision
-        || currentTurn.userFacingOutputObserved || userSpeechActiveRef.current) {
+        || currentTurn.userFacingOutputObserved
+        || userSpeechActiveRef.current) {
         console.info("gpt_live_live_continuation_skipped_stale_turn", {
           session_id: sessionIdRef.current,
           turn_id: turnId,
@@ -862,6 +876,23 @@ export function useGPTLiveVoiceConversation(args: UseGPTLiveVoiceConversationArg
     });
     return true;
   }, [scheduleLiveResumeAfterInterruptAck]);
+
+  const flushPendingLiveContinuation = useCallback(() => {
+    if (userSpeechActiveRef.current) {
+      return;
+    }
+    const pending = pendingLiveContinuationRef.current;
+    if (!pending) {
+      return;
+    }
+    pendingLiveContinuationRef.current = null;
+    sendLiveConversationContinuation(
+      pending.reason,
+      pending.relatedDelegationId,
+    );
+  }, [sendLiveConversationContinuation]);
+
+  flushPendingLiveContinuationRef.current = flushPendingLiveContinuation;
 
   const scheduleResponseStartWatchdog = useCallback((turn: NonNullable<typeof activeTurnRef.current>) => {
     turn.responseStartTimeoutId = window.setTimeout(() => {

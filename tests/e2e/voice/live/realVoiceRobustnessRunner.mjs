@@ -110,6 +110,20 @@ function diagnosticDataChannelPolicy(engine) {
     process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_INSTRUCTION_ON_DELEGATION ?? "",
   ).toLowerCase() === "true";
   const prependInstructionDelayMs = Number(process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_PREPEND_DELAY_MS);
+  let sessionUpdate = null;
+  try {
+    const rawSessionUpdate = String(
+      process.env.VOICE_TEST_GPT_LIVE_DIAGNOSTIC_SESSION_UPDATE_JSON ?? "",
+    ).trim();
+    if (rawSessionUpdate) {
+      const parsed = JSON.parse(rawSessionUpdate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        sessionUpdate = parsed;
+      }
+    }
+  } catch {
+    sessionUpdate = null;
+  }
   return {
     suppressTypes,
     prependInstructionBeforeTypes: prependInstruction
@@ -122,6 +136,8 @@ function diagnosticDataChannelPolicy(engine) {
     prependInstructionDelayMs: Number.isFinite(prependInstructionDelayMs)
       ? Math.max(0, prependInstructionDelayMs)
       : 0,
+    sessionUpdateAfterServerTypes: sessionUpdate ? ["session.started"] : [],
+    sessionUpdate,
   };
 }
 
@@ -2221,7 +2237,13 @@ export async function runRealVoiceRobustnessSession({
     const assistant = assistantAfterBoundary(
       collectAssistant(afterTrace.channel, afterTrace.live, engine, {
         boundaryAt: turnStartedAt,
-        inputEndAt: responseBoundaryAt,
+        // The response boundary is where Live output may be counted. It is
+        // not the end of the current user input: for a no-state delegation it
+        // can be earlier than the input transcript itself. Use the current
+        // final transcript as the lower bound for finding a *later* input
+        // transcript, so the current turn's own input cannot hide its Live
+        // response from the evidence collector.
+        inputEndAt: transcript.lastFinalTimestampMs ?? responseBoundaryAt,
       }),
       responseBoundaryAt,
     );

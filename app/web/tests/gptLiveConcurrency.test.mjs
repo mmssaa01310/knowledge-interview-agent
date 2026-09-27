@@ -2240,6 +2240,71 @@ test("a completed delegation without a state tool does not block continuation", 
   app.hook.stop();
 });
 
+test("a no-state delegation waits for transcript final before continuing Live", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答の途中です。" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "completed-before-transcript-final", target: "responses" },
+    response_id: "initial-before-transcript-final",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "completed-before-transcript-final",
+    response_id: "initial-before-transcript-final",
+    event: {
+      type: "response.completed",
+      response: { id: "initial-before-transcript-final" },
+    },
+  });
+
+  assert.equal(
+    app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length,
+    0,
+    "the no-state continuation must wait while the user transcript is active",
+  );
+
+  app.receive({ type: "session.input_transcript.done" });
+  const continuation = app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_"));
+  assert.equal(continuation.length, 1);
+  assert.equal(continuation[0].type, "session.commentary.append");
+  assert.equal(continuation[0].delegation_id, null);
+  app.hook.stop();
+});
+
+test("a no-state delegation does not duplicate a Live response that starts while waiting", async () => {
+  const app = setup();
+  await app.hook.start();
+  app.receive({ type: "session.input_transcript.delta", delta: "回答です。" });
+  app.receive({
+    type: "session.delegation.created",
+    delegation: { id: "completed-while-speaking", target: "responses" },
+    response_id: "initial-while-speaking",
+  });
+  app.receive({
+    type: "response.event",
+    delegation_id: "completed-while-speaking",
+    response_id: "initial-while-speaking",
+    event: {
+      type: "response.completed",
+      response: { id: "initial-while-speaking" },
+    },
+  });
+
+  // The user-facing Live response can begin before the transcript grouping
+  // marker arrives. That response is the continuation; do not append another
+  // commentary request when the input is finalized.
+  app.receive({ type: "session.output_transcript.delta", delta: "次の質問です。" });
+  app.receive({ type: "session.input_transcript.done" });
+
+  assert.equal(
+    app.sent.filter((event) => event.event_id?.startsWith("gpt_live_continuation_")).length,
+    0,
+  );
+  app.hook.stop();
+});
+
 test("a protocol-only Live response is recoverable when no delegation is observed", async () => {
   const app = setup();
   await app.hook.start();

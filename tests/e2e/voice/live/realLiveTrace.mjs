@@ -71,7 +71,17 @@ export async function installVoiceDataChannelTrace(page, policy = {}) {
     const prependInstructionDelayMs = Number.isFinite(Number(policy.prependInstructionDelayMs))
       ? Math.max(0, Number(policy.prependInstructionDelayMs))
       : 0;
+    const sessionUpdateAfterServerTypes = new Set(
+      Array.isArray(policy.sessionUpdateAfterServerTypes)
+        ? policy.sessionUpdateAfterServerTypes
+        : [],
+    );
+    const sessionUpdate = policy.sessionUpdate
+      && typeof policy.sessionUpdate === "object"
+      ? policy.sessionUpdate
+      : null;
     let prependInstructionCount = 0;
+    let sessionUpdateSent = false;
     const record = (direction, value) => {
       let parsed = null;
       if (typeof value === "string") {
@@ -105,6 +115,8 @@ export async function installVoiceDataChannelTrace(page, policy = {}) {
         prependInstructionOnServerTypes: [...prependInstructionOnServerTypes],
         gateAppendsAfterInstruction,
         prependInstructionDelayMs,
+        sessionUpdateAfterServerTypes: [...sessionUpdateAfterServerTypes],
+        sessionUpdate,
       },
     };
     const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
@@ -228,6 +240,19 @@ export async function installVoiceDataChannelTrace(page, policy = {}) {
           });
           record("client", instruction);
           originalSend(instruction);
+        }
+        if (parsed?.type && sessionUpdate
+          && sessionUpdateAfterServerTypes.has(parsed.type)
+          && !sessionUpdateSent) {
+          sessionUpdateSent = true;
+          const eventId = `voice_diagnostic_session_update_${Date.now()}`;
+          const update = JSON.stringify({
+            type: "session.update",
+            event_id: eventId,
+            session: sessionUpdate,
+          });
+          record("client", update);
+          originalSend(update);
         }
         if (parsed?.type === "session.instructions.appended"
           && parsed.client_event_id === instructionGateEventId) {
