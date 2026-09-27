@@ -162,6 +162,16 @@ export const REAL_VOICE_FIXTURE_TEXTS = Object.freeze({
     "プロジェクトリーダーとして開発を進めています。",
     "今の役割はプロジェクトリーダーです。",
   ]),
+  PARTIAL_COMPLETION: Object.freeze([
+    "プロジェクトリーダーとして、メンバーのタスクと進捗を管理しています。",
+    "プロジェクトリーダーとして、進捗と品質を管理し、リスクがあれば早めに相談しています。",
+    "プロジェクトリーダーとして、メンバーの状況を確認し、必要な調整を行っています。",
+  ]),
+  RECOVERY_NORMAL: Object.freeze([
+    "顧客の要望を聞きながらシステム開発を進めた経験が転機になりました。要件を整理し、関係者と優先順位を合わせてから実装する進め方を身につけました。",
+    "顧客との調整を経験したことで、先に要件を整理して認識を合わせる仕事の進め方に変わりました。今も開発の手戻りを減らすために活かしています。",
+    "難しい案件で要望の優先順位を決めた経験から、影響範囲を確認してから判断するようになりました。現在の開発でも同じ進め方をしています。",
+  ]),
   LONG_ANSWER: Object.freeze([
     "宮崎です。開発部でシニアエンジニアをしています。顧客の要望を整理し、関係者と優先順位を確認してから実装しています。問題が起きたときは影響範囲を調べ、計画を見直してチームに共有します。",
     "現在はシステム開発を担当しています。要件を聞き、関係者の認識を合わせ、実装と検証を進めます。リリース後の問い合わせにも対応し、次の改善につなげています。",
@@ -212,6 +222,32 @@ export const REAL_VOICE_FIXTURE_TEXTS = Object.freeze({
     "確認ありがとうございます。開発部です。",
     "そうですね、プロジェクトリーダーです。",
   ]),
+});
+
+// These are test-fixture semantics. They describe which dev voice-demo field
+// a prerecorded utterance is intended to answer; they are never sent to the
+// application or used as production conversation rules.
+export const REAL_VOICE_FIXTURE_TARGETS = Object.freeze({
+  NORMAL: Object.freeze({
+    fieldId: "dev-voice-demo-field-self-introduction",
+    aspectIds: ["name", "department", "role_or_domain"],
+    expectedMissingAspectIds: [],
+  }),
+  PARTIAL_ANSWER: Object.freeze({
+    fieldId: "dev-voice-demo-field-current-role",
+    aspectIds: ["role"],
+    expectedMissingAspectIds: ["responsibilities"],
+  }),
+  PARTIAL_COMPLETION: Object.freeze({
+    fieldId: "dev-voice-demo-field-current-role",
+    aspectIds: ["role", "responsibilities"],
+    expectedMissingAspectIds: [],
+  }),
+  RECOVERY_NORMAL: Object.freeze({
+    fieldId: "dev-voice-demo-field-experience",
+    aspectIds: ["trigger_experience", "impact_or_change"],
+    expectedMissingAspectIds: [],
+  }),
 });
 
 export function realVoiceFixtureText(behavior, variant = 0) {

@@ -50,7 +50,9 @@ export default defineConfig({
     ? {
         command: "node tests/e2e/voice/drivers/startLocalStack.mjs",
         url: voiceTestConfig.baseURL,
-        reuseExistingServer: !process.env.CI,
+        // Never attach to an already-running process. A stale stack can have
+        // different model/configuration and would make the test result invalid.
+        reuseExistingServer: false,
         timeout: 120_000,
       }
     : undefined,

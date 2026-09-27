@@ -18,6 +18,7 @@ import {
   realVoiceFixtureText,
   REAL_VOICE_BEHAVIORS,
   REAL_VOICE_BEHAVIORS_BY_ENGINE,
+  REAL_VOICE_FIXTURE_TARGETS,
   REAL_VOICE_FIXTURE_TEXTS,
 } from "../scenarios/scenarios.mjs";
 import {
@@ -290,6 +291,144 @@ export function realConversationPlan({
   });
 }
 
+/**
+ * Acceptance-only sequence for the Live partial-answer recovery path. The
+ * clarification is produced by GPT-Live between turns 2 and 3; it is not a
+ * synthetic user fixture. The target metadata is checked separately before a
+ * Live session is opened.
+ */
+export function partialAcceptancePlan({ sessions = 2, maxTurns = 5 } = {}) {
+  const sessionCount = Math.max(1, Math.floor(Number(sessions) || 1));
+  const turnLimit = Math.max(4, Math.floor(Number(maxTurns) || 5));
+  const plans = [];
+  for (let index = 0; index < sessionCount; index += 1) {
+    const variant = index % 3;
+    const turns = [
+      { behavior: "NORMAL", variant },
+      { behavior: "PARTIAL_ANSWER", variant },
+      { behavior: "PARTIAL_COMPLETION", variant },
+      { behavior: "RECOVERY_NORMAL", variant },
+    ].slice(0, turnLimit);
+    plans.push({
+      behavior: "PARTIAL_ANSWER",
+      variant,
+      ordinal: index + 1,
+      turns,
+      fixtureText: turns.map((turn) => realVoiceFixtureText(turn.behavior, turn.variant)),
+    });
+  }
+  return plans;
+}
+
+function requiredAspectIds(field) {
+  return (field?.questionPlan?.requiredItems ?? [])
+    .map((item) => item?.itemId)
+    .filter((itemId) => typeof itemId === "string" && itemId.trim());
+}
+
+function nextFieldAfter(context, field) {
+  const fields = sortedFields(context);
+  const index = fields.findIndex((candidate) => candidate?.id === field?.id);
+  return index >= 0 ? fields[index + 1] ?? null : null;
+}
+
+/**
+ * Check the semantic relationship between the first five acceptance inputs
+ * and the dev voice-demo question order before a real Live session is
+ * started. This is test-fixture validation, not a production answer router.
+ */
+export function buildFixtureCorrelationPreflight({
+  context,
+  state,
+  plannedTurns = [],
+  fixtureRecords = [],
+} = {}) {
+  const fields = sortedFields(context);
+  const fieldById = new Map(fields.map((field) => [field.id, field]));
+  const recordsByKey = new Map(fixtureRecords.map((record) => [
+    `${record.behavior}:${record.variant}`,
+    record,
+  ]));
+  const initialField = fieldForQuestion(context, interviewState(state).currentQuestionId)
+    ?? fields[0]
+    ?? null;
+  const remaining = new Map(fields.map((field) => [field.id, requiredAspectIds(field)]));
+  const rows = [];
+  const violations = [];
+  let currentField = initialField;
+
+  if (!initialField) violations.push("current question field is unavailable");
+  if (interviewState(state).currentQuestionId
+    && initialField
+    && interviewState(state).currentQuestionId !== liveQuestionId(initialField)) {
+    violations.push("persisted currentQuestionId does not resolve to the current field");
+  }
+
+  for (const [index, turn] of plannedTurns.entries()) {
+    const behavior = normalizeBehavior(turn.behavior);
+    const variant = Number(turn.variant) || 0;
+    const record = recordsByKey.get(`${behavior}:${variant}`);
+    const targetField = record?.targetField ? fieldById.get(record.targetField) : null;
+    const currentQuestionId = currentField ? liveQuestionId(currentField) : null;
+    const currentQuestion = currentField ? questionText(currentField) : null;
+    const missingAspects = currentField ? [...(remaining.get(currentField.id) ?? [])] : [];
+    const expectedMissingAfterFixture = currentField
+      ? missingAspects.filter((aspectId) => !(record?.targetAspects ?? []).includes(aspectId))
+      : [];
+    const row = {
+      turn: index + 1,
+      behavior,
+      variant,
+      currentQuestionId,
+      currentQuestion,
+      missingAspects,
+      fixtureText: record?.text ?? realVoiceFixtureText(behavior, variant),
+      fixtureTargetField: record?.targetField ?? null,
+      fixtureTargetAspects: record?.targetAspects ?? [],
+      expectedMissingAspectsAfterFixture: expectedMissingAfterFixture,
+      expectedMissingAspectsFromMetadata: record?.expectedMissingAspects ?? null,
+    };
+    rows.push(row);
+
+    if (!record) {
+      violations.push(`turn ${index + 1}: fixture metadata is missing for ${behavior}:${variant}`);
+    }
+    if (!targetField) {
+      violations.push(`turn ${index + 1}: fixture target field is not present in question context`);
+    }
+    if (!currentField || !currentQuestion) {
+      violations.push(`turn ${index + 1}: current question is unavailable`);
+    }
+    if (record && currentField && record.targetField !== currentField.id) {
+      violations.push(
+        `turn ${index + 1}: fixture target ${record.targetField} does not match ${currentField.id}`,
+      );
+    }
+    if (record
+      && JSON.stringify(record.expectedMissingAspects ?? [])
+        !== JSON.stringify(expectedMissingAfterFixture)) {
+      violations.push(`turn ${index + 1}: fixture missing-aspect expectation is inconsistent`);
+    }
+
+    if (currentField) {
+      const nextRemaining = expectedMissingAfterFixture;
+      remaining.set(currentField.id, nextRemaining);
+      currentField = nextRemaining.length === 0
+        ? nextFieldAfter(context, currentField)
+        : currentField;
+    }
+  }
+
+  return {
+    status: violations.length ? "FAIL" : "PASS",
+    failureType: violations.length ? "TEST_INFRA_FAILURE" : null,
+    currentState: stateSnapshot(state),
+    rows,
+    violations,
+    fixtureTargets: REAL_VOICE_FIXTURE_TARGETS,
+  };
+}
+
 function behaviorExpectations(behavior, engine) {
   const normalized = normalizeBehavior(behavior);
   const isSegmentCase = engine === ROBUSTNESS_ENGINE.transcribe_polly
@@ -471,11 +610,13 @@ export function delegationLifecycle({
   ].map(traceDelegationId).filter((value) => typeof value === "string" && value))];
   const observed = created.length > 0;
   const stateToolCalled = stateToolCalls.length > 0;
+  const responseCreated = runtime.filter((entry) => entry.type === "response.created");
+  const responseCompleted = runtime.filter((entry) => entry.type === "response.completed");
   return {
     status: !observed
       ? "NOT_OBSERVED"
       : stateToolCalled
-        ? "STATE_TOOL_CALLED"
+        ? "OBSERVED_WITH_STATE_TOOL"
         : "OBSERVED_WITHOUT_STATE_TOOL",
     observed,
     createdCount: created.length,
@@ -485,11 +626,76 @@ export function delegationLifecycle({
     functionResultSent: resultSent.some((entry) => entry.details?.type === "response.item.create"),
     responsesContinuationSent: responseCreateSent.length > 0,
     backendCompleted: backendCompleted.length > 0,
+    responseCreatedCount: responseCreated.length,
+    responseCompletedCount: responseCompleted.length,
+    responseCreated: responseCreated.map((entry) => ({
+      timestampMs: entry.timestampMs,
+      responseId: entry.event?.response?.id ?? entry.event?.id ?? null,
+    })),
+    responseCompleted: responseCompleted.map((entry) => ({
+      timestampMs: entry.timestampMs,
+      responseId: entry.event?.response?.id ?? entry.event?.id ?? null,
+      outputCount: Array.isArray(entry.event?.response?.output)
+        ? entry.event.response.output.length
+        : Array.isArray(entry.event?.output) ? entry.event.output.length : null,
+    })),
     firstCreatedAt: created[0]?.timestampMs ?? null,
     firstStateToolCallAt: stateToolCalls[0]?.timestampMs ?? null,
     firstResultSentAt: resultSent[0]?.timestampMs ?? null,
     firstResponseCreateAt: responseCreateSent[0]?.timestampMs ?? null,
     completedAt: backendCompleted.at(-1)?.timestampMs ?? null,
+  };
+}
+
+export function liveUpdateLifecycle({
+  dataTrace = [],
+  consoleTrace = [],
+  turnStartedAt = null,
+} = {}) {
+  const afterBoundary = (entry) => turnStartedAt === null
+    || number(entry.timestampMs, 0) >= number(turnStartedAt, 0);
+  const runtime = dataTrace.filter(afterBoundary);
+  const consoleEntries = consoleTrace
+    .map((entry) => ({
+      timestampMs: entry.timestampMs,
+      logger: entry.args?.[0] ?? null,
+      details: entry.args?.[1] ?? {},
+      eventType: entry.args?.[0] === "gpt_live_event"
+        ? entry.args?.[1]?.type ?? null
+        : null,
+    }))
+    .filter(afterBoundary);
+  const clientTypeCount = (type) => runtime.filter((entry) => (
+    entry.direction === "client" && dataChannelEventType(entry) === type
+  )).length;
+  const sentCount = (type) => {
+    const logged = consoleEntries.filter((entry) => (
+      [
+        "gpt_live_live_update_sent",
+        "gpt_live_live_update_retry_sent",
+      ].includes(entry.logger)
+      && entry.details?.type === type
+    )).length;
+    return logged || clientTypeCount(type);
+  };
+  const ackTypeCount = (type) => {
+    const loggerCount = consoleEntries.filter((entry) => (
+      entry.logger === "gpt_live_live_update_acknowledged"
+      && entry.details?.type === `${type}ed`
+    )).length;
+    if (loggerCount) return loggerCount;
+    return consoleEntries.filter((entry) => entry.eventType === `${type}ed`).length;
+  };
+  return {
+    interruptionBoundaryCount: consoleEntries.filter((entry) => (
+      entry.logger === "gpt_live_response_interrupt_requested"
+      || entry.logger === "gpt_live_live_continuation_boundary_sent"
+    )).length || clientTypeCount("session.instructions.append"),
+    thinkingAppendCount: sentCount("session.thinking.append"),
+    commentaryAppendCount: sentCount("session.commentary.append"),
+    commentaryAckCount: ackTypeCount("session.commentary.append"),
+    thinkingAckCount: ackTypeCount("session.thinking.append"),
+    instructionAckCount: ackTypeCount("session.instructions.append"),
   };
 }
 
@@ -1501,6 +1707,7 @@ export async function runRealVoiceRobustnessSession({
     ? conversationTurns.map((item) => ({
       behavior: normalizeBehavior(item.behavior),
       variant: Number.isFinite(Number(item.variant)) ? Number(item.variant) : 0,
+      fixtureRecord: item.fixtureRecord ?? null,
     }))
     : null;
   const fixtureSequence = plannedTurns
@@ -1705,6 +1912,8 @@ export async function runRealVoiceRobustnessSession({
       const turnBehavior = normalizeBehavior(turnPlan.behavior);
       const expectations = behaviorExpectations(turnBehavior, engine);
       const turnAudioMetadata = readWavMetadata(turnFixturePath);
+      const turnFixtureText = turnPlan.fixtureRecord?.text
+        ?? realVoiceFixtureText(turnBehavior, turnPlan.variant);
       if (turn > 1) {
         before = await fetchInterviewState(request).catch(() => before);
         currentField = fieldForQuestion(contextData, interviewState(before).currentQuestionId);
@@ -2009,6 +2218,13 @@ export async function runRealVoiceRobustnessSession({
         turnStartedAt,
       })
       : null;
+    const liveUpdateLifecycleState = engine === ROBUSTNESS_ENGINE.gpt_live
+      ? liveUpdateLifecycle({
+        dataTrace: afterTrace.channel,
+        consoleTrace: afterTrace.live,
+        turnStartedAt,
+      })
+      : null;
     if (delegationLifecycleState) {
       telemetry.event("delegation_lifecycle", delegationLifecycleState);
     }
@@ -2277,6 +2493,7 @@ export async function runRealVoiceRobustnessSession({
         answerState: answer.answerState,
         stateVersionAdvanced: stateVersionAdvancedForTurn,
         stateUpdateReceiptPersisted,
+        stateMutationOccurred: stateUpdateReceiptPersisted,
         questionAdvanced: advanced,
         assistantResponseCount: assistant.mainResponseCount,
         assistantPlaybackSettled: Boolean(outputPlaybackStatus?.settled),
@@ -2297,6 +2514,7 @@ export async function runRealVoiceRobustnessSession({
         candidate: answer.candidate,
         confirmed: answer.confirmed,
         answerState: answer.answerState,
+        answerStatus: stateUpdateLifecycle?.request?.answerStatus ?? null,
         stateVersionBefore: stateVersion(before),
         stateVersionAfter: stateVersionAfterTurn,
         currentQuestionBefore: interviewState(before).currentQuestionId ?? null,
@@ -2308,8 +2526,15 @@ export async function runRealVoiceRobustnessSession({
         questionLifecycle,
       },
       delegation: delegationLifecycleState,
+      liveUpdates: liveUpdateLifecycleState,
       response: {
         assistantSpeechStarted: assistant.mainResponseCount > 0,
+        liveOutputStarted: assistant.mainResponseCount > 0,
+        assistantAudioStarted: assistant.playbackStartedAt !== null
+          || afterTrace.live.some((entry) => (
+            entry.args?.[0] === "gpt_live_live_audio_started"
+            && number(entry.timestampMs, 0) >= number(turnStartedAt, 0)
+          )),
         assistantSpeechEnded: timing.assistantSpeechEnded !== null,
         assistantPlaybackSettled: Boolean(outputPlaybackStatus?.settled),
         assistantPlaybackCompletionSource: outputPlaybackStatus?.settled
@@ -2332,6 +2557,14 @@ export async function runRealVoiceRobustnessSession({
         segmentFinalCount: transcript.finalCount,
         liveModel: telemetry.liveModel ?? null,
         responsesModels: telemetry.responsesModels ?? [],
+      },
+      fixtureCorrelation: {
+        fixtureText: turnFixtureText,
+        fixtureTargetField: turnPlan.fixtureRecord?.targetField ?? null,
+        fixtureTargetAspects: turnPlan.fixtureRecord?.targetAspects ?? [],
+        currentQuestionId: beforeQuestionId,
+        currentQuestionText: currentQuestion,
+        missingAspects: stateUpdateLifecycle?.request?.missingAspects ?? [],
       },
       timing,
       realTiming: timing,

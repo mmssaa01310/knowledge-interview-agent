@@ -27,7 +27,7 @@ Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、Dat
 {
   "type": "responses",
   "responses": {
-    "model": "${GPT_LIVE_RESPONSES_MODEL}",
+    "model": "gpt-5.6-luna",
     "instructions": "semantic assessment only",
     "tools": [{"type": "function", "name": "update_interview_state"}],
     "tool_choice": {"type": "function", "name": "update_interview_state"},
@@ -36,7 +36,7 @@ Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、Dat
 }
 ```
 
-`GPT_LIVE_RESPONSES_MODEL`の既定値は`gpt-5.6-luna`。GPT LiveにはJSONや特殊マーカーを発話させず、Liveの自然言語から正規表現でStateを抽出しない。これはResponses Delegationの意味評価モデルであり、GPT-Live音声セッションのモデル設定ではない。
+GPT-LiveのResponses Delegationは`gpt-5.6-luna`に固定する。旧Terraスタックへ切り替える環境変数は設けない。GPT LiveにはJSONや特殊マーカーを発話させず、Liveの自然言語から正規表現でStateを抽出しない。これはResponses Delegationの意味評価モデルであり、GPT-Live音声セッションのモデル設定ではない。
 
 ## Browserの接続順
 

@@ -1,3 +1,5 @@
+import { DEFAULT_VOICE_TEST_API_BASE_URL } from "../config.mjs";
+
 const DEV_HEADERS = {
   "content-type": "application/json",
   "x-dev-token": process.env.VOICE_TEST_DEV_TOKEN || "dev-manager",
@@ -5,7 +7,7 @@ const DEV_HEADERS = {
 
 export function apiUrl(
   pathname,
-  baseURL = process.env.VOICE_TEST_API_BASE_URL || "http://127.0.0.1:8001",
+  baseURL = process.env.VOICE_TEST_API_BASE_URL || DEFAULT_VOICE_TEST_API_BASE_URL,
 ) {
   return baseURL + pathname;
 }

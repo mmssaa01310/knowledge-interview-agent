@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { REAL_VOICE_FIXTURE_TEXTS } from "../scenarios/scenarios.mjs";
+import {
+  REAL_VOICE_FIXTURE_TARGETS,
+  REAL_VOICE_FIXTURE_TEXTS,
+} from "../scenarios/scenarios.mjs";
 
 export const REAL_VOICE_FIXTURE_METADATA_FILENAME = "real-voice-fixtures.json";
 export const STALE_AUDIO_FIXTURE = "STALE_AUDIO_FIXTURE";
@@ -41,6 +44,15 @@ export function expectedFixtureRecords(behavior) {
   const version = scenarioVersion(normalized);
   const prefix = fixtureIdPrefix(normalized);
   return texts.map((text, variant) => ({
+    ...(REAL_VOICE_FIXTURE_TARGETS[normalized]
+      ? {
+        targetField: REAL_VOICE_FIXTURE_TARGETS[normalized].fieldId,
+        targetAspects: [...REAL_VOICE_FIXTURE_TARGETS[normalized].aspectIds],
+        expectedMissingAspects: [
+          ...REAL_VOICE_FIXTURE_TARGETS[normalized].expectedMissingAspectIds,
+        ],
+      }
+      : {}),
     behavior: normalized,
     variant,
     fixtureId: `${prefix}-${variant + 1}`,
@@ -122,8 +134,15 @@ export function validateRealVoiceFixtureMetadata({
         "text",
         "generatedFromScenarioVersion",
         "wav",
+        "targetField",
+        "targetAspects",
+        "expectedMissingAspects",
       ]) {
         if (record[field] !== expectedRecord[field]) {
+          if (Array.isArray(record[field]) && Array.isArray(expectedRecord[field])
+            && JSON.stringify(record[field]) === JSON.stringify(expectedRecord[field])) {
+            continue;
+          }
           throw stale(`${behavior} variant ${expectedRecord.variant + 1} has stale ${field}`);
         }
       }

@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from ai_interviewer_api.core.config import (
-    DEFAULT_GPT_LIVE_RESPONSES_MODEL,
+    GPT_LIVE_RESPONSES_MODEL,
     settings,
 )
 from ai_interviewer_api.schemas.live import (
@@ -365,11 +365,11 @@ def create_live_session(
             session["delegation"] = {
                 "type": "responses",
                 "responses": {
-                    "model": getattr(
-                        settings,
-                        "gpt_live_responses_model",
-                        DEFAULT_GPT_LIVE_RESPONSES_MODEL,
-                    ),
+                    # GPT-Live's semantic-assessor stack is intentionally
+                    # fixed to the current Responses model. Do not allow a
+                    # stale deployment environment to route this path to the
+                    # removed Terra stack.
+                    "model": GPT_LIVE_RESPONSES_MODEL,
                     "instructions": build_responses_delegation_instructions(
                         interview_context,
                     ),

@@ -13,6 +13,9 @@ import {
   isGPTLiveInitialResponseReady,
   realBehaviorPlan,
   realConversationPlan,
+  buildFixtureCorrelationPreflight,
+  partialAcceptancePlan,
+  liveUpdateLifecycle,
   questionAdvanced,
   questionAdvanceRequiredForTurn,
   questionAdvanceExpected,
@@ -117,12 +120,95 @@ test("delegation lifecycle distinguishes no delegation from a delegation without
     dataTrace: [],
     turnStartedAt: 100,
   })).toMatchObject({
-    status: "STATE_TOOL_CALLED",
+    status: "OBSERVED_WITH_STATE_TOOL",
     observed: true,
     stateToolCalled: true,
     functionResultSent: true,
     responsesContinuationSent: true,
   });
+});
+
+test("partial acceptance plan keeps the partial answer on the current-role target", () => {
+  const plans = partialAcceptancePlan({ sessions: 2, maxTurns: 5 });
+  expect(plans).toHaveLength(2);
+  expect(plans[0].turns.map(({ behavior }) => behavior)).toEqual([
+    "NORMAL",
+    "PARTIAL_ANSWER",
+    "PARTIAL_COMPLETION",
+    "RECOVERY_NORMAL",
+  ]);
+  expect(plans[1].turns.map(({ behavior }) => behavior)).toEqual([
+    "NORMAL",
+    "PARTIAL_ANSWER",
+    "PARTIAL_COMPLETION",
+    "RECOVERY_NORMAL",
+  ]);
+});
+
+test("fixture correlation preflight rejects a target field mismatch before a Live session", () => {
+  const context = {
+    fields: [
+      {
+        id: "dev-voice-demo-field-self-introduction",
+        aiQuestionExamples: ["プロフィールを教えてください"],
+        questionPlan: { requiredItems: [{ itemId: "name" }] },
+      },
+    ],
+  };
+  const result = buildFixtureCorrelationPreflight({
+    context,
+    state: { interviewState: { currentQuestionId: "live-field-dev-voice-demo-field-self-introduction" } },
+    plannedTurns: [{ behavior: "NORMAL", variant: 0 }],
+    fixtureRecords: [{
+      behavior: "NORMAL",
+      variant: 0,
+      text: "宮崎です。",
+      targetField: "dev-voice-demo-field-current-role",
+      targetAspects: ["role"],
+      expectedMissingAspects: [],
+    }],
+  });
+  expect(result).toMatchObject({ status: "FAIL", failureType: "TEST_INFRA_FAILURE" });
+  expect(result.violations.join(" ")).toMatch(/target/);
+});
+
+test("Live append telemetry counts are scoped to one turn", () => {
+  const result = liveUpdateLifecycle({
+    turnStartedAt: 100,
+    dataTrace: [
+      { direction: "client", timestampMs: 90, event: { type: "session.commentary.append" } },
+      { direction: "client", timestampMs: 110, event: { type: "session.thinking.append" } },
+      { direction: "client", timestampMs: 120, event: { type: "session.commentary.append" } },
+    ],
+    consoleTrace: [
+      { timestampMs: 130, args: ["gpt_live_live_update_acknowledged", { type: "session.commentary.appended" }] },
+      { timestampMs: 140, args: ["gpt_live_response_interrupt_requested", {}] },
+    ],
+  });
+  expect(result).toMatchObject({
+    interruptionBoundaryCount: 1,
+    thinkingAppendCount: 1,
+    commentaryAppendCount: 1,
+    commentaryAckCount: 1,
+  });
+});
+
+test("Live append telemetry counts a retry as a duplicate send", () => {
+  const result = liveUpdateLifecycle({
+    turnStartedAt: 100,
+    dataTrace: [],
+    consoleTrace: [
+      {
+        timestampMs: 110,
+        args: ["gpt_live_live_update_sent", { type: "session.commentary.append" }],
+      },
+      {
+        timestampMs: 120,
+        args: ["gpt_live_live_update_retry_sent", { type: "session.commentary.append" }],
+      },
+    ],
+  });
+  expect(result.commentaryAppendCount).toBe(2);
 });
 
 test("GPT-Live response observation falls back to the user-turn boundary without State persistence", () => {

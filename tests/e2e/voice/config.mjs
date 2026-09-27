@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
+export const DEFAULT_VOICE_TEST_BASE_URL = "http://127.0.0.1:15173";
+export const DEFAULT_VOICE_TEST_API_BASE_URL = "http://127.0.0.1:18001";
+
 const configuredRunId = String(process.env.VOICE_TEST_RUN_ID || "").trim();
 const DEFAULT_RUN_ID = configuredRunId
   || new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)
@@ -59,8 +62,10 @@ export function readVoiceTestConfig(env = process.env) {
     seed: integerEnv(env.VOICE_TEST_SEED, 38291),
     agentMode,
     scenario: env.VOICE_TEST_SCENARIO || "NORMAL",
-    baseURL: env.VOICE_TEST_BASE_URL || "http://127.0.0.1:5173",
-    apiBaseURL: env.VOICE_TEST_API_BASE_URL || "http://127.0.0.1:8001",
+    // Keep voice E2E on isolated ports so it cannot silently reuse the old
+    // 5173/8001 stack when a stale process is still running.
+    baseURL: env.VOICE_TEST_BASE_URL || DEFAULT_VOICE_TEST_BASE_URL,
+    apiBaseURL: env.VOICE_TEST_API_BASE_URL || DEFAULT_VOICE_TEST_API_BASE_URL,
     outputDir: path.resolve(env.VOICE_TEST_OUTPUT_DIR || DEFAULT_OUTPUT_DIR),
     audioFixturePath: env.VOICE_TEST_AUDIO_FIXTURE
       ? path.resolve(env.VOICE_TEST_AUDIO_FIXTURE)

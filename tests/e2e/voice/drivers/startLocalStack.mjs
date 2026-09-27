@@ -1,6 +1,32 @@
 import { spawn } from "node:child_process";
+import {
+  DEFAULT_VOICE_TEST_API_BASE_URL,
+  DEFAULT_VOICE_TEST_BASE_URL,
+} from "../config.mjs";
 
 const root = process.cwd();
+const apiBaseURL = String(
+  process.env.VOICE_TEST_API_BASE_URL || DEFAULT_VOICE_TEST_API_BASE_URL,
+).replace(/\/+$/, "");
+const webBaseURL = String(
+  process.env.VOICE_TEST_BASE_URL || DEFAULT_VOICE_TEST_BASE_URL,
+).replace(/\/+$/, "");
+const voiceBaseURL = String(
+  process.env.VOICE_TEST_VOICE_API_BASE_URL || "http://127.0.0.1:18010",
+).replace(/\/+$/, "");
+
+function portFrom(url, fallback) {
+  try {
+    const parsed = new URL(url);
+    return parsed.port || String(fallback);
+  } catch {
+    return String(fallback);
+  }
+}
+
+const apiPort = portFrom(apiBaseURL, 18001);
+const webPort = portFrom(webBaseURL, 15173);
+const voicePort = portFrom(voiceBaseURL, 18010);
 const realApiEnabled = ["1", "true", "yes", "on"].includes(
   String(process.env.VOICE_TEST_REAL_API_ENABLED || "").toLowerCase(),
 );
@@ -16,8 +42,8 @@ const environment = {
   DOCUMENT_KNOWLEDGE_BACKEND: "postgres",
   BEDROCK_ENABLED: "false",
   OPENAI_SECRET_KEY: process.env.OPENAI_SECRET_KEY || "voice-test-disabled",
-  VITE_API_PROXY_TARGET: "http://127.0.0.1:8001",
-  VITE_VOICE_PROXY_TARGET: "http://127.0.0.1:8010",
+  VITE_API_PROXY_TARGET: apiBaseURL,
+  VITE_VOICE_PROXY_TARGET: voiceBaseURL,
   VITE_VOICE_RUNTIME_PROVIDER: realProvider,
   VITE_DEV_TOKEN: process.env.VOICE_TEST_DEV_TOKEN || "dev-manager",
 };
@@ -34,7 +60,7 @@ const children = [
       "--host",
       "127.0.0.1",
       "--port",
-      "8001",
+      apiPort,
     ],
     {
       cwd: root,
@@ -42,7 +68,7 @@ const children = [
       stdio: process.env.VOICE_TEST_VERBOSE ? "inherit" : "ignore",
     },
   ),
-  spawn("pnpm", ["--dir", "app/web", "dev", "--host", "127.0.0.1"], {
+  spawn("pnpm", ["--dir", "app/web", "dev", "--host", "127.0.0.1", "--port", webPort], {
     cwd: root,
     env: environment,
     stdio: process.env.VOICE_TEST_VERBOSE ? "inherit" : "ignore",
@@ -61,13 +87,13 @@ if (realProvider === "transcribe_polly") {
       "--host",
       "127.0.0.1",
       "--port",
-      "8010",
+      voicePort,
     ],
     {
       cwd: root,
       env: {
         ...environment,
-        VOICE_API_BASE_URL: "http://127.0.0.1:8001",
+        VOICE_API_BASE_URL: apiBaseURL,
         VOICE_RUNTIME_PROVIDER: realProvider,
       },
       stdio: process.env.VOICE_TEST_VERBOSE ? "inherit" : "ignore",
@@ -98,10 +124,10 @@ process.on("SIGTERM", stop);
 process.on("exit", stop);
 
 try {
-  await waitFor("http://127.0.0.1:8001/api/health");
-  await waitFor("http://127.0.0.1:5173/");
+  await waitFor(apiBaseURL + "/api/health");
+  await waitFor(webBaseURL + "/");
   if (realProvider === "transcribe_polly") {
-    await waitFor("http://127.0.0.1:8010/voice/health");
+    await waitFor(voiceBaseURL + "/voice/health");
   }
   await new Promise(() => {});
 } finally {

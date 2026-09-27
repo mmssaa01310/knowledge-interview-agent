@@ -73,7 +73,10 @@ def test_create_live_session_uses_gpt_live_webrtc_and_short_prompt(monkeypatch) 
     monkeypatch.setattr(
         live_session_module,
         "settings",
-        SimpleNamespace(openai_secret_key="server-only-test-key"),
+        SimpleNamespace(
+            openai_secret_key="server-only-test-key",
+            gpt_live_responses_model="gpt-5.6-terra",
+        ),
     )
 
     result = live_session_module.create_live_session(

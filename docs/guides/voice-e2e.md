@@ -163,7 +163,7 @@ APIを含むローカルスタックをテスト側で起動する場合は次�
     uv sync --project app/api --locked
     VOICE_TEST_START_LOCAL_STACK=true pnpm test:e2e:voice
 
-startLocalStack.mjs はAPIを memory://test、Webを5173番ポートで起動し、dev用のvoice demo recordをseedします。
+startLocalStack.mjs はAPIを memory://test、Webを15173番ポート、APIを18001番ポートで起動し、dev用のvoice demo recordをseedします。既存プロセスには接続せず、テスト専用スタックを新規起動します。
 実際に発話をTranscribeするLevel 3では、`VOICE_TEST_AUDIO_FIXTURE=/absolute/path/to/recorded.wav`で録音済みWAVを指定してください。未指定時の短いWAVは、Level 2のマイク接続・イベント経路確認用です。
 Transcribe + Pollyのローカルスタックを使う場合は、先に`uv sync --project app/voice --locked`も実行してください。
 
