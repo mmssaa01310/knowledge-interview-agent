@@ -89,9 +89,9 @@ AWS Polly（Kazuha / neural）で`PARTIAL_ANSWER`を再生成する例:
     pnpm exec playwright test tests/e2e/voice/live/level3-promotion.spec.mjs \
       --project=chromium --workers=1 --retries=0
 
-Level 3のTelemetryは`audioInputMode=fake_microphone_wav`、`transcriptSource=gpt_live`、`liveApiUsed=true`としてLevel 2と区別します。speech start/end、transcript final、state commit、assistant speech start/endを実測し、speech endからtranscript final / assistant startまでのレイテンシを保存します。候補ごとの比較結果と失敗時のEvidence Packageは`level3/`以下に出力されます。この段階ではCodexの自動修正、LLM Judge、自動commitは行いません。
+Level 3のTelemetryは`audioInputMode=fake_microphone_wav`、`transcriptSource=gpt_live`、`liveApiUsed=true`としてLevel 2と区別します。speech start/end、transcript final、state commit、assistant speech startを実測し、speech endからtranscript final / assistant startまでのレイテンシを保存します。WebRTC Providerから`assistantSpeechEnded`が得られない場合があるため、`assistantPlaybackSettled`は別フィールドに記録しますが、正式な音声終了とは同一視しません。候補ごとの比較結果と失敗時のEvidence Packageは`level3/`以下に出力されます。この段階ではCodexの自動修正、LLM Judge、自動commitは行いません。
 
-GPT-Liveの入力文字起こしは、プロトコル上の完成イベントではなく`session.input_transcript.delta`の断片として届く場合があります。実行側では、音声入力が一定時間アイドルになった時点（またはプロバイダが明示した音声終了イベント）に`gpt_live_input_transcript_final`を記録し、蓄積したdeltaをアプリケーション上の1ターンのfinalとして扱います。これは句読点や特定の末尾文字列を推測する判定ではありません。プロバイダの`input_audio_buffer.speech_started/stopped`は診断情報として保存しますが、GPT-Liveのテスト成立条件にはしません。
+GPT-Liveの入力文字起こしは、プロトコル上の完成イベントではなく`session.input_transcript.delta`の断片として届く場合があります。実行側では、音声入力が一定時間アイドルになった時点（またはプロバイダが明示した音声終了イベント）に`gpt_live_input_transcript_final`を記録し、蓄積したdeltaをアプリケーション上の1ターンのfinalとして扱います。これは句読点や特定の末尾文字列を推測する判定ではありません。プロバイダの`input_audio_buffer.speech_started/stopped`は診断情報として保存しますが、GPT-Liveのテスト成立条件にはしません。Responses Delegationの`response.completed`、`response.created`、Function Tool結果の送信、`session.commentary.append` ACKは、Liveのユーザー向け応答開始を示しません。State ToolなしのDelegation完了後もLive出力が無い場合は、入力Transcriptの確定を待ってLive continuationを同一turnで最大1回送ります。
 
 ### Jev Supervisor（TypeSafe）
 
@@ -219,6 +219,8 @@ NORMALの各ターンでは、次の順序をTimelineに記録します。
       → state_version_updated
       → current_question_updated
       → assistant_speech_started
+
+GPT-Liveでは、上記のState保存・Responses評価のTimelineに加えて、`session.delegation.created`、`delegation_id`、Function Tool call、`response.item.create`、Responses用`response.create`、Live用`session.commentary.append`とACK、Live output transcript、assistant audio startedを記録します。Function ToolがないDelegationも正常な分岐であり、`response.completed`の`output: []`だけで失敗・成功を決めません。`response.create`やappend ACKを音声応答と数えず、実際のLive output/audio開始を別に検証します。同一turnのcontinuation、commentary、assistant main responseは重複しないことを確認します。
 
 GPT-Liveではプロバイダから音声終了または会話ターン完了イベントが必ず届くとは限らないため、`gpt_live_input_transcript_final`がアプリケーション側のtransport-level grouping markerになります。音声トラックがliveで、Outbound RTPと入力transcript deltaが確認でき、アプリケーション境界も記録されていれば、プロバイダVADイベントが無くても有効なターンとして扱います。反対に、音声が送信されていない、transcriptが無い、またはこのアプリケーション境界も無い場合は、会話ロジックの失敗とせず`TEST_INFRA_FAILURE`として分類します。
 

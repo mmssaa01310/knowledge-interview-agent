@@ -341,7 +341,7 @@ Schemaは`additionalProperties=false`を設定し、定義済みの全プロパ�
 | `ASR_TARGET` | 直前の音声認識で何が不明だったかの確認 | 保存済み`clarificationTarget`の役割だけを短く説明 |
 | `MISSING_INFORMATION_TARGET` | どの観点が不足しているかの確認 | 保存済みの不足観点だけを短く説明 |
 
-`ASR_TARGET`や`MISSING_INFORMATION_TARGET`は、特定言語の語句一致で判定してはならない。Interpreterが発話の目的を構造化分類し、Backendは`clarificationKind`と保存済みの対象だけで応答を選択する。質問全体の説明を許可するのは`QUESTION_MEANING`の場合だけである。`QUESTION_MEANING`でも、`expectedInformation`のうちユーザーが尋ねた対象だけを選び、`capturedItemIds`にある回答済み観点は説明・再質問しない。説明は原則1文、長くても2文までとし、長い回答ガイドや複数例を読み上げない。Transcribe + Polly、テキスト、GPT Live / Realtimeは同じ分類結果と`clarificationTarget`を利用する。
+`ASR_TARGET`や`MISSING_INFORMATION_TARGET`は、特定言語の語句一致で判定してはならない。Interpreterが発話の目的を構造化分類し、Backendは`clarificationKind`と保存済みの対象だけで応答を選択する。質問全体の説明を許可するのは`QUESTION_MEANING`の場合だけである。`QUESTION_MEANING`でも、`expectedInformation`のうちユーザーが尋ねた対象だけを選び、`capturedItemIds`にある回答済み観点は説明・再質問しない。説明は原則1文、長くても2文までとし、長い回答ガイドや複数例を読み上げない。Transcribe + Polly、テキスト、旧Realtimeは同じ分類結果と`clarificationTarget`を利用する。GPT-Liveは同じAspect意味契約をResponses Delegationで評価し、Liveモデルが質問意図への応答と会話復帰を担う。
 
 ### 7.1.2 回答充足性とProbe
 

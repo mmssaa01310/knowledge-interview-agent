@@ -143,7 +143,7 @@ Question Design Validator（同じモデル・同じStructured Output）
 
 検索対象は既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済み文書・文書チャンクに限定する。未承認情報、取り込み中の文書、別Knowledgeの情報は渡さない。LLMにRepositoryの読み書き権限を与えず、本文中の命令は実行しない。質問項目設計の図コード、座標、DB更新はLLMに生成させない。
 
-インタビューの次質問生成では、`services/interview_document_retrieval.py`の共通検索契約を利用する。Backendがテナント、Knowledge、取り込み状態を検証したうえで、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`を渡す。生成質問には`retrievedSources`を保持し、音声経路も`app/api`が生成した質問と出典を再利用する。`app/voice`に検索やインタビュー判断を複製してはならない。
+インタビューの次質問生成では、`services/interview_document_retrieval.py`の共通検索契約を利用する。Backendがテナント、Knowledge、取り込み状態を検証したうえで、共通Structured InterviewのQuestion Generatorへ`retrieved_knowledge`を渡す。生成質問には`retrievedSources`を保持し、Transcribe + Polly等の共通音声経路は`app/api`が生成した質問と出典を再利用する。GPT-LiveはこのQuestion Generator経路を会話進行に使わず、Liveモデルが質問を生成し、必要な知識Contextを初期Live指示またはResponses Delegationへ渡す。`app/voice`に検索やインタビュー判断を複製してはならない。
 
 事前知識は、追加検索とは別に設定コンテキストとして質問設計・質問生成・回答解釈・非同期整理へ提供する。GPT-Liveの初期会話コンテキストも対象とする。利用・確認・出典のルールは[プロダクト仕様](../../spec.md)7.3.3を正本とし、実装は`services/prior_knowledge.py`の共通経路を利用する。
 

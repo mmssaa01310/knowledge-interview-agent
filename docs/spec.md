@@ -223,11 +223,11 @@ WebRTC接続の確立や制御に必要なシグナリング通信には、WebSo
 Provider自動fallbackは行わない。
 
 GPT-Live-1は既存のStructured Interview音声経路から分離したWebRTC経路を使用する。
-記録付きの会話では、字幕の累積観測を既存BackendのLLMで並列に整理し、全質問項目へ保存・検証する。モデルの委譲イベントは保存の必須条件としない。
-音声会話は保存・検証結果を待たず進行し、正式な状態の更新はBackendが担う。
+GPT-Liveを唯一のインタビュアー／会話進行者とし、Responses Delegationは現在の質問に対する意味評価とEvidence抽出だけを担当する。Application BackendはDelegationの結果を検証して保存するState Storeであり、GPT-Live経路のTranscriptを別のLLMで再評価したり、次質問本文やConversation Actionを生成したりしない。モデルの委譲イベントはState更新の唯一の成功条件ではなく、State Toolを呼ばないDelegation後もLive会話は継続できる。
+音声会話のユーザー向け応答はGPT-Liveが生成する。State Toolを実行した場合のResponses継続用`response.create`、Responses完了、LiveへのContext返却、Liveの出力・音声開始は別イベントとして扱う。State Toolがない場合も、Responsesの`output: []`やappend ACKだけで会話完了とせず、必要ならLiveへ一度だけcontinuationを渡す。
 未充足項目の回答は整理中として表示し、追加回答・訂正を同じ質問項目へ統合する。全必須詳細が揃うまでは回答済みとしない。
 接続、字幕、バックグラウンド保存の契約は[GPT-Live WebRTC](architecture/voice/gpt-live-phase1.md)に従う。
-DB受付済み字幕の整理・保存はページ離脱後もBackendで継続し、未処理分は再起動後も再試行する。GPT-Live経路でも共通のProfile別完了条件と最後の追加事項への回答を検証して完了を保存し、画面の聞き取り状態を終了する。未確定の回答候補は処理中と混同せず「補足・確認待ち」と表示する。
+共通Structured音声経路のDB受付済み字幕の整理・保存はページ離脱後もBackendで継続し、未処理分は再起動後も再試行する。GPT-Live経路では、Responses Delegationの評価結果をState Storeへ保存し、Liveモデルが会話を継続・終了する。未確定の回答候補は処理中と混同せず「補足・確認待ち」と表示する。
 
 Assistant音声への割り込みは音声出力の停止であり、コミット済みUser Turnの取消しを意味しない。
 未コミットTurnだけを取消可能とし、明示的な訂正は新しいTurnとして状態更新する。
@@ -434,7 +434,7 @@ Frontendは設定未完了の状態を表示し、管理者系ロールには「
 
 本文はBackendで決定的に正規化してから保存・チャンク化する。改行コードをLFへ統一し、外側の空行と空白だけの行を整理し、連続する空行は最大2行までにする。本文中の非空行の字下げ、改行、末尾空白は意味を変えないため保持する。有効なJSONオブジェクトまたは配列だけは構造を変えずに2スペースのインデントへ整形し、JSONとして不正な本文は推測で整形しない。LLMによる書き換えや要約は保存時に実行しない。内部メタデータの`contentFormat`は本文から自動判定する表示・互換用の値であり、入力項目ではない。
 
-Backendは有効な事前知識を質問項目設計、インタビューの質問生成、回答解釈・非同期の回答整理へ渡す。テキスト、Transcribe + Polly、Nova Sonic 2、GPT-Liveで利用方針を共通化する。GPT-Liveにも初期会話コンテキストと回答整理の双方へ渡し、事前知識を使うために独自ターン制御や整理完了待ちを追加してはならない。
+Backendは有効な事前知識を質問項目設計、インタビューの質問生成、回答解釈・非同期の回答整理へ渡す。テキスト、Transcribe + Polly、Nova Sonic 2ではこの共通Backend経路で利用方針を共通化する。GPT-Liveでは事前知識を初期会話コンテキストとResponses Delegationの評価Contextへ渡すが、GPT-LiveのTranscriptを共通Structured Interpreterで再評価したり、整理完了を待つためのBackendターン制御を追加したりしてはならない。
 
 * 既知の一般的な前提を最初から説明させず、未確認の内容、差分、具体例を質問する。例えば「承認には製品Aを使用」と登録済みなら、使用製品を聞き直すのではなく、運用上の課題などを聞く。
 * 対象者への適用確認や記録上の回答確認が必要な場合は「製品Aをお使いという理解で合っていますか？」のように既知情報を提示して短く確認する。事前知識だけで必須項目を回答済み・確認済みにしない。
@@ -872,7 +872,7 @@ Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.fo
 
 質問項目設計の生成前に、Backendは同じテナントかつ同じKnowledgeに属する情報だけを読み取る。検索対象は、既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済みの文書・文書チャンクである。未承認の記録・提案、取り込み中の文書、別Knowledgeの情報をLLMへ渡してはならない。検索結果は`retrieved_knowledge`として入力へ埋め込み、LLMにDBアクセスやDB更新を許可してはならない。
 
-インタビューの次質問生成でも、Backendは同じテナントかつ同じKnowledgeに属する`indexed`または取り込み完了状態の本文・チャンクを共通検索サービスから取得し、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`として渡す。`retrievalPolicy=never`の項目では追加検索せず、`auto`または`required`では質問・項目・会話文脈に関連する情報を検索する。設定として渡す事前知識の扱いは7.3.3に従う。生成された質問には`retrievedSources`として出典ID、タイトル、改訂識別子と検索時のスコアを記録する。`app/voice`は検索・質問進行を実装せず、Backendが生成した同じ質問と出典を利用する。
+インタビューの次質問生成でも、Backendは同じテナントかつ同じKnowledgeに属する`indexed`または取り込み完了状態の本文・チャンクを共通検索サービスから取得し、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`として渡す。`retrievalPolicy=never`の項目では追加検索せず、`auto`または`required`では質問・項目・会話文脈に関連する情報を検索する。設定として渡す事前知識の扱いは7.3.3に従う。生成された質問には`retrievedSources`として出典ID、タイトル、改訂識別子と検索時のスコアを記録する。`app/voice`は検索・質問進行を実装せず、共通Structured音声経路ではBackendが生成した同じ質問と出典を利用する。GPT-LiveはLiveモデルが質問進行を担い、検索・事前知識のContextは初期指示またはResponses Delegationへ渡す。
 
 Question Design AgentとValidatorは、同じ選択モデルへそれぞれStructured Outputリクエストを送る。生成結果と検証結果はBackendがPydantic Schemaで検証し、検証失敗時は各段階で1回だけ再実行する。Provider障害時に別モデルや別の自動フォールバックへ切り替えてはならない。
 
@@ -882,7 +882,7 @@ Question Design AgentとValidatorは、同じ選択モデルへそれぞれStruc
 
 画像生成モデルはインタビュー処理、図生成、図表示のいずれにも使用しない。
 
-インタビュー実行はStructured Interview経路だけを正式サポートする。テキストと音声（Transcribe + Polly）の両方が同じStructured Interpreter、Coordinator、Question Generatorを使用し、旧Interview Agent経路や切替用Feature Flagは持たない。AWS認証情報またはIAM権限が不足している場合は状態を更新せず、エラーとして扱う。
+インタビュー実行はStructured Interview経路だけを正式サポートする。テキストと音声（Transcribe + Polly）の両方が同じStructured Interpreter、Coordinator、Question Generatorを使用し、旧Interview Agent経路や切替用Feature Flagは持たない。GPT-Liveはこの共通音声経路とは分離したWebRTC経路で、Liveモデルが会話・質問進行、Responses Delegationが意味評価、Application BackendがState保存を担当する。AWS認証情報またはIAM権限が不足している場合は状態を更新せず、エラーとして扱う。
 
 構造化インタビューの環境変数は次のとおりである。
 

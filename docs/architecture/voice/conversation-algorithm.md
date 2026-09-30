@@ -1,10 +1,10 @@
 # Conversation Algorithm 現行監査・仕様化
 
-更新日: 2026-09-14
-対象: `text` / `transcribe_polly` / `nova_sonic` / `openai_realtime`
-状態: 現行コードの監査、characterization、Canonical Intent Policy Phase 1、実LLM評価、Single State Writer Phase 2を反映。
+更新日: 2026-09-28
+対象: `text` / `transcribe_polly` / `nova_sonic` / `openai_realtime` / `gpt_live`
+状態: 現行コードの監査、characterization、Canonical Intent Policy Phase 1、実LLM評価、Single State Writer Phase 2、GPT-Live Responses Delegationの責務分離を反映。
 
-この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
+この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。GPT-Liveは共通Structured Interviewとは別に、Liveモデル・Responses Delegation・Application State Storeで構成されるため、共通経路の監査結果と混同しない。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
 
 Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの順序保護、Provider source turnのDurable Dedup、Canonical Question Definitionの不変契約を実装した。2026-09-14時点で、Structured回答の永続化前に質問進行しない契約とBackground専用の`analysisVersion`を追加した。旧Fast Pathはこの契約を満たさないためVoice API経路ではfail-closedとなり、設定が有効でも通常経路へフォールバックする。Initial Questionの全面統合、Realtime音声経路の変更、RAG構造変更はこの文書の対象外である。
 
@@ -262,7 +262,7 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 
 ### 4.2.1 共通の回答評価
 
-Text、Transcribe + Polly、GPT Liveの確定transcriptは、同じ意味ルーター、Structured Interpreter、共通会話制御へ渡す。各ターンは`userIntent`（通常回答、質問意図確認、ASR対象確認、メタ質問等）を先に判定し、その後`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`の評価と`conversationAction`を決定する。ユーザーからAssistantへ向けた質問はインタビュー回答として評価しない。
+Text、Transcribe + Polly、Nova Sonic、旧OpenAI Realtimeの確定transcriptは、同じ意味ルーター、Structured Interpreter、共通会話制御へ渡す。各ターンは`userIntent`（通常回答、質問意図確認、ASR対象確認、メタ質問等）を先に判定し、その後`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`の評価と`conversationAction`を決定する。ユーザーからAssistantへ向けた質問はインタビュー回答として評価しない。GPT-Liveはこの意味契約とAspect定義を共有するが、同じ確定transcriptをBackendのStructured Interpreterへ再投入するのではなく、Responses DelegationのSemantic Assessorが評価し、GPT-Live自身が会話Actionと質問進行を担う。
 
 `PARTIALLY_ANSWERED`は認識済みだが必要な観点が不足している状態、`NOT_HEARD`は文字起こしの欠落・空文字・音声上の曖昧さを示す根拠がある状態、`INCOMPLETE_UTTERANCE`は発話が途中で終わった状態である。前者を「聞き取れなかった」や「続き」と表現してはならない。`missingInformation`に不足観点を記録し、Question Generatorには現在質問、目的、必要観点、今回の回答、取得済み情報、不足情報、直前評価、同一targetの質問履歴を渡す。
 
@@ -278,7 +278,7 @@ Text、Transcribe + Polly、GPT Liveの確定transcriptは、同じ意味ルー�
 
 Question Masterの`questionPlan`には、質問の目的（`questionGoal`）、Probeで優先する観点（`preferredProbeDimensions`）、最大回数（`maxProbeCount`）を設定できる。`JUDGMENT`、`ACTION`、`CONTEXT`、`RESULT`等から質問目的に合う観点を1つだけ選ぶ。追加情報が存在するだけではProbeを出さず、専門性・判断・行動・暗黙知の理解に重要な不足がある場合だけ生成する。
 
-Transcribe + Polly、GPT Live、テキストは同じ確定transcriptをこの共通判定へ渡す。Runtime側はProbeの価値判断や質問進行を行わず、確定transcriptの受け渡しと回答文の音声化だけを担当する。右側UIでは基本質問カード内に統合回答を表示し、Probeがあるときだけ折りたたみのProbe Q/Aを表示する。
+Transcribe + Polly、Nova Sonic、旧OpenAI Realtime、テキストは同じ確定transcriptをこの共通判定へ渡す。これらのRuntime側はProbeの価値判断や質問進行を行わず、確定transcriptの受け渡しと回答文の音声化だけを担当する。GPT-Liveは別のRuntime契約で、Liveモデルが会話・Probe・質問進行を担当し、Responses Delegationの評価結果をApplication Backendへ保存する。GPT-LiveのBackendは次質問本文を生成しない。右側UIでは基本質問カード内に統合回答を表示し、Probeがあるときだけ折りたたみのProbe Q/Aを表示する。
 
 ### 4.3 VoiceTurn lifecycle
 

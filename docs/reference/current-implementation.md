@@ -80,7 +80,7 @@ app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/coordinator.py::Open
 `openai_realtime`ではAmazon Transcribe、Amazon Polly、`PollyTextChunker`、既存の独自VADを使用しない。
 OpenAI Secret Keyは`app/voice`だけで読み込み、Browserへ返さない。Provider failure時の自動fallbackも行わない。
 
-GPT-Live Phase 1は、上記の旧OpenAI Realtime経路とは別の接続検証経路として実装している。
+GPT-Live Phase 1は、上記の旧OpenAI Realtime経路とは別の、GPT-Liveを会話進行者とするWebRTC経路として実装している。Responses Delegationを意味評価境界、Application BackendをInterview Stateの保存境界とする。
 
 ```text
 Browser RTCPeerConnection
@@ -89,12 +89,12 @@ Browser RTCPeerConnection
   → GPT-Live-1音声・Data Channelイベント
 ```
 
-`app/api/src/ai_interviewer_api/services/live_session.py`がOpenAI Python SDKの`client.live.create()`を呼び出し、`gpt-live-1`と短い日本語会話プロンプト、音声`marin`を固定する。GPT-Live経路ではVoiceSession/VoiceTurn、InterviewBridge、`speech_stopped`、`response.completed`、`response.done`、独自VAD、Transcribe、Pollyを使用しない。詳細は[GPT-Live Phase 1](../architecture/voice/gpt-live-phase1.md)を参照する。
+`app/api/src/ai_interviewer_api/services/live_session.py`がOpenAI Python SDKの`client.live.create()`を呼び出し、`gpt-live-1`と短い日本語会話プロンプト、音声`marin`を固定する。GPT-Live経路では旧VoiceSession/VoiceTurn、InterviewBridge、`speech_stopped`、独自VAD、Transcribe、Pollyを使用しない。一方、Responses Delegationのネストされた`response.completed`は意味評価処理の監査イベントとして扱う。`response.completed`、Responses用`response.create`、`session.commentary.append`のACKは、GPT-Liveのユーザー向け出力や音声開始とは別である。詳細は[GPT-Live Phase 1](../architecture/voice/gpt-live-phase1.md)を参照する。
 
 分類は次のとおりである。
 
-* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。追加で旧OpenAI Realtime経路と、Phase 1のGPT-Live Browser WebRTC経路。
-* B（共通）: 認証・Record認可、Store/Repository、VoiceSession/VoiceTurn、Interview Bridge、文書検索、メッセージ・イベントの冪等性。
+* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。追加で旧OpenAI Realtime経路と、Responses Delegationを使うGPT-Live Browser WebRTC経路。
+* B（共通）: 認証・Record認可、Store/Repository、文書検索、メッセージ・イベントの冪等性。VoiceSession/VoiceTurnとInterview Bridgeは旧OpenAI Realtime・Transcribe + Polly・Nova Sonic等の共通音声経路で利用し、GPT-LiveのBrowser WebRTC経路はLive State APIとDataChannelの契約を利用する。
 * C（旧・削除済み）: 旧Strands Interview Agent、旧Voice回答評価、`dialogue_interpreter`、`interview_answer_processor`、Strands共通Tool、旧Feature Flagと旧専用設定。
 * D（判断不能）: なし。Structured Interviewのみを正式経路とする方針に確定したため、旧経路分岐も削除した。
 
@@ -236,7 +236,7 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 
 `field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡し、直接登録した事前知識は検索結果の有無にかかわらず`prior_knowledge`として同じ入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用する。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
 
-通常の固定項目インタビューと構造化インタビューの次質問生成は、`interview_document_retrieval`と`services/prior_knowledge.py`の共通経路を利用する。追加検索の結果は`retrieved_knowledge`、直接登録した事前知識は`prior_knowledge`として、同じテナント・同じKnowledgeの有効な本文だけを質問コンテキストへ渡す。直接登録した事前知識は追加文書検索から除外し、文書由来の確認候補と混同しない。`retrievalPolicy=never`でも設定済み事前知識は渡し、追加検索は行わない。回答解釈・高速音声判定にも同じ`prior_knowledge`を渡し、事前知識だけで回答を確定しない。GPT-Liveは初期セッション指示へ事前知識を渡し、音声経路は`app/api`の共通整理を再利用する。
+通常の固定項目インタビューと構造化インタビューの次質問生成は、`interview_document_retrieval`と`services/prior_knowledge.py`の共通経路を利用する。追加検索の結果は`retrieved_knowledge`、直接登録した事前知識は`prior_knowledge`として、同じテナント・同じKnowledgeの有効な本文だけを質問コンテキストへ渡す。直接登録した事前知識は追加文書検索から除外し、文書由来の確認候補と混同しない。`retrievalPolicy=never`でも設定済み事前知識は渡し、追加検索は行わない。回答解釈・高速音声判定にも同じ`prior_knowledge`を渡し、事前知識だけで回答を確定しない。GPT-Liveは初期セッション指示とResponses Delegationの評価Contextへ事前知識を渡し、共通Structured Interpreterによる回答整理やBackendの次質問生成を再利用しない。
 
 質問対象の値が取り込み済み文書に明示されている場合、共通の`QuestionGenerationOutput`が`documentCandidateValue`と`documentCandidateSourceIds`を返す。Backendは検索結果への値の出現と出典IDを検証したうえで、`candidateSource=document_reference`、`answerState/status=AWAITING_CONFIRMATION`の仮候補として保存する。初回質問は「文書では○○となっています。この内容で合っていますか？」という確認事項になり、明示承認後だけ正式回答へ移る。値が文書にない場合、文書の取り込みが完了していない場合、または`retrievalPolicy=never`の場合は通常質問へ戻る。通常、構造化、音声のすべてでこの状態と出典を共有し、音声はAPIが生成した確認質問をそのまま再生する。
 

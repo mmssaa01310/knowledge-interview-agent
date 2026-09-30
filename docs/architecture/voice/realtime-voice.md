@@ -4,9 +4,11 @@
 
 リアルタイム音声インタビューは、Structured Interviewに対する別の入出力経路として実装する。
 
-質問進行、回答評価、RAG、状態更新、構造化提案生成、終了判定は、`app/voice`ではなく`app/api`を正本とする。
+共通Structured音声経路の質問進行、回答評価、RAG、状態更新、構造化提案生成、終了判定は、`app/voice`ではなく`app/api`を正本とする。GPT-Live WebRTCは冒頭の例外境界に従い、Liveモデルが質問進行、Responses Delegationが意味評価、`app/api`が保存保証を担当する。
 
 `app/voice`は音声入出力、WebRTC、Voice Runtime制御、確定Transcriptの受け渡しに責務を限定する。
+
+ただしGPT-Live WebRTCは、旧OpenAI RealtimeおよびTranscribe + Polly/Nova Sonicの共通Structured Interview経路とは別の責務境界を持つ。GPT-Liveが唯一のインタビュアーとして会話・質問進行を行い、Responses Delegationが意味評価、Application BackendがState保存を担当する。GPT-Live経路でBackendがTranscriptを再評価したり、次質問本文を生成したりしない。詳細は[GPT-Live WebRTC](gpt-live-phase1.md)を参照する。
 
 本書は本番を含む共通契約・責務の設計である。ローカル実装の認証方式と実装済み範囲は[現行実装](../../reference/current-implementation.md)を参照する。
 
@@ -22,13 +24,15 @@
 * Voice SessionとVoice Turnの保存
 * 確定Transcriptの正式保存
 * 回答対象Question IDの管理
-* Structured Interviewの実行
-* 回答評価
+* 共通Structured Interviewの実行
+* 共通Structured Interviewの回答評価
 * RAG
-* インタビュー状態更新
-* 次質問、深掘り質問、終了応答の決定
+* 共通Structured Interviewのインタビュー状態更新
+* 共通Structured Interviewの次質問、深掘り質問、終了応答の決定
 * AI提案の生成と保存
 * AssistantReplyの生成
+
+GPT-Liveでは、上記のうちApplication Backendは認証・認可、Question/Aspect検証、Interview Stateの更新・保存を担う。GPT-Liveの質問進行、深掘り、ユーザー向け応答はLiveモデルが担い、Responses Delegationは意味評価だけを行う。
 
 `app/api`へ音声固有依存を追加しない。
 
