@@ -1046,6 +1046,8 @@ Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20ms�
 `audio_sequence`順にWebRTCへ渡す。初回発話は固定挨拶と初回質問を1つの正式応答へまとめる。
 相槌・処理中通知を有効にした場合も、メモリキャッシュ済み音声だけを使い、正式会話履歴には保存しない。
 
+Text deltaは1つのSpeech Bufferへ集約し、LLMのstream delta境界をPollyのutterance境界として扱わない。`。！？!?`を最優先し、次に`、`、target到達後は完結述語の後に続く既知の接続句など安全な節境界を探す。文字数targetだけでは切らず、一般的な助詞直後も境界にしない。自然な境界が来なければ次の句読点またはstream完了までbufferし、文末flushでは残り全体を出力する。最初のchunkは低いtargetで境界探索を始め、最初に現れた自然な境界で再生を始める。
+
 正式回答、PROCESSING_ACK、LISTEN_ACK、長時間処理通知は単一の`AudioOutputCoordinator`へ渡す。
 優先度は順に100、50、40、30とし、高優先度出力は低優先度の生成・再生を即時キャンセルする。
 PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信する。正式回答の送信要求は

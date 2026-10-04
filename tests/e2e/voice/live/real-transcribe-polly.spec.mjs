@@ -11,13 +11,13 @@ const config = readVoiceTestConfig();
 const recordUrl = "/knowledge-dbs/dev-voice-demo-db/knowledges/"
   + "dev-voice-demo-knowledge/records/dev-voice-demo-record";
 
-test.describe("voice E2E level 3: real Transcribe + Polly opt-in", () => {
+test.describe("voice E2E level 3: real Transcribe + Polly connection smoke", () => {
   test.skip(
     !config.realApiEnabled || config.realProvider !== "transcribe_polly",
     "Set VOICE_TEST_REAL_API_ENABLED=true and VOICE_TEST_REAL_PROVIDER=transcribe_polly",
   );
 
-  test("streams one bounded real Transcribe + Polly session", async ({ page, request }, testInfo) => {
+  test("opens one real Transcribe + Polly session without turn acceptance", async ({ page, request }, testInfo) => {
     const guard = new VoiceCostGuard(config);
     for (let retry = 0; retry < testInfo.retry; retry += 1) guard.recordRetry();
     guard.requireRealApiOptIn();

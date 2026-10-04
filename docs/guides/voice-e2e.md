@@ -167,6 +167,16 @@ startLocalStack.mjs はAPIを memory://test、Webを15173番ポート、APIを18
 実際に発話をTranscribeするLevel 3では、`VOICE_TEST_AUDIO_FIXTURE=/absolute/path/to/recorded.wav`で録音済みWAVを指定してください。未指定時の短いWAVは、Level 2のマイク接続・イベント経路確認用です。
 Transcribe + Pollyのローカルスタックを使う場合は、先に`uv sync --project app/voice --locked`も実行してください。
 
+## Transcribe + Pollyの実AWS Acceptance
+
+Mock E2Eとは別に、Amazon Transcribe StreamingとPollyを実際に呼ぶAcceptanceを実行できます。AWS CLIで利用可能な認証情報またはAWS Profileを設定したうえで、次の1コマンドを実行してください。
+
+    pnpm voice:acceptance:transcribe-polly
+
+コマンドはMock E2EとReal AWS Acceptanceを別々に実行し、両方が成功した場合だけ全体を成功とします。AWS認証確認後、例示質問をSpeech Bufferで分割して実際のPollyへ送り、成功した要求本文、AWS request ID、各chunkのPCM完了を記録します。必要な音声fixtureがない場合はPollyで生成してから、通常回答、部分回答と補完、質問確認、複数ターン、Transcribe再接続、Polly再生完了後の入力再開、再生中の割り込みを検証します。Mockだけの成功やReal AWSテストのskipはAcceptance成功になりません。
+
+結果レポートは`test-results/voice-acceptance/<run-id>/acceptance-report.json`、Real AWS側の詳細は`real-aws/acceptance/transcribe-polly-report.json`に保存されます。全体レポートには`real-aws/polly-chunk-probe/polly-chunk-acceptance-report.json`の結果も含まれ、例示質問でPollyへ実際に送信した本文を確認できます。自然な2chunkの期待例は「現在の役割と、」「日々どのような責任を担っているかを具体的に教えてください。」です。後者の詳細レポートにはTranscribe確定TurnとInterview APIの保存Turnの照合結果、質問State versionの差分、実際にランタイムがPollyへ渡したテキストchunk一覧、AWS Polly要求ログが含まれます。AWSの実行に失敗した場合もMockの結果とともに全体レポートを残し、コマンドは失敗します。
+
 Level 1の決定論的シナリオ・seedの再実行:
 
     pnpm voice-test -- --scenario SELF_CORRECTION

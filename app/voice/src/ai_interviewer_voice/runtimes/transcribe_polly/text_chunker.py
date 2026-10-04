@@ -4,18 +4,42 @@ import re
 from dataclasses import dataclass
 
 _STRONG_BOUNDARIES = frozenset("。？！!?\n")
+_SAFE_CLAUSE_MARKERS = (
+    "具体的には",
+    "その一方で",
+    "そのため",
+    "その結果",
+    "一方で",
+    "それから",
+    "その後",
+    "さらに",
+    "ただし",
+    "次に",
+    "また",
+    "なお",
+)
+_COMPLETE_PREDICATE_SUFFIX = re.compile(
+    r"(?:していただけますか|してもらえますか|していただけます|"
+    r"してもらえます|してください|なっています|となっています|"
+    r"していました|しています|しており|している|していた|"
+    r"でしょうか|ではありません|ではないです|ありませんでした|"
+    r"できました|できています|になります|となります|"
+    r"でした|ません|ました|います|あります|します|です|ます|"
+    r"だった|である|できる|する|した)$"
+)
+_PUNCTUATION = frozenset("。？！!?、,\n")
 
 
 @dataclass(frozen=True)
 class PollyTextChunkerConfig:
-    first_min_chars: int = 10
-    first_max_chars: int = 30
-    following_min_chars: int = 20
-    following_max_chars: int = 80
+    first_min_chars: int = 5
+    first_target_chars: int = 30
+    following_min_chars: int = 10
+    following_target_chars: int = 80
 
 
 class PollyTextChunker:
-    """LLM deltaにも完成済みtextにも使える増分テキスト分割器。"""
+    """Buffer streamed text until a punctuation or safe phrase boundary."""
 
     def __init__(self, config: PollyTextChunkerConfig | None = None) -> None:
         self._config = config or PollyTextChunkerConfig()
@@ -44,98 +68,110 @@ class PollyTextChunker:
     def _next_boundary(self, *, final: bool) -> int | None:
         if not self._buffer:
             return None
-        min_chars, max_chars = self._limits()
+        minimum, target = self._limits()
 
-        comma = self._buffer.find("、")
-        comma_min_chars = min(min_chars, 10)
-        strong = _first_strong_boundary(self._buffer)
-        if (
-            comma >= 0
-            and comma + 1 >= comma_min_chars
-            and strong is not None
-            and strong - (comma + 1) >= comma_min_chars
-        ):
-            return comma + 1
+        punctuation = _first_punctuation_boundary(self._buffer, minimum)
+        if punctuation is not None:
+            return punctuation
 
-        if strong is not None and (strong >= min_chars or final):
-            return strong
+        if len(self._buffer) >= target:
+            safe_clause = _next_safe_clause_boundary(
+                self._buffer,
+                minimum=minimum,
+                target=target,
+            )
+            if safe_clause is not None:
+                return safe_clause
 
-        if comma >= 0 and comma + 1 >= min_chars:
-            return comma + 1
-
-        if len(self._buffer) >= max_chars:
-            natural = _last_natural_boundary(self._buffer, max_chars, min_chars)
-            return natural or max_chars
-
+        # Character targets only decide when to look for a safe boundary.
+        # They never split a Japanese word, predicate, or particle-bound phrase
+        # by themselves. If no natural punctuation or complete-clause boundary
+        # has arrived, keep buffering until one does or the response ends.
         if final:
             return len(self._buffer)
         return None
 
     def _limits(self) -> tuple[int, int]:
         if self._chunk_index == 0:
-            return self._config.first_min_chars, self._config.first_max_chars
-        return self._config.following_min_chars, self._config.following_max_chars
+            return self._config.first_min_chars, self._config.first_target_chars
+        return self._config.following_min_chars, self._config.following_target_chars
 
 
-def split_text_for_polly(text: str, config: PollyTextChunkerConfig | None = None) -> list[str]:
+def split_text_for_polly(
+    text: str,
+    config: PollyTextChunkerConfig | None = None,
+) -> list[str]:
     return PollyTextChunker(config).feed(text, final=True)
 
 
-def _first_boundary(text: str, boundaries: frozenset[str]) -> int | None:
-    positions = [text.find(item) for item in boundaries if item in text]
-    return min(positions) + 1 if positions else None
-
-
-def _last_natural_boundary(text: str, limit: int, minimum: int) -> int | None:
-    candidate = text[:limit]
-    positions = [
-        position
-        for position in (
-            _last_strong_boundary(candidate),
-            candidate.rfind("、") + 1,
-        )
-        if position >= minimum
-    ]
-    return max(positions) if positions else None
+def _first_punctuation_boundary(text: str, minimum: int) -> int | None:
+    strong = _first_strong_boundary(text)
+    comma = text.find("、")
+    if comma >= 0 and comma + 1 < minimum:
+        comma = -1
+    comma_boundary = comma + 1 if comma >= 0 else None
+    if strong is None:
+        return comma_boundary
+    if comma_boundary is None:
+        return strong
+    return min(strong, comma_boundary)
 
 
 def _first_strong_boundary(text: str) -> int | None:
-    positions = [
-        index + 1
-        for index, mark in enumerate(text)
-        if mark in _STRONG_BOUNDARIES
-        and (mark != "." or _safe_ascii_period(text, index))
-    ]
-    # ASCII full stops are not in _STRONG_BOUNDARIES so they are considered
-    # separately.  This keeps decimal values, URLs, and abbreviations intact.
-    positions.extend(
-        index + 1
-        for index, mark in enumerate(text)
-        if mark == "." and _safe_ascii_period(text, index)
-    )
-    return min(positions) if positions else None
+    for index, mark in enumerate(text):
+        if mark in _STRONG_BOUNDARIES:
+            return index + 1
+        if mark == "." and _safe_ascii_period(text, index):
+            return index + 1
+    return None
 
 
-def _last_strong_boundary(text: str) -> int:
-    positions = [
-        index + 1
-        for index, mark in enumerate(text)
-        if mark in _STRONG_BOUNDARIES
-    ]
-    positions.extend(
-        index + 1
-        for index, mark in enumerate(text)
-        if mark == "." and _safe_ascii_period(text, index)
-    )
-    return max(positions, default=0)
+def _next_safe_clause_boundary(
+    text: str,
+    *,
+    minimum: int,
+    target: int,
+) -> int | None:
+    candidates: list[int] = []
+    for marker in _SAFE_CLAUSE_MARKERS:
+        start = 0
+        while True:
+            index = text.find(marker, start)
+            if index < 0:
+                break
+            if index >= minimum and _has_complete_predicate(text[:index]):
+                candidates.append(index)
+            start = index + len(marker)
+
+    for match in re.finditer(r"\s+", text):
+        index = match.start()
+        prefix = text[:index].rstrip()
+        if index >= minimum and (
+            not _contains_japanese(prefix) or _has_complete_predicate(prefix)
+        ):
+            candidates.append(index)
+
+    return _boundary_near_target(candidates, target) if candidates else None
+
+
+def _boundary_near_target(candidates: list[int], target: int) -> int:
+    after_target = [boundary for boundary in candidates if boundary >= target]
+    return min(after_target) if after_target else max(candidates)
+
+
+def _has_complete_predicate(text: str) -> bool:
+    return bool(_COMPLETE_PREDICATE_SUFFIX.search(text.rstrip()))
+
+
+def _contains_japanese(text: str) -> bool:
+    return any("\u3040" <= char <= "\u30ff" or "\u4e00" <= char <= "\u9fff" for char in text)
 
 
 def _safe_ascii_period(text: str, index: int) -> bool:
     previous = text[index - 1] if index > 0 else ""
     following = text[index + 1] if index + 1 < len(text) else ""
-    # A delta may end immediately after the period in a decimal value such
-    # as ``3.14``.  Wait for the next delta to reveal whether this is a safe
-    # sentence boundary; ``final=True`` still flushes the remaining buffer.
+    # A streamed delta may end after the period in a decimal value such as
+    # ``3.14``. Wait for the next delta to reveal whether it is a sentence end.
     if not following:
         return False
     if previous.isdigit() and following.isdigit():

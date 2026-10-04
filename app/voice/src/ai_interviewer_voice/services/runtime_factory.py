@@ -78,6 +78,11 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
                 partial_results_stability=settings.transcribe_partial_results_stability,
                 transcribe_reconnect_attempts=settings.transcribe_reconnect_attempts,
                 reconnect_audio_buffer_ms=settings.transcribe_reconnect_audio_buffer_ms,
+                test_reconnect_after_audio_chunks=(
+                    settings.test_transcribe_reconnect_after_audio_chunks
+                    if settings.app_env == "test"
+                    else 0
+                ),
                 vad_rms_threshold=settings.transcribe_vad_rms_threshold,
                 normal_endpoint_ms=settings.voice_endpoint_silence_ms,
                 hard_endpoint_ms=settings.voice_hard_endpoint_ms,

@@ -518,6 +518,7 @@ function normalizedExpectations(expectations) {
 function eventEntries(dataTrace, provider, { includeClient = false } = {}) {
   return dataTrace.filter((entry) => includeClient || entry.direction === "server").map((entry) => ({
     timestampMs: entry.timestampMs,
+    direction: entry.direction,
     type: dataChannelEventType(entry),
     event: dataChannelEventPayload(entry),
     envelope: entry.event ?? {},
@@ -1330,6 +1331,32 @@ async function waitForTrace(page, predicate, timeoutMs) {
   })).catch(() => ({ live: [], channel: [] }));
 }
 
+function transcribePlaybackLifecycle(dataTrace, boundaryAt) {
+  const entries = eventEntries(dataTrace, ROBUSTNESS_ENGINE.transcribe_polly, {
+    includeClient: true,
+  }).filter((entry) => number(entry.timestampMs, 0) >= number(boundaryAt, 0));
+  const outputEnded = entries.some((entry) => (
+    entry.direction !== "client" && entry.type === "assistant_speech_ended"
+  ));
+  const browserDrained = entries.some((entry) => (
+    entry.direction === "client" && entry.type === "assistant_playback_drained"
+  ));
+  const inputResumed = entries.some((entry) => (
+    entry.direction !== "client"
+    && entry.type === "input_state_changed"
+    && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
+  ));
+  return {
+    settled: outputEnded && browserDrained && inputResumed,
+    outputEnded,
+    browserDrained,
+    inputResumed,
+    settlementSource: outputEnded && browserDrained && inputResumed
+      ? "assistant_speech_ended_and_browser_drained_then_input_resumed"
+      : null,
+  };
+}
+
 async function waitForGPTLiveOutputPlaybackIdle(
   page,
   { boundaryAt, timeoutMs, idleMs },
@@ -1750,6 +1777,7 @@ export async function runRealVoiceRobustnessSession({
   variant,
   sessionIndex,
   conversationTurns = null,
+  strictTranscribePlayback = false,
 }) {
   const normalizedBehavior = normalizeBehavior(behavior);
   const plannedTurns = Array.isArray(conversationTurns) && conversationTurns.length
@@ -1757,6 +1785,7 @@ export async function runRealVoiceRobustnessSession({
       behavior: normalizeBehavior(item.behavior),
       variant: Number.isFinite(Number(item.variant)) ? Number(item.variant) : 0,
       fixtureRecord: item.fixtureRecord ?? null,
+      interruptAssistant: item.interruptAssistant === true,
     }))
     : null;
   const fixtureSequence = plannedTurns
@@ -1821,6 +1850,7 @@ export async function runRealVoiceRobustnessSession({
   let turn = 0;
   let lastTurnRecord = null;
   let lastHardGate = null;
+  const preplayedTurns = new Map();
 
   try {
     try {
@@ -1959,6 +1989,7 @@ export async function runRealVoiceRobustnessSession({
         variant: (variant + turn - 1) % 3,
       };
       const turnBehavior = normalizeBehavior(turnPlan.behavior);
+      const preplayedTurn = preplayedTurns.get(turn) ?? null;
       const expectations = behaviorExpectations(turnBehavior, engine);
       const turnAudioMetadata = readWavMetadata(turnFixturePath);
       const turnFixtureText = turnPlan.fixtureRecord?.text
@@ -1968,21 +1999,23 @@ export async function runRealVoiceRobustnessSession({
         currentField = fieldForQuestion(contextData, interviewState(before).currentQuestionId);
         currentQuestionId = currentField ? liveQuestionId(currentField) : null;
         currentQuestion = currentField ? questionText(currentField) : null;
-        const replay = await replayWavFixtureMicrophone(
-          page,
-          (turn - 1) % fixtureSequence.length,
-        );
-        telemetry.event("audio_fixture_replayed", {
-          turn,
-          fixturePath: turnFixturePath,
-          microphoneMode: replay.mode,
-          playCount: replay.playCount,
-        });
-        if (!replay.started && replay.mode !== "browser_fallback") {
-          throw new Error(
-            "real_voice_fixture_replay_failed: "
-              + String(replay.error || replay.mode),
+        if (!preplayedTurn) {
+          const replay = await replayWavFixtureMicrophone(
+            page,
+            (turn - 1) % fixtureSequence.length,
           );
+          telemetry.event("audio_fixture_replayed", {
+            turn,
+            fixturePath: turnFixturePath,
+            microphoneMode: replay.mode,
+            playCount: replay.playCount,
+          });
+          if (!replay.started && replay.mode !== "browser_fallback") {
+            throw new Error(
+              "real_voice_fixture_replay_failed: "
+                + String(replay.error || replay.mode),
+            );
+          }
         }
       }
     const turnBaseline = await page.evaluate(() => ({
@@ -1990,17 +2023,11 @@ export async function runRealVoiceRobustnessSession({
       channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
       audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
     })).catch(() => ({ live: [], channel: [], audio: { events: [], stats: [] } }));
-    const baselineTranscriptCount = collectTranscript(
-      turnBaseline.channel,
-      turnBaseline.live,
-      engine,
-    ).finalCount;
-    const baselineAssistantResponseCount = collectAssistant(
-      turnBaseline.channel,
-      turnBaseline.live,
-      engine,
-    ).mainResponseCount;
-    turnStartedAt = Date.now();
+    const baselineTranscriptCount = preplayedTurn?.baselineTranscriptCount
+      ?? collectTranscript(turnBaseline.channel, turnBaseline.live, engine).finalCount;
+    const baselineAssistantResponseCount = preplayedTurn?.baselineAssistantResponseCount
+      ?? collectAssistant(turnBaseline.channel, turnBaseline.live, engine).mainResponseCount;
+    turnStartedAt = preplayedTurn?.startedAt ?? Date.now();
     guard.startTurn(turnAudioMetadata.durationSeconds);
     telemetry.event("audio_fixture_started", {
       fixturePath: turnFixturePath,
@@ -2178,6 +2205,33 @@ export async function runRealVoiceRobustnessSession({
       }
     }
 
+    const nextTurnPlan = plannedTurns?.[turn] ?? null;
+    const nextTurnInterruptsAssistant = nextTurnPlan?.interruptAssistant === true;
+    if (
+      strictTranscribePlayback
+      && engine === ROBUSTNESS_ENGINE.transcribe_polly
+      && preliminaryTranscript.finalCount > 0
+      && !nextTurnInterruptsAssistant
+    ) {
+      const playbackTimeoutMs = Number.parseInt(
+        process.env.VOICE_TEST_REAL_POLLY_DRAIN_TIMEOUT_MS || "20000",
+        10,
+      );
+      const playbackTrace = await waitForTrace(page, (value) => (
+        transcribePlaybackLifecycle(value.channel, turnStartedAt).settled
+      ), Math.max(1_000, playbackTimeoutMs));
+      finalTrace = playbackTrace;
+      outputPlaybackStatus = transcribePlaybackLifecycle(
+        playbackTrace.channel,
+        turnStartedAt,
+      );
+      telemetry.event("transcribe_polly_playback_drain_completed", {
+        ...outputPlaybackStatus,
+        turn,
+        timeoutMs: playbackTimeoutMs,
+      });
+    }
+
     // The Live state-update response is the persistence acknowledgement, but
     // the separate snapshot endpoint may become visible later. Do not block
     // Live's response on that read. Once the response has drained, give the
@@ -2293,7 +2347,11 @@ export async function runRealVoiceRobustnessSession({
       number(stateUpdateLifecycle?.response?.stateVersion, 0),
     );
     const stateVersionAdvancedForTurn = stateVersionAfterTurn > stateVersion(before);
+    const transcriptQuestionId = transcript.finalEntries
+      .map((entry) => entry.event?.questionId ?? entry.event?.question_id)
+      .find(hasText);
     const requestedQuestionId = stateUpdateLifecycle?.request?.questionId
+      || transcriptQuestionId
       || interviewState(after).currentQuestionId
       || currentQuestionId;
     const answerField = fieldForQuestion(contextData, requestedQuestionId) ?? currentField;
@@ -2387,6 +2445,23 @@ export async function runRealVoiceRobustnessSession({
       dataTrace: afterTrace.channel,
       consoleTrace: afterTrace.live,
     });
+    if (
+      strictTranscribePlayback
+      && engine === ROBUSTNESS_ENGINE.transcribe_polly
+      && expectations.transcriptFinal === "required"
+      && transcript.partialCount < 1
+    ) {
+      extraFailures.push("TRANSCRIBE_PARTIAL_RESULT_MISSING");
+    }
+    if (
+      strictTranscribePlayback
+      && engine === ROBUSTNESS_ENGINE.transcribe_polly
+      && preliminaryTranscript.finalCount > 0
+      && !nextTurnInterruptsAssistant
+      && !outputPlaybackStatus?.settled
+    ) {
+      extraFailures.push("POLLY_PLAYBACK_DRAIN_NOT_CONFIRMED");
+    }
     if (engine === ROBUSTNESS_ENGINE.gpt_live
       && preliminaryTranscript.finalCount > 0
       && outputPlaybackStatus
@@ -2729,7 +2804,99 @@ export async function runRealVoiceRobustnessSession({
 
     lastTurnRecord = turnRecord;
     lastHardGate = hardGate;
-    if (turn < maxTurns) {
+    if (
+      strictTranscribePlayback
+      && engine === ROBUSTNESS_ENGINE.transcribe_polly
+      && nextTurnInterruptsAssistant
+    ) {
+      const currentTrace = await page.evaluate(() => ({
+        live: window.__kikioriVoiceLiveTrace?.entries ?? [],
+        channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
+        audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
+      }));
+      const currentRuntime = eventEntries(currentTrace.channel, engine, {
+        includeClient: true,
+      }).filter((entry) => number(entry.timestampMs, 0) >= number(turnStartedAt, 0));
+      const activeAssistantStarted = currentRuntime.some((entry) => (
+        entry.direction !== "client" && entry.type === "assistant_speech_started"
+      ));
+      const assistantAlreadyDrained = currentRuntime.some((entry) => (
+        entry.direction === "client" && entry.type === "assistant_playback_drained"
+      ));
+      if (!activeAssistantStarted || assistantAlreadyDrained) {
+        throw new Error("BARGE_IN_WINDOW_NOT_OBSERVED");
+      }
+      const startedAt = Date.now();
+      const nextBaselineTranscriptCount = collectTranscript(
+        currentTrace.channel,
+        currentTrace.live,
+        engine,
+      ).finalCount;
+      const nextBaselineAssistantResponseCount = collectAssistant(
+        currentTrace.channel,
+        currentTrace.live,
+        engine,
+      ).mainResponseCount;
+      const replay = await replayWavFixtureMicrophone(page, turn);
+      if (!replay.started && replay.mode !== "browser_fallback") {
+        throw new Error(
+          "real_voice_barge_in_fixture_start_failed: "
+            + String(replay.error || replay.mode),
+        );
+      }
+      preplayedTurns.set(turn + 1, {
+        startedAt,
+        baselineTranscriptCount: nextBaselineTranscriptCount,
+        baselineAssistantResponseCount: nextBaselineAssistantResponseCount,
+      });
+      const interruptedTrace = await waitForTrace(page, (value) => (
+        (() => {
+          const entries = eventEntries(value.channel, engine, { includeClient: true })
+            .filter((entry) => number(entry.timestampMs, 0) >= startedAt);
+          const interruptionObserved = entries.some((entry) => (
+            entry.direction !== "client" && entry.type === "assistant_interrupted"
+          ));
+          const inputResumed = entries.some((entry) => (
+            entry.direction !== "client"
+            && entry.type === "input_state_changed"
+            && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
+          ));
+          return interruptionObserved && inputResumed;
+        })()
+      ), 8_000);
+      const interruptionObserved = eventEntries(
+        interruptedTrace.channel,
+        engine,
+        { includeClient: true },
+      ).some((entry) => (
+        entry.direction !== "client"
+        && entry.type === "assistant_interrupted"
+        && number(entry.timestampMs, 0) >= startedAt
+      ));
+      const interruptionInputResumed = eventEntries(
+        interruptedTrace.channel,
+        engine,
+        { includeClient: true },
+      ).some((entry) => (
+        entry.direction !== "client"
+        && entry.type === "input_state_changed"
+        && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
+        && number(entry.timestampMs, 0) >= startedAt
+      ));
+      telemetry.event("real_barge_in_observed", {
+        turn: turn + 1,
+        observed: interruptionObserved,
+        inputResumed: interruptionInputResumed,
+        assistantStartedAt: currentRuntime.find((entry) => (
+          entry.direction !== "client" && entry.type === "assistant_speech_started"
+        ))?.timestampMs ?? null,
+        microphoneReplayAt: startedAt,
+        fixturePath: fixtureSequence[turn],
+      });
+      if (!interruptionObserved || !interruptionInputResumed) {
+        throw new Error("REAL_BARGE_IN_NOT_OBSERVED");
+      }
+    } else if (turn < maxTurns) {
       // WebRTC does not expose a per-response audio-complete DataChannel
       // event. Give the just-started response a short drain window before
       // replaying the next fixture so the next user turn cannot overlap the

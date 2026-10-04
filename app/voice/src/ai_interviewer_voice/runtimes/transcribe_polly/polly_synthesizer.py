@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
+import os
 import re
 import threading
+from datetime import UTC, datetime
+from pathlib import Path
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -23,6 +27,39 @@ _POLLY_SPEECH_RATE_PRESETS = frozenset(
     {"x-slow", "slow", "medium", "fast", "x-fast"}
 )
 _POLLY_SPEECH_RATE_PERCENTAGE = re.compile(r"^(\d+(?:\.\d+)?)%$")
+_TEST_CAPTURE_LOCK = threading.Lock()
+
+
+def record_test_polly_text_chunk(
+    *,
+    response_id: str,
+    chunk_index: int,
+    text: str,
+) -> None:
+    """Record the exact runtime chunk sent for synthesis in an explicit test run."""
+
+    _append_test_jsonl(
+        "VOICE_TEST_POLLY_TEXT_CHUNKS_FILE",
+        {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "responseId": response_id,
+            "chunkIndex": chunk_index,
+            "text": text,
+        },
+    )
+
+
+def _append_test_jsonl(environment_key: str, record: dict[str, Any]) -> None:
+    if os.getenv("APP_ENV") != "test":
+        return
+    output_path = os.getenv(environment_key, "").strip()
+    if not output_path:
+        return
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _TEST_CAPTURE_LOCK:
+        with path.open("a", encoding="utf-8") as output:
+            output.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 class PollySynthesisError(RuntimeError):
@@ -236,7 +273,7 @@ class PollySynthesizer:
 
     def _synthesize_response_sync(self, text: str) -> dict[str, Any]:
         client = self._get_client_sync()
-        return client.synthesize_speech(
+        response = client.synthesize_speech(
             Engine=self._config.polly_engine,
             LanguageCode=self._config.polly_language_code,
             OutputFormat="pcm",
@@ -250,6 +287,31 @@ class PollySynthesizer:
             TextType="ssml",
             VoiceId=self._config.polly_voice_id,
         )
+        self._record_test_text_chunk(text, response)
+        return response
+
+    def _record_test_text_chunk(self, text: str, response: dict[str, Any]) -> None:
+        """Capture accepted Polly request text only in an explicit E2E test run."""
+
+        if (
+            os.getenv("APP_ENV") != "test"
+            or not os.getenv("VOICE_TEST_POLLY_AWS_REQUESTS_FILE", "").strip()
+        ):
+            return
+        response_metadata = response.get("ResponseMetadata")
+        request_id = (
+            response_metadata.get("RequestId")
+            if isinstance(response_metadata, dict)
+            else None
+        )
+        record = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "requestId": request_id,
+            "engine": self._config.polly_engine,
+            "voiceId": self._config.polly_voice_id,
+            "text": text,
+        }
+        _append_test_jsonl("VOICE_TEST_POLLY_AWS_REQUESTS_FILE", record)
 
     def _get_client_sync(self) -> Any:
         if self._client is not None:

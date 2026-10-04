@@ -62,6 +62,9 @@ class Settings:
     transcribe_reconnect_audio_buffer_ms: int = int(
         os.getenv("TRANSCRIBE_RECONNECT_AUDIO_BUFFER_MS", "3000")
     )
+    test_transcribe_reconnect_after_audio_chunks: int = int(
+        os.getenv("VOICE_TEST_TRANSCRIBE_RECONNECT_AFTER_AUDIO_CHUNKS", "0")
+    )
     transcribe_vad_rms_threshold: int = int(
         os.getenv("TRANSCRIBE_VAD_RMS_THRESHOLD", "600")
     )

@@ -31,6 +31,7 @@ from ai_interviewer_voice.schemas.events import (
     AssistantTranscriptFinal,
     InputStateChanged,
     RuntimeError,
+    UserTranscriptPartial,
     UserTranscriptFinal,
 )
 from ai_interviewer_voice.schemas.sessions import VoiceRuntimeContext
@@ -572,7 +573,10 @@ async def test_final_transcript_is_the_only_text_sent_to_interview_bridge(
 
 
 @pytest.mark.anyio
-async def test_duplicate_transcribe_final_events_create_only_one_interview_turn() -> None:
+async def test_duplicate_transcribe_final_events_create_only_one_interview_turn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG)
     transcribe = FakeTranscribe()
     bridge = FakeBridge()
     runtime = TranscribePollyRuntime(
@@ -596,6 +600,12 @@ async def test_duplicate_transcribe_final_events_create_only_one_interview_turn(
 
     assert len(bridge.process_calls) == 1
     assert bridge.process_calls[0]["transcript"] == "回答です。"
+    events = []
+    while not runtime._events.empty():
+        events.append(runtime._events.get_nowait())
+    assert sum(isinstance(event, UserTranscriptPartial) for event in events) == 1
+    assert sum(isinstance(event, UserTranscriptFinal) for event in events) == 1
+    assert "transcribe_final_duplicate_ignored result_id=same-result" in caplog.text
     await runtime.close()
 
 

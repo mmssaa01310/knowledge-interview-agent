@@ -11,6 +11,7 @@
     "voice-test": "node tests/e2e/voice/cli.mjs",
     "voice:fixtures": "node tests/e2e/voice/fixtures/generateRealVoiceFixtures.mjs",
     "voice:fixtures:partial": "node tests/e2e/voice/fixtures/generateRealVoiceFixtures.mjs PARTIAL_ANSWER",
+    "voice:acceptance:transcribe-polly": "node tests/e2e/voice/acceptance/transcribePollyAcceptance.mjs",
     "voice-self-heal": "node tests/e2e/voice/selfHealing/cli.mjs",
     "docker:config": "docker compose -f infra/docker-compose.yml config",
     "docker:build": "docker compose -f infra/docker-compose.yml build",

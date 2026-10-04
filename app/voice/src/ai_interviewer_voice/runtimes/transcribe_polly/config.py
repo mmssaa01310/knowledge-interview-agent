@@ -12,6 +12,7 @@ class TranscribePollyRuntimeConfig:
     partial_results_stability: str = "medium"
     transcribe_reconnect_attempts: int = 2
     reconnect_audio_buffer_ms: int = 3000
+    test_reconnect_after_audio_chunks: int = 0
     vad_rms_threshold: int = 600
     # A normal clause pause is around the soft endpoint.  Wait longer before
     # emitting a listen acknowledgement so a completed answer is not met with
@@ -47,10 +48,10 @@ class TranscribePollyRuntimeConfig:
     polly_max_parallel_requests: int = 2
     polly_retry_attempts: int = 1
     polly_retry_base_delay_ms: int = 150
-    first_chunk_min_chars: int = 10
-    first_chunk_max_chars: int = 30
-    following_chunk_min_chars: int = 20
-    following_chunk_max_chars: int = 80
+    first_chunk_min_chars: int = 5
+    first_chunk_target_chars: int = 30
+    following_chunk_min_chars: int = 10
+    following_chunk_target_chars: int = 80
     listen_ack_text: str = "なるほど。"
     processing_ack_text: str = "回答を確認しています。"
     long_processing_text: str = "確認に少し時間がかかっています。"

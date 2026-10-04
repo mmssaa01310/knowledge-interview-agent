@@ -77,6 +77,16 @@ class FakeClient:
         return self.stream
 
 
+class SequencedFakeClient:
+    def __init__(self, streams: list[FakeDuplexStream]) -> None:
+        self.streams = streams
+        self.inputs = []
+
+    async def start_stream_transcription(self, input):
+        self.inputs.append(input)
+        return self.streams[len(self.inputs) - 1]
+
+
 @pytest.mark.anyio
 async def test_aws_transcribe_port_uses_stabilized_ja_jp_and_maps_results() -> None:
     stream = FakeDuplexStream()
@@ -192,3 +202,46 @@ async def test_aws_transcribe_port_applies_backpressure_when_queue_is_full() -> 
     assert await port._audio_queue.get() == bytes(3200)
     port._audio_queue.task_done()
     await port.close()
+
+
+@pytest.mark.anyio
+async def test_test_fault_injection_reconnects_to_a_second_aws_stream() -> None:
+    first_stream = FakeDuplexStream()
+    second_stream = FakeDuplexStream()
+    client = SequencedFakeClient([first_stream, second_stream])
+    reconnecting = []
+    port = AwsTranscribeStreamingPort(
+        TranscribePollyRuntimeConfig(test_reconnect_after_audio_chunks=2),
+        client=client,
+    )
+    await port.start(
+        on_result=lambda result: asyncio.sleep(0),
+        on_reconnecting=lambda attempt: _append(reconnecting, attempt),
+        on_fatal_error=lambda exc: asyncio.sleep(0),
+    )
+
+    try:
+        await port.send_audio(bytes(3200))
+        await port.send_audio(bytes(3200))
+        for _ in range(100):
+            if reconnecting and len(client.inputs) == 2 and first_stream.closed:
+                break
+            await asyncio.sleep(0.01)
+
+        assert reconnecting == [1]
+        assert first_stream.closed is True
+        assert second_stream.closed is False
+        assert len(client.inputs) == 2
+
+        await port.send_audio(bytes(3200))
+        for _ in range(100):
+            if second_stream.input_stream.events:
+                break
+            await asyncio.sleep(0.01)
+        assert len(second_stream.input_stream.events) == 1
+    finally:
+        await port.close()
+
+
+async def _append(items: list, value) -> None:
+    items.append(value)

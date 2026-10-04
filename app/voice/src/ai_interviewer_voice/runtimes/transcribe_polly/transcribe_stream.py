@@ -76,6 +76,7 @@ class AwsTranscribeStreamingPort:
         self._connected = asyncio.Event()
         self._initial_error: Exception | None = None
         self._closed = False
+        self._test_reconnect_injected = False
 
     async def start(
         self,
@@ -189,11 +190,7 @@ class AwsTranscribeStreamingPort:
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            for task in tasks:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            await asyncio.gather(*tasks, return_exceptions=True)
             await stream.close()
         for task in done:
             exception = task.exception()
@@ -203,12 +200,29 @@ class AwsTranscribeStreamingPort:
             raise ConnectionError("Transcribe stream closed unexpectedly")
 
     async def _send_loop(self, input_stream: Any) -> None:
+        sent_chunks = 0
         while not self._closed:
             pcm = await self._audio_queue.get()
             try:
                 await input_stream.send(
                     AudioStreamAudioEvent(AudioEvent(audio_chunk=pcm))
                 )
+                sent_chunks += 1
+                reconnect_after = max(
+                    0,
+                    self._config.test_reconnect_after_audio_chunks,
+                )
+                if (
+                    reconnect_after
+                    and not self._test_reconnect_injected
+                    and sent_chunks >= reconnect_after
+                ):
+                    self._test_reconnect_injected = True
+                    logger.warning(
+                        "transcribe_test_reconnect_forced sent_audio_chunks=%s",
+                        sent_chunks,
+                    )
+                    raise ConnectionError("voice_test_forced_transcribe_reconnect")
             finally:
                 self._audio_queue.task_done()
 

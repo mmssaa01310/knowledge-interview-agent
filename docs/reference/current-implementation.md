@@ -78,6 +78,8 @@ app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/coordinator.py::Open
 ```
 
 `openai_realtime`ではAmazon Transcribe、Amazon Polly、`PollyTextChunker`、既存の独自VADを使用しない。
+
+Transcribe + Pollyの正式な実AWS Acceptanceは`pnpm voice:acceptance:transcribe-polly`で実行する。Mock E2Eの結果とは独立して実AWSの結果を記録し、実Pollyに対する日本語chunk probeと複数ターンの実音声経路を含め、両方が成功したときだけAcceptanceを成功にする。
 OpenAI Secret Keyは`app/voice`だけで読み込み、Browserへ返さない。Provider failure時の自動fallbackも行わない。
 
 GPT-Live Phase 1は、上記の旧OpenAI Realtime経路とは別の、GPT-Liveを会話進行者とするWebRTC経路として実装している。Responses Delegationを意味評価境界、Application BackendをInterview Stateの保存境界とする。

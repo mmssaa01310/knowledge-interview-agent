@@ -33,6 +33,7 @@ from ai_interviewer_voice.runtimes.transcribe_polly.polly_synthesizer import (
     PollySynthesisError,
     PollySynthesisPort,
     PollySynthesizer,
+    record_test_polly_text_chunk,
 )
 from ai_interviewer_voice.runtimes.transcribe_polly.text_chunker import (
     PollyTextChunker,
@@ -345,9 +346,9 @@ class TranscribePollyRuntime:
             text,
             PollyTextChunkerConfig(
                 first_min_chars=self._config.first_chunk_min_chars,
-                first_max_chars=self._config.first_chunk_max_chars,
+                first_target_chars=self._config.first_chunk_target_chars,
                 following_min_chars=self._config.following_chunk_min_chars,
-                following_max_chars=self._config.following_chunk_max_chars,
+                following_target_chars=self._config.following_chunk_target_chars,
             ),
         )
         if not chunks:
@@ -731,6 +732,18 @@ class TranscribePollyRuntime:
     async def _on_transcribe_result(self, result: TranscribeResult) -> None:
         if self._closed or not self._turn_active or not self._input_available:
             return
+        if not result.is_partial and result.result_id:
+            previous_final = self._final_segments.get(result.result_id)
+            if (
+                previous_final is not None
+                and _transcript_fingerprint(previous_final)
+                == _transcript_fingerprint(result.text)
+            ):
+                logger.debug(
+                    "transcribe_final_duplicate_ignored result_id=%s",
+                    result.result_id,
+                )
+                return
         now = monotonic()
         if self._soft_endpoint_triggered and self._settle_started_at is not None:
             self._log_transcript_event(
@@ -1805,9 +1818,9 @@ class TranscribePollyRuntime:
             )
         config = PollyTextChunkerConfig(
             first_min_chars=self._config.first_chunk_min_chars,
-            first_max_chars=self._config.first_chunk_max_chars,
+            first_target_chars=self._config.first_chunk_target_chars,
             following_min_chars=self._config.following_chunk_min_chars,
-            following_max_chars=self._config.following_chunk_max_chars,
+            following_target_chars=self._config.following_chunk_target_chars,
         )
         text_queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue(
             maxsize=max(2, self._config.polly_max_parallel_requests * 2)
@@ -1830,6 +1843,11 @@ class TranscribePollyRuntime:
                         delta = str(payload or "")
                         streamed_text += delta
                         for chunk in chunker.push(delta, final=False):
+                            record_test_polly_text_chunk(
+                                response_id=response_id,
+                                chunk_index=index,
+                                text=chunk,
+                            )
                             await text_queue.put((index, chunk))
                             index += 1
                         continue
@@ -1861,6 +1879,11 @@ class TranscribePollyRuntime:
                             )
                             final_text = ""
                         for chunk in chunker.push(final_text, final=True):
+                            record_test_polly_text_chunk(
+                                response_id=response_id,
+                                chunk_index=index,
+                                text=chunk,
+                            )
                             await text_queue.put((index, chunk))
                             index += 1
                         break
@@ -2048,15 +2071,21 @@ class TranscribePollyRuntime:
             text,
             PollyTextChunkerConfig(
                 first_min_chars=self._config.first_chunk_min_chars,
-                first_max_chars=self._config.first_chunk_max_chars,
+                first_target_chars=self._config.first_chunk_target_chars,
                 following_min_chars=self._config.following_chunk_min_chars,
-                following_max_chars=self._config.following_chunk_max_chars,
+                following_target_chars=self._config.following_chunk_target_chars,
             ),
         )
         parallel = max(1, self._config.polly_max_parallel_requests)
         tasks: dict[int, asyncio.Task[bytes]] = {}
         if not chunks:
             return
+        for index, chunk in enumerate(chunks):
+            record_test_polly_text_chunk(
+                response_id=response_id or "",
+                chunk_index=index,
+                text=chunk,
+            )
         next_to_schedule = 1
         try:
             while next_to_schedule < min(parallel, len(chunks)):

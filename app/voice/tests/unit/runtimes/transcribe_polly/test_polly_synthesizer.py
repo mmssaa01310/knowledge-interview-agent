@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from io import BytesIO
 
 import pytest
@@ -10,6 +11,7 @@ from ai_interviewer_voice.runtimes.transcribe_polly.config import (
 )
 from ai_interviewer_voice.runtimes.transcribe_polly.polly_synthesizer import (
     PollySynthesizer,
+    record_test_polly_text_chunk,
 )
 
 
@@ -171,3 +173,63 @@ async def test_polly_synthesizer_deduplicates_concurrent_synthesis_requests() ->
 
     assert first == second == bytes(640)
     assert len(client.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_polly_synthesizer_captures_accepted_test_aws_request_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    output_path = tmp_path / "polly-text-chunks.jsonl"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("VOICE_TEST_POLLY_AWS_REQUESTS_FILE", str(output_path))
+    client = StubPollyClient()
+    synthesizer = PollySynthesizer(
+        TranscribePollyRuntimeConfig(polly_voice_id="capture-test"),
+        client=client,
+    )
+
+    await synthesizer.synthesize("実際に送信した読み上げ文です。")
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["text"] == "実際に送信した読み上げ文です。"
+    assert record["voiceId"] == "capture-test"
+    assert client.calls[0]["TextType"] == "ssml"
+
+
+@pytest.mark.anyio
+async def test_polly_synthesizer_does_not_capture_aws_request_text_outside_test_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    output_path = tmp_path / "polly-text-chunks.jsonl"
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("VOICE_TEST_POLLY_AWS_REQUESTS_FILE", str(output_path))
+    synthesizer = PollySynthesizer(
+        TranscribePollyRuntimeConfig(polly_voice_id="capture-test"),
+        client=StubPollyClient(),
+    )
+
+    await synthesizer.synthesize("この文は記録されません。")
+
+    assert output_path.exists() is False
+
+
+def test_runtime_chunk_capture_records_exact_text_and_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    output_path = tmp_path / "polly-text-chunks.jsonl"
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("VOICE_TEST_POLLY_TEXT_CHUNKS_FILE", str(output_path))
+
+    record_test_polly_text_chunk(
+        response_id="response-1",
+        chunk_index=0,
+        text="現在の役割と、",
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["responseId"] == "response-1"
+    assert record["chunkIndex"] == 0
+    assert record["text"] == "現在の役割と、"
