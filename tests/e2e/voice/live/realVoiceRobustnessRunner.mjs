@@ -765,10 +765,11 @@ export function collectTranscript(
   dataEntries,
   consoleEntries,
   provider,
-  { boundaryAt = null } = {},
+  { boundaryAt = null, endAt = null } = {},
 ) {
   const isAfterBoundary = (entry) => (
-    boundaryAt === null || number(entry.timestampMs, 0) >= number(boundaryAt, 0)
+    (boundaryAt === null || number(entry.timestampMs, 0) >= number(boundaryAt, 0))
+      && (endAt === null || number(entry.timestampMs, 0) < number(endAt, 0))
   );
   const runtime = eventEntries(dataEntries, provider).filter(isAfterBoundary);
   const finals = runtime.filter((entry) => entry.type === "user_transcript_final");
@@ -1345,6 +1346,148 @@ async function waitForTrace(page, predicate, timeoutMs) {
     channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
     audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
   })).catch(() => ({ live: [], channel: [] }));
+}
+
+async function interruptAssistantWithNextFixture({
+  page,
+  request,
+  engine,
+  turnStartedAt,
+  turn,
+  fixtureIndex,
+  fixturePath,
+  timeoutMs,
+}) {
+  const trace = await waitForTrace(page, (value) => eventEntries(
+    value.channel,
+    engine,
+    { includeClient: true },
+  ).some((entry) => (
+    entry.direction !== "client"
+    && entry.type === "assistant_speech_started"
+    && number(entry.timestampMs, 0) >= turnStartedAt
+  )), timeoutMs);
+  const entries = eventEntries(trace.channel, engine, { includeClient: true })
+    .filter((entry) => number(entry.timestampMs, 0) >= turnStartedAt);
+  const assistantStartedAt = entries.find((entry) => (
+    entry.direction !== "client" && entry.type === "assistant_speech_started"
+  ))?.timestampMs ?? null;
+  const assistantAlreadyDrained = assistantStartedAt !== null && entries.some((entry) => (
+    entry.direction === "client"
+    && entry.type === "assistant_playback_drained"
+    && number(entry.timestampMs, 0) >= number(assistantStartedAt, 0)
+  ));
+  if (assistantStartedAt === null || assistantAlreadyDrained) {
+    return {
+      observed: false,
+      inputResumed: false,
+      assistantStartedAt,
+      microphoneReplayAt: null,
+      preplayedTurn: null,
+      error: assistantStartedAt === null
+        ? "ASSISTANT_SPEECH_START_NOT_OBSERVED"
+        : "BARGE_IN_WINDOW_ALREADY_DRAINED",
+    };
+  }
+
+  const nextBaselineTranscriptCount = collectTranscript(
+    trace.channel,
+    trace.live,
+    engine,
+  ).finalCount;
+  const nextBaselineAssistantResponseCount = collectAssistant(
+    trace.channel,
+    trace.live,
+    engine,
+  ).mainResponseCount;
+  const beforeState = await fetchInterviewState(request).catch(() => null);
+  if (!beforeState) {
+    return {
+      observed: false,
+      inputResumed: false,
+      assistantStartedAt,
+      microphoneReplayAt: null,
+      preplayedTurn: null,
+      error: "PRE_BARGE_IN_STATE_SNAPSHOT_MISSING",
+    };
+  }
+  const beforeReplayTrace = await page.evaluate(() => ({
+    channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
+  })).catch(() => ({ channel: [] }));
+  const drainedBeforeReplay = eventEntries(
+    beforeReplayTrace.channel,
+    engine,
+    { includeClient: true },
+  ).some((entry) => (
+    entry.direction === "client"
+    && entry.type === "assistant_playback_drained"
+    && number(entry.timestampMs, 0) >= number(assistantStartedAt, 0)
+  ));
+  if (drainedBeforeReplay) {
+    return {
+      observed: false,
+      inputResumed: false,
+      assistantStartedAt,
+      microphoneReplayAt: null,
+      preplayedTurn: null,
+      error: "BARGE_IN_WINDOW_ALREADY_DRAINED",
+    };
+  }
+
+  const microphoneReplayAt = Date.now();
+  const replay = await replayWavFixtureMicrophone(page, fixtureIndex);
+  if (!replay.started && replay.mode !== "browser_fallback") {
+    return {
+      observed: false,
+      inputResumed: false,
+      assistantStartedAt,
+      microphoneReplayAt,
+      preplayedTurn: null,
+      error: `BARGE_IN_FIXTURE_START_FAILED:${String(replay.error || replay.mode)}`,
+    };
+  }
+  const preplayedTurn = {
+    startedAt: microphoneReplayAt,
+    baselineTranscriptCount: nextBaselineTranscriptCount,
+    baselineAssistantResponseCount: nextBaselineAssistantResponseCount,
+    beforeState,
+  };
+  const interruptedTrace = await waitForTrace(page, (value) => {
+    const observedEntries = eventEntries(value.channel, engine, { includeClient: true })
+      .filter((entry) => number(entry.timestampMs, 0) >= microphoneReplayAt);
+    const interrupted = observedEntries.some((entry) => (
+      entry.direction !== "client" && entry.type === "assistant_interrupted"
+    ));
+    const inputResumed = observedEntries.some((entry) => (
+      entry.direction !== "client"
+      && entry.type === "input_state_changed"
+      && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
+    ));
+    return interrupted && inputResumed;
+  }, Math.min(8_000, Math.max(1_000, timeoutMs)));
+  const interruptedEntries = eventEntries(
+    interruptedTrace.channel,
+    engine,
+    { includeClient: true },
+  ).filter((entry) => number(entry.timestampMs, 0) >= microphoneReplayAt);
+  const observed = interruptedEntries.some((entry) => (
+    entry.direction !== "client" && entry.type === "assistant_interrupted"
+  ));
+  const inputResumed = interruptedEntries.some((entry) => (
+    entry.direction !== "client"
+    && entry.type === "input_state_changed"
+    && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
+  ));
+  return {
+    observed,
+    inputResumed,
+    assistantStartedAt,
+    microphoneReplayAt,
+    preplayedTurn,
+    turn: turn + 1,
+    fixturePath,
+    error: observed && inputResumed ? null : "REAL_BARGE_IN_NOT_OBSERVED",
+  };
 }
 
 export function transcribePlaybackLifecycle(dataTrace, boundaryAt) {
@@ -2027,13 +2170,16 @@ export async function runRealVoiceRobustnessSession({
         variant: (variant + turn - 1) % 3,
       };
       const turnBehavior = normalizeBehavior(turnPlan.behavior);
+      const nextTurnPlan = plannedTurns?.[turn] ?? null;
+      const nextTurnInterruptsAssistant = nextTurnPlan?.interruptAssistant === true;
       const preplayedTurn = preplayedTurns.get(turn) ?? null;
       const expectations = behaviorExpectations(turnBehavior, engine);
       const turnAudioMetadata = readWavMetadata(turnFixturePath);
       const turnFixtureText = turnPlan.fixtureRecord?.text
         ?? realVoiceFixtureText(turnBehavior, turnPlan.variant);
       if (turn > 1) {
-        before = await fetchInterviewState(request).catch(() => before);
+        before = preplayedTurn?.beforeState
+          ?? await fetchInterviewState(request).catch(() => before);
         currentField = fieldForQuestion(
           contextData,
           interviewState(before).currentQuestionId,
@@ -2091,7 +2237,9 @@ export async function runRealVoiceRobustnessSession({
       return turnBehavior === "SILENCE" ? Date.now() - turnStartedAt > 8_000 : hasFinal;
     }, timeoutMs);
     finalTrace = trace;
-    const preliminaryTranscript = collectTranscript(trace.channel, trace.live, engine);
+    const preliminaryTranscript = collectTranscript(trace.channel, trace.live, engine, {
+      boundaryAt: turnStartedAt,
+    });
     if (preliminaryTranscript.finalCount > 0 || turnBehavior === "SILENCE") {
       telemetry.event("transcript_final", {
         finalText: preliminaryTranscript.finalText,
@@ -2099,6 +2247,36 @@ export async function runRealVoiceRobustnessSession({
         partialCount: preliminaryTranscript.partialCount,
         engine,
       });
+    }
+
+    // Start the following fixture as soon as Polly begins speaking. Waiting
+    // until the current turn's persistence and telemetry checks finish misses
+    // the actual VAD interruption window.
+    let bargeInPromise = null;
+    if (
+      strictTranscribePlayback
+      && engine === ROBUSTNESS_ENGINE.transcribe_polly
+      && preliminaryTranscript.finalCount > 0
+      && nextTurnInterruptsAssistant
+    ) {
+      const remainingTurnMs = Math.max(1_000, timeoutMs - (Date.now() - turnStartedAt));
+      bargeInPromise = interruptAssistantWithNextFixture({
+        page,
+        request,
+        engine,
+        turnStartedAt,
+        turn,
+        fixtureIndex: turn,
+        fixturePath: fixtureSequence[turn],
+        timeoutMs: remainingTurnMs,
+      }).catch((error) => ({
+        observed: false,
+        inputResumed: false,
+        assistantStartedAt: null,
+        microphoneReplayAt: null,
+        preplayedTurn: null,
+        error: error instanceof Error ? error.message : String(error),
+      }));
     }
 
     // If the provider never emits a final transcript, there is no useful
@@ -2247,8 +2425,6 @@ export async function runRealVoiceRobustnessSession({
       }
     }
 
-    const nextTurnPlan = plannedTurns?.[turn] ?? null;
-    const nextTurnInterruptsAssistant = nextTurnPlan?.interruptAssistant === true;
     if (
       strictTranscribePlayback
       && engine === ROBUSTNESS_ENGINE.transcribe_polly
@@ -2306,13 +2482,37 @@ export async function runRealVoiceRobustnessSession({
       }
     }
 
-    const expectedAcceptanceField = NO_ADVANCE_BEHAVIORS.has(turnBehavior)
-      ? currentField
-      : nextFieldAfter(contextData, currentField);
+    const bargeInResult = bargeInPromise ? await bargeInPromise : null;
+    if (bargeInResult?.preplayedTurn) {
+      preplayedTurns.set(turn + 1, bargeInResult.preplayedTurn);
+    }
+    if (bargeInResult) {
+      telemetry.event("real_barge_in_observed", {
+        turn: turn + 1,
+        observed: bargeInResult.observed,
+        inputResumed: bargeInResult.inputResumed,
+        assistantStartedAt: bargeInResult.assistantStartedAt,
+        microphoneReplayAt: bargeInResult.microphoneReplayAt,
+        fixturePath: bargeInResult.fixturePath ?? fixtureSequence[turn],
+        error: bargeInResult.error,
+      });
+    }
+
+    const acceptanceFieldForState = (state) => {
+      const answer = currentField
+        ? extractFieldAnswer(interviewState(state), currentField.id)
+        : null;
+      return NO_ADVANCE_BEHAVIORS.has(turnBehavior)
+        || !questionAdvanceExpected({ expectations, answer })
+        ? currentField
+        : nextFieldAfter(contextData, currentField);
+    };
+    let expectedAcceptanceField = acceptanceFieldForState(after);
     if (
       strictTranscribePlayback
       && engine === ROBUSTNESS_ENGINE.transcribe_polly
       && preliminaryTranscript.finalCount > 0
+      && !nextTurnInterruptsAssistant
     ) {
       const stateRefreshDeadline = Date.now() + Math.min(timeoutMs, 8_000);
       let expectedStateObserved = false;
@@ -2320,6 +2520,7 @@ export async function runRealVoiceRobustnessSession({
         const candidateState = await fetchInterviewState(request).catch(() => null);
         if (candidateState && stateVersion(candidateState) >= stateVersion(after)) {
           after = candidateState;
+          expectedAcceptanceField = acceptanceFieldForState(candidateState);
           const actualField = fieldForQuestion(
             contextData,
             interviewState(candidateState).currentQuestionId,
@@ -2371,8 +2572,13 @@ export async function runRealVoiceRobustnessSession({
       responsesModels: modelObservation.responsesModels,
     });
     telemetry.event("models_observed", modelObservation);
+    const bargeInAssistantStartAt = bargeInResult?.assistantStartedAt ?? null;
     const transcript = collectTranscript(afterTrace.channel, afterTrace.live, engine, {
       boundaryAt: turnStartedAt,
+      // The following fixture is sent while this assistant response is
+      // playing. Keep its transcript deltas/final out of the current turn's
+      // evidence, even if Transcribe finishes quickly.
+      endAt: nextTurnInterruptsAssistant ? bargeInAssistantStartAt : null,
     });
     const responseBoundaryAt = engine === ROBUSTNESS_ENGINE.gpt_live
       ? gptLiveResponseBoundary({
@@ -2920,99 +3126,7 @@ export async function runRealVoiceRobustnessSession({
 
     lastTurnRecord = turnRecord;
     lastHardGate = hardGate;
-    if (
-      strictTranscribePlayback
-      && engine === ROBUSTNESS_ENGINE.transcribe_polly
-      && nextTurnInterruptsAssistant
-    ) {
-      const currentTrace = await page.evaluate(() => ({
-        live: window.__kikioriVoiceLiveTrace?.entries ?? [],
-        channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
-        audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
-      }));
-      const currentRuntime = eventEntries(currentTrace.channel, engine, {
-        includeClient: true,
-      }).filter((entry) => number(entry.timestampMs, 0) >= number(turnStartedAt, 0));
-      const activeAssistantStarted = currentRuntime.some((entry) => (
-        entry.direction !== "client" && entry.type === "assistant_speech_started"
-      ));
-      const assistantAlreadyDrained = currentRuntime.some((entry) => (
-        entry.direction === "client" && entry.type === "assistant_playback_drained"
-      ));
-      if (!activeAssistantStarted || assistantAlreadyDrained) {
-        throw new Error("BARGE_IN_WINDOW_NOT_OBSERVED");
-      }
-      const startedAt = Date.now();
-      const nextBaselineTranscriptCount = collectTranscript(
-        currentTrace.channel,
-        currentTrace.live,
-        engine,
-      ).finalCount;
-      const nextBaselineAssistantResponseCount = collectAssistant(
-        currentTrace.channel,
-        currentTrace.live,
-        engine,
-      ).mainResponseCount;
-      const replay = await replayWavFixtureMicrophone(page, turn);
-      if (!replay.started && replay.mode !== "browser_fallback") {
-        throw new Error(
-          "real_voice_barge_in_fixture_start_failed: "
-            + String(replay.error || replay.mode),
-        );
-      }
-      preplayedTurns.set(turn + 1, {
-        startedAt,
-        baselineTranscriptCount: nextBaselineTranscriptCount,
-        baselineAssistantResponseCount: nextBaselineAssistantResponseCount,
-      });
-      const interruptedTrace = await waitForTrace(page, (value) => (
-        (() => {
-          const entries = eventEntries(value.channel, engine, { includeClient: true })
-            .filter((entry) => number(entry.timestampMs, 0) >= startedAt);
-          const interruptionObserved = entries.some((entry) => (
-            entry.direction !== "client" && entry.type === "assistant_interrupted"
-          ));
-          const inputResumed = entries.some((entry) => (
-            entry.direction !== "client"
-            && entry.type === "input_state_changed"
-            && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
-          ));
-          return interruptionObserved && inputResumed;
-        })()
-      ), 8_000);
-      const interruptionObserved = eventEntries(
-        interruptedTrace.channel,
-        engine,
-        { includeClient: true },
-      ).some((entry) => (
-        entry.direction !== "client"
-        && entry.type === "assistant_interrupted"
-        && number(entry.timestampMs, 0) >= startedAt
-      ));
-      const interruptionInputResumed = eventEntries(
-        interruptedTrace.channel,
-        engine,
-        { includeClient: true },
-      ).some((entry) => (
-        entry.direction !== "client"
-        && entry.type === "input_state_changed"
-        && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
-        && number(entry.timestampMs, 0) >= startedAt
-      ));
-      telemetry.event("real_barge_in_observed", {
-        turn: turn + 1,
-        observed: interruptionObserved,
-        inputResumed: interruptionInputResumed,
-        assistantStartedAt: currentRuntime.find((entry) => (
-          entry.direction !== "client" && entry.type === "assistant_speech_started"
-        ))?.timestampMs ?? null,
-        microphoneReplayAt: startedAt,
-        fixturePath: fixtureSequence[turn],
-      });
-      if (!interruptionObserved || !interruptionInputResumed) {
-        throw new Error("REAL_BARGE_IN_NOT_OBSERVED");
-      }
-    } else if (turn < maxTurns) {
+    if (turn < maxTurns && !nextTurnInterruptsAssistant) {
       // WebRTC does not expose a per-response audio-complete DataChannel
       // event. Give the just-started response a short drain window before
       // replaying the next fixture so the next user turn cannot overlap the

@@ -3024,6 +3024,13 @@ def load_structured_interview_state(
     profile = resolve_profile(knowledge)
     existing = store.get("interview_states", state_id)
     if existing:
+        # Question generation spans an external model call between the
+        # questionGenerationPending and question-advanced commits. A state
+        # snapshot read during that window must not run migrations or repair
+        # the current question and persist a competing version. Return an
+        # isolated snapshot; the foreground writer will persist its result.
+        if existing.get("questionGenerationPending"):
+            return deepcopy(existing)
         state = existing if persist else deepcopy(existing)
         state_profile = state.get("interviewProfile")
         if state_profile in STRUCTURED_PROFILES:

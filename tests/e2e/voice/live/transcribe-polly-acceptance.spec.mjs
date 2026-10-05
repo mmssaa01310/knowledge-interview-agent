@@ -126,11 +126,17 @@ function acceptanceFailures(result, plan) {
         failures.push(`TURN_${index + 1}_PARTIAL_CANDIDATE_NOT_PERSISTED`);
       }
     }
-    if (behavior === "PARTIAL_COMPLETION"
-      && !["CONFIRMED", "ANSWERED"].includes(
-        String(turn.interview?.answerState ?? "").toUpperCase(),
-      )) {
-      failures.push(`TURN_${index + 1}_PARTIAL_COMPLETION_NOT_CONFIRMED`);
+    if (behavior === "PARTIAL_COMPLETION") {
+      const answerState = String(turn.interview?.answerState ?? "").toUpperCase();
+      const awaitingExplicitConfirmation = answerState === "AWAITING_CONFIRMATION"
+        && currentFieldBeforeId === currentFieldAfterId
+        && Boolean(turn.interview?.candidate?.trim());
+      if (![
+        "CONFIRMED",
+        "ANSWERED",
+      ].includes(answerState) && !awaitingExplicitConfirmation) {
+        failures.push(`TURN_${index + 1}_PARTIAL_COMPLETION_NOT_CONFIRMED`);
+      }
     }
     if (!(Number(turn.observed?.assistantResponseCount) > 0)) {
       failures.push(`TURN_${index + 1}_ASSISTANT_RESPONSE_MISSING`);
@@ -297,6 +303,14 @@ test.describe("Transcribe + Polly real AWS acceptance", () => {
       apiLog,
       /interview_answer_state_committed[^\r\n]*\bsource_turn_id=([^\s]+)/g,
     );
+    const apiSessionIdsInPlanOrder = [...new Set(
+      createdTurnEvents
+        .filter((turn) => turn.sequence === 1)
+        .map((turn) => turn.voiceSessionId),
+    )];
+    const sessionIndexByVoiceSessionId = new Map(
+      apiSessionIdsInPlanOrder.map((voiceSessionId, index) => [voiceSessionId, index]),
+    );
     const answerStateUpdateCountsByTurnId = new Map();
     for (const turnId of answerStateUpdateTurnIds) {
       answerStateUpdateCountsByTurnId.set(
@@ -305,9 +319,7 @@ test.describe("Transcribe + Polly real AWS acceptance", () => {
       );
     }
     const answerStateUpdatesByTurn = createdTurnEvents.map((turn) => {
-      const sessionIndex = sessions.findIndex(
-        (session) => session.telemetry?.sessionId === turn.voiceSessionId,
-      );
+      const sessionIndex = sessionIndexByVoiceSessionId.get(turn.voiceSessionId) ?? -1;
       const behavior = plans[sessionIndex]?.turns[turn.sequence - 1]?.behavior ?? null;
       return {
         voiceSessionId: turn.voiceSessionId,
