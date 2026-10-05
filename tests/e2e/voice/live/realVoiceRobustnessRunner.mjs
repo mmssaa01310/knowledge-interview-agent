@@ -155,10 +155,18 @@ function sortedFields(context) {
   );
 }
 
-function fieldForQuestion(context, questionId) {
+export function fieldForQuestion(context, questionId, state = null) {
   const fields = sortedFields(context);
-  const normalized = String(questionId ?? "").replace(/^live-field-/, "");
-  return fields.find((field) => field.id === normalized || `live-field-${field.id}` === questionId)
+  const questionIdText = String(questionId ?? "");
+  const normalized = questionIdText.replace(/^live-field-/, "");
+  const interview = interviewState(state);
+  const askedQuestion = (interview.askedQuestions ?? []).find((question) => (
+    question?.questionId === questionIdText
+  ));
+  const stateFieldId = askedQuestion?.fieldId
+    ?? (interview.currentQuestionId === questionIdText ? interview.currentFieldId : null);
+  return fields.find((field) => field.id === stateFieldId)
+    ?? fields.find((field) => field.id === normalized || `live-field-${field.id}` === questionIdText)
     ?? fields[0]
     ?? null;
 }
@@ -398,7 +406,7 @@ export function buildFixtureCorrelationPreflight({
     `${record.behavior}:${record.variant}`,
     record,
   ]));
-  const initialField = fieldForQuestion(context, interviewState(state).currentQuestionId)
+  const initialField = fieldForQuestion(context, interviewState(state).currentQuestionId, state)
     ?? fields[0]
     ?? null;
   const remaining = new Map(fields.map((field) => [field.id, requiredAspectIds(field)]));
@@ -1056,9 +1064,17 @@ function fieldAnswerIsComplete(interview, field) {
       .some((status) => ["CONFIRMED", "ANSWERED"].includes(String(status ?? "").toUpperCase()));
 }
 
-function nextUnansweredField(context, state) {
+export function nextUnansweredField(context, state) {
   const interview = interviewState(state);
-  const currentFieldId = String(interview.currentQuestionId ?? "").replace(/^live-field-/, "");
+  const askedQuestion = (interview.askedQuestions ?? []).find((question) => (
+    question?.questionId === interview.currentQuestionId
+  ));
+  const currentFieldId = String(
+    interview.currentFieldId
+      ?? askedQuestion?.fieldId
+      ?? interview.currentQuestionId
+      ?? "",
+  ).replace(/^live-field-/, "");
   const currentField = sortedFields(context).find((field) => field.id === currentFieldId) ?? null;
   // GPT-Live keeps currentQuestionId as the answer target until the next
   // user turn is assessed. Do not treat a later checklist item as the next
@@ -1331,26 +1347,43 @@ async function waitForTrace(page, predicate, timeoutMs) {
   })).catch(() => ({ live: [], channel: [] }));
 }
 
-function transcribePlaybackLifecycle(dataTrace, boundaryAt) {
+export function transcribePlaybackLifecycle(dataTrace, boundaryAt) {
   const entries = eventEntries(dataTrace, ROBUSTNESS_ENGINE.transcribe_polly, {
     includeClient: true,
   }).filter((entry) => number(entry.timestampMs, 0) >= number(boundaryAt, 0));
-  const outputEnded = entries.some((entry) => (
-    entry.direction !== "client" && entry.type === "assistant_speech_ended"
-  ));
-  const browserDrained = entries.some((entry) => (
-    entry.direction === "client" && entry.type === "assistant_playback_drained"
-  ));
-  const inputResumed = entries.some((entry) => (
-    entry.direction !== "client"
-    && entry.type === "input_state_changed"
-    && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
-  ));
+  const outputEndedAt = entries
+    .filter((entry) => entry.direction !== "client" && entry.type === "assistant_speech_ended")
+    .map((entry) => number(entry.timestampMs, null))
+    .filter((timestamp) => timestamp !== null)
+    .at(-1) ?? null;
+  const browserDrainedAt = entries
+    .filter((entry) => entry.direction === "client" && entry.type === "assistant_playback_drained")
+    .map((entry) => number(entry.timestampMs, null))
+    .filter((timestamp) => timestamp !== null)
+    .at(-1) ?? null;
+  const outputEnded = outputEndedAt !== null;
+  const browserDrained = browserDrainedAt !== null;
+  const playbackEndedAt = outputEnded && browserDrained
+    ? Math.max(outputEndedAt, browserDrainedAt)
+    : null;
+  const inputResumedAt = playbackEndedAt === null ? null : entries
+    .filter((entry) => (
+      entry.direction !== "client"
+      && entry.type === "input_state_changed"
+      && ["ANSWER_LISTENING", "CONFIRMATION_LISTENING"].includes(entry.event?.inputState)
+      && number(entry.timestampMs, 0) > playbackEndedAt
+    ))
+    .map((entry) => number(entry.timestampMs, null))
+    .filter((timestamp) => timestamp !== null)[0] ?? null;
+  const inputResumed = inputResumedAt !== null;
   return {
     settled: outputEnded && browserDrained && inputResumed,
     outputEnded,
     browserDrained,
     inputResumed,
+    outputEndedAt,
+    browserDrainedAt,
+    inputResumedAt,
     settlementSource: outputEnded && browserDrained && inputResumed
       ? "assistant_speech_ended_and_browser_drained_then_input_resumed"
       : null,
@@ -1873,7 +1906,11 @@ export async function runRealVoiceRobustnessSession({
     contextData = await fetchInterviewContext(request);
     before = await fetchInterviewState(request);
     const fields = sortedFields(contextData);
-    let currentField = fieldForQuestion(contextData, interviewState(before).currentQuestionId);
+    let currentField = fieldForQuestion(
+      contextData,
+      interviewState(before).currentQuestionId,
+      before,
+    );
     let currentQuestionId = currentField ? liveQuestionId(currentField) : null;
     let currentQuestion = currentField ? questionText(currentField) : null;
     telemetry.event("robustness_session_started", {
@@ -1894,6 +1931,7 @@ export async function runRealVoiceRobustnessSession({
     await page.addInitScript(() => {
       window.localStorage.setItem("ai-interviewer-dev-token", "dev-manager");
     });
+    const initialReplyBoundaryAt = Date.now();
     await page.goto(RECORD_URL);
     await page.selectOption("select", engine);
     await page.locator(".voice-conversation-button").click();
@@ -1910,7 +1948,11 @@ export async function runRealVoiceRobustnessSession({
       const readyState = await fetchInterviewState(request).catch(() => null);
       if (readyState && interviewState(readyState).currentQuestionId) {
         before = readyState;
-        currentField = fieldForQuestion(contextData, interviewState(before).currentQuestionId);
+        currentField = fieldForQuestion(
+          contextData,
+          interviewState(before).currentQuestionId,
+          before,
+        );
         currentQuestionId = currentField ? liveQuestionId(currentField) : null;
         currentQuestion = currentField ? questionText(currentField) : null;
         telemetry.event("turn_baseline_ready", {
@@ -1941,12 +1983,8 @@ export async function runRealVoiceRobustnessSession({
       ? configuredInitialResponseIdleMs
       : DEFAULT_GPT_LIVE_INITIAL_RESPONSE_IDLE_MS;
     const initialQuestionReadyPredicate = (value) => {
-      const runtime = eventEntries(value.channel, engine);
       if (engine === ROBUSTNESS_ENGINE.transcribe_polly) {
-        return runtime.some((entry) => (
-          entry.type === "input_state_changed"
-          && entry.event?.inputState === "ANSWER_LISTENING"
-        ));
+        return transcribePlaybackLifecycle(value.channel, initialReplyBoundaryAt).settled;
       }
       return isGPTLiveInitialResponseReady(value.live, {
         idleMs: initialResponseIdleMs,
@@ -1996,7 +2034,11 @@ export async function runRealVoiceRobustnessSession({
         ?? realVoiceFixtureText(turnBehavior, turnPlan.variant);
       if (turn > 1) {
         before = await fetchInterviewState(request).catch(() => before);
-        currentField = fieldForQuestion(contextData, interviewState(before).currentQuestionId);
+        currentField = fieldForQuestion(
+          contextData,
+          interviewState(before).currentQuestionId,
+          before,
+        );
         currentQuestionId = currentField ? liveQuestionId(currentField) : null;
         currentQuestion = currentField ? questionText(currentField) : null;
         if (!preplayedTurn) {
@@ -2264,6 +2306,56 @@ export async function runRealVoiceRobustnessSession({
       }
     }
 
+    const expectedAcceptanceField = NO_ADVANCE_BEHAVIORS.has(turnBehavior)
+      ? currentField
+      : nextFieldAfter(contextData, currentField);
+    if (
+      strictTranscribePlayback
+      && engine === ROBUSTNESS_ENGINE.transcribe_polly
+      && preliminaryTranscript.finalCount > 0
+    ) {
+      const stateRefreshDeadline = Date.now() + Math.min(timeoutMs, 8_000);
+      let expectedStateObserved = false;
+      while (Date.now() < stateRefreshDeadline) {
+        const candidateState = await fetchInterviewState(request).catch(() => null);
+        if (candidateState && stateVersion(candidateState) >= stateVersion(after)) {
+          after = candidateState;
+          const actualField = fieldForQuestion(
+            contextData,
+            interviewState(candidateState).currentQuestionId,
+            candidateState,
+          );
+          const targetMatches = expectedAcceptanceField
+            ? actualField?.id === expectedAcceptanceField.id
+            : interviewState(candidateState).status === "completed";
+          const answer = currentField
+            ? extractFieldAnswer(interviewState(candidateState), currentField.id)
+            : {};
+          const partialCandidateStored = turnBehavior !== "PARTIAL_ANSWER"
+            || (hasText(answer.candidate)
+              && !["CONFIRMED", "ANSWERED"].includes(
+                String(answer.answerState ?? "").toUpperCase(),
+              ));
+          if (targetMatches && partialCandidateStored) {
+            expectedStateObserved = true;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      stateObservedAt = Date.now();
+      telemetry.event("interview_state_after_response_observed", {
+        expectedFieldId: expectedAcceptanceField?.id ?? null,
+        actualFieldId: fieldForQuestion(
+          contextData,
+          interviewState(after).currentQuestionId,
+          after,
+        )?.id ?? null,
+        expectedStateObserved,
+        state: stateSnapshot(after),
+      });
+    }
+
     const afterTrace = await page.evaluate(() => ({
       live: window.__kikioriVoiceLiveTrace?.entries ?? [],
       channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
@@ -2350,11 +2442,14 @@ export async function runRealVoiceRobustnessSession({
     const transcriptQuestionId = transcript.finalEntries
       .map((entry) => entry.event?.questionId ?? entry.event?.question_id)
       .find(hasText);
+    const fallbackQuestionId = engine === ROBUSTNESS_ENGINE.transcribe_polly
+      ? interviewState(before).currentQuestionId
+      : interviewState(after).currentQuestionId;
     const requestedQuestionId = stateUpdateLifecycle?.request?.questionId
       || transcriptQuestionId
-      || interviewState(after).currentQuestionId
+      || fallbackQuestionId
       || currentQuestionId;
-    const answerField = fieldForQuestion(contextData, requestedQuestionId) ?? currentField;
+    const answerField = fieldForQuestion(contextData, requestedQuestionId, before) ?? currentField;
     const answer = extractFieldAnswer(
       interviewState(after),
       answerField?.id,
@@ -2363,7 +2458,18 @@ export async function runRealVoiceRobustnessSession({
       interviewState(before),
       currentField?.id,
     );
+    const answerStateMutationObserved = ["answerState", "candidate", "confirmed"].some(
+      (key) => beforeAnswer?.[key] !== answer?.[key],
+    );
     const beforeQuestionId = interviewState(before).currentQuestionId ?? currentQuestionId;
+    const currentFieldAfter = fieldForQuestion(
+      contextData,
+      interviewState(after).currentQuestionId,
+      after,
+    );
+    const currentFieldBeforeId = currentField?.id ?? null;
+    const currentFieldAfterId = currentFieldAfter?.id ?? null;
+    const expectedFieldAfterId = expectedAcceptanceField?.id ?? null;
     const expectedNextFieldBefore = nextUnansweredField(contextData, before);
     const sameTurnExpectedNextQuestionId = expectedNextFieldBefore
       ? liveQuestionId(expectedNextFieldBefore)
@@ -2382,12 +2488,15 @@ export async function runRealVoiceRobustnessSession({
     const effectiveExpectations = shouldAdvance || expectations.questionAdvance !== "required"
       ? expectations
       : { ...expectations, questionAdvance: "optional" };
-    const advanced = questionAdvanced({
-      before,
-      after,
-      requestedQuestionId,
-      expectedQuestionId: sameTurnExpectedNextQuestionId,
-    });
+    const advanced = strictTranscribePlayback
+      && engine === ROBUSTNESS_ENGINE.transcribe_polly
+      ? currentFieldAfterId !== currentFieldBeforeId
+      : questionAdvanced({
+        before,
+        after,
+        requestedQuestionId,
+        expectedQuestionId: sameTurnExpectedNextQuestionId,
+      });
     // In GPT-Live, a changed currentQuestionId on this record means that the
     // current transcript was routed to the next answer target. It is not a
     // same-turn question-advance assertion: Live has already spoken the next
@@ -2396,6 +2505,7 @@ export async function runRealVoiceRobustnessSession({
     // observed advance would classify a valid PARTIAL turn as
     // UNEXPECTED_QUESTION_ADVANCE.
     const questionAdvancedForHardGate = engine === ROBUSTNESS_ENGINE.gpt_live
+      || (strictTranscribePlayback && engine === ROBUSTNESS_ENGINE.transcribe_polly)
       ? null
       : advanced;
     const responseIdsValue = responseIds(afterTrace.channel, afterTrace.live);
@@ -2530,6 +2640,7 @@ export async function runRealVoiceRobustnessSession({
     const questionLifecycle = {
       before: {
         questionId: beforeQuestionId,
+        fieldId: currentFieldBeforeId,
         questionText: currentQuestion,
         answerState: beforeAnswer.answerState ?? null,
         candidate: beforeAnswer.candidate ?? null,
@@ -2544,8 +2655,10 @@ export async function runRealVoiceRobustnessSession({
       backendSelectedQuestionId: null,
       backendSelectedQuestionText: null,
       nextQuestionDetermination: {
-        owner: "gpt_live",
-        reason: "application_backend_persists_answer_target_only",
+        owner: engine === ROBUSTNESS_ENGINE.gpt_live ? "gpt_live" : "application_backend",
+        reason: engine === ROBUSTNESS_ENGINE.gpt_live
+          ? "application_backend_persists_answer_target_only"
+          : "backend_state_tracks_answer_target_and_progression",
         answerTargetQuestionId: requestedQuestionId ?? null,
         selectedForThisTurnQuestionId: requestedQuestionId ?? null,
         selectedForThisTurnQuestionText: answerField ? questionText(answerField) : null,
@@ -2553,14 +2666,21 @@ export async function runRealVoiceRobustnessSession({
         sameTurnExpectedNextQuestionText: expectedNextFieldBefore
           ? questionText(expectedNextFieldBefore)
           : null,
-        expectedNextQuestionId: expectedNextQuestionId,
-        expectedNextQuestionText: expectedNextFieldAfter
-          ? questionText(expectedNextFieldAfter)
-          : null,
+        expectedNextQuestionId: expectedAcceptanceField
+          ? liveQuestionId(expectedAcceptanceField)
+          : expectedNextQuestionId,
+        expectedNextQuestionText: expectedAcceptanceField
+          ? questionText(expectedAcceptanceField)
+          : expectedNextFieldAfter
+            ? questionText(expectedNextFieldAfter)
+            : null,
         selectedQuestionMatchesExpected: shouldAdvance
           ? requestedQuestionId === sameTurnExpectedNextQuestionId
           : null,
-        progressionVerification: "PENDING_NEXT_TURN",
+        progressionVerification: strictTranscribePlayback
+          && engine === ROBUSTNESS_ENGINE.transcribe_polly
+          ? currentFieldAfterId === expectedFieldAfterId ? "VERIFIED" : "MISMATCH"
+          : "PENDING_NEXT_TURN",
         spokenText: assistant.text || null,
       },
       frontendStateApplied,
@@ -2568,15 +2688,8 @@ export async function runRealVoiceRobustnessSession({
         questionId: stateUpdateLifecycle?.response?.currentQuestionId
           ?? interviewState(after).currentQuestionId
           ?? null,
-        questionText: fieldForQuestion(
-          contextData,
-          stateUpdateLifecycle?.response?.currentQuestionId
-            ?? interviewState(after).currentQuestionId,
-        ) ? questionText(fieldForQuestion(
-          contextData,
-          stateUpdateLifecycle?.response?.currentQuestionId
-            ?? interviewState(after).currentQuestionId,
-        )) : null,
+        fieldId: currentFieldAfterId,
+        questionText: currentFieldAfter ? questionText(currentFieldAfter) : null,
         answerState: answer.answerState ?? null,
         candidate: answer.candidate ?? null,
         confirmed: answer.confirmed ?? null,
@@ -2623,7 +2736,7 @@ export async function runRealVoiceRobustnessSession({
         answerState: answer.answerState,
         stateVersionAdvanced: stateVersionAdvancedForTurn,
         stateUpdateReceiptPersisted,
-        stateMutationOccurred: stateUpdateReceiptPersisted,
+        stateMutationOccurred: answerStateMutationObserved,
         questionAdvanced: advanced,
         assistantResponseCount: assistant.mainResponseCount,
         assistantPlaybackSettled: Boolean(outputPlaybackStatus?.settled),
@@ -2641,6 +2754,9 @@ export async function runRealVoiceRobustnessSession({
       interview: {
         questionId: requestedQuestionId ?? currentQuestionId,
         currentQuestionText: currentQuestion,
+        currentFieldBeforeId,
+        currentFieldAfterId,
+        expectedFieldAfterId,
         candidate: answer.candidate,
         confirmed: answer.confirmed,
         answerState: answer.answerState,

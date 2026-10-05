@@ -79,8 +79,16 @@ function acceptanceFailures(result, plan) {
     const turn = turns[index];
     if (!turn) continue;
     const behavior = String(planTurn.behavior).toUpperCase();
-    const delta = Number(turn.interview?.stateVersionAfter)
-      - Number(turn.interview?.stateVersionBefore);
+    const lifecycle = turn.interview?.questionLifecycle ?? {};
+    const before = lifecycle.before ?? {};
+    const after = lifecycle.after ?? {};
+    const currentFieldBeforeId = turn.interview?.currentFieldBeforeId
+      ?? before.fieldId
+      ?? null;
+    const currentFieldAfterId = turn.interview?.currentFieldAfterId
+      ?? after.fieldId
+      ?? null;
+    const expectedFieldAfterId = turn.interview?.expectedFieldAfterId ?? null;
 
     if (!turn.transcription?.finalText?.trim()) {
       failures.push(`TURN_${index + 1}_FINAL_TRANSCRIPT_MISSING`);
@@ -92,8 +100,10 @@ function acceptanceFailures(result, plan) {
       failures.push(`TURN_${index + 1}_PARTIAL_TRANSCRIPT_MISSING`);
     }
     if (behavior === "ASK_CLARIFICATION") {
-      if (delta !== 0) failures.push(`TURN_${index + 1}_CLARIFICATION_CHANGED_STATE`);
-      if (turn.interview?.currentQuestionBefore !== turn.interview?.currentQuestionAfter) {
+      if (turn.observed?.stateMutationOccurred) {
+        failures.push(`TURN_${index + 1}_CLARIFICATION_CHANGED_ANSWER_STATE`);
+      }
+      if (currentFieldBeforeId !== currentFieldAfterId) {
         failures.push(`TURN_${index + 1}_CLARIFICATION_ADVANCED_QUESTION`);
       }
       if (!(Number(turn.observed?.assistantResponseCount) > 0)) {
@@ -102,16 +112,17 @@ function acceptanceFailures(result, plan) {
       continue;
     }
 
-    if (delta !== 1) failures.push(`TURN_${index + 1}_STATE_VERSION_DELTA_NOT_ONE`);
-    if (["NORMAL", "PARTIAL_COMPLETION", "RECOVERY_NORMAL"].includes(behavior)
-      && turn.interview?.currentQuestionBefore === turn.interview?.currentQuestionAfter) {
-      failures.push(`TURN_${index + 1}_EXPECTED_QUESTION_PROGRESSION_MISSING`);
+    if (turn.interview?.currentFieldBeforeId == null) {
+      failures.push(`TURN_${index + 1}_CURRENT_QUESTION_FIELD_MISSING`);
+    }
+    if (expectedFieldAfterId != null && currentFieldAfterId !== expectedFieldAfterId) {
+      failures.push(`TURN_${index + 1}_EXPECTED_QUESTION_FIELD_NOT_SELECTED`);
     }
     if (behavior === "PARTIAL_ANSWER") {
-      if (turn.interview?.currentQuestionBefore !== turn.interview?.currentQuestionAfter) {
+      if (currentFieldBeforeId !== currentFieldAfterId) {
         failures.push(`TURN_${index + 1}_PARTIAL_ANSWER_ADVANCED_QUESTION`);
       }
-      if (!turn.interview?.candidate?.trim()) {
+      if (!turn.interview?.candidate?.trim() || turn.observed?.answerState === "CONFIRMED") {
         failures.push(`TURN_${index + 1}_PARTIAL_CANDIDATE_NOT_PERSISTED`);
       }
     }
@@ -261,10 +272,15 @@ test.describe("Transcribe + Polly real AWS acceptance", () => {
     const voiceLogPath = path.join(config.outputDir, "voice-service.log");
     const apiLog = fs.existsSync(apiLogPath) ? fs.readFileSync(apiLogPath, "utf8") : "";
     const voiceLog = fs.existsSync(voiceLogPath) ? fs.readFileSync(voiceLogPath, "utf8") : "";
-    const createdTurnIds = matchingValues(
-      apiLog,
-      /voice_turn_created[^\r\n]*\bclient_turn_id=([^\s]+)/g,
-    );
+    const createdTurnEvents = [...apiLog.matchAll(
+      /voice_turn_created[^\r\n]*\bvoice_session_id=([^\s]+)[^\r\n]*\bturn_id=([^\s]+)[^\r\n]*\bclient_turn_id=([^\s]+)[^\r\n]*\bsequence=(\d+)/g,
+    )].map((match) => ({
+      voiceSessionId: match[1],
+      turnId: match[2],
+      clientTurnId: match[3],
+      sequence: Number(match[4]),
+    }));
+    const createdTurnIds = createdTurnEvents.map((turn) => turn.clientTurnId);
     const committedTurnIds = matchingValues(
       voiceLog,
       /transcribe_turn_telemetry event=user_turn_committed[^\r\n]*\bclient_turn_id=([^\s]+)/g,
@@ -277,6 +293,32 @@ test.describe("Transcribe + Polly real AWS acceptance", () => {
       apiLog,
       /voice_turn_reused(?:_after_unique_conflict)?[^\r\n]*\bclient_turn_id=([^\s]+)/g,
     );
+    const answerStateUpdateTurnIds = matchingValues(
+      apiLog,
+      /interview_answer_state_committed[^\r\n]*\bsource_turn_id=([^\s]+)/g,
+    );
+    const answerStateUpdateCountsByTurnId = new Map();
+    for (const turnId of answerStateUpdateTurnIds) {
+      answerStateUpdateCountsByTurnId.set(
+        turnId,
+        (answerStateUpdateCountsByTurnId.get(turnId) ?? 0) + 1,
+      );
+    }
+    const answerStateUpdatesByTurn = createdTurnEvents.map((turn) => {
+      const sessionIndex = sessions.findIndex(
+        (session) => session.telemetry?.sessionId === turn.voiceSessionId,
+      );
+      const behavior = plans[sessionIndex]?.turns[turn.sequence - 1]?.behavior ?? null;
+      return {
+        voiceSessionId: turn.voiceSessionId,
+        turnId: turn.turnId,
+        clientTurnId: turn.clientTurnId,
+        sequence: turn.sequence,
+        behavior,
+        expectedCount: behavior === null ? null : behavior === "ASK_CLARIFICATION" ? 0 : 1,
+        observedCount: answerStateUpdateCountsByTurnId.get(turn.turnId) ?? 0,
+      };
+    });
     const reconnectCount = (voiceLog.match(/transcribe_reconnecting\b/g) ?? []).length;
     const forcedReconnectCount = (voiceLog.match(/transcribe_test_reconnect_forced\b/g) ?? []).length;
     const pollyTextChunks = readJsonl(path.join(config.outputDir, "polly-text-chunks.jsonl"));
@@ -284,23 +326,56 @@ test.describe("Transcribe + Polly real AWS acceptance", () => {
     const expectedCommittedIds = new Set(committedTurnIds);
     const uniqueCreatedIds = new Set(createdTurnIds);
     const stateAndPersistenceFailures = [];
+    const expectedAnswerStateUpdateCount = plans.reduce(
+      (sum, plan) => sum + plan.turns.filter((turn) => turn.behavior !== "ASK_CLARIFICATION").length,
+      0,
+    );
 
     if (sessions.some((session) => session.status !== "PASS")) {
       stateAndPersistenceFailures.push("SESSION_ACCEPTANCE_FAILED");
     }
-    if (createdTurnIds.length !== expectedTurnCount
-      || uniqueCreatedIds.size !== expectedTurnCount) {
-      stateAndPersistenceFailures.push("VOICE_TURN_CREATE_COUNT_OR_DEDUP_FAILURE");
+    if (createdTurnIds.length !== expectedTurnCount) {
+      stateAndPersistenceFailures.push("VOICE_TURN_CREATE_COUNT_MISMATCH");
     }
-    if (committedTurnIds.length !== expectedTurnCount
-      || expectedCommittedIds.size !== expectedTurnCount) {
-      stateAndPersistenceFailures.push("TRANSCRIBE_COMMIT_COUNT_OR_DEDUP_FAILURE");
+    if (uniqueCreatedIds.size !== createdTurnIds.length) {
+      stateAndPersistenceFailures.push("DUPLICATE_VOICE_TURN_CREATION");
+    }
+    if (committedTurnIds.length !== expectedTurnCount) {
+      stateAndPersistenceFailures.push("TRANSCRIBE_COMMIT_COUNT_MISMATCH");
+    }
+    if (expectedCommittedIds.size !== committedTurnIds.length) {
+      stateAndPersistenceFailures.push("DUPLICATE_TRANSCRIBE_COMMIT");
     }
     if (createdTurnIds.some((turnId) => !expectedCommittedIds.has(turnId))) {
       stateAndPersistenceFailures.push("COMMITTED_AND_PERSISTED_TURN_IDS_DIFFER");
     }
     if (claimedTurnIds.length !== expectedTurnCount) {
       stateAndPersistenceFailures.push("VOICE_TURN_PROCESSING_CLAIM_COUNT_MISMATCH");
+    }
+    if (new Set(claimedTurnIds).size !== claimedTurnIds.length) {
+      stateAndPersistenceFailures.push("DUPLICATE_VOICE_TURN_PROCESSING_CLAIM");
+    }
+    if (answerStateUpdateTurnIds.length !== expectedAnswerStateUpdateCount) {
+      stateAndPersistenceFailures.push("ANSWER_STATE_UPDATE_COUNT_MISMATCH");
+    }
+    if (new Set(answerStateUpdateTurnIds).size !== answerStateUpdateTurnIds.length) {
+      stateAndPersistenceFailures.push("DUPLICATE_ANSWER_STATE_UPDATE");
+    }
+    for (const answerStateUpdate of answerStateUpdatesByTurn) {
+      if (answerStateUpdate.expectedCount === null) continue;
+      if (answerStateUpdate.observedCount > answerStateUpdate.expectedCount) {
+        stateAndPersistenceFailures.push(
+          answerStateUpdate.behavior === "ASK_CLARIFICATION"
+            ? "CLARIFICATION_MUTATED_ANSWER_STATE"
+            : "DUPLICATE_ANSWER_STATE_UPDATE",
+        );
+      } else if (answerStateUpdate.observedCount < answerStateUpdate.expectedCount) {
+        stateAndPersistenceFailures.push(
+          answerStateUpdate.behavior === "ASK_CLARIFICATION"
+            ? "CLARIFICATION_MUTATED_ANSWER_STATE"
+            : "ANSWER_STATE_UPDATE_MISSING",
+        );
+      }
     }
     if (reusedTurnIds.length > 0) {
       stateAndPersistenceFailures.push("DUPLICATE_VOICE_TURN_REUSE_OBSERVED");
@@ -339,6 +414,10 @@ test.describe("Transcribe + Polly real AWS acceptance", () => {
         createdTurnIds,
         committedTurnIds,
         reusedTurnIds,
+        expectedAnswerStateUpdateCount,
+        answerStateUpdateCount: answerStateUpdateTurnIds.length,
+        uniqueAnswerStateUpdateCount: new Set(answerStateUpdateTurnIds).size,
+        answerStateUpdatesByTurn,
         reconnectCount,
         forcedReconnectCount,
       },

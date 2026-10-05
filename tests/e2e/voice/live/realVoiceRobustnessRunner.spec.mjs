@@ -6,6 +6,7 @@ import {
   collectTranscript,
   delegationLifecycle,
   extractTiming,
+  fieldForQuestion,
   failureAnalysis,
   gptLiveResponseBoundary,
   gptLiveOutputPlaybackIdleStatus,
@@ -15,12 +16,69 @@ import {
   realConversationPlan,
   buildFixtureCorrelationPreflight,
   partialAcceptancePlan,
+  nextUnansweredField,
   liveUpdateLifecycle,
   questionAdvanced,
   questionAdvanceRequiredForTurn,
   questionAdvanceExpected,
   verifyLiveQuestionProgression,
+  transcribePlaybackLifecycle,
 } from "./realVoiceRobustnessRunner.mjs";
+
+test("backend q IDs map to their canonical fields for voice state checks", () => {
+  const context = {
+    fields: [
+      { id: "field-intro", displayOrder: 1 },
+      { id: "field-role", displayOrder: 2 },
+      { id: "field-experience", displayOrder: 3 },
+    ],
+  };
+  const state = {
+    interviewState: {
+      currentQuestionId: "q-002",
+      currentFieldId: "field-role",
+      askedQuestions: [
+        { questionId: "q-001", fieldId: "field-intro" },
+        { questionId: "q-002", fieldId: "field-role" },
+      ],
+      completedFieldIds: ["field-intro"],
+      fieldStates: { "field-role": { answerState: "CANDIDATE_PENDING" } },
+    },
+  };
+
+  expect(fieldForQuestion(context, "q-002", state)?.id).toBe("field-role");
+  expect(nextUnansweredField(context, state)).toBeNull();
+  state.interviewState.completedFieldIds.push("field-role");
+  expect(nextUnansweredField(context, state)?.id).toBe("field-experience");
+});
+
+test("Transcribe input resumes only after assistant output and browser playback drain", () => {
+  const trace = [
+    {
+      direction: "server",
+      timestampMs: 100,
+      event: { type: "input_state_changed", inputState: "ANSWER_LISTENING" },
+    },
+    { direction: "server", timestampMs: 200, event: { type: "assistant_speech_ended" } },
+    { direction: "client", timestampMs: 300, event: { type: "assistant_playback_drained" } },
+  ];
+
+  expect(transcribePlaybackLifecycle(trace, 0)).toMatchObject({
+    outputEnded: true,
+    browserDrained: true,
+    inputResumed: false,
+    settled: false,
+  });
+  trace.push({
+    direction: "server",
+    timestampMs: 400,
+    event: { type: "input_state_changed", inputState: "ANSWER_LISTENING" },
+  });
+  expect(transcribePlaybackLifecycle(trace, 0)).toMatchObject({
+    inputResumed: true,
+    settled: true,
+  });
+});
 
 test("repeated NORMAL sessions restart the ordered fixture sequence", () => {
   expect(realBehaviorPlan({
@@ -48,8 +106,7 @@ test("PARTIAL_ANSWER answers only the next question's first aspect after the bas
   ]));
   expect(plan.fixtureText[0]).toContain("スマート技術開発部");
   expect(plan.fixtureText[0]).toContain("シニアエンジニア");
-  expect(plan.fixtureText[1]).toContain("プロジェクトリーダー");
-  expect(plan.fixtureText[1]).not.toContain("メンバー");
+  expect(plan.fixtureText[1]).toBe("現在の役職はプロジェクトリーダーです。");
 });
 
 test("delegation lifecycle distinguishes no delegation from a delegation without the State Tool", () => {

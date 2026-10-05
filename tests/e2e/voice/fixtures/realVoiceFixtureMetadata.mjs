@@ -11,7 +11,7 @@ export const REAL_VOICE_FIXTURE_METADATA_FILENAME = "real-voice-fixtures.json";
 export const STALE_AUDIO_FIXTURE = "STALE_AUDIO_FIXTURE";
 
 const FIXTURE_ID_PREFIXES = Object.freeze({
-  PARTIAL_ANSWER: "partial-role-only-v2",
+  PARTIAL_ANSWER: "partial-role-only-v3",
 });
 
 function normalizeBehavior(behavior) {

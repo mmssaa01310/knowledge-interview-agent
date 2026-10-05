@@ -158,8 +158,8 @@ export const REAL_VOICE_FIXTURE_TEXTS = Object.freeze({
     "特に思い当たることはありません。",
   ]),
   PARTIAL_ANSWER: Object.freeze([
-    "現在はプロジェクトリーダーをしています。",
-    "プロジェクトリーダーとして開発を進めています。",
+    "現在の役職はプロジェクトリーダーです。",
+    "役職はプロジェクトリーダーです。",
     "今の役割はプロジェクトリーダーです。",
   ]),
   PARTIAL_COMPLETION: Object.freeze([
