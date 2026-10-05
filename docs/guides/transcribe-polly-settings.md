@@ -77,7 +77,7 @@ Pollyの速度指定の詳細は[AWS公式ドキュメント](https://docs.aws.a
 | `VOICE_ENABLE_BACKCHANNELS` | `false` | 発話中の「なるほど。」などの相槌と、処理中の案内を有効にするかです。 | `true`にするとPollyの先行生成が行われます。通常の短い間では再生せず、発話途中の長い無音が続いた場合だけ相槌を出します。 |
 | `VOICE_PROCESSING_ACK_DELAY_MS` | `900` | ユーザーturnを確定してから、Interview APIの処理が続いている場合に固定音声の相槌を開始するまでの時間です。 | `700`〜`1200`ms程度で調整します。応答が速い場合は正式応答開始時にキャンセルされます。 |
 | `VOICE_TURN_SAVE_TIMEOUT_SECONDS` | `5` | 音声ターンの保存処理を待つ上限秒数です。 | 小さくしすぎると保存完了前にタイムアウトしやすくなります。 |
-| `VOICE_TURN_PROCESS_TIMEOUT_SECONDS` | `30` | Interview APIの回答解釈・次質問生成を待つ上限秒数です。 | 小さくすると失敗応答へ早く切り替わりますが、通常のLLM処理も失敗扱いになりやすくなります。 |
+| `VOICE_TURN_PROCESS_TIMEOUT_SECONDS` | `60` | Interview APIの回答解釈・次質問生成を待つ上限秒数です。 | 小さくすると失敗応答へ早く切り替わりますが、通常のLLM処理も失敗扱いになりやすくなります。 |
 | `VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS` | `5` | 読み上げ音声の再生終了を待つ上限秒数です。 | 小さくすると入力再開が早くなりますが、末尾再生中に次ターンへ進むリスクがあります。 |
 
 ## 7. 調整例

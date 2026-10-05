@@ -16,6 +16,8 @@ import {
   realConversationPlan,
   buildFixtureCorrelationPreflight,
   partialAcceptancePlan,
+  questionGenerationPending,
+  settledTurnBaselineState,
   nextUnansweredField,
   liveUpdateLifecycle,
   questionAdvanced,
@@ -50,6 +52,33 @@ test("backend q IDs map to their canonical fields for voice state checks", () =>
   expect(nextUnansweredField(context, state)).toBeNull();
   state.interviewState.completedFieldIds.push("field-role");
   expect(nextUnansweredField(context, state)?.id).toBe("field-experience");
+});
+
+test("question-generation intermediate state is not treated as a settled question snapshot", () => {
+  expect(questionGenerationPending({
+    interviewState: { questionGenerationPending: true },
+  })).toBe(true);
+  expect(questionGenerationPending({
+    interviewState: { questionGenerationPending: false },
+  })).toBe(false);
+});
+
+test("barge-in turn baselines prefer the prior turn's later settled question state", () => {
+  const interrupted = {
+    interviewState: { currentQuestionId: "q-002", stateVersion: 8 },
+  };
+  const previousTurnSettled = {
+    interviewState: { currentQuestionId: "q-003", stateVersion: 9 },
+  };
+  const laterInterruptedSnapshot = {
+    interviewState: { currentQuestionId: "q-004", stateVersion: 10 },
+  };
+
+  expect(settledTurnBaselineState(interrupted, previousTurnSettled))
+    .toBe(previousTurnSettled);
+  expect(settledTurnBaselineState(interrupted, laterInterruptedSnapshot))
+    .toBe(laterInterruptedSnapshot);
+  expect(settledTurnBaselineState(interrupted, null)).toBe(interrupted);
 });
 
 test("Transcribe input resumes only after assistant output and browser playback drain", () => {

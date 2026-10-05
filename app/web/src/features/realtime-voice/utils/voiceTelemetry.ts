@@ -2,6 +2,10 @@ export const VOICE_SIGNALING_TIMEOUT_MS = Number.parseInt(
   import.meta.env.VITE_VOICE_SIGNALING_TIMEOUT_MS ?? "8000",
   10,
 );
+export const VOICE_SESSION_START_TIMEOUT_MS = Number.parseInt(
+  import.meta.env.VITE_VOICE_SESSION_START_TIMEOUT_MS ?? "30000",
+  10,
+);
 
 export type VoiceStartupTrace = {
   voice_session_ms: number;

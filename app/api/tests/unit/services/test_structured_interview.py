@@ -773,7 +773,9 @@ def test_completed_field_gets_one_useful_deepening_then_moves_on_without_persist
     assert all(call.get("optionalDeepening") is not True for call in provider.question_calls[2:])
 
 
-def test_answered_probe_is_saved_under_the_same_basic_question_and_integrated() -> None:
+def test_answered_probe_is_saved_under_the_same_basic_question_and_integrated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-explicit-probe",
         (("field-role", "現在の役割"), ("field-next", "次の項目")),
@@ -820,7 +822,8 @@ def test_answered_probe_is_saved_under_the_same_basic_question_and_integrated() 
         content="プロジェクトリーダーとして進行管理を担当しています。",
     )
 
-    probe = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    with caplog.at_level("INFO", logger="ai_interviewer_api.agents.interview_knowledge.service"):
+        probe = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     assert probe["question"]["questionId"] == first["question"]["questionId"]
     assert probe["question"]["turnType"] == "PROBE"
@@ -829,6 +832,8 @@ def test_answered_probe_is_saved_under_the_same_basic_question_and_integrated() 
     assert len(probe["interviewState"]["askedQuestions"]) == 1
     assert probe["interviewState"]["followUpCounts"]["field:field-role"] == 1
     assert probe["interviewState"]["questionAnswers"][first["question"]["questionId"]]["probes"] == []
+    assert "interview_answer_state_committed" in caplog.text
+    assert "source_turn_id=explicit-probe-basic" in caplog.text
 
     _add_structured_answer(
         record,

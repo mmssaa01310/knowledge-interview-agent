@@ -259,8 +259,10 @@ async function main() {
           VOICE_TEST_AUDIO_FIXTURE_DIR: fixtureDirectory,
           VOICE_TEST_MAX_SESSIONS: "3",
           VOICE_TEST_MAX_TURNS_PER_SESSION: "4",
-          VOICE_TEST_REAL_TURN_TIMEOUT_MS: "60000",
+          VOICE_TEST_REAL_STARTUP_TIMEOUT_MS: "90000",
+          VOICE_TEST_REAL_TURN_TIMEOUT_MS: "90000",
           VOICE_TEST_REAL_POLLY_DRAIN_TIMEOUT_MS: "30000",
+          VOICE_TURN_PROCESS_TIMEOUT_SECONDS: "60",
           VOICE_TEST_RUN_MODE: "acceptance",
         }),
       );

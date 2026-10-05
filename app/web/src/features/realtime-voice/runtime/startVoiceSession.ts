@@ -22,6 +22,7 @@ import {
   createVoiceStartupTrace,
   logVoiceStartupEvent,
   VOICE_SIGNALING_TIMEOUT_MS,
+  VOICE_SESSION_START_TIMEOUT_MS,
 } from "../utils/voiceTelemetry";
 import {
   createOpenAIRealtimePeerConnection,
@@ -137,7 +138,7 @@ export async function startVoiceSession(options: StartVoiceSessionOptions): Prom
     markStartup("voice_session_request_started");
     const voiceSession = await withTimeout(
       (signal) => createVoiceSession(recordId, provider, signal),
-      VOICE_SIGNALING_TIMEOUT_MS,
+      VOICE_SESSION_START_TIMEOUT_MS,
     );
     trace.voice_session_ms = Math.round(performance.now() - stageStartedAt);
     voiceSessionRef.current = voiceSession;

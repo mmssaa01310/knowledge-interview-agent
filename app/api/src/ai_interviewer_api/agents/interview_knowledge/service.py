@@ -2411,6 +2411,10 @@ def _generate_structured_interview_result(
                 and current_question.get("targetType") != "closing"
                 and _probe_limit_for_question(current_question) > 0
             ):
+                answer_state_before_probe_commit = _structured_answer_state_snapshot(state)
+                answer_state_version_before_probe_commit = int(
+                    state.get("stateVersion", 0) or 0
+                )
                 probe_question, probe_assistant_message, probe_messages = _start_probe_question(
                     state=state,
                     base_question=current_question,
@@ -2429,6 +2433,28 @@ def _generate_structured_interview_result(
                     user_record_id=str(record["id"]),
                     on_question_delta=on_question_delta,
                 )
+                changed_field_ids = _changed_structured_field_ids(
+                    answer_state_before,
+                    answer_state_before_probe_commit,
+                )
+                if answer_state_before is not None and changed_field_ids:
+                    logger.info(
+                        "interview_answer_state_committed record_id=%s source_turn_id=%s "
+                        "source_message_id=%s transcript_chars=%s field_ids=%s applied_topics=%s "
+                        "state_version_before=%s state_version_after=%s current_question_id=%s "
+                        "persisted=%s",
+                        record.get("id"),
+                        latest_user_message.get("voiceTurnId")
+                        or latest_user_message.get("id"),
+                        latest_message_id,
+                        len(raw_transcript),
+                        changed_field_ids,
+                        applied_topics,
+                        answer_state_version_before_probe_commit,
+                        state.get("stateVersion"),
+                        current_question.get("questionId"),
+                        persist_state,
+                    )
                 return _build_result(
                     record=record,
                     state=state,

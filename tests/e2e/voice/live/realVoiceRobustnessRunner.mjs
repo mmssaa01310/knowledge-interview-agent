@@ -149,6 +149,18 @@ function interviewState(state) {
   return state?.interviewState ?? state ?? {};
 }
 
+export function questionGenerationPending(state) {
+  return interviewState(state).questionGenerationPending === true;
+}
+
+export function settledTurnBaselineState(interruptedState, previousSettledState) {
+  if (!interruptedState) return previousSettledState;
+  if (!previousSettledState) return interruptedState;
+  return stateVersion(previousSettledState) >= stateVersion(interruptedState)
+    ? previousSettledState
+    : interruptedState;
+}
+
 function sortedFields(context) {
   return [...(context?.fields ?? [])].sort(
     (left, right) => number(left.displayOrder, 0) - number(right.displayOrder, 0),
@@ -1400,17 +1412,7 @@ async function interruptAssistantWithNextFixture({
     trace.live,
     engine,
   ).mainResponseCount;
-  const beforeState = await fetchInterviewState(request).catch(() => null);
-  if (!beforeState) {
-    return {
-      observed: false,
-      inputResumed: false,
-      assistantStartedAt,
-      microphoneReplayAt: null,
-      preplayedTurn: null,
-      error: "PRE_BARGE_IN_STATE_SNAPSHOT_MISSING",
-    };
-  }
+  const beforeStatePromise = fetchInterviewState(request).catch(() => null);
   const beforeReplayTrace = await page.evaluate(() => ({
     channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
   })).catch(() => ({ channel: [] }));
@@ -1435,7 +1437,18 @@ async function interruptAssistantWithNextFixture({
   }
 
   const microphoneReplayAt = Date.now();
-  const replay = await replayWavFixtureMicrophone(page, fixtureIndex);
+  const replayPromise = replayWavFixtureMicrophone(page, fixtureIndex);
+  const [beforeState, replay] = await Promise.all([beforeStatePromise, replayPromise]);
+  if (!beforeState) {
+    return {
+      observed: false,
+      inputResumed: false,
+      assistantStartedAt,
+      microphoneReplayAt,
+      preplayedTurn: null,
+      error: "PRE_BARGE_IN_STATE_SNAPSHOT_MISSING",
+    };
+  }
   if (!replay.started && replay.mode !== "browser_fallback") {
     return {
       observed: false,
@@ -2142,6 +2155,9 @@ export async function runRealVoiceRobustnessSession({
       channel: window.__kikioriVoiceDataChannelTrace?.entries ?? [],
       audio: window.__kikioriVoiceAudioTrace ?? { events: [], stats: [] },
     })).catch(() => ({ live: [], channel: [], audio: { events: [], stats: [] } })));
+    if (strictTranscribePlayback && !initialQuestionReady) {
+      throw new Error("TRANSCRIBE_POLLY_INITIAL_QUESTION_PLAYBACK_NOT_SETTLED");
+    }
     const microphoneStart = await startWavFixtureMicrophone(page);
     telemetry.event("audio_fixture_ready", {
       engine,
@@ -2163,6 +2179,7 @@ export async function runRealVoiceRobustnessSession({
       fixtureSequence.length,
     );
     for (turn = 1; turn <= maxTurns; turn += 1) {
+      const previousSettledState = after;
       after = null;
       const turnFixturePath = fixtureSequence[(turn - 1) % fixtureSequence.length];
       const turnPlan = plannedTurns?.[turn - 1] ?? {
@@ -2178,8 +2195,12 @@ export async function runRealVoiceRobustnessSession({
       const turnFixtureText = turnPlan.fixtureRecord?.text
         ?? realVoiceFixtureText(turnBehavior, turnPlan.variant);
       if (turn > 1) {
-        before = preplayedTurn?.beforeState
-          ?? await fetchInterviewState(request).catch(() => before);
+        before = preplayedTurn
+          ? (settledTurnBaselineState(
+            preplayedTurn.beforeState,
+            previousSettledState,
+          ) ?? await fetchInterviewState(request).catch(() => before))
+          : await fetchInterviewState(request).catch(() => before);
         currentField = fieldForQuestion(
           contextData,
           interviewState(before).currentQuestionId,
@@ -2297,9 +2318,10 @@ export async function runRealVoiceRobustnessSession({
       const questionChanged = candidateState
         && interviewState(candidateState).currentQuestionId !== interviewState(before).currentQuestionId;
       const answerReady = candidateState && fieldAnswerPersisted(candidateState, currentField?.id);
+      const questionStillGenerating = questionGenerationPending(candidateState);
       if (candidateState && (
         turnBehavior === "SILENCE"
-        || (stateChanged && (
+        || (stateChanged && !questionStillGenerating && (
           answerReady
           || questionChanged
           || NO_ADVANCE_BEHAVIORS.has(turnBehavior)
