@@ -16,6 +16,11 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     RequirementUpdate,
     StructuredInterviewOutput,
 )
+from ai_interviewer_api.services.conversation_control import (
+    extracted_update_summary,
+    has_evaluable_answer_content,
+    normalize_conversation_output,
+)
 from ai_interviewer_api.models.interview_plan import InterviewQuestionPlan
 from ai_interviewer_api.services.interview_answer_resolution import (
     normalize_answer_resolution,
@@ -101,7 +106,10 @@ PURPOSE_PROPOSAL_PREREQUISITES: tuple[tuple[str, str], ...] = (
     ("requirement.request", "要求内容"),
 )
 
-MAX_OPTIONAL_DEEPENING_PER_FIELD = 1
+# A probe is a child of the current basic question.  Keeping this limit in the
+# coordinator makes the backend guarantee independent from model output.
+MAX_PROBE_COUNT = 1
+MAX_OPTIONAL_DEEPENING_PER_FIELD = MAX_PROBE_COUNT
 
 
 def resolve_profile(knowledge: Mapping[str, Any]) -> InterviewProfile:
@@ -158,15 +166,35 @@ def build_initial_structured_state(
         "analysisVersion": 0,
         "currentFieldId": None,
         "currentQuestionId": None,
+        "currentTurnType": "BASIC",
         "completedFieldIds": [],
         "pendingFieldIds": [field_id for field_id in field_states],
         "askedQuestions": [],
+        "questionAnswers": {},
         "followUpCounts": {},
         "fieldStates": field_states,
         "lastProcessedUserMessageId": None,
         "lastUtteranceCompleteness": None,
         "lastTranscriptAssessment": None,
         "lastAnswerAssessment": None,
+        "lastAnswerEvaluation": None,
+        "lastAnswerStatus": None,
+        "lastProbeDecision": None,
+        "lastProbeDimension": None,
+        "lastProbeReason": None,
+        "lastClarificationKind": "NONE",
+        "lastAspectAssessments": [],
+        "lastMissingInformation": [],
+        "lastExtractedFields": [],
+        "lastNextAction": None,
+        "lastConversationTrace": None,
+        "lastUserIntent": None,
+        "lastConversationAction": None,
+        "lastInterpretationMatch": "NONE",
+        "lastUserInterpretation": None,
+        "lastOriginalQuestionIntent": None,
+        "lastResumeCurrentQuestion": True,
+        "lastClarificationTarget": None,
         "activeProbeTarget": None,
         "pendingTranscriptConfirmation": None,
         "nextQuestionTarget": None,
@@ -220,6 +248,20 @@ def sync_structured_state_fields(
         if "deepeningItemIds" not in field_state:
             field_state["deepeningItemIds"] = []
             changed = True
+        defaults = {
+            "originalAnswer": None,
+            "answer": field_state.get("recordAnswer"),
+            "answerSource": "GENERATED",
+            "probes": [],
+            "answerStatus": "NOT_ANSWERED",
+            "probeDecision": "NONE",
+            "probeCount": 0,
+            "probeStatus": "NONE",
+        }
+        for key, value in defaults.items():
+            if key not in field_state:
+                field_state[key] = deepcopy(value)
+                changed = True
         changed |= _sync_field_progress(field_state)
     return changed
 
@@ -306,6 +348,12 @@ def record_interpretation_assessment(
     *,
     latest_message_id: str,
     raw_transcript: str | None = None,
+    user_intent: str | None = None,
+    conversation_action: str | None = None,
+    interpretation_match: str | None = None,
+    user_interpretation: str | None = None,
+    original_question_intent: str | None = None,
+    resume_current_question: bool | None = None,
 ) -> None:
     """Persist the model's safety decisions without promoting an answer.
 
@@ -328,6 +376,30 @@ def record_interpretation_assessment(
     state["lastUtteranceCompleteness"] = output.utteranceCompleteness
     state["lastTranscriptAssessment"] = assessment
     state["lastAnswerAssessment"] = output.answerAssessment.model_dump()
+    state["lastAnswerEvaluation"] = output.answerEvaluation
+    state["lastAnswerStatus"] = output.answerStatus
+    state["lastProbeDecision"] = output.probeDecision
+    state["lastProbeDimension"] = output.probeDimension
+    state["lastProbeReason"] = output.probeReason
+    state["lastClarificationKind"] = output.clarificationKind
+    state["lastAspectAssessments"] = [
+        aspect.model_dump() for aspect in output.aspectAssessments
+    ]
+    state["lastMissingInformation"] = list(output.missingInformation)
+    state["lastExtractedFields"] = extracted_update_summary(output)
+    state["lastUserIntent"] = user_intent or output.userIntent
+    if conversation_action is not None:
+        state["lastConversationAction"] = conversation_action
+    state["lastInterpretationMatch"] = interpretation_match or output.interpretationMatch
+    state["lastUserInterpretation"] = user_interpretation or output.userInterpretation
+    state["lastOriginalQuestionIntent"] = (
+        original_question_intent or output.originalQuestionIntent
+    )
+    state["lastResumeCurrentQuestion"] = (
+        resume_current_question
+        if resume_current_question is not None
+        else output.resumeCurrentQuestion
+    )
     state["lastProcessedUserMessageId"] = latest_message_id
 
 
@@ -476,10 +548,15 @@ def apply_structured_output(
         latest_message_id=latest_message_id,
         raw_transcript=raw_transcript,
     )
-    if output.utteranceCompleteness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
-        # A final Transcribe result is still only a candidate utterance. The
-        # Interpreter must establish both grammatical completeness and a
-        # meaningful answer before any field or process state is changed.
+    if (
+        output.utteranceCompleteness != "COMPLETE"
+        and not has_evaluable_answer_content(output)
+    ):
+        # A genuinely incomplete utterance is still only a candidate. A
+        # complete utterance with insufficient semantic coverage is different:
+        # its grounded portion may be applied while the coordinator keeps the
+        # missing aspects open for a targeted follow-up. The same applies when
+        # one semantic aspect is complete but the next clause is unfinished.
         return []
 
     changed_topics: list[str] = []
@@ -705,7 +782,52 @@ def apply_background_structured_output(
     be replayed from a stale background snapshot.
     """
 
-    safe_output = output.model_copy(update={"dialogueAct": "OTHER"})
+    safe_output = normalize_conversation_output(output)
+    if safe_output.answerEvaluation in {
+        "OFF_TARGET",
+        "CLARIFICATION_REQUEST",
+        "NOT_HEARD",
+        "REPEAT_REQUEST",
+    }:
+        safe_output = safe_output.model_copy(
+            update={
+                "fieldUpdates": [],
+                "requirementUpdates": [],
+                "processPatch": ProcessPatch(),
+                "applicability": [],
+                "contradictions": [],
+                "resolvedContradictionIds": [],
+                "openIssues": [],
+            }
+        )
+    if safe_output.answerAssessment.sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+        safe_output = safe_output.model_copy(
+            update={
+                "fieldUpdates": [],
+                "requirementUpdates": [],
+            }
+        )
+    elif (
+        safe_output.answerEvaluation == "PARTIALLY_ANSWERED"
+        or safe_output.answerAssessment.sufficiency != "SUFFICIENT"
+    ):
+        # Background observation has no foreground target-selection step that
+        # can selectively downgrade the active target. Keep every extracted
+        # value tentative until the foreground coordinator evaluates the same
+        # transcript and decides which missing aspect was answered.
+        safe_output = safe_output.model_copy(
+            update={
+                "fieldUpdates": [
+                    update.model_copy(update={"answerResolution": "TENTATIVE"})
+                    for update in safe_output.fieldUpdates
+                ],
+                "requirementUpdates": [
+                    update.model_copy(update={"answerResolution": "TENTATIVE"})
+                    for update in safe_output.requirementUpdates
+                ],
+            }
+        )
+    safe_output = safe_output.model_copy(update={"dialogueAct": "OTHER"})
     return apply_structured_output(
         state,
         safe_output,
@@ -1035,11 +1157,17 @@ def _active_probe_target(state: Mapping[str, Any]) -> dict[str, Any] | None:
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
+        "probeMode",
+        "probeDimension",
+        "probeReason",
+        "probeQuestion",
+        "parentQuestionId",
     ):
         if key in value:
             target[key] = deepcopy(value[key])
     target["probeType"] = str(value.get("probeType") or "CLARIFY")
     target["probeCount"] = int(value.get("probeCount") or 0)
+    target["probeMode"] = str(value.get("probeMode") or "MISSING_INFORMATION")
     return target
 
 
@@ -1124,6 +1252,11 @@ def register_probe(
         "deepeningItemIds",
         "deepeningItems",
         "optionalDeepening",
+        "probeMode",
+        "probeDimension",
+        "probeReason",
+        "probeQuestion",
+        "parentQuestionId",
     ):
         if key in target:
             active_probe[key] = deepcopy(target[key])
@@ -1400,6 +1533,16 @@ def _new_field_state(
         "rawAnswer": None,
         "rawAnswerHistory": [],
         "recordAnswer": None,
+        # Evidence and the currently adopted answer are intentionally kept
+        # separate so a management edit never erases the interview trail.
+        "originalAnswer": None,
+        "answer": None,
+        "answerSource": "GENERATED",
+        "probes": [],
+        "answerStatus": "NOT_ANSWERED",
+        "probeDecision": "NONE",
+        "probeCount": 0,
+        "probeStatus": "NONE",
         "capturedItems": [],
         "capturedItemIds": [],
         "candidateItems": [],
@@ -1455,6 +1598,13 @@ def _normalize_question_plan(
     return {
         "version": int(plan.version or 1),
         "purpose": _clean_optional_text(plan.purpose),
+        "questionGoal": _clean_optional_text(plan.questionGoal),
+        "preferredProbeDimensions": [
+            str(value).strip().upper()
+            for value in plan.preferredProbeDimensions
+            if str(value).strip()
+        ],
+        "maxProbeCount": max(0, min(int(plan.maxProbeCount), MAX_PROBE_COUNT)),
         "requiredItems": required_items,
         "optionalItems": optional_items,
         "completionCriteria": {"mode": "all_required_items"},
@@ -2199,6 +2349,8 @@ def _apply_field_update(
         resolution = "CONFIRM_REQUIRED"
     was_confirmed = field_state.get("answerState") == "CONFIRMED"
     if was_confirmed:
+        # Corrections replace one item, not the other facts already collected.
+        field_state["candidateItems"] = deepcopy(field_state.get("confirmedItems") or [])
         field_state["recordAnswer"] = None
         field_state["confirmedItems"] = []
         state["completedFieldIds"] = [

@@ -78,9 +78,17 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
                 partial_results_stability=settings.transcribe_partial_results_stability,
                 transcribe_reconnect_attempts=settings.transcribe_reconnect_attempts,
                 reconnect_audio_buffer_ms=settings.transcribe_reconnect_audio_buffer_ms,
+                test_reconnect_after_audio_chunks=(
+                    settings.test_transcribe_reconnect_after_audio_chunks
+                    if settings.app_env == "test"
+                    else 0
+                ),
                 vad_rms_threshold=settings.transcribe_vad_rms_threshold,
                 normal_endpoint_ms=settings.voice_endpoint_silence_ms,
+                hard_endpoint_ms=settings.voice_hard_endpoint_ms,
                 final_result_settle_ms=settings.voice_final_result_settle_ms,
+                transcript_settle_ms=settings.voice_transcript_settle_ms,
+                hard_timeout_ms=settings.voice_hard_timeout_ms,
                 polly_voice_id=(
                     settings.polly_voice_id
                     if locale_config.interview_locale == "ja-JP"
@@ -88,8 +96,10 @@ def create_runtime(provider: str, interview_locale: str | None = None) -> Realti
                 ),
                 polly_language_code=locale_config.polly_language_code,
                 polly_engine=settings.polly_engine,
+                polly_speech_rate=settings.polly_speech_rate,
                 polly_max_parallel_requests=settings.polly_max_parallel_requests,
                 backchannel_enabled=settings.voice_enable_backchannels,
+                processing_ack_delay_ms=settings.voice_processing_ack_delay_ms,
                 listen_ack_text=runtime_texts["listen_ack"],
                 processing_ack_text=runtime_texts["processing_ack"],
                 long_processing_text=runtime_texts["long_processing"],

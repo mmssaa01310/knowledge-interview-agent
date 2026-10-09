@@ -16,6 +16,15 @@ class VoiceTurnCreate(BaseModel):
     expectedStateVersion: int | None = None
     startedAtMs: int | None = None
     endedAtMs: int | None = None
+    speculativeId: str | None = None
+
+
+class SpeculativeTurnCreate(BaseModel):
+    speculativeId: str
+    transcript: str
+    sttConfidence: float | None = Field(default=None, ge=0, le=1)
+    answerToQuestionId: str | None = None
+    expectedStateVersion: int | None = None
 
 
 class VoiceTurnIntentCreate(BaseModel):

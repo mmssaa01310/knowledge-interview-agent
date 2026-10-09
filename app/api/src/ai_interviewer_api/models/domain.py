@@ -107,6 +107,20 @@ class VoiceTurn(BaseEntity):
     normalizedTranscript: str | None = None
     correctionStatus: Literal["NONE", "CORRECTED", "UNCERTAIN"] = "NONE"
     transcriptAssessment: dict | None = None
+    runtime: str | None = None
+    dialogueAct: str | None = None
+    answerEvaluation: str | None = None
+    answerStatus: str | None = None
+    probeDecision: str | None = None
+    probeDimension: str | None = None
+    currentTurnType: str | None = None
+    missingInformation: list[str] = Field(default_factory=list)
+    extractedFields: list[dict] = Field(default_factory=list)
+    fieldStates: dict = Field(default_factory=dict)
+    nextAction: str | None = None
+    llmInput: dict | None = None
+    llmOutput: dict | None = None
+    conversationTrace: dict | None = None
     sttConfidence: float | None = None
     turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
     answerToQuestionId: str | None = None
@@ -149,6 +163,7 @@ class VoiceTurn(BaseEntity):
     clarificationEnqueued: bool = False
     startedAtMs: int | None = None
     endedAtMs: int | None = None
+    speculativeId: str | None = None
 
 
 class AiProposal(BaseEntity):
@@ -167,6 +182,11 @@ class Document(BaseEntity):
     knowledgeId: str
     fileName: str
     contentType: str
+    sourceType: Literal["file", "prior_knowledge"] = "file"
+    title: str | None = None
+    knowledgeType: Literal["known_fact", "glossary"] | None = None
+    contentFormat: Literal["text", "markdown"] | None = None
+    content: str | None = None
     ingestionStatus: str = "uploaded"
     progressPercent: int = 0
     chunkCount: int = 0

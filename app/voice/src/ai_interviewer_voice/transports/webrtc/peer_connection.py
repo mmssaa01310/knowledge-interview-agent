@@ -48,6 +48,7 @@ from ai_interviewer_voice.schemas.events import (
 from ai_interviewer_voice.schemas.sessions import AssistantReply, VoiceRuntimeContext
 from ai_interviewer_voice.services.ice_server_service import IceServer
 from ai_interviewer_voice.services.voice_session_service import AuthorizedVoiceSession, VoiceSessionService
+from ai_interviewer_voice.startup_timing import log_voice_startup_stage
 from ai_interviewer_voice.transports.webrtc.audio_input_track import AudioInputTrackConsumer
 from ai_interviewer_voice.transports.webrtc.audio_output_track import AudioOutputTrack
 from ai_interviewer_voice.transports.webrtc.audio_output_track import OutputFrameMetrics
@@ -89,10 +90,8 @@ class VoicePeerConnection:
         ice_gathering_timeout_seconds: float,
         peer_disconnected_grace_seconds: float,
         audio_input_queue_max_frames: int = 12,
-        playback_buffer_target_ms: float = 100.0,
         playback_buffer_retention_max_ms: float = 60000.0,
         playback_preroll_ms: float = 80.0,
-        playback_short_underrun_ms: float = 40.0,
         playback_drain_timeout_seconds: float = 10.0,
     ) -> None:
         self.voice_session_id = session.voice_session_id
@@ -105,23 +104,28 @@ class VoicePeerConnection:
         self._peer_disconnected_grace_seconds = peer_disconnected_grace_seconds
         self._playback_drain_timeout_seconds = playback_drain_timeout_seconds
         self._session_state = session
+        runtime_factory_started_at = monotonic()
+        self._startup_stage("runtime_factory_started")
         self._runtime = (
             runtime_factory(session.provider, session.interview_locale)
             if session.provider in {"transcribe_polly", "nova_sonic"}
             else runtime_factory(session.provider)
         )
+        self._startup_stage(
+            "runtime_factory_ready",
+            elapsed_ms=round((monotonic() - runtime_factory_started_at) * 1000, 1),
+        )
         runtime_output_rate_hz = int(getattr(self._runtime, "output_sample_rate_hz", 24000))
         self._playback_buffer = PlaybackBuffer(
             sample_rate_hz=runtime_output_rate_hz,
-            target_depth_ms=playback_buffer_target_ms,
             retention_max_ms=playback_buffer_retention_max_ms,
         )
         self._output_track = AudioOutputTrack(
             self._playback_buffer,
             voice_session_id=self.voice_session_id,
+            provider=session.provider,
             input_rate_hz=runtime_output_rate_hz,
             preroll_ms=playback_preroll_ms,
-            short_underrun_ms=playback_short_underrun_ms,
             on_frame_emitted=self._handle_output_frame_emitted,
         )
         self._data_channel = VoiceEventsDataChannel()
@@ -143,6 +147,8 @@ class VoicePeerConnection:
         self._close_lock = asyncio.Lock()
         self._current_generation: int | None = None
         self._generation_metrics: dict[int, AssistantGenerationMetrics] = {}
+        self._startup_first_response_event_logged = False
+        self._startup_first_audio_chunk_logged = False
         self._generation_finalize_tasks: dict[int, asyncio.Task[None]] = {}
         self._playback_drain_tasks: dict[
             tuple[str | None, int | None], asyncio.Task[None]
@@ -172,6 +178,7 @@ class VoicePeerConnection:
 
     async def apply_offer(self, offer_sdp: str, offer_type: str) -> str:
         started_at = monotonic()
+        self._startup_stage("backend_offer_received", offer_type=offer_type)
         self._schedule_initial_reply_audio_preload()
         self._pc.addTrack(self._output_track)
         await self._pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
@@ -184,6 +191,11 @@ class VoicePeerConnection:
             self.voice_session_id,
             round((monotonic() - started_at) * 1000),
             self._pc.iceGatheringState,
+        )
+        self._startup_stage(
+            "backend_answer_ready",
+            ice_gathering_state=self._pc.iceGatheringState,
+            elapsed_ms=round((monotonic() - started_at) * 1000, 1),
         )
         return self._pc.localDescription.sdp
 
@@ -205,8 +217,20 @@ class VoicePeerConnection:
             self._session_state.interview_locale,
         )
         greeting_text = localized_runtime_texts(self._session_state.interview_locale)["greeting"]
-        spoken_text = f"{greeting_text}{question_text}"
+        spoken_text = _join_initial_greeting_and_question(
+            greeting_text,
+            question_text,
+            self._session_state.interview_locale,
+        )
+        self._startup_stage(
+            "initial_tts_preload_started",
+            prepared_text_length=len(spoken_text),
+        )
         self._initial_reply_preload_task = asyncio.create_task(prepare(spoken_text))
+        self._startup_stage(
+            "initial_tts_preload_scheduled",
+            prepared_text_length=len(spoken_text),
+        )
         self._initial_reply_preload_task.add_done_callback(
             self._handle_initial_reply_preload_done
         )
@@ -239,6 +263,7 @@ class VoicePeerConnection:
             if track.kind != "audio":
                 return
             self._remote_audio_track = track
+            self._startup_stage("backend_microphone_track_received")
             if self._runtime_started and self._audio_input_started:
                 await self._input_consumer.start(track)
                 return
@@ -320,6 +345,7 @@ class VoicePeerConnection:
                 detail={},
             )
             if state == "connected":
+                self._startup_stage("webrtc_connected")
                 if self._disconnect_task is not None:
                     self._disconnect_task.cancel()
                     self._disconnect_task = None
@@ -339,6 +365,7 @@ class VoicePeerConnection:
             if self._remote_audio_track is None:
                 return
             try:
+                self._startup_stage("runtime_start_started")
                 await self._runtime.start(
                     VoiceRuntimeContext(
                         voice_session_id=self._session_state.voice_session_id,
@@ -347,9 +374,12 @@ class VoicePeerConnection:
                         interview_locale=self._session_state.interview_locale,
                     )
                 )
+                self._startup_stage("runtime_start_returned")
                 self._runtime_events_task = asyncio.create_task(self._consume_runtime_events())
                 if hasattr(self._runtime, "start_audio_input"):
+                    self._startup_stage("audio_input_start_started")
                     await getattr(self._runtime, "start_audio_input")()
+                    self._startup_stage("audio_input_ready")
                 await self._input_consumer.start(self._remote_audio_track)
                 self._runtime_started = True
                 self._audio_input_started = True
@@ -396,6 +426,7 @@ class VoicePeerConnection:
                 self._session_state.initial_question_id,
                 self._session_state.initial_reply_status,
             )
+            self._startup_stage("initial_reply_claim_started")
             claim = await self._voice_session_service.claim_initial_reply(
                 self.voice_session_id
             )
@@ -409,6 +440,10 @@ class VoicePeerConnection:
                 return
             self._initial_reply_sent = True
             try:
+                self._startup_stage(
+                    "initial_response_request_started",
+                    initial_question_id=claim.initial_question_id,
+                )
                 logger.info(
                     "voice_initial_reply_claimed voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
                     self.voice_session_id,
@@ -419,52 +454,88 @@ class VoicePeerConnection:
                     initial_reply_text,
                     self._session_state.interview_locale,
                 )
-                if hasattr(self._runtime, "start_initial_reply"):
-                    await getattr(self._runtime, "start_initial_reply")(
-                        reply_text=greeting_text,
-                        question_id=None,
+                self._startup_stage(
+                    "initial_response_request_dispatched",
+                    initial_question_id=claim.initial_question_id,
+                )
+                if self._session_state.provider == "transcribe_polly":
+                    # Transcribe + Polly does not have a provider-side initial
+                    # sequence queue. Send the greeting and first question as
+                    # one formal reply so the normal browser playback-drain
+                    # guard is not inserted between them.
+                    question_text = _extract_initial_question_text(
+                        claim.initial_reply_text,
+                        self._session_state.interview_locale,
                     )
-                    logger.info(
-                        "voice_initial_control_text_sent voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
-                        self.voice_session_id,
-                        None,
-                        "sending",
+                    spoken_text = _join_initial_greeting_and_question(
+                        localized_runtime_texts(self._session_state.interview_locale)["greeting"],
+                        question_text,
+                        self._session_state.interview_locale,
                     )
-                else:
                     await self._runtime.send_reply(
                         AssistantReply(
                             turn_id=f"initial-{self.voice_session_id}",
                             response_id=f"initial-response-{self.voice_session_id}",
-                            text=greeting_text,
+                            text=spoken_text,
                             action="ask_initial_question",
-                            question_id=None,
+                            question_id=claim.initial_question_id,
                             state_version=self._session_state.state_version,
                         )
                     )
-                question_text = _extract_initial_question_text(
-                    claim.initial_reply_text,
-                    self._session_state.interview_locale,
-                )
-                if question_text:
-                    if hasattr(self._runtime, "queue_initial_followup_reply"):
-                        await getattr(self._runtime, "queue_initial_followup_reply")(
-                            reply_text=question_text,
-                            question_id=claim.initial_question_id,
+                    await self._voice_session_service.mark_initial_reply_sent(
+                        self.voice_session_id
+                    )
+                else:
+                    if hasattr(self._runtime, "start_initial_reply"):
+                        await getattr(self._runtime, "start_initial_reply")(
+                            reply_text=greeting_text,
+                            question_id=None,
+                        )
+                        logger.info(
+                            "voice_initial_control_text_sent voice_session_id=%s initial_question_id=%s initial_reply_status=%s",
+                            self.voice_session_id,
+                            None,
+                            "sending",
                         )
                     else:
                         await self._runtime.send_reply(
                             AssistantReply(
-                                turn_id=f"initial-{self.voice_session_id}-question",
-                                response_id=f"initial-response-{self.voice_session_id}-question",
-                                text=question_text,
+                                turn_id=f"initial-{self.voice_session_id}",
+                                response_id=f"initial-response-{self.voice_session_id}",
+                                text=greeting_text,
                                 action="ask_initial_question",
-                                question_id=claim.initial_question_id,
+                                question_id=None,
                                 state_version=self._session_state.state_version,
                             )
                         )
-                        await self._voice_session_service.mark_initial_reply_sent(
-                            self.voice_session_id
-                        )
+                    question_text = _extract_initial_question_text(
+                        claim.initial_reply_text,
+                        self._session_state.interview_locale,
+                    )
+                    if question_text:
+                        if hasattr(self._runtime, "queue_initial_followup_reply"):
+                            await getattr(self._runtime, "queue_initial_followup_reply")(
+                                reply_text=question_text,
+                                question_id=claim.initial_question_id,
+                            )
+                        else:
+                            await self._runtime.send_reply(
+                                AssistantReply(
+                                    turn_id=f"initial-{self.voice_session_id}-question",
+                                    response_id=f"initial-response-{self.voice_session_id}-question",
+                                    text=question_text,
+                                    action="ask_initial_question",
+                                    question_id=claim.initial_question_id,
+                                    state_version=self._session_state.state_version,
+                                )
+                            )
+                            await self._voice_session_service.mark_initial_reply_sent(
+                                self.voice_session_id
+                            )
+                self._startup_stage(
+                    "initial_reply_setup_completed",
+                    initial_question_id=claim.initial_question_id,
+                )
             except Exception:
                 self._initial_reply_sent = False
                 await self._voice_session_service.mark_initial_reply_failed(self.voice_session_id)
@@ -506,6 +577,7 @@ class VoicePeerConnection:
     async def _handle_runtime_event(self, event: VoiceRuntimeEvent) -> None:
         event_to_send = event
         if isinstance(event, RuntimeReady):
+            self._startup_stage("runtime_ready")
             self._data_channel.send_runtime_ready(context=self._event_context())
             self._data_channel.send_interview_state(context=self._event_context())
             logger.info(
@@ -531,6 +603,14 @@ class VoicePeerConnection:
             )
             if event.response_id is not None:
                 metrics.response_id = event.response_id
+            if not self._startup_first_response_event_logged:
+                self._startup_first_response_event_logged = True
+                self._startup_stage(
+                    "first_response_event",
+                    response_id=event.response_id,
+                    generation=event.generation,
+                    event_type="assistant_speech_started",
+                )
             logger.info(
                 "voice_assistant_speech_started voice_session_id=%s current_question_id=%s state_version=%s response_id=%s generation=%s peer_connection_state=%s runtime_open=%s audio_input_open=%s browser_track_state=%s",
                 self.voice_session_id,
@@ -548,7 +628,14 @@ class VoicePeerConnection:
                 return
             if self._current_generation is None:
                 self._current_generation = event.generation
-            completion_matches = bool(event.completion_id)
+            if not self._startup_first_audio_chunk_logged:
+                self._startup_first_audio_chunk_logged = True
+                self._startup_stage(
+                    "first_audio_chunk_received",
+                    response_id=event.response_id,
+                    generation=event.generation,
+                    bytes=len(event.pcm),
+                )
             try:
                 enqueued = await self._playback_buffer.enqueue(
                     event,
@@ -591,14 +678,14 @@ class VoicePeerConnection:
             if should_log_playback:
                 self._last_playback_log_at = monotonic()
                 logger.info(
-                    "voice_playback_audio_chunk voice_session_id=%s response_id=%s completion_id=%s event_generation=%s current_generation=%s event_authorized=%s completion_matches=%s bytes=%s enqueued=%s enqueue_result=%s drop_count=%s playback_buffer_enqueue_count=%s playback_buffer_depth_ms=%s playback_buffer_peak_depth_ms=%s playback_old_audio_dropped_ms=%s playback_underrun_count=%s playback_silence_inserted_ms=%s assistant_pcm_received_bytes=%s assistant_pcm_received_duration_ms=%s assistant_generation_id=%s assistant_interrupted=%s",
+                    "voice_playback_audio_chunk voice_session_id=%s response_id=%s completion_id=%s event_generation=%s current_generation=%s event_authorized=%s completion_id_present=%s bytes=%s enqueued=%s enqueue_result=%s drop_count=%s playback_buffer_enqueue_count=%s playback_buffer_depth_ms=%s playback_buffer_peak_depth_ms=%s playback_old_audio_dropped_ms=%s playback_underrun_count=%s playback_silence_inserted_ms=%s assistant_pcm_received_bytes=%s assistant_pcm_received_duration_ms=%s assistant_generation_id=%s assistant_interrupted=%s",
                     self.voice_session_id,
                     event.response_id,
                     event.completion_id,
                     event.generation,
                     self._current_generation,
                     event.authorized,
-                    completion_matches,
+                    bool(event.completion_id),
                     len(event.pcm),
                     enqueued,
                     "enqueued" if enqueued else "dropped",
@@ -908,6 +995,13 @@ class VoicePeerConnection:
         generation_metrics.output_frame_count += 1
         if generation_metrics.first_output_emitted_at is None:
             generation_metrics.first_output_emitted_at = metrics.emitted_at
+            logger.info(
+                "voice_turn_first_audio_frame_sent_to_browser voice_session_id=%s response_id=%s generation=%s monotonic_ms=%s",
+                self.voice_session_id,
+                generation_metrics.response_id,
+                generation,
+                round(metrics.emitted_at * 1000),
+            )
         generation_metrics.last_output_emitted_at = metrics.emitted_at
 
     def _schedule_generation_finalize_after_drain(self, generation: int) -> None:
@@ -1074,6 +1168,7 @@ class VoicePeerConnection:
             )
             await self._on_closed(self.voice_session_id)
             logger.info("voice_session_close_completed %s", self._close_log_context(reason=reason, source=source))
+            self._startup_stage("session_closed", reason=reason, source=source)
 
     def _close_log_context(self, *, reason: str, source: str) -> str:
         return (
@@ -1093,6 +1188,15 @@ class VoicePeerConnection:
             question_id=self._session_state.current_question_id,
             state_version=self._session_state.state_version,
             interview_status=self._session_state.interview_status,
+        )
+
+    def _startup_stage(self, stage: str, **details: object) -> None:
+        log_voice_startup_stage(
+            logger,
+            voice_session_id=self.voice_session_id,
+            provider=self._session_state.provider,
+            stage=stage,
+            **details,
         )
 
     @staticmethod
@@ -1121,3 +1225,14 @@ def _extract_initial_question_text(
         if text.startswith(greeting):
             return text[len(greeting) :].strip()
     return text
+
+
+def _join_initial_greeting_and_question(
+    greeting_text: str,
+    question_text: str,
+    interview_locale: str,
+) -> str:
+    if not question_text:
+        return greeting_text
+    separator = "" if interview_locale in {"ja-JP", "zh-CN"} else " "
+    return f"{greeting_text}{separator}{question_text}"

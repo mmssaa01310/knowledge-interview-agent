@@ -4,9 +4,11 @@
 
 リアルタイム音声インタビューは、Structured Interviewに対する別の入出力経路として実装する。
 
-質問進行、回答評価、RAG、状態更新、構造化提案生成、終了判定は、`app/voice`ではなく`app/api`を正本とする。
+共通Structured音声経路の質問進行、回答評価、RAG、状態更新、構造化提案生成、終了判定は、`app/voice`ではなく`app/api`を正本とする。GPT-Live WebRTCは冒頭の例外境界に従い、Liveモデルが質問進行、Responses Delegationが意味評価、`app/api`が保存保証を担当する。
 
 `app/voice`は音声入出力、WebRTC、Voice Runtime制御、確定Transcriptの受け渡しに責務を限定する。
+
+ただしGPT-Live WebRTCは、旧OpenAI RealtimeおよびTranscribe + Polly/Nova Sonicの共通Structured Interview経路とは別の責務境界を持つ。GPT-Liveが唯一のインタビュアーとして会話・質問進行を行い、Responses Delegationが意味評価、Application BackendがState保存を担当する。GPT-Live経路でBackendがTranscriptを再評価したり、次質問本文を生成したりしない。詳細は[GPT-Live WebRTC](gpt-live-phase1.md)を参照する。
 
 本書は本番を含む共通契約・責務の設計である。ローカル実装の認証方式と実装済み範囲は[現行実装](../../reference/current-implementation.md)を参照する。
 
@@ -22,13 +24,15 @@
 * Voice SessionとVoice Turnの保存
 * 確定Transcriptの正式保存
 * 回答対象Question IDの管理
-* Structured Interviewの実行
-* 回答評価
+* 共通Structured Interviewの実行
+* 共通Structured Interviewの回答評価
 * RAG
-* インタビュー状態更新
-* 次質問、深掘り質問、終了応答の決定
+* 共通Structured Interviewのインタビュー状態更新
+* 共通Structured Interviewの次質問、深掘り質問、終了応答の決定
 * AI提案の生成と保存
 * AssistantReplyの生成
+
+GPT-Liveでは、上記のうちApplication Backendは認証・認可、Question/Aspect検証、Interview Stateの更新・保存を担う。GPT-Liveの質問進行、深掘り、ユーザー向け応答はLiveモデルが担い、Responses Delegationは意味評価だけを行う。
 
 `app/api`へ音声固有依存を追加しない。
 
@@ -200,13 +204,13 @@ class AssistantReply:
 
 ### 4.1 回答確認と次質問
 
-音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは文としての完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で評価し、`rawTranscript`、意味を変えない`normalizedTranscript`、STT補正候補の`correctionStatus`を返す。さらに質問への意味的成立性を`answerAssessment`で評価する。Backendは、未完了なら現在質問を維持し、`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから回答状態を更新する。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
+音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは発話完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で、認識品質を`recognitionStatus=CLEAR/PARTIAL/MISSING/AMBIGUOUS`で、質問への意味的成立性を`answerEvaluation`と`answerAssessment`で評価する。`PARTIALLY_ANSWERED`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`は別の評価であり、認識できたが情報が不足している回答を`NOT_HEARD`に変換してはならない。Backendは、未完了の発話に完結した回答観点が含まれる場合はその観点の根拠を保持して不足部分だけを質問し、完結した観点がない場合だけ現在質問を維持して続行を促す。認識品質の根拠がある`NOT_HEARD`だけ再発話を要求し、意味不足なら`missingInformation`に基づいて不足部分だけを質問する。`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから正式回答を更新する。`UNCERTAIN`でも補正対象とは独立して明確な項目だけは`TENTATIVE`候補として保持できるが、確認前に確定・次質問へ進めない。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
 
 回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。`TENTATIVE`の候補は次質問本文に自然に織り込む。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 
 次質問の対象値がBackendの検索した`indexed`文書に明示されている場合、APIは`document_reference`の候補を`AWAITING_CONFIRMATION`として保持し、音声には文書記載値の確認質問を返す。候補は「はい」などの明示承認後だけ正式回答へ移し、訂正発話があれば利用者の値へ更新する。音声Runtimeはこの判定や文書検索を複製せず、`app/api`が生成した確認質問、状態、出典を利用する。
 
-Transcribe + Pollyの聞き返し文は、Structured Interviewの状態を変更しない音声専用の表現層で整える。`UNCERTAIN`時は最新Transcriptをそのまま復唱せず、最新ターンを根拠とする信頼できる項目だけを短く示し、聞き取れなかった項目を特定して再回答を依頼する。単一候補の`CORRECTED`はBackendが確認待ち状態を作成した場合だけ補正候補を確認し、候補が曖昧な場合は推測を発話しない。通常のテキスト経路とNova Sonicの応答文生成にはこの表現層を適用しない。
+Transcribe + Pollyの聞き返し文は、Structured Interviewの状態を変更しない音声専用の表現層で整える。`answerEvaluation=NOT_HEARD`または旧状態の`UNCERTAIN`で、認識品質の根拠がある場合だけ、最新Transcriptをそのまま復唱せず、信頼できる項目を短く示して再回答を依頼する。`PARTIALLY_ANSWERED`、`OFF_TARGET`、`INCOMPLETE_UTTERANCE`の応答をこの層で「聞き取れなかった」と言い換えてはならない。単一候補の`CORRECTED`はBackendが確認待ち状態を作成した場合だけ補正候補を確認し、候補が曖昧な場合は推測を発話しない。通常のテキスト経路とNova Sonicの応答文生成にはこの表現層を適用しない。
 
 ## 5. VoiceRuntimeEvent契約
 
@@ -282,7 +286,7 @@ Trickle ICE用WebSocketは初回PoCの対象外とする。
 
 `app/voice`から`app/api`を呼び出すため、内部APIを用意する。
 
-回答処理APIの待機上限は`VOICE_TURN_PROCESS_TIMEOUT_SECONDS`で管理し、既定値は30秒とする。構造化インタビューのLLM処理が数秒を超えることを許容しつつ、無制限には待たない。timeout時は`PROCESS_TIMEOUT`として「処理中」の状態を維持し、APIエラー（`API_ERROR`）・通信エラー（`NETWORK_ERROR`）とは区別する。timeout後も同じ`clientTurnId`を保持し、次の発話があった場合は先行turnをキャンセルしてから開始するため、遅延した処理結果との二重確定を防ぐ。
+回答処理APIの待機上限は`VOICE_TURN_PROCESS_TIMEOUT_SECONDS`で管理し、既定値は60秒とする。構造化インタビューの回答解釈、必要な再試行、次質問生成の間にストリームが無通信になる場合を許容しつつ、無制限には待たない。timeout時は`PROCESS_TIMEOUT`としてAPIエラー（`API_ERROR`）・通信エラー（`NETWORK_ERROR`）とは区別する。timeout後も同じ`clientTurnId`を保持し、次の発話があった場合は先行turnをキャンセルしてから開始するため、遅延した処理結果との二重確定を防ぐ。
 
 ```http
 POST /internal/voice-sessions/{voice_session_id}/turns
@@ -298,12 +302,14 @@ POST /internal/voice-sessions/{voice_session_id}/connection-events
 
 ### 6.3.1 音声ターンの低遅延判定
 
-Transcribe + Pollyの確定Transcriptは、音声サービスで先行意図分類せず、`app/api`へ1回だけ送る。
-通常ターンでは、`turnType`、Dialogue Act、回答評価を同一のAI判定へ統合する。回答評価は`answerResolution`を返し、確認質問は`CONFIRM_REQUIRED`の例外に限定する。`CONFIRM_REQUIRED`のターンでは、`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返す専用判定を1回だけ行う。
+Transcribe + Pollyは音声サービスで意図分類を行わない。soft endpointでは確定前の候補を
+`/turns/speculative`へ送り、DB/Interview Stateを変更しない先行解釈だけを開始する。正式な
+確定Transcriptは通常のTurn APIへ1回だけ送る。
+通常ターンでは、`turnType`、Dialogue Act、`answerEvaluation`、`answerAssessment`を共通のAI判定へ統合する。`answerEvaluation`は`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`を使用する。`NOT_HEARD`は認識欠落の根拠がある場合だけ許可し、回答不足には`missingInformation`を返す。回答評価は`answerResolution`を返し、確認質問は`CONFIRM_REQUIRED`の例外に限定する。`CONFIRM_REQUIRED`のターンでは、`CONFIRM`、`REVISE_WITH_CONTENT`、`REJECT_WITHOUT_CONTENT`、`UNCLEAR`を返す専用判定を1回だけ行う。
 
 この処理は`app/api`の`BedrockResponsesStructuredProvider`がStructured Outputとして受け取り、
 `Structured Interview`のCoordinatorへ渡す。確認、必須項目、不足項目、状態更新、正式保存の保証はBackendが持ち、
-AI出力をそのまま正式回答として確定しない。音声サービスは回答評価や質問生成を実行しない。
+AI出力をそのまま正式回答として確定しない。音声サービスは回答評価や質問生成を再実装せず、`nextAction`、`missingInformation`、`conversationTrace`を応答・監査へ引き継ぐ。
 
 確定Transcriptの表示は、APIの評価完了を待たずに`UserTranscriptFinal`としてWebへ通知する。正式な
 回答評価、状態遷移、次質問本文、音声再生は引き続きAPI結果にだけ従う。これにより表示の先行は状態機械や
@@ -353,7 +359,7 @@ v1では以下を基本構成とする。
 * 既存ProviderのPeer Connection: `aiortc`
 * 既存ProviderのTURN: Kinesis Video Streamsの`GetIceServerConfig`で取得
 * OpenAI Realtime: Browserの`RTCPeerConnection`からOpenAI Calls APIへ接続し、server-side
-  sideband WebSocketで制御する。OpenAI経路ではKIKIORIの`aiortc`/KVSを経由しない。
+  sideband WebSocketで制御する。OpenAI経路ではMUSUBIの`aiortc`/KVSを経由しない。
 
 KVSシグナリングチャネルはv1では使用しない。
 
@@ -451,6 +457,12 @@ class VoiceSession:
 `initial_reply_text`は、Session開始時点で`app/api`が決定した初回発話文である。
 v1では固定挨拶「それではインタビューを開始します。」に続けて、Structured Interviewが決定した初回質問を含める。
 Novaに初回質問を独自生成させるための値ではない。
+
+既存のInterview Stateを引き継いで音声セッションを開始し、過去の回答または確定済みの回答がある場合、
+`app/api`は共通Structured Interview Question Generatorを使って現在の質問文を文脈に合わせて再描画できる。
+確定回答に含まれる対象名などを現在の質問に直接関係する場合だけ短く添え、確認済み情報の聞き直しや
+未確認情報の事実扱いはしない。再描画は発話文だけに適用し、現在の質問ID、対象、Interview Stateは変更しない。
+生成に失敗した場合は保存済みの質問文を使う。音声Runtimeは`initialReplyText`をそのまま音声化する。
 
 初回発話も通常ターンと同じTool Result経路で音声化する。
 初回質問本文を`role=USER`のinteractive text inputとして送信してはならない。
@@ -1020,22 +1032,27 @@ local preface playback drained AND evaluation_reply_ready
 
 Transcribe + Polly RuntimeはWebRTCから受けた16kHz、mono、s16 PCMを20msフレームとしてVADへ渡し、
 5フレームを100msにまとめてTranscribe Streamingへ送る。部分結果安定化は`medium`を既定とし、
-部分TranscriptはUI通知だけに使い、確定したTranscriptだけをInterview APIへ渡す。
+`ResultId`ごとに最新のpartial/final Resultを保持する。`IsPartial=false`は自然発話セグメントの
+確定であり、ユーザーターン全体の確定ではない。final Resultは`StartTime`順に再構成し、partialは
+`Items[].Stable=true`の連続prefixだけを先行処理へ渡す。
 
 発話途中の相槌と処理中通知は、意図しない音声の割り込みを防ぐため既定で無効とする。
 `VOICE_ENABLE_BACKCHANNELS=true`を明示した場合だけ、次のタイミングで有効になる。
 
-* 350ms: soft endpoint
-* 500ms: 条件を満たす場合だけLISTEN_ACK
-* 600ms: Transcribe確定結果または完結表現で通常確定
-* 1,000ms: hard endpoint。確定結果を最大300ms待って安定部分で確定
+* 1,200ms: 条件を満たす場合だけLISTEN_ACK。通常の短い区切りでは再生しない。
+* 600ms: VADの無音soft endpoint。入力ゲートを閉じず、final segment + stable prefixで非コミットLLM先行処理を開始
+* transcript更新停止300ms: 正式確定。final Resultを全文再構成し、正式Turn/Interview State/DB処理へ進む
+* soft endpoint後1,500ms: hard timeout。final/partial Transcriptがある場合はその時点の最善のTranscriptで強制確定し、どちらもない場合だけ`transcribe_final_timeout`を`NOT_HEARD`、`ASK_REPEAT`として通知
 * 1,300ms: ターン確定後のPROCESSING_ACK
 * 3,000ms: 1ターン1回の長時間処理通知
 
 正式応答はInterview APIの`AssistantReply`を正本とし、句読点と文字数で分割してPolly
-`SynthesizeSpeech`へ最大2件先行要求する。音声は16kHz PCMとして受け、`audio_sequence`順に
-WebRTCへ渡す。相槌・処理中通知を有効にした場合も、メモリキャッシュ済み音声だけを使い、
-正式会話履歴には保存しない。
+`SynthesizeSpeech`へ最大2件先行要求する。最初のPolly `AudioStream`は読み取り可能なPCMフラグメント
+単位で直ちに再生へ渡し、全文音声の生成完了を待たない。音声は16kHz PCMとして受け、
+`audio_sequence`順にWebRTCへ渡す。初回発話は固定挨拶と初回質問を1つの正式応答へまとめる。
+相槌・処理中通知を有効にした場合も、メモリキャッシュ済み音声だけを使い、正式会話履歴には保存しない。
+
+Text deltaは1つのSpeech Bufferへ集約し、LLMのstream delta境界をPollyのutterance境界として扱わない。`。！？!?`を最優先し、次に`、`、target到達後は完結述語の後に続く既知の接続句など安全な節境界を探す。文字数targetだけでは切らず、一般的な助詞直後も境界にしない。自然な境界が来なければ次の句読点またはstream完了までbufferし、文末flushでは残り全体を出力する。最初のchunkは低いtargetで境界探索を始め、最初に現れた自然な境界で再生を始める。
 
 正式回答、PROCESSING_ACK、LISTEN_ACK、長時間処理通知は単一の`AudioOutputCoordinator`へ渡す。
 優先度は順に100、50、40、30とし、高優先度出力は低優先度の生成・再生を即時キャンセルする。
@@ -1046,14 +1063,17 @@ PCMは20ms frameへ分割し、`monotonic()`基準のdeadlineで実時間送信�
 既知の音声長に1,000msの再生ガードを加えてdrainを通知する。既知の音声長は固定の5秒上限で
 切り捨てず、未知の場合だけ`VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS`を復旧待機時間に使う。
 
-回答の確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、マイクPCMを
-VAD・Transcribeへ渡さない。WebRTC frameが継続して届いている間は、AWS Transcribeの無音timeoutを
-避けるため、マイクPCMを同じ長さのゼロPCMへ置換して100ms単位でTranscribe streamへ送る。ゲート中は
-VADを実行せず、Transcript callbackもTurnを開始しない。入力再開時には未送信bufferを破棄してから
-マイクPCMの転送を再開する。`assistant_playback_drained`を受けた後にだけ次の入力を受け付けるため、
-このRuntimeでは正式応答中のbarge-inを行わない。古いLLM応答、未再生Polly音声、遅延通知はgeneration
-照合で破棄する。Transcribeは最大2回再接続し、その間の音声を最大3秒保持する。Pollyは指数
-バックオフ付きで1回再試行し、失敗時も正式応答テキストを表示して会話を継続する。
+正式確定時点で入力ゲートを閉じ、API評価中から正式応答のBrowser再生完了まで、マイクPCMを
+VAD・Transcribeへそのまま渡さない。WebRTC frameが継続して届いている間は、AWS Transcribeの無音timeoutを
+避けるため、マイクPCMを同じ長さのゼロPCMへ置換して100ms単位でTranscribe streamへ送る。一方、ゲート中も
+ローカルVADは割り込み判定のために監視し、120ms以上の連続音声で正式応答を中断して入力を再開する。
+割り込み成立後のフレームからマイクPCMをTranscribeへ転送する。通常の無音や短いノイズではゲートを開けず、
+入力再開時には未送信bufferを破棄する。古いLLM応答、未再生Polly音声、遅延通知はgeneration照合で破棄する。
+Transcribeは最大2回再接続し、その間の音声を最大3秒保持する。再接続用キューが満杯の場合は古い音声を破棄し、
+破棄量を`transcribe_audio_queue_drop`で記録する。Pollyは指数バックオフ付きで1回再試行し、最初のPCM送出後は
+重複再生を避けるため再試行しない。失敗時も正式応答テキストを表示して会話を継続する。
+
+`transcribe_final_timeout`は、意味不足を示す会話評価ではなく、final/partialのどちらも得られなかった音声認識・転送上の事象である。Runtimeは`recognitionEvidence=no_final_or_partial_transcript`と`answerEvaluation=NOT_HEARD`をイベント詳細へ付与し、画面は内部エラーコードをそのまま読み上げず、再発話を依頼する。final Transcriptが取得できた場合はこのエラーを出さず、共通Interview Coordinatorが`PARTIALLY_ANSWERED`等を評価する。
 
 `generation`はVoice Runtime内の音声生成・再生を無効化する識別子であり、InterviewStateの
 排他制御には使用しない。確定turnには`clientTurnId`と`expectedStateVersion`を付与し、
@@ -1063,8 +1083,8 @@ APIは重複ID、古いversion、非active Sessionを拒否する。
 
 * `OUTPUT_INTERRUPT`: 割り込みを許可するRuntimeでBarge-inが成立した場合、または明示的な割り込み操作を
   受けた場合に、Polly生成、PCM再生、相槌、通知、未再生Assistant responseを中断し、`generation`を更新する。
-  APIのUser Turnは変更しない。Transcribe + Polly Runtimeの通常の正式応答中は入力ゲートを閉じるため、
-  Barge-inは成立しない。
+  APIのUser Turnは変更しない。Transcribe + Polly Runtimeでは正式応答中もローカルVADだけを監視し、
+  120ms以上の音声を検出した場合にこの操作を実行する。
 * `PENDING_TURN_CANCEL`: API応答待ちのUser Turnが`RECEIVED`または`EVALUATING`の場合だけ、
   新しいユーザー発話の開始に伴って明示的に実行する。cancel tombstoneを作成し、遅延commitを拒否する。
 * `COMMITTED_TURN_REVERT`: 通常のBarge-inでは実行しない。明示的な訂正を新しいUser Turnとして

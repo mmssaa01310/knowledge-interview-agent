@@ -117,8 +117,32 @@ class AudioOutputCoordinator:
             if active is None:
                 return None
             response_id = active.request.response_id
-            self._cancel_active_locked(active)
-            return response_id
+            task = active.task
+            self._cancel_active_locked(active, collect=False)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        return response_id
+
+    async def wait_for_response(self, response_id: str) -> bool:
+        """Wait for one active output to finish without cancelling its playback."""
+
+        async with self._lock:
+            active = self._active
+            if active is None or active.request.response_id != response_id:
+                return False
+            task = active.task
+        if task is None:
+            return False
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                return False
+            raise
+        except Exception:
+            # A failed notice should not prevent the formal reply from starting.
+            return False
+        return True
 
     async def cancel_notices(self) -> None:
         async with self._lock:
@@ -136,13 +160,14 @@ class AudioOutputCoordinator:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _cancel_active_locked(self, active: _ActiveOutput) -> None:
+    def _cancel_active_locked(self, active: _ActiveOutput, *, collect: bool = True) -> None:
         active.request.cancel_event.set()
         if active.task is not None and not active.task.done():
             active.task.cancel()
-            collector = asyncio.create_task(self._collect(active.task))
-            self._collection_tasks.add(collector)
-            collector.add_done_callback(self._collection_tasks.discard)
+            if collect:
+                collector = asyncio.create_task(self._collect(active.task))
+                self._collection_tasks.add(collector)
+                collector.add_done_callback(self._collection_tasks.discard)
 
     async def _collect(self, task: asyncio.Task[object]) -> None:
         await asyncio.gather(task, return_exceptions=True)

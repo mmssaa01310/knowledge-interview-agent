@@ -62,28 +62,43 @@ class Settings:
     transcribe_reconnect_audio_buffer_ms: int = int(
         os.getenv("TRANSCRIBE_RECONNECT_AUDIO_BUFFER_MS", "3000")
     )
+    test_transcribe_reconnect_after_audio_chunks: int = int(
+        os.getenv("VOICE_TEST_TRANSCRIBE_RECONNECT_AFTER_AUDIO_CHUNKS", "0")
+    )
     transcribe_vad_rms_threshold: int = int(
         os.getenv("TRANSCRIBE_VAD_RMS_THRESHOLD", "600")
     )
     voice_endpoint_silence_ms: int = int(
         os.getenv("VOICE_ENDPOINT_SILENCE_MS", "600")
     )
+    voice_hard_endpoint_ms: int = int(
+        os.getenv("VOICE_HARD_ENDPOINT_MS", "1000")
+    )
     voice_final_result_settle_ms: int = int(
         os.getenv("VOICE_FINAL_RESULT_SETTLE_MS", "150")
     )
+    voice_transcript_settle_ms: int = int(
+        os.getenv("VOICE_TRANSCRIPT_SETTLE_MS", "300")
+    )
+    voice_hard_timeout_ms: int = int(
+        os.getenv("VOICE_HARD_TIMEOUT_MS", "1200")
+    )
     polly_voice_id: str = os.getenv("POLLY_VOICE_ID", "Kazuha")
     polly_engine: str = os.getenv("POLLY_ENGINE", "neural")
+    polly_speech_rate: str = os.getenv("POLLY_SPEECH_RATE", "115%")
     polly_max_parallel_requests: int = int(
         os.getenv("POLLY_MAX_PARALLEL_REQUESTS", "2")
     )
     voice_enable_backchannels: bool = os.getenv(
         "VOICE_ENABLE_BACKCHANNELS", "false"
     ).strip().lower() in {"1", "true", "yes", "on"}
+    voice_processing_ack_delay_ms: int = int(
+        os.getenv("VOICE_PROCESSING_ACK_DELAY_MS", "900")
+    )
     interview_turn_save_timeout_seconds: float = float(os.getenv("VOICE_TURN_SAVE_TIMEOUT_SECONDS", "5"))
-    # Structured-interview turns can include an LLM interpretation and next-question
-    # generation. Keep a finite bound, but do not treat ordinary 6-10 second turns
-    # as failed requests.
-    interview_turn_process_timeout_seconds: float = float(os.getenv("VOICE_TURN_PROCESS_TIMEOUT_SECONDS", "30"))
+    # The streaming API can go quiet while interpretation, retry, and question
+    # generation are running. Keep a finite bound long enough for those stages.
+    interview_turn_process_timeout_seconds: float = float(os.getenv("VOICE_TURN_PROCESS_TIMEOUT_SECONDS", "60"))
     interview_timeout_reply_text: str = os.getenv(
         "VOICE_INTERVIEW_TIMEOUT_REPLY_TEXT",
         "処理に時間がかかっています。もう一度お願いします。",
@@ -111,17 +126,11 @@ class Settings:
     webrtc_audio_input_queue_max_frames: int = int(
         os.getenv("VOICE_WEBRTC_AUDIO_INPUT_QUEUE_MAX_FRAMES", "12")
     )
-    webrtc_playback_buffer_target_ms: float = float(
-        os.getenv("VOICE_WEBRTC_PLAYBACK_BUFFER_TARGET_MS", "100")
-    )
     webrtc_playback_buffer_retention_max_ms: float = float(
         os.getenv("VOICE_WEBRTC_PLAYBACK_BUFFER_RETENTION_MAX_MS", "60000")
     )
     webrtc_playback_preroll_ms: float = float(
         os.getenv("VOICE_WEBRTC_PLAYBACK_PREROLL_MS", "80")
-    )
-    webrtc_playback_short_underrun_ms: float = float(
-        os.getenv("VOICE_WEBRTC_PLAYBACK_SHORT_UNDERRUN_MS", "40")
     )
     webrtc_playback_drain_timeout_seconds: float = float(
         os.getenv("VOICE_WEBRTC_PLAYBACK_DRAIN_TIMEOUT_SECONDS", "5")

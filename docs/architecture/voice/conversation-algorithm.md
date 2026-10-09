@@ -1,16 +1,16 @@
 # Conversation Algorithm 現行監査・仕様化
 
-更新日: 2026-09-14
-対象: `text` / `transcribe_polly` / `nova_sonic` / `openai_realtime`
-状態: 現行コードの監査、characterization、Canonical Intent Policy Phase 1、実LLM評価、Single State Writer Phase 2を反映。
+更新日: 2026-09-28
+対象: `text` / `transcribe_polly` / `nova_sonic` / `openai_realtime` / `gpt_live`
+状態: 現行コードの監査、characterization、Canonical Intent Policy Phase 1、実LLM評価、Single State Writer Phase 2、GPT-Live Responses Delegationの責務分離を反映。
 
-この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
+この文書は、理想的な会話Policyではなく、現在のコードが実際にどこで判断し、どこでStateを変更し、どこで出力を開始するかを記録する。GPT-Liveは共通Structured Interviewとは別に、Liveモデル・Responses Delegation・Application State Storeで構成されるため、共通経路の監査結果と混同しない。行番号は本監査時点のものを示す。LLMの実際の分類は入力・モデル応答によって変わるため、コードが提供している分岐を確定事項、モデルが返す値を実行時観測事項として分けて扱う。
 
 Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの順序保護、Provider source turnのDurable Dedup、Canonical Question Definitionの不変契約を実装した。2026-09-14時点で、Structured回答の永続化前に質問進行しない契約とBackground専用の`analysisVersion`を追加した。旧Fast Pathはこの契約を満たさないためVoice API経路ではfail-closedとなり、設定が有効でも通常経路へフォールバックする。Initial Questionの全面統合、Realtime音声経路の変更、RAG構造変更はこの文書の対象外である。
 
 ## 1. 監査結果の要約
 
-`app/api` のText/Voice処理には、既存 `StructuredDialogueAct` を型として再利用する `Canonical Intent -> Canonical Action` Policyが実装されている。Provider側の入力境界にはまだ粗いtransport `turnType` が残るが、Voiceの会話処理開始時にはBackendのCanonical Policyを再評価する。
+`app/api` のText/Voice処理には、`userIntent -> conversationAction`を中心とし、既存`StructuredDialogueAct`を互換値として併記する共通Policyが実装されている。Provider側の入力境界にはまだ粗いtransport `turnType` が残るが、Voiceの会話処理開始時にはBackendのCanonical Policyを再評価する。
 
 最も近い「Stateの正本」は `app/api` の `interview_state` と `VoiceTurn` である。しかし、会話制御の判断は次の実装に分散している。
 
@@ -18,8 +18,9 @@ Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの�
 |---|---|---|
 | User Turnの受領・重複排除 | OpenAI sideband、Voice API、Transcribe runtime、Nova tool coordinator | OpenAIは`openai-{item_id}`、Novaは`nova-{tool_use_idまたはcompletion_id}`、Transcribeは受理したAWS Transcribeの`ResultId`（複数なら順序付きhash）を`clientTurnId`へ変換し、APIとDBのDurable契約で再利用する。ResultIdを提供しない旧/代替ストリームだけはruntime生成IDとなる |
 | Turn Type | `InterviewBridge.process_turn()` の既定値、Voice intent API、OpenAI coordinator | OpenAI transportには粗い `ANSWER` が残るが、Backend側でCanonical Intentを再評価するため、transport値は会話Policyの正本ではない |
-| dialogueAct / Canonical Intent | `services/conversation_policy.py:resolve_canonical_intent()` | 既存 `StructuredDialogueAct` を再利用。Routerは副作用なしで意図だけを返す |
-| Canonical Action | `services/conversation_policy.py:resolve_canonical_action()` | Intentとpending confirmation等から1つのActionへ変換 |
+| User Intent / Dialogue Act | `services/conversation_policy.py:resolve_canonical_intent()` | 現在質問、直前発話、clarification/probe対象、取得済み/不足情報から意味的に分類。既存`StructuredDialogueAct`は互換値 |
+| Conversation Action | `services/conversation_policy.py:resolve_conversation_action()` | User Intentから応答・回答評価・再発話・Probe等の次動作へ変換。通常回答は回答評価後に`ACCEPT_AND_NEXT`等へ確定 |
+| Legacy Canonical Action | `services/conversation_policy.py:resolve_canonical_action()` | 既存のVoice/Text境界との互換用。新しい意味分類の正本ではない |
 | Fast判定 | `start_fast_interview_turn()` | `minimumInformationPresent`等のBooleanだけで、dialogueActを分類しない |
 | State更新 | `services/interview_state_transition.py:commit_interview_state()` | 永続化入口は1系統。回答Stateの保存後にのみ通常質問を進行する。Background proposalは`analysisVersion`だけを進め、ユーザーTurn用`stateVersion`を変えない。旧Fast PathはVoice APIでfail-closed |
 | 次target | `select_next_question_target()` | Backend coordinatorが決める。Question Generatorはtargetを決めない |
@@ -30,7 +31,7 @@ Phase 2.5 / Phase 3では、Stateの書き込み境界、Background proposalの�
 したがって、会話処理では次の契約を正本として扱う。
 
 1. Provider固有IDを、`voice_session_id + clientTurnId`で永続的に追跡できるCanonical User Turnへ一度だけ変換すること。
-2. 1つのUser Turnから1つの会話分類、1つのCanonical Action、1つのState transitionだけを生成すること。
+2. 1つのUser Turnから1つの意味分類、1つのConversation Action、1つのState transitionだけを生成すること。
 3. Interview Plan / Knowledge由来のCanonical Question Definitionを不変とし、質問文・説明文は一時的なrendered outputとして扱うこと。
 
 Canonical Intent/Actionは `conversation_policy.py`、永続StateのcommitとBackground mergeは `interview_state_transition.py` が担当する。VoiceTurnのDurable Dedupと処理claimは`voice_turn_repository.py`および`voice_turn_session_client_id_unique_idx`が担当する。
@@ -68,8 +69,10 @@ Browser WebRTC audio track
 独自VAD + 100ms単位のTranscribe送信
   ↓ _on_transcribe_result():604-635
 partial/final transcript保持
-  ↓ _endpoint_loop():661-683
-endpoint silence + final settle
+  ↓ _endpoint_loop()
+600ms VAD soft endpoint + ResultId/StartTime再構成 + transcript settle
+  ↓ soft endpoint: start_speculative_turn()（非コミット）
+  ↓ formal settle / hard timeout
   ↓ _finalize_user_turn():711-739
 UserSpeechEnded / ANSWER_PROCESSING
   ↓ asyncio.create_task(_process_interview_turn())
@@ -89,7 +92,18 @@ PollyTextChunker + Polly worker pool
 PCM output -> Browser audio
 ```
 
-Transcribe側は、partialをUIに出すが、Backend Turnを作るのはendpointで `_finalize_user_turn()` が作る処理タスクだけである。Transcribe final自体はRAGを開始しない（`runtime.py:604-635`）。
+Transcribe側は`ResultId`ごとに最新Resultを保持し、`IsPartial=false`を自然発話セグメントの
+確定として扱う。final segmentは`StartTime`順に再構成し、partialの`Stable=true`連続prefixは
+UIとsoft endpointの先行入力に利用する。600msのsoft endpointでは入力ゲートを閉じず、
+`start_speculative_turn()`で非コミットのStructured Interpreterを開始する。
+
+正式Turnを作成するのは、soft endpoint後のhard endpoint到達時だけである。Transcribeの
+`IsPartial=false`はセグメント確定に過ぎず、`transcript_settle_ms`の経過だけでは正式Turnを
+作成しない。これにより、無音を挟んだ後続セグメントを同じユーザーturnへ統合できる。正式確定前に
+DB/Interview Stateは更新しない。確定後のInterview API処理が遅い場合は、固定キャッシュ済みの
+相槌を最大1回だけ再生し、相槌はTurnやInterview Stateへ保存しない。
+正式Transcriptが先行入力と一致した場合のみ先行解釈を再利用し、異なる場合・未完了の場合は
+先行結果を破棄して正式Transcriptで実行する。
 
 ### 2.3 `nova_sonic`
 
@@ -237,11 +251,34 @@ Provider側のUI表示とtransport Turn typeはまだ別の境界にある。一
 | `AWAITING_CONFIRMATION` | `REJECTION` | `UNANSWERED`等へ戻し候補破棄 | `coordinator.py:_reject_target()` 2056-2123 |
 | 任意target | `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`かつupdateなし | current target維持、説明文 | `service.py:1396-1425` -> `_keep_current_question()` 1914-1963 |
 | 任意target | `HESITATION` / `BACKCHANNEL` / `OTHER` | current target維持、再開促進文 | `service.py:1427-1445` -> `_keep_current_question()` |
-| 任意target | transcript `UNCERTAIN` | current target維持、transcript retry | `service.py:1380-1395` -> `_keep_current_question()` |
-| valid answer | insufficient | current/active probeまたはfollow-up target | `service.py:1469-1506`, `coordinator.py:700-879` |
+| 任意target | `recognitionStatus=PARTIAL/MISSING/AMBIGUOUS` または根拠のある `NOT_HEARD` | current target維持、再発話依頼 | `conversation_control.py`、`service.py` -> `_keep_current_question()` |
+| 任意target | `INCOMPLETE_UTTERANCE` | current target維持、発話の続きを促す | `service.py` -> `_keep_current_question()` |
+| 任意target | `CLARIFICATION_REQUEST` / `REPEAT_REQUEST` | current target維持。`QUESTION_MEANING`は動的説明、`ASR_TARGET`/`MISSING_INFORMATION_TARGET`は対象だけを説明、`REPEAT_REQUEST`は質問再提示 | `conversation_policy.py`、`service.py` |
+| 任意target | `OFF_TARGET` | current target維持、現在の不足対象へ戻す | `conversation_control.py`、`service.py` |
+| valid answer | `PARTIALLY_ANSWERED` / semantic不足 | current/active probeまたはfollow-up target | `service.py`、`coordinator.py` |
 | valid answer | sufficient | next target selection | `service.py:1550-1825`、`coordinator.py:700-879` |
 | no unresolved issue | required/closing等が未完了 | next target | `coordinator.py:evaluate_completion()` 669-697, `select_next_question_target()` 700-879 |
 | all completion conditions | closing `CONFIRMED`等 | `completed` | `service.py:1764-1781`、`voice_interview.py:625-904` |
+
+### 4.2.1 共通の回答評価
+
+Text、Transcribe + Polly、Nova Sonic、旧OpenAI Realtimeの確定transcriptは、同じ意味ルーター、Structured Interpreter、共通会話制御へ渡す。各ターンは`userIntent`（通常回答、質問意図確認、ASR対象確認、メタ質問等）を先に判定し、その後`ANSWERED`、`PARTIALLY_ANSWERED`、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CORRECTION`、`REPEAT_REQUEST`の評価と`conversationAction`を決定する。ユーザーからAssistantへ向けた質問はインタビュー回答として評価しない。GPT-Liveはこの意味契約とAspect定義を共有するが、同じ確定transcriptをBackendのStructured Interpreterへ再投入するのではなく、Responses DelegationのSemantic Assessorが評価し、GPT-Live自身が会話Actionと質問進行を担う。
+
+`PARTIALLY_ANSWERED`は認識済みだが必要な観点が不足している状態、`NOT_HEARD`は文字起こしの欠落・空文字・音声上の曖昧さを示す根拠がある状態、`INCOMPLETE_UTTERANCE`は発話が途中で終わった状態である。前者を「聞き取れなかった」や「続き」と表現してはならない。`missingInformation`に不足観点を記録し、Question Generatorには現在質問、目的、必要観点、今回の回答、取得済み情報、不足情報、直前評価、同一targetの質問履歴を渡す。
+
+複数観点の質問では`aspectAssessments`で観点ごとの取得状況を評価し、回答済みの観点や「不要」「該当なし」を不足情報へ戻さない。`transcriptAssessment.ambiguousSpans`が示す重要な音声曖昧さ（`ASR_TARGET`）と、音声は理解できたが不足している観点（`MISSING_INFORMATION_TARGET`）は分離する。直前の聞き返しで対象を尋ねられた場合は、保存済み`clarificationTarget`だけを短く説明し、`QUESTION_MEANING`の場合だけ動的な質問補足を生成する。これらの分類は発話言語や特定の言い回しに依存しない。
+
+背景観測であっても、`OFF_TARGET`、`CLARIFICATION_REQUEST`、`NOT_HEARD`、`REPEAT_REQUEST`の抽出値は回答として適用しない。`INCOMPLETE_UTTERANCE`でも、発話内に`aspectAssessments.status=ANSWERED`または`NOT_APPLICABLE`の観点がある場合は、その観点に根拠のある更新を保持し、残りの不足情報だけを前景Coordinatorが確認する。完結した観点がない発話途中だけは更新を適用せず、現在の質問を維持する。意味不足の抽出値は`TENTATIVE`に留め、前景Coordinatorが不足情報を確認する。
+
+### 4.2.2 半構造化インタビューのProbe
+
+共通Structured Interviewは、回答成立と追加深掘りを別に判定する。`answerStatus`は`ANSWERED`、`PARTIAL`、`NOT_ANSWERED`のいずれか、`probeDecision`は`NONE`または`PROBE`とする。`PARTIAL`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`、`CLARIFICATION_REQUEST`は回答補足・再発話・説明の経路であり、回答成立後のProbeとは別物である。
+
+`ANSWERED + PROBE`のときだけ、現在の基本質問に対して最大1問の子Probeを生成する。Probe中も`currentQuestionId`、`targetType`、`targetId`は親の基本質問のまま、`currentTurnType=PROBE`として保持する。Probeを`askedQuestions`へ別の基本質問として追加せず、回答は`questionAnswers[questionId].probes[]`へ保存する。Probe回答後、`originalAnswer`とProbe回答から統合`answer`を作り、次の基本質問へ進む。
+
+Question Masterの`questionPlan`には、質問の目的（`questionGoal`）、Probeで優先する観点（`preferredProbeDimensions`）、最大回数（`maxProbeCount`）を設定できる。`JUDGMENT`、`ACTION`、`CONTEXT`、`RESULT`等から質問目的に合う観点を1つだけ選ぶ。追加情報が存在するだけではProbeを出さず、専門性・判断・行動・暗黙知の理解に重要な不足がある場合だけ生成する。
+
+Transcribe + Polly、Nova Sonic、旧OpenAI Realtime、テキストは同じ確定transcriptをこの共通判定へ渡す。これらのRuntime側はProbeの価値判断や質問進行を行わず、確定transcriptの受け渡しと回答文の音声化だけを担当する。GPT-Liveは別のRuntime契約で、Liveモデルが会話・Probe・質問進行を担当し、Responses Delegationの評価結果をApplication Backendへ保存する。GPT-LiveのBackendは次質問本文を生成しない。右側UIでは基本質問カード内に統合回答を表示し、Probeがあるときだけ折りたたみのProbe Q/Aを表示する。
 
 ### 4.3 VoiceTurn lifecycle
 
@@ -335,9 +372,9 @@ Turn 2: 大丈夫です。
 
 ### 5.3 Case B: 質問の意味を聞き返す
 
-Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、`service.py:1396-1425` が `questionDefinition` を作り、`localized_interview_question_help()` を返し、`_keep_current_question()` へ入る。したがってtargetを進めず、現在質問の説明へ進むコードは存在する。
+Full Structured経路では、`QUESTION_TO_ASSISTANT` または `CLARIFICATION_REQUEST` で構造化更新がない場合、現在の不変な`questionDefinition`と`expectedInformation`を元に `provider.generate_question_help()` を呼ぶ。LLMは問い合わせ対象の`targetAspectId`を1つ選び、その観点だけの短い`topic`を返す。例は必要な場合だけ1個まで許可し、`perspectives`を回答ガイドとして読み上げない。Backendは`capturedItemIds`にある回答済み観点を除外し、1〜2文の補足へ整形して `_keep_current_question()` へ渡す。元の質問文や項目説明の再掲は禁止し、targetと質問IDは維持する。
 
-一方Fast経路では、Fast schemaは `needsQuestionExplanation` を持つが、dialogueActそのものを持たない（`fast_interpreter/schemas.py:6-19`）。`start_fast_interview_turn()` は `can_proceed(assessment) and not needs_question_explanation` で進行可否を決める（`service.py:512-523`）。Falseの場合の説明文は `question_definition` のoriginal question、description、required itemsを使う（同:534-573）。よってFastで「質問の意味」を拾えるかは、Boolean `needsQuestionExplanation` のモデル出力に依存し、Full StructuredのdialogueAct分類とは別契約である。
+一方Fast経路では、Fast schemaの `needsQuestionExplanation` は互換用に残っているが、dialogueActの代替分類や補足文生成には使わない（`fast_interpreter/schemas.py:6-19`）。音声APIの質問補足はCanonical Intentで `EXPLAIN_CURRENT_QUESTION` に振り分けられ、共通Structured経路のLLM生成ガイダンスを使用する。これによりTranscribe + Polly、Nova Sonic、GPT-Live、テキストの補足内容を同じ契約で揃える。
 
 ### 5.4 Case C: 「すでに回答している」
 
@@ -367,7 +404,7 @@ OpenAIの起動状態はTransportとConversationで分離する。sideband接続
 |---|---|---|---|---|---|---|
 | A normal answer | current profile target | Fullは `ANSWER`。FastはBooleanのみ | profile required items、candidate/auto-confirmの実値 | profile candidateの有無 | field stateの適用、必要ならawaiting/confirmed | `select_next_question_target()`の結果とQG文 |
 | A confirmation | confirmation target | Canonical Routerは `CONFIRMATION`。Full validationは別に観測 | 通常のfield updateではなく `_confirm_target()` | candidate -> confirmed | `AWAITING_CONFIRMATION` -> `CONFIRMED` | 次field/target |
-| B clarification | current question | Canonical Routerは `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`。Fastは呼ばない | 通常updateなし | 維持 | `_keep_current_question()` | current targetのdefinitionに基づく説明 |
+| B clarification | current question | Canonical Routerは `QUESTION_TO_ASSISTANT` / `CLARIFICATION_REQUEST`。Fastは呼ばない | 通常updateなし | 維持 | `_keep_current_question()` | `QUESTION_MEANING`は質問定義に基づく説明、対象確認は`clarificationTarget`のみ |
 | C already answered | current question | Canonical Routerで分類し、FullのdialogueActは検証として採取 | correction/answer updateの有無 | 維持または更新 | correctionStatus / Stateの変化 | currentまたはnext target |
 | D rejection | confirmation target | Full `REJECTION`。Fast schemaには専用値なし | candidate rejection | candidate破棄 | `_reject_target()`で未確定側へ | 再回答用target |
 | E hesitation | current question | Canonical Routerは `HESITATION` / `BACKCHANNEL`。Fastは呼ばない | 通常updateなし | 維持 | current target維持 | retry / current question |
@@ -445,6 +482,7 @@ Fast ONが要求された場合も現在は通常経路へフォールバック�
 * `target`のid/type/label
 * selected fieldの `name`、`description`、`questionText`、`aiQuestionExamples`、`questionPlan`、required/optional
 * `questionDefinition`の `title`、`originalQuestion`、`description`、`purpose`、`requiredItems`、`optionalItems`、`completionCriteria`、missing/captured
+* `currentAnswer`、`acquiredInformation`、`missingInformation`、`answerEvaluation`、`sameQuestionAskedBefore`
 * bounded state、直近6件のconversation、answerAssessment、activeProbe、tentativeCandidates
 * retrieved knowledge（検索対象時）
 

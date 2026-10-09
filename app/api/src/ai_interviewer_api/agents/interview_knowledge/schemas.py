@@ -12,6 +12,49 @@ ApplicabilityStatus = Literal["unknown", "present", "not_applicable"]
 CandidateSource = Literal["user_statement", "assistant_proposal", "document_reference"]
 UtteranceCompleteness = Literal["COMPLETE", "INCOMPLETE", "UNCERTAIN"]
 TranscriptCorrectionStatus = Literal["NONE", "CORRECTED", "UNCERTAIN"]
+TranscriptRecognitionStatus = Literal["CLEAR", "PARTIAL", "MISSING", "AMBIGUOUS"]
+AnswerAspectStatus = Literal["ANSWERED", "MISSING", "NOT_APPLICABLE", "UNCERTAIN"]
+AnswerEvaluation = Literal[
+    "ANSWERED",
+    "PARTIALLY_ANSWERED",
+    "OFF_TARGET",
+    "CLARIFICATION_REQUEST",
+    "NOT_HEARD",
+    "INCOMPLETE_UTTERANCE",
+    "CORRECTION",
+    "REPEAT_REQUEST",
+]
+AnswerStatus = Literal["ANSWERED", "PARTIAL", "NOT_ANSWERED"]
+ClarificationKind = Literal[
+    "NONE",
+    "QUESTION_MEANING",
+    "ASR_TARGET",
+    "MISSING_INFORMATION_TARGET",
+]
+ProbeDecision = Literal["NONE", "PROBE"]
+ProbeDimension = Literal[
+    "CONTEXT",
+    "ACTION",
+    "JUDGMENT",
+    "RESULT",
+    "LEARNING",
+    "APPLICATION",
+    "PROBLEM",
+    "CRITERIA",
+    "EXCEPTION",
+    "OTHER",
+]
+ConversationNextAction = Literal[
+    "MOVE_NEXT",
+    "FOLLOW_UP",
+    "ASK_MISSING_INFORMATION",
+    "EXPLAIN_QUESTION",
+    "ASK_REPEAT",
+    "WAIT_FOR_CONTINUATION",
+    "APPLY_CORRECTION",
+    "REPEAT_CURRENT_QUESTION",
+    "KEEP_CURRENT_QUESTION",
+]
 AnswerSufficiency = Literal[
     "SUFFICIENT",
     "PARTIAL",
@@ -34,8 +77,35 @@ StructuredDialogueAct = Literal[
     "CORRECTION",
     "REJECTION",
     "CONFIRMATION",
+    "REPEAT_REQUEST",
     "IRRELEVANT",
     "OTHER",
+]
+UserIntent = Literal[
+    "USER_RESPONSE",
+    "QUESTION_CLARIFICATION",
+    "QUESTION_INTENT_CONFIRMATION",
+    "ASR_CLARIFICATION_REQUEST",
+    "ANSWER_CLARIFICATION",
+    "META_QUESTION",
+    "DECLINE_OR_SKIP",
+    "OTHER",
+]
+InterpretationMatch = Literal["NONE", "MATCH", "PARTIAL_MATCH", "MISMATCH"]
+ConversationAction = Literal[
+    "ASK_MAIN_QUESTION",
+    "PROCESS_USER_RESPONSE",
+    "ANSWER_USER_CLARIFICATION",
+    "ASK_FOR_MISSING_INFORMATION",
+    "ASK_PROBE",
+    "REPHRASE_QUESTION",
+    "ASK_ASR_RETRY",
+    "ACCEPT_AND_NEXT",
+    "SKIP_AND_NEXT",
+    "REPEAT_CURRENT_QUESTION",
+    "APPLY_CORRECTION",
+    "KEEP_CURRENT_QUESTION",
+    "HANDLE_CONTROL",
 ]
 
 
@@ -187,14 +257,38 @@ class OpenIssue(StrictModel):
     evidenceTranscriptIds: list[str] = Field(default_factory=list)
 
 
+class ASRAmbiguousSpan(StrictModel):
+    """A transcript span whose recognition is ambiguous for this question."""
+
+    span: str = Field(min_length=1, max_length=160)
+    semanticRole: str = Field(min_length=1, max_length=120)
+    important: bool = True
+
+
 class TranscriptAssessment(StrictModel):
     """Assessment of the STT text before it can become a formal answer."""
 
     rawTranscript: str = ""
     normalizedTranscript: str = ""
     correctionStatus: TranscriptCorrectionStatus = "NONE"
+    recognitionStatus: TranscriptRecognitionStatus = "CLEAR"
+    recognitionEvidence: list[str] = Field(default_factory=list, max_length=5)
     correctionCandidates: list[str] = Field(default_factory=list, max_length=3)
     correctionReason: str | None = None
+    # Keep the uncertain span separate from semantic answer sufficiency.  A
+    # provider may understand the rest of a sentence while one name, number,
+    # or technical term remains ambiguous.
+    ambiguousSpans: list[ASRAmbiguousSpan] = Field(default_factory=list, max_length=5)
+
+
+class AnswerAspectAssessment(StrictModel):
+    """Per-aspect answer coverage for a multi-part interview question."""
+
+    aspectId: str = Field(min_length=1, max_length=120)
+    label: str = Field(min_length=1, max_length=200)
+    status: AnswerAspectStatus = "UNCERTAIN"
+    required: bool = True
+    evidence: str | None = Field(default=None, max_length=600)
 
 
 class AnswerAssessment(StrictModel):
@@ -204,13 +298,52 @@ class AnswerAssessment(StrictModel):
     probeType: ProbeType = "NONE"
 
 
+class QuestionHelpOutput(StrictModel):
+    """LLM-generated guidance that lets the user start answering immediately."""
+
+    # The interpreter must select one expected-information item instead of
+    # explaining the whole question.  The backend validates this id against
+    # the immutable question definition and the current captured-item state.
+    targetAspectId: str | None = Field(default=None, max_length=120)
+    topic: str = Field(min_length=1, max_length=300)
+    examples: list[str] = Field(default_factory=list, max_length=1)
+    exampleMode: Literal["none", "single", "additional"] = "none"
+    # Kept in the structured contract for compatibility with older providers,
+    # but not read aloud as a multi-point answer guide.
+    perspectives: list[str] = Field(default_factory=list, max_length=1)
+
+
 class StructuredInterviewOutput(StrictModel):
     """Meaning extraction contract. It contains no generated question or layout."""
 
     dialogueAct: StructuredDialogueAct = "ANSWER"
+    # These fields describe what the latest user turn is doing.  They are
+    # separate from answerEvaluation so a question to the assistant cannot be
+    # mistaken for an incomplete interview answer.
+    userIntent: UserIntent = "USER_RESPONSE"
+    interpretationMatch: InterpretationMatch = "NONE"
+    userInterpretation: str | None = Field(default=None, max_length=300)
+    originalQuestionIntent: str | None = Field(default=None, max_length=300)
+    resumeCurrentQuestion: bool = True
+    answerEvaluation: AnswerEvaluation = "ANSWERED"
+    # ``answerEvaluation`` describes the conversational act (including audio
+    # and clarification failures).  These two fields describe the answer to
+    # the current basic question and the independent value of one probe.
+    answerStatus: AnswerStatus = "ANSWERED"
+    clarificationKind: ClarificationKind = "NONE"
+    probeDecision: ProbeDecision = "NONE"
+    probeDimension: ProbeDimension | None = None
+    probeReason: str | None = Field(default=None, max_length=500)
+    probeQuestion: str | None = Field(default=None, max_length=300)
+    integratedAnswer: str | None = Field(default=None, max_length=4000)
     utteranceCompleteness: UtteranceCompleteness = "COMPLETE"
     transcriptAssessment: TranscriptAssessment = Field(default_factory=TranscriptAssessment)
     answerAssessment: AnswerAssessment = Field(default_factory=AnswerAssessment)
+    aspectAssessments: list[AnswerAspectAssessment] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+    missingInformation: list[str] = Field(default_factory=list, max_length=12)
     fieldUpdates: list[FieldUpdate] = Field(default_factory=list)
     requirementUpdates: list[RequirementUpdate] = Field(default_factory=list)
     processPatch: ProcessPatch = Field(default_factory=ProcessPatch)
@@ -218,6 +351,13 @@ class StructuredInterviewOutput(StrictModel):
     resolvedContradictionIds: list[str] = Field(default_factory=list)
     applicability: list[ApplicabilityUpdate] = Field(default_factory=list)
     openIssues: list[OpenIssue] = Field(default_factory=list)
+
+
+class LiveObservationOutput(StructuredInterviewOutput):
+    """Evidence of an open-ended closing, never a model completion decision."""
+
+    closingQuestionEvidenceIds: list[str] = Field(default_factory=list)
+    closingAnswerEvidenceIds: list[str] = Field(default_factory=list)
 
 
 class ProcessModelEditOutput(StrictModel):

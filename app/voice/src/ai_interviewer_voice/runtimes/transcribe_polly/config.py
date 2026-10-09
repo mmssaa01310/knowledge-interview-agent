@@ -12,33 +12,46 @@ class TranscribePollyRuntimeConfig:
     partial_results_stability: str = "medium"
     transcribe_reconnect_attempts: int = 2
     reconnect_audio_buffer_ms: int = 3000
+    test_reconnect_after_audio_chunks: int = 0
     vad_rms_threshold: int = 600
-    vad_soft_endpoint_ms: int = 350
-    listen_ack_silence_ms: int = 500
+    # A normal clause pause is around the soft endpoint.  Wait longer before
+    # emitting a listen acknowledgement so a completed answer is not met with
+    # an untimely fixed phrase.
+    listen_ack_silence_ms: int = 1200
     normal_endpoint_ms: int = 600
+    # ``hard_endpoint_ms`` and ``final_result_settle_ms`` remain as legacy
+    # constructor inputs for tests/older callers.  Production wiring passes
+    # the explicit soft/settle/hard values below.
     hard_endpoint_ms: int = 1000
     final_result_wait_ms: int = 300
     final_result_settle_ms: int = 150
+    transcript_settle_ms: int | None = None
+    hard_timeout_ms: int | None = None
     long_form_speech_ms: int = 2500
     long_form_endpoint_ms: int = 850
     listen_ack_min_speech_ms: int = 800
     listen_ack_min_stable_chars: int = 5
     backchannel_cooldown_ms: int = 3000
     backchannel_enabled: bool = False
-    processing_ack_delay_ms: int = 1300
+    # A fixed, cached acknowledgement may be played while the interview API
+    # is still evaluating a committed turn.  Keep the default inside the
+    # short UX window; the feature itself remains opt-in via
+    # ``backchannel_enabled``.
+    processing_ack_delay_ms: int = 900
     long_processing_notice_ms: int = 3000
     barge_in_voice_ms: int = 120
     polly_voice_id: str = "Kazuha"
     polly_language_code: str = "ja-JP"
     polly_engine: str = "neural"
+    polly_speech_rate: str = "115%"
     polly_sample_rate_hz: int = 16000
     polly_max_parallel_requests: int = 2
     polly_retry_attempts: int = 1
     polly_retry_base_delay_ms: int = 150
-    first_chunk_min_chars: int = 10
-    first_chunk_max_chars: int = 30
-    following_chunk_min_chars: int = 20
-    following_chunk_max_chars: int = 80
-    listen_ack_text: str = "はい。"
+    first_chunk_min_chars: int = 5
+    first_chunk_target_chars: int = 30
+    following_chunk_min_chars: int = 10
+    following_chunk_target_chars: int = 80
+    listen_ack_text: str = "なるほど。"
     processing_ack_text: str = "回答を確認しています。"
     long_processing_text: str = "確認に少し時間がかかっています。"

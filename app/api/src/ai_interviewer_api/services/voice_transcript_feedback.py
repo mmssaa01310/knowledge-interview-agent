@@ -12,7 +12,10 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ai_interviewer_api.core.interview_locale import InterviewLocale
+from ai_interviewer_api.core.interview_locale import (
+    InterviewLocale,
+    localized_interview_ambiguous_part_prompt,
+)
 
 
 _MAX_SPOKEN_VALUE_LENGTH = 64
@@ -25,7 +28,6 @@ def build_transcribe_polly_transcript_feedback(
     *,
     field_labels: Mapping[str, str],
     locale: InterviewLocale,
-    force_retry: bool = False,
 ) -> str | None:
     """Build a targeted spoken retry for a Transcribe + Polly turn.
 
@@ -39,13 +41,10 @@ def build_transcribe_polly_transcript_feedback(
     output = _as_mapping(state.get("lastStructuredOutput"))
     question = _as_mapping(result.get("question"))
     status = _clean_text(assessment.get("correctionStatus")).upper()
+    answer_evaluation = _clean_text(
+        output.get("answerEvaluation") or result.get("answerEvaluation")
+    ).upper()
     correction_candidates = _unique_texts(assessment.get("correctionCandidates"))
-    base_state = _as_mapping(turn.get("baseInterviewState"))
-    base_pending = base_state.get("pendingTranscriptConfirmation")
-    rejected_transcript_correction = (
-        _clean_text(output.get("dialogueAct")) == "REJECTION"
-        and isinstance(base_pending, Mapping)
-    )
 
     if status == "CORRECTED":
         normalized = _correction_candidate(state, assessment)
@@ -66,19 +65,63 @@ def build_transcribe_polly_transcript_feedback(
         # were a reliable candidate. Use targeted retry wording instead.
         status = "UNCERTAIN"
 
-    if status != "UNCERTAIN" and not rejected_transcript_correction and not force_retry:
+    # The shared evaluator is authoritative when it is available. Semantic
+    # insufficiency, off-target answers, and incomplete utterances must never
+    # be relabeled as an audio failure by this presentation layer. The legacy
+    # status-only fallback remains for old persisted turns without the new
+    # evaluation field.
+    if answer_evaluation and answer_evaluation != "NOT_HEARD":
+        return None
+    if status != "UNCERTAIN" and answer_evaluation != "NOT_HEARD":
         return None
 
-    latest_message_ids = _latest_message_ids(state, turn)
-    reliable_updates = (
-        {}
-        if correction_candidates
-        else _reliable_field_updates(
-            output,
-            latest_message_ids=latest_message_ids,
-            field_labels=field_labels,
-        )
+    clarification_target = _as_mapping(
+        state.get("lastClarificationTarget")
+        or result.get("clarificationTarget")
     )
+    if not _has_concrete_asr_target(clarification_target, assessment):
+        # The shared coordinator does not initiate ASR retry without a named
+        # span.  Keep this presentation layer aligned with that invariant for
+        # legacy or malformed persisted state as well.
+        return None
+    latest_message_ids = _latest_message_ids(state, turn)
+    reliable_updates = _reliable_field_updates(
+        output,
+        latest_message_ids=latest_message_ids,
+        field_labels=field_labels,
+        correction_candidates=correction_candidates,
+    )
+    understood = _understood_phrase(reliable_updates, field_labels, locale)
+    if clarification_target:
+        target_type = _clean_text(clarification_target.get("type")).upper()
+        if target_type == "ASR_AMBIGUOUS" and _clean_text(
+            clarification_target.get("semanticRole")
+        ):
+            return localized_interview_ambiguous_part_prompt(
+                locale,
+                _clean_text(clarification_target.get("semanticRole")) or None,
+                understood,
+            )
+
+    # A persisted turn from before clarificationTarget was introduced may
+    # still carry the span metadata on the transcript assessment itself.
+    ambiguous_spans = assessment.get("ambiguousSpans")
+    if isinstance(ambiguous_spans, list):
+        important_span = next(
+            (
+                _as_mapping(item)
+                for item in ambiguous_spans
+                if _as_mapping(item).get("important", True)
+            ),
+            None,
+        )
+        if important_span:
+            return localized_interview_ambiguous_part_prompt(
+                locale,
+                _clean_text(important_span.get("semanticRole")) or None,
+                understood,
+            )
+
     unclear_labels = _unclear_labels(
         state,
         question,
@@ -86,8 +129,6 @@ def build_transcribe_polly_transcript_feedback(
         known_field_ids=set(reliable_updates),
         locale=locale,
     )
-    understood = _understood_phrase(reliable_updates, field_labels, locale)
-
     if understood and unclear_labels:
         unclear = _join_labels(unclear_labels, locale)
         if locale == "en-US":
@@ -115,6 +156,10 @@ def build_transcribe_polly_transcript_feedback(
         locale,
         prefer_broad=not bool(understood),
     )
+    if _is_broad_target(subject):
+        return localized_interview_ambiguous_part_prompt(locale)
+    if understood and not unclear_labels:
+        return _repeat_unclear_part_message(locale, understood, subject)
     if understood:
         if locale == "en-US":
             return f"I understood {understood}. Please repeat the part about {subject}."
@@ -123,6 +168,9 @@ def build_transcribe_polly_transcript_feedback(
         if locale == "pt-BR":
             return f"Entendi {understood}. Por favor, repita a parte sobre {subject}."
         return f"{understood}ということは分かりました。{subject}について、もう一度お願いします。"
+
+    if correction_candidates:
+        return _partial_retry_message(locale, subject)
 
     if locale == "en-US":
         return f"I couldn't hear your answer clearly. Please tell me about {subject} again."
@@ -136,6 +184,39 @@ def build_transcribe_polly_transcript_feedback(
     return f"回答がうまく聞き取れませんでした。もう一度、{subject}についてお話しください。"
 
 
+def _partial_retry_message(locale: InterviewLocale, subject: str) -> str:
+    if locale == "en-US":
+        return (
+            f"I couldn't hear part of your answer about {subject} clearly. "
+            "Please repeat only the unclear part."
+        )
+    if locale == "zh-CN":
+        return f"关于{subject}的回答中有一部分没有听清楚。请只重复没有听清的部分。"
+    if locale == "pt-BR":
+        return (
+            f"Não consegui ouvir uma parte da sua resposta sobre {subject}. "
+            "Por favor, repita apenas essa parte."
+        )
+    return (
+        f"{subject}について、回答の一部がうまく聞き取れませんでした。"
+        "聞き取れなかった部分だけ、もう一度お願いします。"
+    )
+
+
+def _repeat_unclear_part_message(
+    locale: InterviewLocale,
+    understood: str,
+    subject: str,
+) -> str:
+    if locale == "en-US":
+        return f"I understood {understood}. Please repeat only the unclear part about {subject}."
+    if locale == "zh-CN":
+        return f"我听懂了{understood}。请只重复{subject}中没有听清的部分。"
+    if locale == "pt-BR":
+        return f"Entendi {understood}. Por favor, repita apenas a parte pouco clara sobre {subject}."
+    return f"{understood}ということは分かりました。{subject}のうち、聞き取れなかった部分だけもう一度お願いします。"
+
+
 def _as_mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
@@ -144,6 +225,26 @@ def _clean_text(value: object) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _has_concrete_asr_target(
+    clarification_target: Mapping[str, Any],
+    assessment: Mapping[str, Any],
+) -> bool:
+    if _clean_text(clarification_target.get("type")).upper() == "ASR_AMBIGUOUS":
+        return bool(
+            _clean_text(clarification_target.get("span"))
+            and _clean_text(clarification_target.get("semanticRole"))
+        )
+    spans = assessment.get("ambiguousSpans")
+    if not isinstance(spans, list):
+        return False
+    return any(
+        _as_mapping(item).get("important", True)
+        and _clean_text(_as_mapping(item).get("span"))
+        and _clean_text(_as_mapping(item).get("semanticRole"))
+        for item in spans
+    )
 
 
 def _unique_texts(value: object) -> list[str]:
@@ -176,6 +277,7 @@ def _reliable_field_updates(
     *,
     latest_message_ids: set[str],
     field_labels: Mapping[str, str],
+    correction_candidates: list[str],
 ) -> dict[str, str]:
     updates = output.get("fieldUpdates")
     if not isinstance(updates, list):
@@ -196,7 +298,9 @@ def _reliable_field_updates(
             or not _clean_text(field_labels.get(field_id))
             or not evidence_ids.intersection(latest_message_ids)
             or _clean_text(update.get("candidateSource")) == "document_reference"
-            or _clean_text(update.get("answerResolution")) != "AUTO_CONFIRM"
+            or _clean_text(update.get("answerResolution"))
+            not in {"AUTO_CONFIRM", "TENTATIVE"}
+            or value in correction_candidates
         ):
             continue
         reliable[field_id] = value

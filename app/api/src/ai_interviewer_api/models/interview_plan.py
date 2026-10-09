@@ -45,6 +45,12 @@ class InterviewQuestionPlan(BaseModel):
 
     version: int = 1
     purpose: str | None = None
+    # Optional metadata used by the semi-structured interviewer.  These fields
+    # describe the value of one additional probe; they do not create another
+    # question-master entry.
+    questionGoal: str | None = None
+    preferredProbeDimensions: list[str] = Field(default_factory=list)
+    maxProbeCount: int = Field(default=1, ge=0, le=1)
     requiredItems: list[InterviewPlanItem] = Field(default_factory=list)
     optionalItems: list[InterviewPlanItem] = Field(default_factory=list)
     completionCriteria: InterviewCompletionCriteria = Field(default_factory=InterviewCompletionCriteria)

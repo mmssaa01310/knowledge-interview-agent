@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Protocol
 
 import boto3
@@ -35,6 +36,8 @@ class TranscribeResult:
     is_partial: bool
     result_id: str | None = None
     confidence: float | None = None
+    start_time: float | None = None
+    end_time: float | None = None
 
 
 class TranscribeCredentialsResolutionError(RuntimeError):
@@ -73,6 +76,7 @@ class AwsTranscribeStreamingPort:
         self._connected = asyncio.Event()
         self._initial_error: Exception | None = None
         self._closed = False
+        self._test_reconnect_injected = False
 
     async def start(
         self,
@@ -85,6 +89,8 @@ class AwsTranscribeStreamingPort:
         self._on_reconnecting = on_reconnecting
         self._on_fatal_error = on_fatal_error
         self._closed = False
+        self._connected.clear()
+        self._initial_error = None
         self._task = asyncio.create_task(self._run())
         connected_wait = asyncio.create_task(self._connected.wait())
         done, _ = await asyncio.wait(
@@ -93,6 +99,7 @@ class AwsTranscribeStreamingPort:
         )
         if connected_wait not in done:
             connected_wait.cancel()
+        await asyncio.gather(connected_wait, return_exceptions=True)
         if self._initial_error is not None:
             raise self._initial_error
         if self._task.done():
@@ -103,13 +110,26 @@ class AwsTranscribeStreamingPort:
     async def send_audio(self, pcm: bytes) -> None:
         if self._closed or not pcm:
             return
-        while self._audio_queue.full():
+        enqueued_at = monotonic()
+        while not self._closed:
             try:
-                self._audio_queue.get_nowait()
-                self._audio_queue.task_done()
-            except asyncio.QueueEmpty:
-                break
-        self._audio_queue.put_nowait(pcm)
+                # Backpressure is preferable to silently removing the oldest
+                # PCM. The caller will stop producing frames when this await
+                # blocks, and the audio remains ordered across reconnects.
+                await asyncio.wait_for(self._audio_queue.put(pcm), timeout=0.5)
+                waited_ms = (monotonic() - enqueued_at) * 1000
+                if waited_ms >= 100:
+                    logger.warning(
+                        "transcribe_audio_queue_backpressure waited_ms=%.1f queue_size=%s",
+                        waited_ms,
+                        self._audio_queue.qsize(),
+                    )
+                return
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "transcribe_audio_queue_waiting queue_size=%s",
+                    self._audio_queue.qsize(),
+                )
 
     async def close(self) -> None:
         self._closed = True
@@ -170,11 +190,7 @@ class AwsTranscribeStreamingPort:
             for task in tasks:
                 if not task.done():
                     task.cancel()
-            for task in tasks:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            await asyncio.gather(*tasks, return_exceptions=True)
             await stream.close()
         for task in done:
             exception = task.exception()
@@ -184,12 +200,29 @@ class AwsTranscribeStreamingPort:
             raise ConnectionError("Transcribe stream closed unexpectedly")
 
     async def _send_loop(self, input_stream: Any) -> None:
+        sent_chunks = 0
         while not self._closed:
             pcm = await self._audio_queue.get()
             try:
                 await input_stream.send(
                     AudioStreamAudioEvent(AudioEvent(audio_chunk=pcm))
                 )
+                sent_chunks += 1
+                reconnect_after = max(
+                    0,
+                    self._config.test_reconnect_after_audio_chunks,
+                )
+                if (
+                    reconnect_after
+                    and not self._test_reconnect_injected
+                    and sent_chunks >= reconnect_after
+                ):
+                    self._test_reconnect_injected = True
+                    logger.warning(
+                        "transcribe_test_reconnect_forced sent_audio_chunks=%s",
+                        sent_chunks,
+                    )
+                    raise ConnectionError("voice_test_forced_transcribe_reconnect")
             finally:
                 self._audio_queue.task_done()
 
@@ -217,19 +250,34 @@ class AwsTranscribeStreamingPort:
                             is_partial=bool(result.is_partial),
                             result_id=result.result_id,
                             confidence=confidence,
+                            start_time=_optional_float(getattr(result, "start_time", None)),
+                            end_time=_optional_float(getattr(result, "end_time", None)),
                         )
                     )
 
 
 def _stable_text(items: list[Any], *, fallback: str) -> str:
-    stable_items = [
-        str(item.content or "")
-        for item in items
-        if item.stable is True and item.content
-    ]
-    if not stable_items:
-        return fallback
-    return "".join(stable_items).strip()
+    """Return only the contiguous stable prefix of a partial result.
+
+    Transcribe's ``Stable`` flag belongs to each item, not to the complete
+    Result.  An unstable item therefore terminates the prefix; stable items
+    after it must not be pulled into speculative processing.
+    """
+
+    stable_items: list[str] = []
+    for item in items:
+        if item.stable is not True:
+            break
+        if item.content:
+            stable_items.append(str(item.content))
+    return "".join(stable_items).strip() or fallback
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _transcript_confidence(alternative: Any) -> float | None:

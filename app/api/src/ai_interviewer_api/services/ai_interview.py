@@ -14,7 +14,9 @@ from typing import Any
 
 from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
+    get_current_structured_question,
     get_structured_interview_state_snapshot,
+    render_current_question_for_resumption,
 )
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     is_current_question_confirmation_target,
@@ -28,6 +30,7 @@ from ai_interviewer_api.models.domain import AiProposal
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.services.record_lifecycle import sync_record_status_after_interview
 from ai_interviewer_api.services.conversation_policy import (
+    CanonicalIntentDecision,
     resolve_canonical_action,
     resolve_canonical_intent,
 )
@@ -78,8 +81,14 @@ def generate_interview_reply(
         canonical_policy = _resolve_text_turn_policy(record, knowledge, user)
         policy_kwargs = (
             {
-                "canonical_intent": canonical_policy[0],
+                "canonical_intent": canonical_policy[0].dialogueAct,
                 "canonical_action": canonical_policy[1],
+                "canonical_user_intent": canonical_policy[0].user_intent,
+                "canonical_conversation_action": canonical_policy[0].conversation_action,
+                "canonical_interpretation_match": canonical_policy[0].interpretation_match,
+                "canonical_user_interpretation": canonical_policy[0].user_interpretation,
+                "canonical_original_question_intent": canonical_policy[0].original_question_intent,
+                "canonical_resume_current_question": canonical_policy[0].resume_current_question,
             }
             if canonical_policy is not None
             else {}
@@ -113,7 +122,7 @@ def _resolve_text_turn_policy(
     record: dict,
     knowledge: dict,
     user: UserContext,
-) -> tuple[str, str] | None:
+) -> tuple[CanonicalIntentDecision, str] | None:
     """Route text turns through the same canonical policy as voice turns."""
 
     snapshot = get_structured_interview_state_snapshot(
@@ -125,14 +134,7 @@ def _resolve_text_turn_policy(
     state = snapshot.get("interviewState") or {}
     messages = snapshot.get("messages") or []
     current_question_id = state.get("currentQuestionId")
-    current_question = next(
-        (
-            question
-            for question in state.get("askedQuestions", [])
-            if question.get("questionId") == current_question_id
-        ),
-        None,
-    )
+    current_question = get_current_structured_question(state)
     if not isinstance(current_question, dict):
         return None
     latest_user_message = next(
@@ -166,6 +168,10 @@ def _resolve_text_turn_policy(
             current_question,
         ),
         recent_conversation=messages,
+        current_turn_type=str(state.get("currentTurnType") or "BASIC"),
+        clarification_target=state.get("lastClarificationTarget"),
+        probe_target=state.get("activeProbeTarget"),
+        interview_state=state,
     )
     action = resolve_canonical_action(
         decision.dialogueAct,
@@ -175,7 +181,7 @@ def _resolve_text_turn_policy(
         ),
         current_target=current_target,
     )
-    return decision.dialogueAct, action
+    return decision, action
 
 
 def get_interview_state_snapshot(
@@ -188,6 +194,25 @@ def get_interview_state_snapshot(
 
     knowledge = store.get("knowledges", record["knowledgeId"]) or {}
     return get_structured_interview_state_snapshot(record, knowledge, user, persist=persist)
+
+
+def render_resumed_interview_question(
+    record: dict,
+    user: UserContext,
+    *,
+    interview_state: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> str | None:
+    """Render the existing question with context through Structured Interview."""
+
+    knowledge = store.get("knowledges", record["knowledgeId"]) or {}
+    return render_current_question_for_resumption(
+        record,
+        knowledge,
+        user,
+        interview_state=interview_state,
+        messages=messages,
+    )
 
 
 def _split_reply_chunks(reply_text: str) -> list[str]:

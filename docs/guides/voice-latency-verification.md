@@ -39,6 +39,68 @@ HTMLAudioElementの`ended`を各Assistant Turnの終了通知として使えな�
 drain通知を区別する。音声終了後0/100/300/500msに発話し、先頭語も確認する。
 マイク機器・ネットワーク・出力デバイス条件を添え、未計測値を0msと記載しない。
 
+## 初回音声の区間計測
+
+初回音声の調査では、Browser Consoleの`voice_startup_latency`とvoice/APIログの
+`voice_startup_stage`を同じ`voice_session_id`（GPT-LiveはLive session ID）で突き合わせる。
+`monotonic_ms`は各プロセス内の区間計算用、`timestamp_ms`はプロセスをまたぐ相関用であり、
+SDP、音声本文、認証情報はログに出さない。
+
+主な対応は次のとおり。
+
+| 区間 | Browser | API / voice |
+| --- | --- | --- |
+| T0 | `start_clicked` | - |
+| T1 | `get_user_media_ready` | - |
+| T2〜T3 | `voice_session_request_started` / `voice_session_ready` | `backend_voice_session_request_started` / `backend_voice_session_ready` |
+| WebRTC準備 | `browser_offer_ready`、`backend_offer_request_started`、`backend_answer_received`、`remote_description_set` | `backend_offer_received`、`backend_answer_ready`、`webrtc_connected` |
+| T4〜T7 | `runtime_ready_received`（legacy）/ `live_session_started`（GPT-Live） | `external_service_connect_started`、`external_service_ready`、`runtime_ready` |
+| T8〜T10 | `initial_instructions_sent`、`initial_response_request_sent` | `initial_response_request_dispatched`、`first_response_event`、`first_audio_chunk_received`、`first_tts_chunk_ready` |
+| T11〜T13 | `remote_audio_track_received`、`audio_playing_started` | `first_audio_frame_sent_to_browser` |
+
+Transcribe + PollyはPollyの`AudioStream`を読みながらPCMフラグメントを出力する。
+`first_tts_chunk_ready`は「最初のPCMフラグメントを受信した時刻」であり、音声生成完了時刻ではない。
+キャッシュ済み音声はキャッシュ読み出し時刻として記録される。Nova SonicはBedrockの音声イベントを受信した時点を
+`first_audio_chunk_received`で記録する。GPT-Liveは音声データをDataChannelへ流さず、
+Remote MediaTrackの`onplaying`をT13として記録する。
+
+Transcribeのターン確定を調べる場合は、次の`transcribe_turn_event`を同じ
+`session_id`/`turn_id`で追う。`soft_endpoint`/`soft_endpoint_triggered`は入力ゲートを閉じず、
+`speculative_llm_started`は非コミット先行処理の開始である。`transcript_settle_started`は
+Transcript更新の観測開始を示すだけで、正式Turnはhard endpoint到達まで確定しない。
+`hard_timeout_triggered`はhard endpointまでにfinalが得られず、利用可能なpartialを安全に送る場合だけ
+発生する。`speculative_llm_reused`または`speculative_llm_discarded`で、先行結果が正式入力に
+採用されたかを確認する。
+
+```text
+transcript_partial_updated
+transcript_stable_prefix
+pending_transcript_updated
+transcribe_segment_final
+soft_endpoint_triggered
+speculative_llm_started
+transcript_segment_final / transcript_settle_reset
+transcript_settle_started
+speech_resumed
+user_turn_committed
+transcript_finalized
+speculative_llm_reused または speculative_llm_discarded
+```
+
+正式応答が遅い場合の固定相槌は、`transcribe_turn_telemetry`の
+`ack_started`/`ack_ended`で追跡する。正式音声は`assistant_main_started`/`assistant_main_ended`で追跡し、
+同じログの`segmentFinalToTurnCommitMs`、`turnCommitToAckMs`、`turnCommitToMainResponseMs`、
+`ackToMainResponseMs`を使って、認識待ち・保存待ち・音声再生待ちを分けて計測する。
+
+実測時は以下のようにログを保存し、`voice_session_id`ごとに隣接イベントの差分を計算する。
+
+```bash
+docker compose -f infra/docker-compose.yml logs --since=10m api voice
+```
+
+ブラウザ側のT0〜T13はDevTools Consoleから取得する。セッションを開始していない
+ログや、一部区間しか揃っていないログから平均値・合計値を補完してはならない。
+
 ## エラー
 
 `interview_snapshot_failed`はrecord ID、HTTP status、例外型、経過msのみ記録する。

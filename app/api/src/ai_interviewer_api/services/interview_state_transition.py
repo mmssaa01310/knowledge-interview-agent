@@ -38,6 +38,7 @@ _STATE_WRITER_LOCKS_GUARD = RLock()
 BACKGROUND_PROTECTED_STATE_FIELDS: tuple[str, ...] = (
     "currentFieldId",
     "currentQuestionId",
+    "currentTurnType",
     "nextQuestionTarget",
     "lastCanonicalIntent",
     "lastCanonicalAction",
@@ -66,6 +67,24 @@ _BACKGROUND_LATEST_FIELDS: tuple[str, ...] = (
     "lastTranscriptAssessment",
     "lastUtteranceCompleteness",
     "lastAnswerAssessment",
+    "lastAnswerEvaluation",
+    "lastAnswerStatus",
+    "lastProbeDecision",
+    "lastProbeDimension",
+    "lastProbeReason",
+    "lastClarificationKind",
+    "lastAspectAssessments",
+    "lastMissingInformation",
+    "lastExtractedFields",
+    "lastNextAction",
+    "lastConversationTrace",
+    "lastUserIntent",
+    "lastConversationAction",
+    "lastInterpretationMatch",
+    "lastUserInterpretation",
+    "lastOriginalQuestionIntent",
+    "lastResumeCurrentQuestion",
+    "lastClarificationTarget",
     "lastConfirmationApplied",
 )
 
@@ -121,24 +140,37 @@ def commit_interview_state(
     if not state_id:
         raise ValueError("interview_state_id_required")
     with _state_writer_lock(state_id):
-        current_version = int(state.get("stateVersion", 0) or 0)
+        # Work on a copy.  InMemoryStore returns the stored dictionary itself;
+        # mutating it before the compare-and-swap would otherwise make a stale
+        # writer appear current before the version check runs.
+        working = deepcopy(state)
+        current_version = int(working.get("stateVersion", 0) or 0)
+        latest = store.get("interview_states", state_id)
+        latest_version = int((latest or {}).get("stateVersion", 0) or 0)
+        if latest is not None and latest_version != current_version:
+            raise ValueError("interview_state_version_conflict")
         if expected_state_version is not None and current_version != expected_state_version:
             raise ValueError("interview_state_version_conflict")
         state_version_before = current_version
         if increment_version:
-            state["stateVersion"] = current_version + 1
-        state["updatedByUserId"] = user.user_id
-        state["updatedAt"] = utc_now()
-        store.upsert("interview_states", state)
+            working["stateVersion"] = current_version + 1
+        working["updatedByUserId"] = user.user_id
+        working["updatedAt"] = utc_now()
+        if latest is None:
+            store.upsert("interview_states", working)
+        elif not store.compare_and_swap_interview_state(working, current_version):
+            raise ValueError("interview_state_version_conflict")
+        state.clear()
+        state.update(deepcopy(working))
         logger.info(
             "interview_state_committed state_id=%s record_id=%s source=%s writer=state_transition "
             "state_version_before=%s state_version_after=%s analysis_version=%s",
             state_id,
-            state.get("recordId"),
+            working.get("recordId"),
             source,
             state_version_before,
-            state.get("stateVersion"),
-            state.get("analysisVersion", 0),
+            working.get("stateVersion"),
+            working.get("analysisVersion", 0),
         )
         return state
 

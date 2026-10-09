@@ -11,6 +11,7 @@ from hashlib import sha256
 from threading import Event, Lock
 from time import monotonic, time
 from typing import Any
+from uuid import uuid4
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     accept_no_answer,
@@ -25,6 +26,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     enqueue_clarification_request,
     is_current_question_confirmation_target,
     register_probe,
+    MAX_PROBE_COUNT,
     process_patch_validation_errors,
     record_interpretation_assessment,
     resolve_profile,
@@ -50,10 +52,14 @@ from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.service impo
     can_proceed,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
+    ConversationAction,
+    InterpretationMatch,
     InterviewProfile,
     ProcessPatch,
+    QuestionHelpOutput,
     StructuredDialogueAct,
     StructuredInterviewOutput,
+    UserIntent,
 )
 from ai_interviewer_api.auth.deps import UserContext
 from ai_interviewer_api.core.config import settings
@@ -62,12 +68,18 @@ from ai_interviewer_api.core.interview_locale import (
     interview_language_instruction,
     localized_interview_confirmation_clarification_prompt,
     localized_interview_hesitation_prompt,
+    localized_interview_intent_confirmation,
+    localized_interview_meta_question_reply,
     localized_interview_confirmation_question,
     localized_interview_document_confirmation_question,
+    localized_interview_ambiguous_part_prompt,
+    localized_interview_clarification_target_reply,
     localized_interview_incomplete_prompt,
     localized_interview_fallbacks,
+    localized_interview_missing_information_prompt,
+    localized_interview_off_target_prompt,
     localized_interview_proposal_question,
-    localized_interview_question_help,
+    localized_interview_question_guidance,
     localized_interview_transcript_confirmation_question,
     localized_interview_transcript_retry,
     localized_interview_unanswerable_prompt,
@@ -85,6 +97,12 @@ from ai_interviewer_api.services.interview_confirmation import (
     is_unambiguous_confirmation,
 )
 from ai_interviewer_api.services.conversation_policy import CanonicalAction
+from ai_interviewer_api.services.conversation_control import (
+    build_conversation_trace,
+    field_state_summary,
+    has_evaluable_answer_content,
+    normalize_conversation_output,
+)
 from ai_interviewer_api.services.interview_document_retrieval import (
     MAX_INTERVIEW_DOCUMENT_CONTEXT,
     SpeculativeInterviewRetrieval,
@@ -98,6 +116,7 @@ from ai_interviewer_api.services.interview_state_transition import (
     commit_foreground_provisional_state,
     commit_interview_state,
 )
+from ai_interviewer_api.services.prior_knowledge import build_prior_knowledge_context
 
 
 STRUCTURED_PROFILES: frozenset[str] = frozenset({"fixed_form", "business_process", "system_requirement"})
@@ -122,6 +141,7 @@ _LATENCY_METRIC_NAMES = (
     "state_transition_ms",
     "retrieval_ms",
     "question_generation_ms",
+    "question_explanation_ms",
 )
 _LATENCY_CALL_METRIC_NAMES = (
     "interpreter_calls",
@@ -129,6 +149,7 @@ _LATENCY_CALL_METRIC_NAMES = (
     "patch_repair_calls",
     "retrieval_calls",
     "question_generation_calls",
+    "question_explanation_calls",
 )
 _LATENCY_EVENT_METRIC_NAMES = (
     "interpreter_start_ms",
@@ -295,6 +316,7 @@ def _serialize_latency_metrics(metrics: Mapping[str, float]) -> dict[str, float 
         "speculative_retrieval_wait_ms",
         "retrieval_reused",
         "retrieval_fallbacks",
+        "interpreter_reused",
     ):
         value = metrics.get(name)
         if value is not None:
@@ -312,9 +334,16 @@ def generate_structured_interview_result(
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
     canonical_intent: StructuredDialogueAct | None = None,
     canonical_action: CanonicalAction | None = None,
+    canonical_user_intent: UserIntent | None = None,
+    canonical_conversation_action: ConversationAction | None = None,
+    canonical_interpretation_match: InterpretationMatch | None = None,
+    canonical_user_interpretation: str | None = None,
+    canonical_original_question_intent: str | None = None,
+    canonical_resume_current_question: bool | None = None,
     on_question_delta: Callable[[str], None] | None = None,
     persist_state: bool = True,
     state_override: Mapping[str, Any] | None = None,
+    interpreter_output: StructuredInterviewOutput | None = None,
 ) -> dict[str, Any]:
     """Run one record's Structured Interview turn serially.
 
@@ -335,10 +364,17 @@ def generate_structured_interview_result(
             speculative_retrieval=speculative_retrieval,
             canonical_intent=canonical_intent,
             canonical_action=canonical_action,
+            canonical_user_intent=canonical_user_intent,
+            canonical_conversation_action=canonical_conversation_action,
+            canonical_interpretation_match=canonical_interpretation_match,
+            canonical_user_interpretation=canonical_user_interpretation,
+            canonical_original_question_intent=canonical_original_question_intent,
+            canonical_resume_current_question=canonical_resume_current_question,
             on_question_delta=on_question_delta,
             defer_question_generation=False,
             persist_state=persist_state,
             state_override=state_override,
+            interpreter_output=interpreter_output,
         )
 
 
@@ -357,10 +393,17 @@ def _generate_structured_interview_result_locked(
     speculative_retrieval: SpeculativeInterviewRetrieval | None,
     canonical_intent: StructuredDialogueAct | None = None,
     canonical_action: CanonicalAction | None = None,
+    canonical_user_intent: UserIntent | None = None,
+    canonical_conversation_action: ConversationAction | None = None,
+    canonical_interpretation_match: InterpretationMatch | None = None,
+    canonical_user_interpretation: str | None = None,
+    canonical_original_question_intent: str | None = None,
+    canonical_resume_current_question: bool | None = None,
     on_question_delta: Callable[[str], None] | None,
     defer_question_generation: bool,
     persist_state: bool = True,
     state_override: Mapping[str, Any] | None = None,
+    interpreter_output: StructuredInterviewOutput | None = None,
 ) -> dict[str, Any]:
     started_at = monotonic()
     latency_metrics = _new_latency_metrics()
@@ -374,10 +417,17 @@ def _generate_structured_interview_result_locked(
         speculative_retrieval=speculative_retrieval,
         canonical_intent=canonical_intent,
         canonical_action=canonical_action,
+        canonical_user_intent=canonical_user_intent,
+        canonical_conversation_action=canonical_conversation_action,
+        canonical_interpretation_match=canonical_interpretation_match,
+        canonical_user_interpretation=canonical_user_interpretation,
+        canonical_original_question_intent=canonical_original_question_intent,
+        canonical_resume_current_question=canonical_resume_current_question,
         on_question_delta=on_question_delta,
         defer_question_generation=defer_question_generation,
         persist_state=persist_state,
         state_override=state_override,
+        interpreter_output=interpreter_output,
     )
     structured_total_ms = _elapsed_ms(started_at)
     # The coordinator portion includes state reads/writes, validation,
@@ -476,6 +526,7 @@ def start_fast_interview_turn(
         current_question=fast_question,
         latest_answer=latest_user_message,
         messages=messages,
+        prior_knowledge=build_prior_knowledge_context(knowledge, user),
     )
     structured_provider = _get_structured_provider(provider, model_id=model_id)
     selected_fast_provider = fast_provider or BedrockFastInterpreterProvider()
@@ -686,7 +737,9 @@ def start_fast_interview_turn(
         provisional_state.setdefault("askedQuestions", []).append(question)
         provisional_state["currentFieldId"] = question.get("fieldId")
         provisional_state["currentQuestionId"] = question["questionId"]
+        provisional_state["currentTurnType"] = "BASIC"
         provisional_state["nextQuestionTarget"] = target
+        _ensure_question_answer_record(provisional_state, question)
         provisional_state = commit_foreground_provisional_state(
             provisional_state,
             user,
@@ -1249,10 +1302,17 @@ def _generate_structured_interview_result(
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
     canonical_intent: StructuredDialogueAct | None = None,
     canonical_action: CanonicalAction | None = None,
+    canonical_user_intent: UserIntent | None = None,
+    canonical_conversation_action: ConversationAction | None = None,
+    canonical_interpretation_match: InterpretationMatch | None = None,
+    canonical_user_interpretation: str | None = None,
+    canonical_original_question_intent: str | None = None,
+    canonical_resume_current_question: bool | None = None,
     on_question_delta: Callable[[str], None] | None = None,
     defer_question_generation: bool = False,
     persist_state: bool = True,
     state_override: Mapping[str, Any] | None = None,
+    interpreter_output: StructuredInterviewOutput | None = None,
 ) -> dict[str, Any]:
     latency_metrics = latency_metrics if latency_metrics is not None else _new_latency_metrics()
     fields = _list_interview_fields(knowledge, user)
@@ -1307,6 +1367,14 @@ def _generate_structured_interview_result(
     if _repair_current_confirmation_question(state, locale=interview_locale):
         _persist_state(state, user, persist=persist_state)
         current_question = _get_current_question(state)
+    probe_turn = bool(
+        current_question
+        and current_question.get("turnType") == "PROBE"
+        and state.get("currentTurnType") == "PROBE"
+    )
+    active_probe_for_turn = (
+        deepcopy(state.get("activeProbeTarget")) if probe_turn else None
+    )
     latest_user_message = _latest_answer_message(messages, current_question)
     last_processed_id = state.get("lastProcessedUserMessageId")
     answer_state_before = (
@@ -1358,6 +1426,7 @@ def _generate_structured_interview_result(
             interpreter_context = _build_interpreter_context(
                 record=record,
                 knowledge=knowledge,
+                user=user,
                 fields=fields,
                 state=state,
                 messages=messages,
@@ -1381,31 +1450,57 @@ def _generate_structured_interview_result(
             else:
                 interpreter_started_at = monotonic()
                 latency_metrics["interpreter_start_ms"] = int(time() * 1000)
-                output = structured_provider.interpret(
-                    profile=profile,
-                    context=interpreter_context,
-                    reasoning_effort=initial_reasoning_effort,
-                )
-                latency_metrics["interpreter_ms"] += _elapsed_ms(interpreter_started_at)
-                latency_metrics["interpreter_calls"] += 1
-                latency_metrics["interpreter_end_ms"] = int(time() * 1000)
-                if (
-                    initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
-                    and _requires_medium_reasoning(state, output)
-                ):
-                    medium_context = {
-                        **interpreter_context,
-                        "preliminaryOutput": output.model_dump(),
-                    }
-                    medium_retry_started_at = monotonic()
+                if interpreter_output is not None:
+                    # This output was generated against the same transcript,
+                    # question, and state version at the soft endpoint. It is
+                    # still passed through all backend validation and commit
+                    # logic below; only the expensive initial interpretation
+                    # call is reused.
+                    output = interpreter_output.model_copy(deep=True)
+                    latency_metrics["interpreter_reused"] = 1.0
+                    if (
+                        initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
+                        and _requires_medium_reasoning(state, output)
+                    ):
+                        medium_context = {
+                            **interpreter_context,
+                            "preliminaryOutput": output.model_dump(),
+                        }
+                        medium_retry_started_at = monotonic()
+                        output = structured_provider.interpret(
+                            profile=profile,
+                            context=medium_context,
+                            reasoning_effort=settings.structured_interview_medium_reasoning_effort,
+                        )
+                        latency_metrics["medium_retry_ms"] += _elapsed_ms(medium_retry_started_at)
+                        latency_metrics["medium_retry_calls"] += 1
+                        selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
+                else:
                     output = structured_provider.interpret(
                         profile=profile,
-                        context=medium_context,
-                        reasoning_effort=settings.structured_interview_medium_reasoning_effort,
+                        context=interpreter_context,
+                        reasoning_effort=initial_reasoning_effort,
                     )
-                    latency_metrics["medium_retry_ms"] += _elapsed_ms(medium_retry_started_at)
-                    latency_metrics["medium_retry_calls"] += 1
-                    selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
+                    latency_metrics["interpreter_ms"] += _elapsed_ms(interpreter_started_at)
+                    latency_metrics["interpreter_calls"] += 1
+                    latency_metrics["interpreter_end_ms"] = int(time() * 1000)
+                    if (
+                        initial_reasoning_effort != settings.structured_interview_medium_reasoning_effort
+                        and _requires_medium_reasoning(state, output)
+                    ):
+                        medium_context = {
+                            **interpreter_context,
+                            "preliminaryOutput": output.model_dump(),
+                        }
+                        medium_retry_started_at = monotonic()
+                        output = structured_provider.interpret(
+                            profile=profile,
+                            context=medium_context,
+                            reasoning_effort=settings.structured_interview_medium_reasoning_effort,
+                        )
+                        latency_metrics["medium_retry_ms"] += _elapsed_ms(medium_retry_started_at)
+                        latency_metrics["medium_retry_calls"] += 1
+                        selected_reasoning_effort = settings.structured_interview_medium_reasoning_effort
             valid_evidence_ids = {
                 str(message.get("id"))
                 for message in messages
@@ -1436,14 +1531,13 @@ def _generate_structured_interview_result(
                 state.get("pendingTranscriptConfirmation"),
                 Mapping,
             )
-            effective_completeness = _effective_utterance_completeness(
-                output,
-                raw_transcript,
-            )
-            if effective_completeness != output.utteranceCompleteness:
-                output = output.model_copy(
-                    update={"utteranceCompleteness": effective_completeness}
-                )
+            # Utterance completeness is a semantic interpreter decision. Do
+            # not infer it from transcript suffixes here: a Japanese clause
+            # can end in a particle or hesitation while already containing a
+            # complete answer aspect. Runtime-specific endpoint timing and
+            # lexical guesses must not turn grounded content into a generic
+            # continuation request.
+            effective_completeness = output.utteranceCompleteness
             transcript_assessment_status = output.transcriptAssessment.correctionStatus
             if (
                 transcript_assessment_status == "CORRECTED"
@@ -1474,7 +1568,150 @@ def _generate_structured_interview_result(
                     }
                 )
                 transcript_assessment_status = "UNCERTAIN"
-            if transcript_assessment_status == "UNCERTAIN":
+            if not raw_transcript and output.transcriptAssessment.recognitionStatus == "CLEAR":
+                # Empty final text is transport/STT evidence, not a semantic
+                # judgement about the answer. Mark only this concrete case as
+                # missing recognition input.
+                output = output.model_copy(
+                    update={
+                        "transcriptAssessment": output.transcriptAssessment.model_copy(
+                            update={
+                                "recognitionStatus": "MISSING",
+                                "recognitionEvidence": ["empty_final_transcript"],
+                            }
+                        )
+                    }
+                )
+            # Normalize the independent transcript/semantic judgements before
+            # any runtime-specific wording or state transition is selected.
+            output = normalize_conversation_output(output)
+            if (
+                output.utteranceCompleteness == "UNCERTAIN"
+                and output.transcriptAssessment.recognitionStatus == "CLEAR"
+                and output.transcriptAssessment.correctionStatus == "NONE"
+            ):
+                # Uncertain grammatical completeness is not evidence of an
+                # audio failure. Let the semantic answer assessment decide
+                # whether to move on or ask for a missing aspect; reserve the
+                # continuation/retry branches for explicit incomplete or
+                # recognition-uncertain turns.
+                output = output.model_copy(update={"utteranceCompleteness": "COMPLETE"})
+                effective_completeness = "COMPLETE"
+            effective_user_intent = canonical_user_intent or output.userIntent
+            effective_interpretation_match = (
+                canonical_interpretation_match or output.interpretationMatch
+            )
+            effective_user_interpretation = (
+                canonical_user_interpretation or output.userInterpretation
+            )
+            effective_original_question_intent = (
+                canonical_original_question_intent or output.originalQuestionIntent
+            )
+            effective_resume_current_question = (
+                canonical_resume_current_question
+                if canonical_resume_current_question is not None
+                else output.resumeCurrentQuestion
+            )
+            output = output.model_copy(
+                update={
+                    "userIntent": effective_user_intent,
+                    "interpretationMatch": effective_interpretation_match,
+                    "userInterpretation": effective_user_interpretation,
+                    "originalQuestionIntent": effective_original_question_intent,
+                    "resumeCurrentQuestion": effective_resume_current_question,
+                }
+            )
+            state["lastUserIntent"] = effective_user_intent
+            state["lastInterpretationMatch"] = effective_interpretation_match
+            state["lastUserInterpretation"] = effective_user_interpretation
+            state["lastOriginalQuestionIntent"] = effective_original_question_intent
+            state["lastResumeCurrentQuestion"] = effective_resume_current_question
+            state["lastConversationAction"] = (
+                (
+                    canonical_conversation_action
+                    if canonical_conversation_action not in {None, "PROCESS_USER_RESPONSE"}
+                    else _conversation_action_for_semantic_turn(output)
+                )
+            )
+            clarification_target = _remember_clarification_target(
+                state,
+                output,
+                current_question,
+            )
+            _set_conversation_trace(state, output, interpreter_context)
+            if effective_user_intent in {
+                "QUESTION_CLARIFICATION",
+                "QUESTION_INTENT_CONFIRMATION",
+                "ASR_CLARIFICATION_REQUEST",
+                "META_QUESTION",
+            }:
+                # A question addressed to the assistant is not an answer to
+                # the interview question.  Discard any contradictory updates
+                # proposed by the slower interpreter and keep the same basic
+                # question active.
+                output = output.model_copy(
+                    update={
+                        "answerEvaluation": "CLARIFICATION_REQUEST",
+                        "answerStatus": "NOT_ANSWERED",
+                        "clarificationKind": (
+                            "ASR_TARGET"
+                            if effective_user_intent == "ASR_CLARIFICATION_REQUEST"
+                            else "QUESTION_MEANING"
+                        ),
+                        "probeDecision": "NONE",
+                        "probeDimension": None,
+                        "probeReason": None,
+                        "probeQuestion": None,
+                        "fieldUpdates": [],
+                        "requirementUpdates": [],
+                        "processPatch": ProcessPatch(),
+                        "applicability": [],
+                        "contradictions": [],
+                        "resolvedContradictionIds": [],
+                        "openIssues": [],
+                    }
+                )
+                state["lastConversationAction"] = "ANSWER_USER_CLARIFICATION"
+                _set_conversation_trace(state, output, interpreter_context)
+                if effective_user_intent == "ASR_CLARIFICATION_REQUEST":
+                    reply = _clarification_target_description(
+                        clarification_target,
+                        interview_locale,
+                    )
+                elif effective_user_intent == "QUESTION_INTENT_CONFIRMATION":
+                    reply = localized_interview_intent_confirmation(
+                        interview_locale,
+                        effective_interpretation_match,
+                        effective_original_question_intent
+                        or str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or ""
+                        ),
+                    )
+                elif effective_user_intent == "META_QUESTION":
+                    reply = localized_interview_meta_question_reply(
+                        interview_locale,
+                        purpose=str(
+                            interpreter_context.get("questionPurpose")
+                            or current_question.get("targetLabel")
+                            or ""
+                        ),
+                    )
+                else:
+                    reply = _render_question_explanation(
+                        record_id=str(record.get("id") or ""),
+                        current_question=current_question,
+                        latest_user_message=latest_user_message,
+                        fields=fields,
+                        locale=interview_locale,
+                        knowledge=knowledge,
+                        user=user,
+                        profile=profile,
+                        provider=structured_provider,
+                        reasoning_effort=settings.structured_interview_question_reasoning_effort,
+                        latency_metrics=latency_metrics,
+                    )
                 return _keep_current_question(
                     record=record,
                     state=state,
@@ -1489,7 +1726,80 @@ def _generate_structured_interview_result(
                     raw_transcript=raw_transcript,
                     current_question=current_question,
                     persist_state=persist_state,
-                    reply=localized_interview_transcript_retry(interview_locale),
+                    reply=reply,
+                )
+            if effective_user_intent == "DECLINE_OR_SKIP":
+                # Treat a semantic skip as an explicit no-detail answer so
+                # the normal coordinator can finalize this target and select
+                # the next basic question.  No wording or question ID is
+                # inspected here.
+                current_target_for_skip = _target_from_question(current_question)
+                if (
+                    current_target_for_skip is not None
+                    and not probe_turn
+                ):
+                    follow_up_key = target_key(current_target_for_skip)
+                    state.setdefault("followUpCounts", {})[follow_up_key] = max(
+                        1,
+                        int(
+                            state.setdefault("followUpCounts", {}).get(follow_up_key, 0)
+                            or 0
+                        ),
+                    )
+                output = output.model_copy(
+                    update={
+                        "dialogueAct": "ANSWER",
+                        "answerEvaluation": "PARTIALLY_ANSWERED",
+                        "answerStatus": "PARTIAL",
+                        "answerAssessment": output.answerAssessment.model_copy(
+                            update={"sufficiency": "REFUSAL", "probeType": "NONE"}
+                        ),
+                        "clarificationKind": "NONE",
+                        "probeDecision": "NONE",
+                        "probeDimension": None,
+                        "probeReason": None,
+                        "probeQuestion": None,
+                        "fieldUpdates": [],
+                        "requirementUpdates": [],
+                        "processPatch": ProcessPatch(),
+                        "applicability": [],
+                        "contradictions": [],
+                        "resolvedContradictionIds": [],
+                        "openIssues": [],
+                    }
+                )
+                state["lastConversationAction"] = "SKIP_AND_NEXT"
+                _set_conversation_trace(state, output, interpreter_context)
+            if output.answerEvaluation == "NOT_HEARD":
+                _apply_uncertain_grounded_updates(
+                    state=state,
+                    output=output,
+                    latest_message_id=latest_message_id,
+                    raw_transcript=raw_transcript,
+                    fields=fields,
+                    profile=profile,
+                    valid_evidence_ids=valid_evidence_ids,
+                    current_question=current_question,
+                )
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    persist_state=persist_state,
+                    reply=_clarification_target_prompt(
+                        clarification_target,
+                        interview_locale,
+                        output,
+                    ),
                 )
             if canonical_intent is not None:
                 actual_dialogue_act = output.dialogueAct
@@ -1498,18 +1808,68 @@ def _generate_structured_interview_result(
                 state["lastStructuredValidationDialogueAct"] = actual_dialogue_act
                 if canonical_action in {
                     "EXPLAIN_CURRENT_QUESTION",
+                    "REPEAT_CURRENT_QUESTION",
                     "KEEP_CURRENT_QUESTION",
                 }:
-                    if canonical_action == "EXPLAIN_CURRENT_QUESTION":
+                    output = normalize_conversation_output(
+                        output.model_copy(update={"dialogueAct": canonical_intent})
+                    )
+                    _set_conversation_trace(state, output, interpreter_context)
+                    if output.clarificationKind in {
+                        "ASR_TARGET",
+                        "MISSING_INFORMATION_TARGET",
+                    }:
+                        # A target query always has priority over the coarse
+                        # router action. For example, "where?" must not turn
+                        # into a repeat of the whole question.
+                        reply = _clarification_target_description(
+                            clarification_target,
+                            interview_locale,
+                        )
+                    elif output.clarificationKind == "QUESTION_MEANING":
+                        # A semantic question-meaning request stays concise
+                        # even if the coarse router selected repeat/keep.
                         reply = _render_question_explanation(
                             record_id=str(record.get("id") or ""),
                             current_question=current_question,
+                            latest_user_message=latest_user_message,
                             fields=fields,
                             locale=interview_locale,
+                            knowledge=knowledge,
+                            user=user,
+                            profile=profile,
+                            provider=structured_provider,
+                            reasoning_effort=settings.structured_interview_question_reasoning_effort,
+                            latency_metrics=latency_metrics,
                         )
+                    elif canonical_action == "EXPLAIN_CURRENT_QUESTION":
+                        reply = _render_question_explanation(
+                            record_id=str(record.get("id") or ""),
+                            current_question=current_question,
+                            latest_user_message=latest_user_message,
+                            fields=fields,
+                            locale=interview_locale,
+                            knowledge=knowledge,
+                            user=user,
+                            profile=profile,
+                            provider=structured_provider,
+                            reasoning_effort=settings.structured_interview_question_reasoning_effort,
+                            latency_metrics=latency_metrics,
+                        )
+                    elif canonical_action == "REPEAT_CURRENT_QUESTION":
+                        reply = str(current_question.get("text") or "")
                     elif canonical_intent == "CONFIRMATION":
                         reply = localized_interview_confirmation_clarification_prompt(
                             interview_locale,
+                        )
+                    elif output.answerEvaluation == "OFF_TARGET":
+                        reply = localized_interview_off_target_prompt(
+                            interview_locale,
+                            str(
+                                current_question.get("targetLabel")
+                                or current_question.get("label")
+                                or "現在の項目"
+                            ),
                         )
                     else:
                         reply = localized_interview_hesitation_prompt(interview_locale)
@@ -1531,7 +1891,10 @@ def _generate_structured_interview_result(
                     )
                 # The structured interpreter remains useful for extraction and
                 # validation, but it must not replace the foreground intent.
-                output = output.model_copy(update={"dialogueAct": canonical_intent})
+                output = normalize_conversation_output(
+                    output.model_copy(update={"dialogueAct": canonical_intent})
+                )
+                _set_conversation_trace(state, output, interpreter_context)
                 if canonical_action in {
                     "CONFIRM_PENDING_CANDIDATE",
                     "REJECT_PENDING_CANDIDATE",
@@ -1557,7 +1920,7 @@ def _generate_structured_interview_result(
                             "openIssues": [],
                         }
                     )
-            if output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"} and not _has_structured_updates(output):
+            if output.answerEvaluation == "REPEAT_REQUEST":
                 return _keep_current_question(
                     record=record,
                     state=state,
@@ -1572,11 +1935,85 @@ def _generate_structured_interview_result(
                     raw_transcript=raw_transcript,
                     current_question=current_question,
                     persist_state=persist_state,
-                    reply=_render_question_explanation(
-                        record_id=str(record.get("id") or ""),
-                        current_question=current_question,
-                        fields=fields,
-                        locale=interview_locale,
+                    reply=str(current_question.get("text") or ""),
+                )
+            if output.answerEvaluation == "CLARIFICATION_REQUEST" or (
+                output.dialogueAct in {"QUESTION_TO_ASSISTANT", "CLARIFICATION_REQUEST"}
+                and not _has_structured_updates(output)
+            ):
+                if _has_structured_updates(output):
+                    output = output.model_copy(
+                        update={
+                            "fieldUpdates": [],
+                            "requirementUpdates": [],
+                            "processPatch": ProcessPatch(),
+                            "applicability": [],
+                            "contradictions": [],
+                            "resolvedContradictionIds": [],
+                            "openIssues": [],
+                        }
+                    )
+                    _set_conversation_trace(state, output, interpreter_context)
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    persist_state=persist_state,
+                    reply=(
+                        _clarification_target_description(
+                            clarification_target,
+                            interview_locale,
+                        )
+                        if (
+                            output.clarificationKind
+                            in {"ASR_TARGET", "MISSING_INFORMATION_TARGET"}
+                        )
+                        else _render_question_explanation(
+                            record_id=str(record.get("id") or ""),
+                            current_question=current_question,
+                            latest_user_message=latest_user_message,
+                            fields=fields,
+                            locale=interview_locale,
+                            knowledge=knowledge,
+                            user=user,
+                            profile=profile,
+                            provider=structured_provider,
+                            reasoning_effort=settings.structured_interview_question_reasoning_effort,
+                            latency_metrics=latency_metrics,
+                        )
+                    ),
+                )
+            if output.answerEvaluation == "OFF_TARGET":
+                return _keep_current_question(
+                    record=record,
+                    state=state,
+                    messages=messages,
+                    fields=fields,
+                    user=user,
+                    latest_user_message=latest_user_message,
+                    latest_message_id=latest_message_id,
+                    output=output,
+                    model_id=model_id,
+                    reasoning_effort=selected_reasoning_effort,
+                    raw_transcript=raw_transcript,
+                    current_question=current_question,
+                    persist_state=persist_state,
+                    reply=localized_interview_off_target_prompt(
+                        interview_locale,
+                        str(
+                            current_question.get("targetLabel")
+                            or current_question.get("label")
+                            or "現在の項目"
+                        ),
                     ),
                 )
             if output.dialogueAct in {"HESITATION", "BACKCHANNEL", "OTHER"}:
@@ -1623,7 +2060,12 @@ def _generate_structured_interview_result(
                     persist_state=persist_state,
                     reply=localized_interview_confirmation_clarification_prompt(interview_locale),
                 )
-            if effective_completeness != "COMPLETE" or output.answerAssessment.sufficiency == "INCOMPLETE":
+            wait_for_continuation = (
+                effective_completeness == "INCOMPLETE"
+                and output.answerEvaluation == "INCOMPLETE_UTTERANCE"
+                and not has_evaluable_answer_content(output)
+            )
+            if wait_for_continuation:
                 apply_structured_output(
                     state,
                     output,
@@ -1639,6 +2081,7 @@ def _generate_structured_interview_result(
                     state.get("lastTranscriptAssessment"),
                     persist=persist_state,
                 )
+                _set_conversation_trace(state, output, interpreter_context)
                 state["lastStructuredOutput"] = output.model_dump()
                 state["lastStructuredModelId"] = model_id
                 state["lastStructuredReasoningEffort"] = selected_reasoning_effort
@@ -1655,7 +2098,7 @@ def _generate_structured_interview_result(
                     fields=fields,
                     reply=(
                         localized_interview_incomplete_prompt(interview_locale)
-                        if effective_completeness == "INCOMPLETE"
+                        if wait_for_continuation
                         else localized_interview_transcript_retry(interview_locale)
                     ),
                     question=current_question,
@@ -1708,6 +2151,7 @@ def _generate_structured_interview_result(
 
             keep_current_question_for_unanswerable = False
             applied_topics: list[str] = []
+            probe_target: dict[str, Any] | None = None
             if output.dialogueAct in {
                 "ANSWER",
                 "CORRECTION",
@@ -1719,11 +2163,47 @@ def _generate_structured_interview_result(
                 if not staged_transcript_correction:
                     current_target = _target_from_question(current_question)
                     answer_sufficiency = output.answerAssessment.sufficiency
-                    if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                    answer_needs_follow_up = (
+                        output.answerStatus != "ANSWERED"
+                        or output.answerEvaluation == "PARTIALLY_ANSWERED"
+                        or answer_sufficiency != "SUFFICIENT"
+                    )
+                    explicit_probe_requested = (
+                        not probe_turn
+                        and output.answerStatus == "ANSWERED"
+                        and output.probeDecision == "PROBE"
+                        and _probe_limit_for_question(current_question) > 0
+                        and current_target is not None
+                    )
+                    if explicit_probe_requested:
+                        existing_answer = _ensure_question_answer_record(
+                            state,
+                            current_question,
+                        )
+                        if existing_answer is None or int(existing_answer.get("probeCount") or 0) < _probe_limit_for_question(current_question):
+                            probe_target = current_target
+                    if (
+                        not probe_turn
+                        and current_target is not None
+                        and raw_transcript
+                        and output.answerStatus != "NOT_ANSWERED"
+                        and answer_sufficiency not in {"UNANSWERABLE", "REFUSAL"}
+                    ):
+                        _record_basic_answer(
+                            state,
+                            current_question,
+                            transcript=raw_transcript,
+                            output=output,
+                        )
+                    if output.answerStatus == "NOT_ANSWERED":
                         output_to_apply = output.model_copy(
                             update={"fieldUpdates": [], "requirementUpdates": []}
                         )
-                    elif answer_sufficiency != "SUFFICIENT":
+                    elif answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                        output_to_apply = output.model_copy(
+                            update={"fieldUpdates": [], "requirementUpdates": []}
+                        )
+                    elif answer_needs_follow_up or probe_target is not None:
                         output_to_apply = _downgrade_current_target_update(
                             output,
                             current_target,
@@ -1747,7 +2227,30 @@ def _generate_structured_interview_result(
                         state,
                     ):
                         confirm_tentative_target(state, tentative_target_before)
-                    if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                    if probe_turn:
+                        # A probe is deliberately bounded. Its answer is
+                        # evidence for the parent question, never a reason to
+                        # schedule another probe for the same parent.
+                        if answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+                            if current_target is not None:
+                                confirm_tentative_target(state, current_target)
+                        elif current_target is not None and _field_target_is_complete(
+                            state,
+                            current_target,
+                        ):
+                            confirm_tentative_target(state, current_target)
+                        if active_probe_for_turn is not None:
+                            _record_probe_answer(
+                                state,
+                                current_question,
+                                active_probe=active_probe_for_turn,
+                                transcript=raw_transcript,
+                                message_id=latest_message_id,
+                                output=output,
+                            )
+                        clear_probe(state, current_target)
+                        state["currentTurnType"] = "BASIC"
+                    elif answer_sufficiency in {"UNANSWERABLE", "REFUSAL"}:
                         if current_question.get("optionalDeepening"):
                             # Optional deepening is deliberately bounded to one
                             # attempt. A refusal or no-detail response ends the
@@ -1776,17 +2279,20 @@ def _generate_structured_interview_result(
                                     probe_type=output.answerAssessment.probeType,
                                 )
                                 keep_current_question_for_unanswerable = True
-                    elif answer_sufficiency != "SUFFICIENT":
+                    elif probe_target is not None:
+                        # The child probe is registered exactly once by
+                        # _start_probe_question below. Do not also increment
+                        # the legacy missing-information counter here.
+                        pass
+                    elif answer_needs_follow_up:
                         optional_target = select_optional_deepening_target(
                             state,
                             current_target,
                         )
                         if optional_target is not None:
-                            register_probe(
-                                state,
-                                target=optional_target,
-                                probe_type=output.answerAssessment.probeType,
-                            )
+                            # Legacy optionalItems are now represented by the
+                            # same child-probe record as explicit PROBE output.
+                            probe_target = optional_target
                         elif current_question.get("optionalDeepening"):
                             # Do not turn one optional probe into a loop when
                             # the answer remains vague or contains no new detail.
@@ -1808,8 +2314,11 @@ def _generate_structured_interview_result(
                             )
                     else:
                         clear_probe(state, current_target)
+                        state["currentTurnType"] = "BASIC"
                         if current_question.get("optionalDeepening"):
                             confirm_tentative_target(state, current_target)
+                    if not probe_turn:
+                        _sync_question_answer_to_target(state, current_question)
                     if persist_state:
                         _save_newly_confirmed_field_messages(
                             record=record,
@@ -1862,6 +2371,7 @@ def _generate_structured_interview_result(
                     normalized_transcript=str(normalized or raw_transcript),
                     valid_evidence_ids=valid_evidence_ids,
                 )
+            _set_conversation_trace(state, output, interpreter_context)
             if (
                 pending_transcript_confirmation
                 and output.dialogueAct == "REJECTION"
@@ -1895,6 +2405,68 @@ def _generate_structured_interview_result(
             state["lastStructuredOutput"] = output.model_dump()
             state["lastStructuredModelId"] = model_id
             state["lastStructuredReasoningEffort"] = selected_reasoning_effort
+            if (
+                probe_target is not None
+                and not probe_turn
+                and current_question.get("targetType") != "closing"
+                and _probe_limit_for_question(current_question) > 0
+            ):
+                answer_state_before_probe_commit = _structured_answer_state_snapshot(state)
+                answer_state_version_before_probe_commit = int(
+                    state.get("stateVersion", 0) or 0
+                )
+                probe_question, probe_assistant_message, probe_messages = _start_probe_question(
+                    state=state,
+                    base_question=current_question,
+                    target=probe_target,
+                    output=output,
+                    record=record,
+                    knowledge=knowledge,
+                    user=user,
+                    fields=fields,
+                    profile=profile,
+                    messages=messages,
+                    provider=structured_provider,
+                    persist_assistant_messages=persist_assistant_messages,
+                    persist_state=persist_state,
+                    latency_metrics=latency_metrics,
+                    user_record_id=str(record["id"]),
+                    on_question_delta=on_question_delta,
+                )
+                changed_field_ids = _changed_structured_field_ids(
+                    answer_state_before,
+                    answer_state_before_probe_commit,
+                )
+                if answer_state_before is not None and changed_field_ids:
+                    logger.info(
+                        "interview_answer_state_committed record_id=%s source_turn_id=%s "
+                        "source_message_id=%s transcript_chars=%s field_ids=%s applied_topics=%s "
+                        "state_version_before=%s state_version_after=%s current_question_id=%s "
+                        "persisted=%s",
+                        record.get("id"),
+                        latest_user_message.get("voiceTurnId")
+                        or latest_user_message.get("id"),
+                        latest_message_id,
+                        len(raw_transcript),
+                        changed_field_ids,
+                        applied_topics,
+                        answer_state_version_before_probe_commit,
+                        state.get("stateVersion"),
+                        current_question.get("questionId"),
+                        persist_state,
+                    )
+                return _build_result(
+                    record=record,
+                    state=state,
+                    messages=probe_messages,
+                    fields=fields,
+                    reply=str(probe_question.get("text") or ""),
+                    question=probe_question,
+                    action="ask_follow_up",
+                    status="in_progress",
+                    assistant_message=probe_assistant_message,
+                    missing_information=list(output.missingInformation),
+                )
             if keep_current_question_for_unanswerable and current_question.get("targetType") != "closing":
                 _persist_state(state, user, persist=persist_state)
                 return _build_result(
@@ -1925,6 +2497,23 @@ def _generate_structured_interview_result(
                     current_question.get("questionId"),
                 )
             answer_state_after = _structured_answer_state_snapshot(state)
+            if (
+                answer_state_before is not None
+                and answer_state_after == answer_state_before
+                and output.answerEvaluation == "PARTIALLY_ANSWERED"
+            ):
+                # A semantic partial answer may contain no safely extractable
+                # value. Still record the missing-information probe so the
+                # next-question generator can ask for that aspect directly.
+                current_target = _target_from_question(current_question)
+                if current_target is not None:
+                    register_probe(
+                        state,
+                        target=current_target,
+                        probe_type=output.answerAssessment.probeType,
+                    )
+                    _set_conversation_trace(state, output, interpreter_context)
+                    answer_state_after = _structured_answer_state_snapshot(state)
             if answer_state_before is not None and answer_state_after == answer_state_before:
                 # A sufficient-looking model result is not permission to
                 # complete the question. Require a persisted semantic effect
@@ -2135,8 +2724,10 @@ def _generate_structured_interview_result(
     state.pop("questionGenerationPending", None)
     state["currentFieldId"] = question.get("fieldId")
     state["currentQuestionId"] = question["questionId"]
+    state["currentTurnType"] = "BASIC"
     state["nextQuestionTarget"] = target
     state.setdefault("askedQuestions", []).append(question)
+    _ensure_question_answer_record(state, question)
     if question.get("fieldId"):
         state.setdefault("fieldStates", {}).setdefault(
             question["fieldId"],
@@ -2166,6 +2757,7 @@ def _generate_structured_interview_result(
     )
     all_messages = [*messages, assistant_message] if assistant_message else messages
     completion = evaluate_completion(state, profile, fields)
+    target_missing_information = _target_missing_information(state, target)
     return _build_result(
         record=record,
         state=state,
@@ -2178,8 +2770,82 @@ def _generate_structured_interview_result(
         assistant_message=assistant_message,
         missing_information=[
             str(item.get("label") or item.get("targetId"))
-            for item in completion["missingRequiredTargets"]
+            for item in (target_missing_information or completion["missingRequiredTargets"])
         ],
+    )
+
+
+def _apply_uncertain_grounded_updates(
+    *,
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    latest_message_id: str,
+    raw_transcript: str,
+    fields: Sequence[Mapping[str, Any]],
+    profile: InterviewProfile | None,
+    valid_evidence_ids: set[str],
+    current_question: Mapping[str, Any],
+) -> None:
+    """Keep independently clear facts as tentative while STT is uncertain.
+
+    An uncertain transcript must not advance the interview or confirm an
+    answer. It can still contain a separate, clearly grounded fact that is
+    useful on the next attempt. Store only those field/requirement updates as
+    tentative candidates; never apply process structure or applicability from
+    the same turn.
+    """
+
+    if (
+        output.utteranceCompleteness != "COMPLETE"
+        or output.answerAssessment.sufficiency
+        in {"INCOMPLETE", "UNANSWERABLE", "REFUSAL"}
+    ):
+        return
+    correction_candidates = {
+        str(candidate).strip()
+        for candidate in output.transcriptAssessment.correctionCandidates
+        if str(candidate).strip()
+    }
+    field_updates = [
+        update.model_copy(update={"answerResolution": "TENTATIVE"})
+        for update in output.fieldUpdates
+        if (
+            update.answerResolution == "TENTATIVE"
+            and update.candidateSource != "document_reference"
+            and update.value.strip() not in correction_candidates
+        )
+    ]
+    requirement_updates = [
+        update.model_copy(update={"answerResolution": "TENTATIVE"})
+        for update in output.requirementUpdates
+        if (
+            update.answerResolution == "TENTATIVE"
+            and update.candidateSource != "document_reference"
+            and update.value.strip() not in correction_candidates
+        )
+    ]
+    if not field_updates and not requirement_updates:
+        return
+    safe_output = output.model_copy(
+        update={
+            "fieldUpdates": field_updates,
+            "requirementUpdates": requirement_updates,
+            "processPatch": ProcessPatch(),
+            "applicability": [],
+            "contradictions": [],
+            "resolvedContradictionIds": [],
+            "openIssues": [],
+        }
+    )
+    apply_structured_output(
+        state,
+        safe_output,
+        latest_message_id=latest_message_id,
+        raw_transcript=raw_transcript,
+        fields=fields,
+        profile=profile,
+        valid_evidence_ids=valid_evidence_ids,
+        current_question=current_question,
     )
 
 
@@ -2217,6 +2883,13 @@ def _keep_current_question(
         latest_message_id=latest_message_id,
         raw_transcript=raw_transcript,
     )
+    trace = state.get("lastConversationTrace")
+    if isinstance(trace, Mapping):
+        state["lastConversationTrace"] = {
+            **trace,
+            "fieldStates": _field_state_trace(state),
+            "nextAction": state.get("lastNextAction"),
+        }
     if persist_state:
         _persist_transcript_assessment(
             latest_user_message,
@@ -2261,6 +2934,181 @@ def get_structured_interview_state_snapshot(
     }
 
 
+def render_current_question_for_resumption(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    *,
+    interview_state: Mapping[str, Any],
+    messages: Sequence[Mapping[str, Any]],
+) -> str | None:
+    """Rephrase the selected question with prior confirmed answers for a resumed session.
+
+    This only renders the existing backend-selected target. It does not change
+    the question ID, interview state, or persisted question text.
+    """
+
+    current_question = get_current_structured_question(interview_state)
+    if current_question is None:
+        return None
+    fallback = str(current_question.get("text") or "").strip()
+    if not fallback or interview_state.get("questionGenerationPending"):
+        return fallback or None
+
+    target = _target_from_question(current_question)
+    if not target:
+        return fallback
+    target_type = str(target.get("targetType") or "")
+    if (
+        target_type == "transcript_confirmation"
+        or interview_state.get("pendingTranscriptConfirmation")
+        or _is_awaiting_confirmation_target(target, interview_state)
+        or _candidate_value_for_target(target, interview_state)
+    ):
+        return fallback
+
+    fields = _list_interview_fields(knowledge, user)
+    has_prior_utterance = any(
+        message.get("role") == "user"
+        and message.get("isActualUtterance") is not False
+        and str(message.get("rawTranscript") or message.get("content") or "").strip()
+        for message in messages
+    )
+    if not has_prior_utterance and not _build_structured_draft(interview_state, fields):
+        return fallback
+
+    try:
+        provider = _get_structured_provider(
+            None,
+            model_id=resolve_structured_model_id(knowledge),
+        )
+        question_text, _, _ = _generate_question_text(
+            provider,
+            profile=_effective_profile(interview_state, resolve_profile(knowledge)),
+            target=target,
+            record=record,
+            knowledge=knowledge,
+            user=user,
+            fields=fields,
+            state=interview_state,
+            messages=messages,
+            use_retrieval=False,
+        )
+    except Exception:  # noqa: BLE001 - persisted question remains a safe fallback
+        logger.warning(
+            "resumed_question_render_failed record_id=%s question_id=%s",
+            record.get("id"),
+            current_question.get("questionId"),
+            exc_info=True,
+        )
+        return fallback
+    return question_text or fallback
+
+
+def preview_structured_interview_output(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    *,
+    transcript: str,
+    answer_to_question_id: str | None,
+    stt_confidence: float | None = None,
+    source_message_id: str | None = None,
+    current_question_override: Mapping[str, Any] | None = None,
+) -> StructuredInterviewOutput:
+    """Interpret a candidate answer without writing messages or state.
+
+    This is intentionally narrower than the foreground coordinator.  It
+    provides the expensive semantic interpretation for the Transcribe soft
+    endpoint; the formal path still owns validation, target selection, state
+    transition, question generation, and persistence.
+    """
+
+    fields = _list_interview_fields(knowledge, user)
+    state = load_structured_interview_state(
+        record,
+        knowledge,
+        user,
+        fields=fields,
+        persist=False,
+    )
+    current_question = (
+        dict(current_question_override)
+        if current_question_override is not None
+        else _get_current_question(state)
+    )
+    if answer_to_question_id:
+        requested_question = (
+            get_current_structured_question(state)
+            if state.get("currentQuestionId") == answer_to_question_id
+            else next(
+                (
+                    question
+                    for question in state.get("askedQuestions", [])
+                    if question.get("questionId") == answer_to_question_id
+                ),
+                None,
+            )
+        )
+        if requested_question is not None:
+            current_question = requested_question
+    if current_question is None:
+        raise ValueError("speculative_preview_question_not_found")
+    synthetic_message = {
+        "id": source_message_id or f"speculative-message-{uuid4().hex[:16]}",
+        "recordId": record.get("id"),
+        "role": "user",
+        "content": transcript.strip(),
+        "rawTranscript": transcript.strip(),
+        "normalizedTranscript": None,
+        "correctionStatus": "NONE",
+        "sttConfidence": stt_confidence,
+        "isActualUtterance": True,
+        "turnType": "ANSWER",
+        "answerToQuestionId": current_question.get("questionId"),
+    }
+    messages = _list_record_messages(record, user)
+    messages.append(synthetic_message)
+    provider = _get_structured_provider(
+        None,
+        model_id=resolve_structured_model_id(knowledge),
+    )
+    context = _build_interpreter_context(
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        fields=fields,
+        state=state,
+        messages=messages,
+        current_question=current_question,
+    )
+    return provider.interpret(
+        profile=_effective_profile(state, resolve_profile(knowledge)),
+        context=context,
+        reasoning_effort=_select_reasoning_effort(state),
+    )
+
+
+def remap_interpreter_output_evidence(
+    output: StructuredInterviewOutput,
+    *,
+    source_message_id: str,
+    target_message_id: str,
+) -> StructuredInterviewOutput:
+    """Replace a speculative synthetic message id before formal validation."""
+
+    def replace(value: Any) -> Any:
+        if isinstance(value, str):
+            return target_message_id if value == source_message_id else value
+        if isinstance(value, list):
+            return [replace(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replace(item) for key, item in value.items()}
+        return value
+
+    return StructuredInterviewOutput.model_validate(replace(output.model_dump()))
+
+
 def load_structured_interview_state(
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
@@ -2273,6 +3121,13 @@ def load_structured_interview_state(
     profile = resolve_profile(knowledge)
     existing = store.get("interview_states", state_id)
     if existing:
+        # Question generation spans an external model call between the
+        # questionGenerationPending and question-advanced commits. A state
+        # snapshot read during that window must not run migrations or repair
+        # the current question and persist a competing version. Return an
+        # isolated snapshot; the foreground writer will persist its result.
+        if existing.get("questionGenerationPending"):
+            return deepcopy(existing)
         state = existing if persist else deepcopy(existing)
         state_profile = state.get("interviewProfile")
         if state_profile in STRUCTURED_PROFILES:
@@ -2354,6 +3209,7 @@ def _backfill_state(
             applicability_states[topic] = applicability_state
             changed = True
     changed |= sync_structured_state_fields(state, fields)
+    changed |= _sync_question_answer_records(state)
     if state.get("interviewProfile") != profile:
         state["interviewProfile"] = profile
         changed = True
@@ -2388,17 +3244,521 @@ def _list_record_messages(record: Mapping[str, Any], user: UserContext) -> list[
     )
 
 
-def _get_current_question(state: Mapping[str, Any]) -> dict[str, Any] | None:
+def get_current_structured_question(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the basic question or its active child probe.
+
+    A probe deliberately keeps the parent's questionId.  Transport runtimes
+    can therefore use one answer-to-question contract while the state still
+    exposes the probe wording after a reconnect.
+    """
+
     question_id = state.get("currentQuestionId")
     if not question_id:
         return None
-    return next(
+    question = next(
         (
-            question
+            deepcopy(question)
             for question in state.get("askedQuestions", [])
             if question.get("questionId") == question_id
         ),
         None,
+    )
+    if question is None:
+        return None
+    active_probe = state.get("activeProbeTarget")
+    if (
+        state.get("currentTurnType") != "PROBE"
+        or not isinstance(active_probe, Mapping)
+        or active_probe.get("probeMode") != "PROBE"
+    ):
+        return question
+    probe_text = str(active_probe.get("probeQuestion") or "").strip()
+    if not probe_text:
+        return question
+    question.update(
+        {
+            "questionType": "follow_up",
+            "turnType": "PROBE",
+            "parentQuestionId": str(question.get("questionId") or ""),
+            "text": probe_text,
+            "renderedQuestionText": probe_text,
+            "probeDimension": active_probe.get("probeDimension"),
+            "probeReason": active_probe.get("probeReason"),
+            "probeCount": active_probe.get("probeCount", 1),
+            "probeStatus": "PENDING",
+        }
+    )
+    for key in (
+        "targetType",
+        "targetId",
+        "targetLabel",
+        "fieldId",
+        "missingItemIds",
+        "missingItems",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
+    ):
+        if key in active_probe:
+            question[key] = deepcopy(active_probe[key])
+    return question
+
+
+def _get_current_question(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the mutable persisted basic question for internal state repair.
+
+    The public helper returns a defensive copy so transport callers can render
+    a child Probe without mutating the state snapshot. Internal migration and
+    confirmation repair still need the original question mapping.
+    """
+
+    question_id = state.get("currentQuestionId")
+    if not question_id:
+        return None
+    question = next(
+        (
+            question
+            for question in state.get("askedQuestions", [])
+            if isinstance(question, dict) and question.get("questionId") == question_id
+        ),
+        None,
+    )
+    if question is None:
+        return None
+    if state.get("currentTurnType") == "PROBE":
+        return get_current_structured_question(state)
+    return question
+
+
+def _new_question_answer_record(question: Mapping[str, Any]) -> dict[str, Any]:
+    question_id = str(question.get("questionId") or "")
+    return {
+        "questionId": question_id,
+        "fieldId": question.get("fieldId"),
+        "targetType": question.get("targetType"),
+        "targetId": question.get("targetId"),
+        "originalAnswer": None,
+        "answer": None,
+        "answerSource": "GENERATED",
+        "probes": [],
+        "answerStatus": "NOT_ANSWERED",
+        "probeDecision": "NONE",
+        "probeCount": 0,
+        "probeStatus": "NONE",
+        "coveredTopics": [],
+        "askedProbeTopics": [],
+        "missingInformation": [],
+        "updatedAt": utc_now(),
+    }
+
+
+def _ensure_question_answer_record(
+    state: dict[str, Any],
+    question: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(question, Mapping):
+        return None
+    question_id = str(question.get("questionId") or "").strip()
+    if not question_id:
+        return None
+    records = state.setdefault("questionAnswers", {})
+    if not isinstance(records, dict):
+        records = {}
+        state["questionAnswers"] = records
+    record = records.setdefault(question_id, _new_question_answer_record(question))
+    if not isinstance(record, dict):
+        record = _new_question_answer_record(question)
+        records[question_id] = record
+    for key in ("fieldId", "targetType", "targetId"):
+        if record.get(key) is None and question.get(key) is not None:
+            record[key] = deepcopy(question.get(key))
+    record.setdefault("probes", [])
+    record.setdefault("askedProbeTopics", [])
+    record.setdefault("coveredTopics", [])
+    record.setdefault("missingInformation", [])
+    return record
+
+
+def _sync_question_answer_records(state: dict[str, Any]) -> bool:
+    changed = False
+    for question in state.get("askedQuestions", []) or []:
+        if not isinstance(question, Mapping):
+            continue
+        question_id = str(question.get("questionId") or "").strip()
+        records = state.setdefault("questionAnswers", {})
+        before = records.get(question_id) if isinstance(records, dict) else None
+        record = _ensure_question_answer_record(state, question)
+        if record is not None and before is None:
+            changed = True
+    return changed
+
+
+def _probe_limit_for_question(question: Mapping[str, Any] | None) -> int:
+    if not isinstance(question, Mapping):
+        return MAX_PROBE_COUNT
+    definition = question.get("questionDefinition")
+    plan = definition.get("questionPlan") if isinstance(definition, Mapping) else None
+    raw_limit = (
+        plan.get("maxProbeCount")
+        if isinstance(plan, Mapping)
+        else question.get("maxProbeCount", MAX_PROBE_COUNT)
+    )
+    try:
+        return max(0, min(int(raw_limit), MAX_PROBE_COUNT))
+    except (TypeError, ValueError):
+        return MAX_PROBE_COUNT
+
+
+def _probe_dimension_for_output(
+    output: StructuredInterviewOutput,
+    question: Mapping[str, Any] | None,
+) -> str:
+    if output.probeDimension:
+        return str(output.probeDimension)
+    assessment_to_dimension = {
+        "REASON": "JUDGMENT",
+        "CRITERIA": "JUDGMENT",
+        "EXAMPLE": "ACTION",
+        "REFRAME": "CONTEXT",
+    }
+    legacy = assessment_to_dimension.get(output.answerAssessment.probeType)
+    if legacy:
+        return legacy
+    definition = question.get("questionDefinition") if isinstance(question, Mapping) else None
+    plan = definition.get("questionPlan") if isinstance(definition, Mapping) else None
+    preferred = plan.get("preferredProbeDimensions") if isinstance(plan, Mapping) else None
+    if isinstance(preferred, Sequence) and not isinstance(preferred, (str, bytes)):
+        for value in preferred:
+            if str(value).strip():
+                return str(value).strip().upper()
+    return "OTHER"
+
+
+def _record_basic_answer(
+    state: dict[str, Any],
+    question: Mapping[str, Any],
+    *,
+    transcript: str,
+    output: StructuredInterviewOutput,
+) -> dict[str, Any] | None:
+    """Store the first answer as evidence without collapsing probe state."""
+
+    if not transcript.strip():
+        return None
+    record = _ensure_question_answer_record(state, question)
+    if record is None:
+        return None
+    if record.get("originalAnswer") is None or output.answerEvaluation == "CORRECTION":
+        record["originalAnswer"] = transcript.strip()
+    if record.get("answerSource") != "MANUAL":
+        record["answer"] = transcript.strip()
+    record["answerStatus"] = output.answerStatus
+    record["probeDecision"] = output.probeDecision
+    record["missingInformation"] = list(output.missingInformation)
+    record["updatedAt"] = utc_now()
+    field_id = str(question.get("fieldId") or "").strip()
+    if field_id:
+        field_state = state.get("fieldStates", {}).get(field_id)
+        if isinstance(field_state, dict):
+            field_state["originalAnswer"] = record.get("originalAnswer")
+            field_state["answer"] = record.get("answer")
+            field_state["answerSource"] = record.get("answerSource", "GENERATED")
+            field_state["answerStatus"] = output.answerStatus
+            field_state["probeDecision"] = output.probeDecision
+            field_state["missingInformation"] = list(output.missingInformation)
+    return record
+
+
+def _sync_question_answer_to_target(
+    state: dict[str, Any],
+    question: Mapping[str, Any],
+    *,
+    force_record_answer: bool = False,
+) -> None:
+    record = _ensure_question_answer_record(state, question)
+    if record is None:
+        return
+    target_type = str(question.get("targetType") or "")
+    target_id = str(question.get("targetId") or "")
+    if target_type == "field":
+        field_state = state.get("fieldStates", {}).get(target_id)
+        if isinstance(field_state, Mapping):
+            field_state = field_state  # type narrowing for the mutable mapping below
+            adopted = str(
+                field_state.get("recordAnswer")
+                or field_state.get("candidateAnswer")
+                or record.get("answer")
+                or ""
+            ).strip()
+            if (
+                adopted
+                and not record.get("probes")
+                and not record.get("answer")
+                and record.get("answerSource") != "MANUAL"
+            ):
+                record["answer"] = adopted
+            if adopted and (
+                force_record_answer
+                or (
+                    field_state.get("answerState") == "CONFIRMED"
+                    and not field_state.get("recordAnswer")
+                )
+            ) and record.get("answerSource") != "MANUAL":
+                field_state["recordAnswer"] = str(record.get("answer") or adopted)
+    field_state = (
+        state.get("fieldStates", {}).get(target_id)
+        if target_type == "field"
+        else None
+    )
+    if isinstance(field_state, dict):
+        field_state["originalAnswer"] = record.get("originalAnswer")
+        field_state["answer"] = record.get("answer")
+        field_state["answerSource"] = record.get("answerSource", "GENERATED")
+        field_state["probes"] = deepcopy(record.get("probes") or [])
+        field_state["answerStatus"] = record.get("answerStatus", "NOT_ANSWERED")
+        field_state["probeDecision"] = record.get("probeDecision", "NONE")
+        field_state["probeCount"] = int(record.get("probeCount") or 0)
+        field_state["probeStatus"] = record.get("probeStatus", "NONE")
+
+
+def _record_probe_answer(
+    state: dict[str, Any],
+    question: Mapping[str, Any],
+    *,
+    active_probe: Mapping[str, Any],
+    transcript: str,
+    message_id: str,
+    output: StructuredInterviewOutput,
+) -> dict[str, Any] | None:
+    record = _ensure_question_answer_record(state, question)
+    if record is None:
+        return None
+    answer = transcript.strip()
+    if not answer:
+        return record
+    probe_question = str(
+        active_probe.get("probeQuestion")
+        or question.get("text")
+        or ""
+    ).strip()
+    dimension = str(active_probe.get("probeDimension") or "OTHER")
+    probes = record.setdefault("probes", [])
+    probe = {
+        "type": "probe",
+        "dimension": dimension,
+        "question": probe_question,
+        "answer": answer,
+        "evidenceTranscriptIds": [message_id] if message_id else [],
+        "answerStatus": output.answerStatus,
+    }
+    if output.dialogueAct == "CORRECTION" and probes:
+        previous_probe = probes[-1]
+        previous_probe["answer"] = answer
+        previous_probe["answerStatus"] = output.answerStatus
+        previous_probe["evidenceTranscriptIds"] = [
+            *dict.fromkeys(
+                [
+                    *previous_probe.get("evidenceTranscriptIds", []),
+                    *probe["evidenceTranscriptIds"],
+                ]
+            )
+        ]
+    else:
+        probes.append(probe)
+    record["probeCount"] = len(probes)
+    record["probeStatus"] = "COMPLETED"
+    record["askedProbeTopics"] = [
+        *dict.fromkeys(
+            [*record.get("askedProbeTopics", []), dimension]
+        )
+    ]
+    original = str(record.get("originalAnswer") or "").strip()
+    integrated = str(output.integratedAnswer or "").strip()
+    if output.answerAssessment.sufficiency in {"UNANSWERABLE", "REFUSAL"}:
+        integrated = original
+    elif (
+        not integrated
+        or not _integrated_answer_is_grounded(integrated, original, answer)
+    ):
+        integrated = " ".join(value for value in (original, answer) if value).strip()
+    if integrated and record.get("answerSource") != "MANUAL":
+        record["answer"] = integrated
+    record["answerStatus"] = "ANSWERED"
+    record["probeDecision"] = "NONE"
+    if record.get("answerSource") != "MANUAL":
+        record["answerSource"] = "GENERATED"
+    record["updatedAt"] = utc_now()
+    _sync_question_answer_to_target(state, question, force_record_answer=True)
+    return record
+
+
+def _integrated_answer_is_grounded(
+    integrated: str,
+    original: str,
+    probe_answer: str,
+) -> bool:
+    """Reject an integration that has no lexical evidence from either source."""
+
+    def fragments(value: str) -> list[str]:
+        compact = re.sub(r"\s+", "", value)
+        if len(compact) <= 3:
+            return [compact] if compact else []
+        return [compact[index : index + 3] for index in range(0, len(compact) - 2, 2)]
+
+    return bool(
+        any(fragment in integrated for fragment in fragments(original))
+        and any(fragment in integrated for fragment in fragments(probe_answer))
+    )
+
+
+def _probe_fallback_question(dimension: str, target: Mapping[str, Any]) -> str:
+    label = str(target.get("label") or "この内容").strip()
+    return {
+        "JUDGMENT": "そのとき、何を根拠にその判断をしましたか？",
+        "ACTION": "その中で、ご自身が工夫したことを一つ教えてください。",
+        "CONTEXT": f"その判断や対応が必要になった状況を、{label}に沿って教えてください。",
+        "RESULT": "その対応の結果、何が変わりましたか？",
+        "LEARNING": "その経験から、現在の仕事に生かしていることは何ですか？",
+        "APPLICATION": "その経験で得たことを、現在はどのように生かしていますか？",
+        "PROBLEM": "そのとき、どのような課題に直面しましたか？",
+        "CRITERIA": "その際、どのような基準で判断しましたか？",
+        "EXCEPTION": "通常と異なる点や例外はありましたか？",
+    }.get(dimension, f"{label}について、特に重要な点を一つ教えてください。")
+
+
+def _build_probe_question(
+    base_question: Mapping[str, Any],
+    active_probe: Mapping[str, Any],
+    text: str,
+) -> dict[str, Any]:
+    question = deepcopy(dict(base_question))
+    question.update(
+        {
+            "questionType": "follow_up",
+            "turnType": "PROBE",
+            "parentQuestionId": base_question.get("questionId"),
+            "text": text,
+            "renderedQuestionText": text,
+            "probeDimension": active_probe.get("probeDimension"),
+            "probeReason": active_probe.get("probeReason"),
+            "probeCount": active_probe.get("probeCount", 1),
+            "probeStatus": "PENDING",
+        }
+    )
+    for key in (
+        "targetType",
+        "targetId",
+        "targetLabel",
+        "fieldId",
+        "missingItemIds",
+        "missingItems",
+        "deepeningItemIds",
+        "deepeningItems",
+        "optionalDeepening",
+    ):
+        if key in active_probe:
+            question[key] = deepcopy(active_probe[key])
+    return question
+
+
+def _start_probe_question(
+    *,
+    state: dict[str, Any],
+    base_question: Mapping[str, Any],
+    target: Mapping[str, Any],
+    output: StructuredInterviewOutput,
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    fields: Sequence[Mapping[str, Any]],
+    profile: InterviewProfile,
+    messages: Sequence[Mapping[str, Any]],
+    provider: StructuredInterviewProvider,
+    persist_assistant_messages: bool,
+    persist_state: bool,
+    latency_metrics: dict[str, float],
+    user_record_id: str,
+    on_question_delta: Callable[[str], None] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]]]:
+    dimension = _probe_dimension_for_output(output, base_question)
+    register_probe(
+        state,
+        target=target,
+        probe_type=output.answerAssessment.probeType,
+    )
+    active_probe = state.get("activeProbeTarget")
+    if not isinstance(active_probe, dict):
+        active_probe = dict(target)
+        active_probe["probeCount"] = 1
+        state["activeProbeTarget"] = active_probe
+    active_probe.update(
+        {
+            "probeMode": "PROBE",
+            "probeDimension": dimension,
+            "probeReason": output.probeReason,
+            "parentQuestionId": base_question.get("questionId"),
+        }
+    )
+    question_text = str(output.probeQuestion or "").strip()
+    if not question_text:
+        question_text = _probe_fallback_question(dimension, target)
+        # Let the question generator replace only the generic fallback when it
+        # can ground the wording in the configured question and answer state.
+        try:
+            generated, _, _ = _generate_question_text(
+                provider,
+                profile=profile,
+                target=target,
+                record=record,
+                knowledge=knowledge,
+                user=user,
+                fields=fields,
+                state=state,
+                messages=messages,
+                latency_metrics=latency_metrics,
+                speculative_retrieval=None,
+                on_question_delta=on_question_delta,
+            )
+            if str(generated or "").strip():
+                question_text = str(generated).strip()
+        except Exception:  # noqa: BLE001 - fallback wording keeps the turn usable
+            logger.exception("probe_question_generation_failed target=%s", target_key(target))
+    active_probe["probeQuestion"] = question_text
+    active_probe["probeCount"] = int(active_probe.get("probeCount") or 1)
+    state["currentTurnType"] = "PROBE"
+    state["currentQuestionId"] = base_question.get("questionId")
+    state["currentFieldId"] = base_question.get("fieldId")
+    state["nextQuestionTarget"] = deepcopy(dict(target))
+    question = _build_probe_question(base_question, active_probe, question_text)
+    question_answer = _ensure_question_answer_record(state, base_question)
+    if question_answer is not None:
+        question_answer["probeDecision"] = "PROBE"
+        question_answer["probeStatus"] = "PENDING"
+        question_answer["probeCount"] = int(active_probe.get("probeCount") or 1)
+        question_answer["askedProbeTopics"] = [
+            *dict.fromkeys(
+                [*question_answer.get("askedProbeTopics", []), dimension]
+            )
+        ]
+        question_answer["updatedAt"] = utc_now()
+    assistant_message = (
+        _save_assistant_message(
+            user,
+            user_record_id,
+            question_text,
+            question,
+            message_id=(
+                f"structured-probe-msg-{user_record_id}-"
+                f"{base_question.get('questionId')}-{active_probe.get('probeCount', 1)}"
+            ),
+        )
+        if persist_assistant_messages
+        else None
+    )
+    if persist_state:
+        _persist_state(state, user, persist=True, source="structured_probe_started")
+    return question, assistant_message, (
+        [*messages, assistant_message] if assistant_message else list(messages)
     )
 
 
@@ -2419,11 +3779,62 @@ def _build_interpreter_context(
     *,
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
+    user: UserContext,
     fields: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
     current_question: Mapping[str, Any],
 ) -> dict[str, Any]:
+    current_target = _target_from_question(current_question) or {}
+    current_field = _field_for_target(current_target, fields)
+    question_definition = _question_definition_context(current_target, current_field)
+    latest_utterance = _latest_utterance_context(messages, current_question)
+    acquired_information = _target_acquired_information(state, current_target)
+    missing_information = _target_missing_information(state, current_target)
+    same_question_asked_before = _same_target_asked_before(
+        state,
+        current_question,
+    )
+    previous_assistant_message = next(
+        (
+            {
+                "id": message.get("id"),
+                "role": message.get("role"),
+                "content": message.get("content"),
+                "questionId": message.get("questionId"),
+            }
+            for message in reversed(messages[:-1])
+            if message.get("role") == "assistant"
+            and message.get("isActualUtterance") is not False
+        ),
+        None,
+    )
+    previous_user_answer = next(
+        (
+            {
+                "id": message.get("id"),
+                "role": message.get("role"),
+                "content": message.get("content"),
+                "rawTranscript": message.get("rawTranscript"),
+                "questionId": message.get("questionId"),
+            }
+            for message in reversed(messages[:-1])
+            if message.get("role") == "user"
+            and message.get("isActualUtterance") is not False
+        ),
+        None,
+    )
+    current_question_slots = [
+        {
+            "itemId": item.get("itemId"),
+            "label": item.get("label"),
+            "description": item.get("description"),
+            "required": required,
+        }
+        for required, key in ((True, "requiredItems"), (False, "optionalItems"))
+        for item in (question_definition.get(key) or [])
+        if isinstance(item, Mapping) and item.get("itemId")
+    ]
     return {
         "profile": state.get("interviewProfile"),
         "knowledge": {
@@ -2434,6 +3845,7 @@ def _build_interpreter_context(
             "targetBusiness": knowledge.get("targetBusiness"),
             "systemPrompt": knowledge.get("systemPrompt"),
         },
+        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
         "record": {
             "id": record.get("id"),
             "title": record.get("title"),
@@ -2454,8 +3866,39 @@ def _build_interpreter_context(
             for field in fields
         ],
         "currentQuestion": dict(current_question),
+        "currentAnswer": latest_utterance,
+        "questionPurpose": question_definition.get("purpose"),
+        "questionGoal": question_definition.get("questionGoal"),
+        "preferredProbeDimensions": list(
+            question_definition.get("preferredProbeDimensions") or []
+        ),
+        "requiredAspects": [
+            *question_definition.get("requiredItems", []),
+            *question_definition.get("optionalItems", []),
+        ],
+        "acquiredInformation": acquired_information,
+        "missingInformation": missing_information,
+        "aspectAssessments": list(state.get("lastAspectAssessments") or []),
+        "previousAssistantMessage": previous_assistant_message,
+        "previousUserAnswer": previous_user_answer,
+        "knownFacts": acquired_information,
+        "coveredInformation": list(state.get("lastAspectAssessments") or []),
+        "currentQuestionSlots": current_question_slots,
+        "clarificationTarget": state.get("lastClarificationTarget"),
+        "clarificationKind": state.get("lastClarificationKind", "NONE"),
+        "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "answerStatus": state.get("lastAnswerStatus"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "probeDimension": state.get("lastProbeDimension"),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
+        "questionAnswer": (
+            state.get("questionAnswers", {}).get(current_question.get("questionId"))
+            if isinstance(state.get("questionAnswers"), Mapping)
+            else None
+        ),
+        "sameQuestionAskedBefore": same_question_asked_before,
         "interviewState": _compact_state(state),
-        "latestUtterance": _latest_utterance_context(messages, current_question),
+        "latestUtterance": latest_utterance,
         "conversation": [
             {
                 "id": message.get("id"),
@@ -2491,6 +3934,292 @@ def _latest_utterance_context(
     }
 
 
+def _target_acquired_information(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Summarize facts already captured for the selected target."""
+
+    if not isinstance(target, Mapping):
+        return []
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        if not isinstance(target_state, Mapping):
+            return []
+        items = target_state.get("capturedItems") or target_state.get("candidateItems") or []
+        return [
+            {
+                "itemId": item.get("itemId"),
+                "value": item.get("value"),
+            }
+            for item in items
+            if isinstance(item, Mapping) and str(item.get("value") or "").strip()
+        ]
+    if target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        if isinstance(target_state, Mapping):
+            value = target_state.get("value") or target_state.get("candidateValue")
+            if str(value or "").strip():
+                return [{"targetId": target_id, "value": value}]
+    return []
+
+
+def _target_missing_information(
+    state: Mapping[str, Any],
+    target: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return configured missing items without inventing new requirements."""
+
+    if not isinstance(target, Mapping):
+        return []
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "")
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        if isinstance(target_state, Mapping):
+            plan = target_state.get("questionPlan")
+            if isinstance(plan, Mapping):
+                labels = {
+                    str(item.get("itemId")): item
+                    for item in plan.get("requiredItems", []) or []
+                    if isinstance(item, Mapping) and item.get("itemId")
+                }
+                missing_ids = target_state.get("missingRequiredItemIds") or []
+                return [
+                    {
+                        "itemId": item_id,
+                        "label": labels.get(str(item_id), {}).get("label", str(item_id)),
+                        "description": labels.get(str(item_id), {}).get("description"),
+                    }
+                    for item_id in missing_ids
+                ]
+    raw_items = target.get("missingItems")
+    if isinstance(raw_items, Sequence) and not isinstance(raw_items, (str, bytes)):
+        return [dict(item) for item in raw_items if isinstance(item, Mapping)]
+    return []
+
+
+def _same_target_asked_before(
+    state: Mapping[str, Any],
+    question: Mapping[str, Any],
+) -> bool:
+    target_type = str(question.get("targetType") or question.get("kind") or "")
+    target_id = str(question.get("targetId") or "")
+    if not target_type or not target_id:
+        return False
+    count = sum(
+        1
+        for asked in state.get("askedQuestions", []) or []
+        if isinstance(asked, Mapping)
+        and str(asked.get("targetType") or asked.get("kind") or "") == target_type
+        and str(asked.get("targetId") or "") == target_id
+    )
+    return count > 1
+
+
+def _set_conversation_trace(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    context: Mapping[str, Any],
+    *,
+    runtime: str = "structured_interview",
+) -> None:
+    """Persist one auditable decision trace shared by all input runtimes."""
+
+    trace = build_conversation_trace(
+        output,
+        context,
+        state=state,
+        runtime=runtime,
+        has_pending_confirmation=bool(
+            state.get("pendingTranscriptConfirmation")
+            or state.get("lastTentativeTarget")
+        ),
+    )
+    state["lastNextAction"] = trace["nextAction"]
+    state["lastConversationTrace"] = trace
+
+
+def _is_clarification_target_kind(output: StructuredInterviewOutput) -> bool:
+    """Use the shared semantic classifier instead of phrase matching."""
+
+    return output.answerEvaluation == "CLARIFICATION_REQUEST" and output.clarificationKind in {
+        "ASR_TARGET",
+        "MISSING_INFORMATION_TARGET",
+    }
+
+
+def _build_clarification_target(
+    output: StructuredInterviewOutput,
+    current_question: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Create one stable target for a short retry/follow-up response."""
+
+    question_id = str(current_question.get("questionId") or "") or None
+    if output.answerEvaluation == "NOT_HEARD":
+        spans = [
+            span
+            for span in output.transcriptAssessment.ambiguousSpans
+            if span.important and span.span.strip() and span.semanticRole.strip()
+        ]
+        span = spans[0] if spans else None
+        if span is None:
+            return None
+        return {
+            "type": "ASR_AMBIGUOUS",
+            "questionId": question_id,
+            "span": span.span,
+            "semanticRole": span.semanticRole,
+            "important": True,
+        }
+
+    if output.answerEvaluation == "PARTIALLY_ANSWERED" or output.answerStatus == "PARTIAL":
+        aspect = next(
+            (
+                item
+                for item in output.aspectAssessments
+                if item.required and item.status in {"MISSING", "UNCERTAIN"}
+            ),
+            None,
+        )
+        label = (
+            aspect.label
+            if aspect is not None
+            else next(
+                (item.strip() for item in output.missingInformation if item.strip()),
+                None,
+            )
+        )
+        if label:
+            return {
+                "type": "MISSING_INFORMATION",
+                "questionId": question_id,
+                "aspectId": aspect.aspectId if aspect is not None else None,
+                "label": label,
+            }
+    return None
+
+
+def _remember_clarification_target(
+    state: dict[str, Any],
+    output: StructuredInterviewOutput,
+    current_question: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Persist the latest concrete target for semantic clarification turns."""
+
+    if output.userIntent in {
+        "QUESTION_CLARIFICATION",
+        "QUESTION_INTENT_CONFIRMATION",
+        "ASR_CLARIFICATION_REQUEST",
+        "META_QUESTION",
+    }:
+        existing = state.get("lastClarificationTarget")
+        return dict(existing) if isinstance(existing, Mapping) else None
+
+    if _is_clarification_target_kind(output):
+        existing = state.get("lastClarificationTarget")
+        return dict(existing) if isinstance(existing, Mapping) else None
+
+    target = _build_clarification_target(output, current_question)
+    if target is not None:
+        state["lastClarificationTarget"] = target
+        return target
+    if output.answerEvaluation in {
+        "CLARIFICATION_REQUEST",
+        "REPEAT_REQUEST",
+    }:
+        state["lastClarificationTarget"] = None
+        return None
+    state["lastClarificationTarget"] = None
+    return None
+
+
+def _conversation_action_for_semantic_turn(
+    output: StructuredInterviewOutput,
+) -> ConversationAction:
+    """Map evaluated semantics to an auditable common action."""
+
+    if output.userIntent in {
+        "QUESTION_CLARIFICATION",
+        "QUESTION_INTENT_CONFIRMATION",
+        "ASR_CLARIFICATION_REQUEST",
+        "META_QUESTION",
+    }:
+        return "ANSWER_USER_CLARIFICATION"
+    if output.userIntent == "DECLINE_OR_SKIP":
+        return "SKIP_AND_NEXT"
+    if output.userIntent == "ANSWER_CLARIFICATION" and output.dialogueAct == "CORRECTION":
+        return "APPLY_CORRECTION"
+    if output.answerEvaluation == "NOT_HEARD":
+        return "ASK_ASR_RETRY"
+    if output.answerEvaluation == "INCOMPLETE_UTTERANCE":
+        return "KEEP_CURRENT_QUESTION"
+    if output.probeDecision == "PROBE":
+        return "ASK_PROBE"
+    if output.answerEvaluation == "PARTIALLY_ANSWERED" or output.answerStatus == "PARTIAL":
+        return "ASK_FOR_MISSING_INFORMATION"
+    if output.answerStatus == "ANSWERED":
+        return "ACCEPT_AND_NEXT"
+    return "KEEP_CURRENT_QUESTION"
+
+
+def _clarification_target_prompt(
+    target: Mapping[str, Any] | None,
+    locale: InterviewLocale,
+    output: StructuredInterviewOutput | None = None,
+) -> str:
+    if not isinstance(target, Mapping):
+        return localized_interview_hesitation_prompt(locale)
+    target_type = str(target.get("type") or "")
+    if target_type == "ASR_AMBIGUOUS":
+        span = str(target.get("span") or "").strip()
+        semantic_role = str(target.get("semanticRole") or "").strip()
+        if not span or not semantic_role:
+            return localized_interview_hesitation_prompt(locale)
+        understood_values: list[str] = []
+        if output is not None:
+            for update in (*output.fieldUpdates, *output.requirementUpdates):
+                value = str(update.value or "").strip()
+                if value and value not in understood_values:
+                    understood_values.append(value)
+        return localized_interview_ambiguous_part_prompt(
+            locale,
+            semantic_role,
+            "、".join(understood_values[:3])[:240] or None,
+        )
+    if target_type == "MISSING_INFORMATION":
+        return localized_interview_missing_information_prompt(
+            locale,
+            str(target.get("label") or ""),
+        )
+    return localized_interview_ambiguous_part_prompt(locale)
+
+
+def _clarification_target_description(
+    target: Mapping[str, Any] | None,
+    locale: InterviewLocale,
+) -> str:
+    if not isinstance(target, Mapping):
+        return localized_interview_hesitation_prompt(locale)
+    target_type = str(target.get("type") or "")
+    if target_type == "ASR_AMBIGUOUS" and not str(target.get("span") or "").strip():
+        return localized_interview_hesitation_prompt(locale)
+    return localized_interview_clarification_target_reply(
+        locale,
+        target_type or "MISSING_INFORMATION",
+        label=str(target.get("label") or "") or None,
+        semantic_role=str(target.get("semanticRole") or "") or None,
+        span=str(target.get("span") or "") or None,
+    )
+
+
+def _field_state_trace(state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Expose only decision-relevant state for turn diagnostics."""
+    return field_state_summary(state)
+
+
 def _compact_state(state: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(state)
     result.pop("lastStructuredOutput", None)
@@ -2514,7 +4243,18 @@ def _question_generator_state_context(state: Mapping[str, Any]) -> dict[str, Any
         "status": state.get("status"),
         "closingState": state.get("closingState"),
         "answerAssessment": state.get("lastAnswerAssessment"),
+        "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "answerStatus": state.get("lastAnswerStatus"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
+        "missingInformation": list(state.get("lastMissingInformation") or []),
+        "aspectAssessments": list(state.get("lastAspectAssessments") or []),
+        "clarificationTarget": state.get("lastClarificationTarget"),
+        "clarificationKind": state.get("lastClarificationKind", "NONE"),
+        "extractedFields": list(state.get("lastExtractedFields") or []),
+        "nextAction": state.get("lastNextAction"),
         "activeProbe": state.get("activeProbeTarget"),
+        "questionAnswers": state.get("questionAnswers", {}),
         "tentativeCandidates": _list_tentative_candidates(state),
     }
 
@@ -2610,6 +4350,12 @@ def _question_definition_context(
                 if isinstance(example, str) and example.strip():
                     original_question = example.strip()
                     break
+    if original_question is None:
+        fallback_title = str(
+            target.get("label") or field.get("name") or target.get("targetId") or "この項目"
+        ).strip()
+        if fallback_title:
+            original_question = f"{fallback_title}について教えてください。"
 
     description: str | None = None
     for value in (
@@ -2654,6 +4400,9 @@ def _question_definition_context(
         "originalQuestion": original_question,
         "description": description,
         "purpose": plan.get("purpose"),
+        "questionGoal": plan.get("questionGoal"),
+        "preferredProbeDimensions": list(plan.get("preferredProbeDimensions") or []),
+        "maxProbeCount": plan.get("maxProbeCount", MAX_PROBE_COUNT),
         "required": required,
         "optional": optional,
         "requiredItems": required_items,
@@ -2723,41 +4472,270 @@ def _render_question_explanation(
     *,
     record_id: str,
     current_question: Mapping[str, Any],
+    latest_user_message: Mapping[str, Any],
     fields: Sequence[Mapping[str, Any]],
     locale: InterviewLocale,
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    profile: str,
+    provider: StructuredInterviewProvider,
+    reasoning_effort: str,
+    latency_metrics: dict[str, float],
 ) -> str:
-    """Render an explanation without a state/definition write path."""
+    """Generate actionable question guidance without mutating its definition."""
 
     definition_before = _question_definition_for_question(current_question, fields)
     hash_before = _question_definition_hash(definition_before)
-    reply = localized_interview_question_help(
-        locale,
-        str(
-            current_question.get("targetLabel")
-            or current_question.get("label")
-            or definition_before.get("title")
-            or "この項目"
+    target = _target_from_question(current_question) or {
+        "targetType": "field",
+        "targetId": str(current_question.get("questionId") or "current-question"),
+        "label": str(current_question.get("targetLabel") or "この項目"),
+    }
+    target["questionDefinition"] = deepcopy(definition_before)
+    current_field = _field_for_target(target, fields)
+    help_context = {
+        "knowledgeName": knowledge.get("name"),
+        "recordTitle": knowledge.get("title"),
+        "interviewLocale": locale,
+        "languageInstruction": interview_language_instruction(locale),
+        "latestUserRequest": str(
+            latest_user_message.get("content")
+            or latest_user_message.get("rawTranscript")
+            or ""
+        ).strip(),
+        "currentQuestion": {
+            "questionId": current_question.get("questionId"),
+            "targetType": target.get("targetType"),
+            "targetId": target.get("targetId"),
+            "targetLabel": target.get("label"),
+            "renderedQuestionText": current_question.get("text"),
+        },
+        "questionDefinition": definition_before,
+        "questionProgress": _question_progress_context(target),
+        "expectedInformation": _question_help_expected_information(
+            definition_before,
+            target,
         ),
-        question_text=definition_before.get("originalQuestion"),
-        description=definition_before.get("description"),
-        required_items=definition_before.get("requiredItems") or [],
+        "fields": [_question_generator_field_context(current_field)]
+        if current_field is not None
+        else [],
+        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
+    }
+    generated_help: QuestionHelpOutput | None = None
+    help_started_at = monotonic()
+    help_method = getattr(provider, "generate_question_help", None)
+    if callable(help_method):
+        latency_metrics["question_explanation_calls"] = (
+            latency_metrics.get("question_explanation_calls", 0.0) + 1.0
+        )
+        try:
+            candidate = help_method(
+                profile=profile,
+                context=help_context,
+                target=target,
+                reasoning_effort=reasoning_effort,
+            )
+            generated_help = (
+                candidate
+                if isinstance(candidate, QuestionHelpOutput)
+                else QuestionHelpOutput.model_validate(candidate)
+            )
+            if _question_help_repeats_definition(generated_help, definition_before):
+                raise ValueError("question_help_repeats_question_definition")
+        except Exception as exc:  # noqa: BLE001 - guidance must not break the turn
+            logger.warning(
+                "question_help_generation_failed record_id=%s question_id=%s error_type=%s",
+                record_id,
+                current_question.get("questionId"),
+                exc.__class__.__name__,
+            )
+    else:
+        logger.warning(
+            "question_help_generation_unavailable record_id=%s question_id=%s provider=%s",
+            record_id,
+            current_question.get("questionId"),
+            provider.__class__.__name__,
+        )
+    latency_metrics["question_explanation_ms"] = (
+        latency_metrics.get("question_explanation_ms", 0.0)
+        + _elapsed_ms(help_started_at)
+    )
+    if generated_help is None:
+        generated_help = _fallback_question_help(
+            definition=definition_before,
+            target_label=str(target.get("label") or definition_before.get("title") or "この項目"),
+        )
+        logger.warning(
+            "question_help_fallback_used record_id=%s question_id=%s",
+            record_id,
+            current_question.get("questionId"),
+        )
+    generated_help = _focus_question_help_on_one_aspect(
+        generated_help,
+        definition=definition_before,
+        target=target,
+    )
+    reply = localized_interview_question_guidance(
+        locale,
+        topic=generated_help.topic,
+        examples=generated_help.examples,
+        perspectives=generated_help.perspectives,
+        example_mode=generated_help.exampleMode,
     )
     definition_after = _question_definition_for_question(current_question, fields)
     hash_after = _question_definition_hash(definition_after)
     logger.info(
         "question_explanation_rendered record_id=%s question_id=%s "
         "question_definition_hash_before=%s question_definition_hash_after=%s "
-        "current_target=%s rendered_explanation=%s",
+        "current_target=%s guidance_topic=%s guidance_examples=%s guidance_perspectives=%s rendered_explanation=%s",
         record_id,
         current_question.get("questionId"),
         hash_before,
         hash_after,
         current_question.get("targetId"),
+        generated_help.topic,
+        generated_help.examples,
+        generated_help.perspectives,
         reply,
     )
     if definition_before != definition_after:
         raise RuntimeError("question_definition_mutated_during_explanation")
     return reply
+
+
+def _question_help_expected_information(
+    definition: Mapping[str, Any],
+    target: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Expose expected information with captured state to the help LLM."""
+
+    captured_ids = {
+        str(item_id).strip()
+        for item_id in target.get("capturedItemIds", []) or []
+        if str(item_id).strip()
+    }
+    result: list[dict[str, Any]] = []
+    for required, key in ((True, "requiredItems"), (False, "optionalItems")):
+        items = definition.get(key)
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            item_id = str(item.get("itemId") or "").strip()
+            label = str(item.get("label") or "").strip()
+            if not item_id or not label:
+                continue
+            result.append(
+                {
+                    "itemId": item_id,
+                    "label": label,
+                    "description": item.get("description"),
+                    "required": required,
+                    "status": "ANSWERED" if item_id in captured_ids else "MISSING",
+                }
+            )
+    return result
+
+
+def _focus_question_help_on_one_aspect(
+    help_output: QuestionHelpOutput,
+    *,
+    definition: Mapping[str, Any],
+    target: Mapping[str, Any],
+) -> QuestionHelpOutput:
+    """Prevent question help from re-explaining captured or multiple aspects."""
+
+    expected = _question_help_expected_information(definition, target)
+    available = [item for item in expected if item.get("status") != "ANSWERED"]
+    available_by_id = {str(item["itemId"]): item for item in available}
+    requested_id = str(help_output.targetAspectId or "").strip()
+
+    if requested_id and requested_id in available_by_id:
+        return help_output
+
+    # A missing/invalid target is a legacy-provider case.  Select one
+    # unresolved expected item deterministically; never fall back to an item
+    # already captured in the interview.
+    fallback_item = next(
+        (item for item in available if bool(item.get("required"))),
+        next(iter(available), None),
+    )
+    if fallback_item is None:
+        return QuestionHelpOutput(
+            targetAspectId=None,
+            topic="まだ確認できていない点",
+            examples=[],
+            exampleMode="none",
+            perspectives=[],
+        )
+
+    label = str(fallback_item.get("label") or "この項目").strip()
+    return QuestionHelpOutput(
+        targetAspectId=str(fallback_item.get("itemId") or "") or None,
+        topic=label,
+        examples=[],
+        exampleMode="none",
+        perspectives=[],
+    )
+
+
+def _question_help_repeats_definition(
+    help_output: QuestionHelpOutput,
+    definition: Mapping[str, Any],
+) -> bool:
+    """Reject guidance that simply reads the configured question back."""
+
+    generated = _normalize_question_help_text(
+        " ".join(
+            [
+                help_output.topic,
+                *help_output.examples,
+                *help_output.perspectives,
+            ]
+        )
+    )
+    for key in ("originalQuestion", "canonicalQuestion", "description"):
+        source = _normalize_question_help_text(str(definition.get(key) or ""))
+        if len(source) >= 8 and source in generated:
+            return True
+    return False
+
+
+def _normalize_question_help_text(value: str) -> str:
+    return re.sub(r"[\s「」『』\"'。、，！？!?.,:：；;]", "", value).casefold()
+
+
+def _fallback_question_help(
+    *,
+    definition: Mapping[str, Any],
+    target_label: str,
+) -> QuestionHelpOutput:
+    """Provide a safe non-repeating fallback for test/custom providers."""
+
+    labels: list[str] = []
+    for key in ("requiredItems", "optionalItems"):
+        items = definition.get(key)
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            label = str(item.get("label") or item.get("description") or "").strip()
+            if label and label not in labels:
+                labels.append(label)
+    examples = [
+        f"{label}について、実際に起きた状況や出来事"
+        for label in labels[:3]
+    ]
+    if not examples:
+        examples = []
+    return QuestionHelpOutput(
+        topic=target_label.strip() or "このテーマ",
+        examples=examples[:1],
+        exampleMode="none" if not examples else "single",
+        perspectives=[],
+    )
 
 
 def _select_reasoning_effort(state: Mapping[str, Any]) -> str:
@@ -3094,6 +5072,7 @@ def _generate_question_text(
     latency_metrics: dict[str, float] | None = None,
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
     on_question_delta: Callable[[str], None] | None = None,
+    use_retrieval: bool = True,
 ) -> tuple[str, list[RetrievedKnowledgeContext], DocumentQuestionCandidate | None]:
     started_at = monotonic()
     pending_transcript = state.get("pendingTranscriptConfirmation")
@@ -3113,7 +5092,7 @@ def _generate_question_text(
         )
     current_field = _field_for_target(target, fields)
     retrieval_policy = _retrieval_policy_for_target(target, current_field)
-    if str(retrieval_policy or "auto").strip().lower() == "never":
+    if not use_retrieval or str(retrieval_policy or "auto").strip().lower() == "never":
         # Do not even enter the retrieval path for a target that prohibits
         # document context. This keeps the request trace unambiguous and
         # avoids needless query construction on every voice turn.
@@ -3229,7 +5208,34 @@ def _generate_question_text(
         "questionProgress": _question_progress_context(target),
         "tentativeCandidates": question_state["tentativeCandidates"],
         "answerAssessment": question_state["answerAssessment"],
+        "answerEvaluation": question_state["answerEvaluation"],
+        "answerStatus": state.get("lastAnswerStatus"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
+        "questionAnswer": (
+            state.get("questionAnswers", {}).get(str(state.get("currentQuestionId") or ""))
+            if isinstance(state.get("questionAnswers"), Mapping)
+            else None
+        ),
+        "currentAnswer": _latest_utterance_context(messages, _get_current_question(state) or {}),
+        "confirmedAnswers": [
+            {"field": field_name, "value": value}
+            for field_name, value in _build_structured_draft(state, fields).items()
+        ],
+        "acquiredInformation": _target_acquired_information(state, target),
+        "missingInformation": _target_missing_information(state, target)
+        or question_state["missingInformation"],
+        "requiredAspects": [
+            *question_definition.get("requiredItems", []),
+            *question_definition.get("optionalItems", []),
+        ],
+        "sameQuestionAskedBefore": _same_target_asked_before(state, target),
+        "nextAction": question_state["nextAction"],
         "activeProbe": question_state["activeProbe"],
+        # Registered facts and glossary entries are configuration context,
+        # not optional lexical RAG. They remain available when retrievalPolicy
+        # is "never" and are never treated as the participant's answer.
+        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
         "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
     question_generation_started_at = monotonic()
@@ -3690,32 +5696,6 @@ def _downgrade_current_target_update(
     )
 
 
-def _effective_utterance_completeness(
-    output: StructuredInterviewOutput,
-    transcript: str,
-) -> str:
-    """Apply a small syntactic safety floor below the model judgement.
-
-    The Structured Interpreter remains the primary decision maker. This guard
-    only catches an unmistakable trailing conjunction/verb stem when a model
-    accidentally reports COMPLETE, so endpoint timing cannot advance the
-    interview on text such as ``担当し`` or ``関わっ``.
-    """
-
-    if output.utteranceCompleteness != "COMPLETE":
-        return output.utteranceCompleteness
-    if output.transcriptAssessment.correctionStatus == "CORRECTED":
-        corrected = output.transcriptAssessment.normalizedTranscript.strip()
-        if corrected and not _looks_like_incomplete_utterance(corrected):
-            # The raw final can itself be truncated by STT. A complete,
-            # explicit correction remains confirmation-only, so accepting the
-            # correction here cannot commit or advance the interview.
-            return "COMPLETE"
-    if _looks_like_incomplete_utterance(transcript):
-        return "INCOMPLETE"
-    return "COMPLETE"
-
-
 def _has_ambiguous_correction_candidates(output: StructuredInterviewOutput) -> bool:
     candidates = {
         str(candidate).strip()
@@ -3723,24 +5703,6 @@ def _has_ambiguous_correction_candidates(output: StructuredInterviewOutput) -> b
         if str(candidate).strip()
     }
     return len(candidates) > 1
-
-
-def _looks_like_incomplete_utterance(transcript: str) -> bool:
-    value = re.sub(r"[\s。、！？!?.,…]+$", "", transcript.strip())
-    if len(value) < 2:
-        return False
-    hesitation = re.sub(r"[\s、。！？!?.,…]+", "", value)
-    if re.fullmatch(
-        r"(?:えーっと|えーと|えっと|ええと|えー|あー|あの|その|うーん|うー)+",
-        hesitation,
-    ):
-        return True
-    if re.search(
-        r"(?:し|っ|ですが|なので|けど|けれど|例えば|まず|それから|というか|担当しているのは|担当して|関わって|携わって|行って|私の場合は|と|や|も|は|が|を|に|で|の|から|まで|主に)$",
-        value,
-    ):
-        return True
-    return bool(re.search(r"(?:and|or|but|because|to|which|that|with|for)$", value.casefold()))
 
 
 def _persist_transcript_assessment(
@@ -3762,6 +5724,8 @@ def _persist_transcript_assessment(
             "rawTranscript": assessment.get("rawTranscript") or stored.get("content") or "",
             "normalizedTranscript": assessment.get("normalizedTranscript") or "",
             "correctionStatus": assessment.get("correctionStatus") or "NONE",
+            "recognitionStatus": assessment.get("recognitionStatus") or "CLEAR",
+            "recognitionEvidence": list(assessment.get("recognitionEvidence") or []),
             "correctionCandidates": list(assessment.get("correctionCandidates") or []),
             "correctionReason": assessment.get("correctionReason"),
             "updatedAt": utc_now(),
@@ -3878,6 +5842,13 @@ def _build_result(
         _effective_profile(state, "system_requirement"),
         fields,
     )
+    trace = state.get("lastConversationTrace")
+    trace = trace if isinstance(trace, Mapping) else {}
+    resolved_missing_information = (
+        list(missing_information)
+        if missing_information is not None
+        else list(state.get("lastMissingInformation") or [])
+    )
     return {
         "status": status,
         "action": action,
@@ -3887,7 +5858,33 @@ def _build_result(
         "currentFieldId": question.get("fieldId") if question else None,
         "answerSummary": None,
         "recordAnswer": result_field.get("recordAnswer"),
-        "missingInformation": missing_information or [],
+        "missingInformation": resolved_missing_information,
+        "answerEvaluation": state.get("lastAnswerEvaluation"),
+        "answerStatus": state.get("lastAnswerStatus"),
+        "userIntent": state.get("lastUserIntent"),
+        "conversationAction": state.get("lastConversationAction"),
+        "interpretationMatch": state.get("lastInterpretationMatch", "NONE"),
+        "userInterpretation": state.get("lastUserInterpretation"),
+        "originalQuestionIntent": state.get("lastOriginalQuestionIntent"),
+        "resumeCurrentQuestion": state.get("lastResumeCurrentQuestion", True),
+        "clarificationKind": state.get("lastClarificationKind", "NONE"),
+        "probeDecision": state.get("lastProbeDecision"),
+        "probeDimension": state.get("lastProbeDimension"),
+        "aspectAssessments": list(state.get("lastAspectAssessments") or []),
+        "clarificationTarget": (
+            dict(state.get("lastClarificationTarget"))
+            if isinstance(state.get("lastClarificationTarget"), Mapping)
+            else None
+        ),
+        "currentTurnType": state.get("currentTurnType", "BASIC"),
+        "extractedFields": list(state.get("lastExtractedFields") or []),
+        "fieldStates": _field_state_trace(state),
+        "nextAction": state.get("lastNextAction"),
+        "rawTranscript": trace.get("rawTranscript"),
+        "finalTranscript": trace.get("finalTranscript"),
+        "llmInput": trace.get("llmInput"),
+        "llmOutput": trace.get("llmOutput"),
+        "conversationTrace": dict(trace) if trace else None,
         "assistantMessage": dict(assistant_message) if assistant_message else None,
         "interviewState": dict(state),
         "structuredDraft": _build_structured_draft(state, fields),
@@ -3939,13 +5936,15 @@ def _save_assistant_message(
     record_id: str,
     content: str,
     question: Mapping[str, Any],
+    *,
+    message_id: str | None = None,
 ) -> dict[str, Any]:
     question_id = str(question.get("questionId") or "")
     message = {
         # A question is a durable state transition. A deterministic message
         # ID makes retries/reconnects idempotent even when the caller did not
         # supply a client message ID.
-        "id": f"structured-question-msg-{record_id}-{question_id}",
+        "id": message_id or f"structured-question-msg-{record_id}-{question_id}",
         "tenantId": user.tenant_id,
         "recordId": record_id,
         "content": content,
@@ -3955,6 +5954,9 @@ def _save_assistant_message(
         "updatedAt": utc_now(),
         "questionId": question_id,
         "questionType": "structured",
+        "interviewTurnType": question.get("turnType") or "BASIC",
+        "parentQuestionId": question.get("parentQuestionId"),
+        "probeDimension": question.get("probeDimension"),
         "fieldId": question.get("fieldId"),
         "targetType": question.get("targetType"),
         "targetId": question.get("targetId"),
@@ -4040,6 +6042,8 @@ _STRUCTURED_ANSWER_STATE_KEYS = (
     "clarificationQueue",
     "activeClarificationRequest",
     "clarificationHistory",
+    "questionAnswers",
+    "currentTurnType",
     "deferredProposalTarget",
     "closingState",
     "closingAnswer",
