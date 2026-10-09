@@ -1,9 +1,65 @@
 import { API_BASE_URL, ApiError } from "../../../lib/api";
-import type { VoiceIceConfigResponse, VoiceProvider, VoiceSessionResponse } from "../types";
+import type { LegacyVoiceProvider, VoiceIceConfigResponse, VoiceSessionResponse } from "../types";
 
 const VOICE_API_BASE_URL = "";
 const DEV_AUTH_TOKEN = import.meta.env.VITE_DEV_TOKEN ?? "dev-manager";
 export const VOICE_RUNTIME_PROVIDER = import.meta.env.VITE_VOICE_RUNTIME_PROVIDER ?? "transcribe_polly";
+
+export type GPTLiveSessionResponse = {
+  session: {
+    id: string;
+  };
+  transport: {
+    type: "webrtc";
+    sdp: string;
+  };
+};
+
+export type GPTLiveDelegationResponse = {
+  status: "updated" | "duplicate" | "completed" | "applied" | "stale";
+  interviewState: Record<string, unknown>;
+  structuredDraft: Record<string, string>;
+  stateVersion?: number | null;
+  currentQuestionId?: string | null;
+};
+
+export type GPTLiveStateUpdateResponse = {
+  status: "applied" | "duplicate" | "stale" | "completed";
+  stateVersion?: number | null;
+  currentQuestionId?: string | null;
+  coveredAspects: string[];
+  missingAspects: string[];
+};
+
+export type LiveTranscriptFragment = {
+  role: "user" | "assistant";
+  text: string;
+  start_ms?: number;
+  end_ms?: number;
+};
+
+export type GPTLiveCaptureResponse = GPTLiveDelegationResponse & {
+  checklist: {
+    id: string;
+    label: string;
+    answer_state: string;
+    answer_resolution?: string | null;
+    candidate_answer?: string;
+    needs_confirmation?: boolean;
+    missing_required_items: string[];
+  }[];
+  processing?: boolean;
+  completion?: {
+    complete: boolean;
+    closingRequired: boolean;
+    missingRequiredTargets: unknown[];
+    pendingConfirmationTargets: unknown[];
+    unknownApplicabilityTopics: string[];
+    unresolvedContradictionIds: string[];
+  };
+};
+
+export type GPTLiveCaptureReceipt = { status: "accepted"; revision: number };
 
 type RequestOptions = {
   method?: "GET" | "POST" | "DELETE";
@@ -57,7 +113,7 @@ async function safeDetail(response: Response): Promise<string> {
 
 export async function createVoiceSession(
   recordId: string,
-  provider: VoiceProvider = VOICE_RUNTIME_PROVIDER as VoiceProvider,
+  provider: LegacyVoiceProvider = getDefaultLegacyVoiceProvider(),
   signal?: AbortSignal,
 ) {
   return requestJson<VoiceSessionResponse>(
@@ -65,6 +121,85 @@ export async function createVoiceSession(
     `/api/records/${recordId}/voice-sessions`,
     { method: "POST", body: { provider }, signal },
   );
+}
+
+export function getDefaultLegacyVoiceProvider(): LegacyVoiceProvider {
+  if (VOICE_RUNTIME_PROVIDER === "nova_sonic" || VOICE_RUNTIME_PROVIDER === "openai_realtime") {
+    return VOICE_RUNTIME_PROVIDER;
+  }
+  return "transcribe_polly";
+}
+
+export async function createGPTLiveSession(
+  offerSdp: string,
+  recordId?: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<GPTLiveSessionResponse>(
+    API_BASE_URL,
+    "/api/live/sessions",
+    {
+      method: "POST",
+      body: {
+        offer_sdp: offerSdp,
+        ...(recordId ? { record_id: recordId } : {}),
+      },
+      signal,
+    },
+  );
+}
+
+export async function submitGPTLiveStateUpdate(
+  recordId: string,
+  payload: {
+    delegation_id: string;
+    call_id: string;
+    turn_id: string;
+    base_state_version: number;
+    question_id: string;
+    answer_status: "ANSWERED" | "PARTIAL" | "NOT_ANSWERED";
+    covered_aspects: { aspect_id: string; evidence: string }[];
+    missing_aspects: string[];
+    evidence: { aspect_id: string; text: string }[];
+    transcript?: string;
+  },
+  transcript = "",
+  signal?: AbortSignal,
+) {
+  return requestJson<GPTLiveStateUpdateResponse>(
+    API_BASE_URL,
+    "/api/live/state-updates",
+    {
+      method: "POST",
+      body: {
+        record_id: recordId,
+        ...payload,
+        transcript: transcript || payload.transcript || "",
+      },
+      signal,
+    },
+  );
+}
+
+export function getGPTLiveCaptureStatus(recordId: string, captureId: string) {
+  return requestJson<GPTLiveCaptureResponse>(
+    API_BASE_URL,
+    `/api/live/captures/${encodeURIComponent(recordId)}?capture_id=${encodeURIComponent(captureId)}`,
+  );
+}
+
+export function submitGPTLiveCapture(
+  recordId: string,
+  captureId: string,
+  revision: number,
+  fragments: LiveTranscriptFragment[],
+) {
+  return requestJson<GPTLiveCaptureReceipt>(API_BASE_URL, "/api/live/captures", {
+    method: "POST",
+    body: { record_id: recordId, capture_id: captureId, revision, fragments },
+    signal: AbortSignal.timeout(15000),
+    keepalive: true,
+  });
 }
 
 export async function sendOpenAIRealtimeOffer(

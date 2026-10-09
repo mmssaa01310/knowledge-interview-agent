@@ -13,6 +13,7 @@ Relations:
 
 import type { IceServerConfig, VoiceConnectionStats, VoiceDataChannelEvent } from "../types";
 import { AssistantPlaybackTracker } from "./assistantPlaybackTracker";
+import { logVoiceStartupEvent } from "../utils/voiceTelemetry";
 
 type VoicePeerConnectionOptions = {
   voiceSessionId: string;
@@ -22,6 +23,8 @@ type VoicePeerConnectionOptions = {
   onEvent: (event: VoiceDataChannelEvent) => void;
   onConnectionStateChange: (state: string) => void;
   onStatsChange?: (stats: VoiceConnectionStats) => void;
+  provider?: string;
+  startupStartedAt?: number;
 };
 
 const ICE_GATHERING_TIMEOUT_MS = Number.parseInt(
@@ -40,6 +43,19 @@ export async function createVoicePeerConnection(
   options: VoicePeerConnectionOptions,
 ): Promise<VoicePeerConnectionHandle> {
   const startedAt = performance.now();
+  const provider = options.provider ?? "legacy";
+  const markStartup = (event: string, details?: Record<string, unknown>) => {
+    if (options.startupStartedAt === undefined) {
+      return;
+    }
+    logVoiceStartupEvent({
+      event,
+      provider,
+      voiceSessionId: options.voiceSessionId,
+      startStartedAt: options.startupStartedAt,
+      details,
+    });
+  };
   const peerConnection = new RTCPeerConnection({
     iceServers: options.iceServers.map((server) => ({
       urls: server.urls,
@@ -70,6 +86,14 @@ export async function createVoicePeerConnection(
     }
     try {
       const event = JSON.parse(messageEvent.data) as VoiceDataChannelEvent;
+      if (event.type === "runtime_ready") {
+        markStartup("runtime_ready_received");
+      } else if (event.type === "assistant_speech_started") {
+        markStartup("first_response_event_received", {
+          response_id: event.responseId,
+          generation: event.generation,
+        });
+      }
       playbackTracker.handleDataChannelEvent(event, {
         playbackInitialized,
         remoteAudioPaused: options.remoteAudioElement?.paused ?? true,
@@ -111,10 +135,19 @@ export async function createVoicePeerConnection(
       }
       if (!playbackInitialized) {
         playbackInitialized = true;
+        markStartup("remote_audio_track_received", {
+          track_id: event.track.id,
+        });
         console.info("realtime_voice_frontend_audio", {
           remote_track_playback_initialized_at: Math.round(remoteAudioTrackReceivedAt),
         });
         options.remoteAudioElement.onplaying = () => {
+          markStartup("audio_playing_started", {
+            remote_track_received_to_playing_ms: Math.max(
+              0,
+              Math.round(performance.now() - remoteAudioTrackReceivedAt),
+            ),
+          });
           playbackTracker.handleAudioElementPlaying();
           console.info("realtime_voice_frontend_audio", {
             event: "remote_track_playing",
@@ -161,6 +194,10 @@ export async function createVoicePeerConnection(
     ice_gathering_state: peerConnection.iceGatheringState,
     browser_ice_gathering_ms: Math.round(performance.now() - iceStartedAt),
     browser_peer_setup_ms: Math.round(performance.now() - startedAt),
+  });
+  markStartup("browser_offer_ready", {
+    ice_completed: iceCompleted,
+    browser_ice_gathering_ms: Math.round(performance.now() - iceStartedAt),
   });
 
   return {

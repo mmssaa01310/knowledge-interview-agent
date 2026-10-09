@@ -14,7 +14,7 @@ import type {
   VoiceConnectionStats,
   VoiceConversationStatus,
   VoiceDataChannelEvent,
-  VoiceProvider,
+  LegacyVoiceProvider,
   VoiceSessionResponse,
 } from "../types";
 import { toStartErrorMessage } from "../utils/voiceErrors";
@@ -22,6 +22,7 @@ import {
   createVoiceStartupTrace,
   logVoiceStartupEvent,
   VOICE_SIGNALING_TIMEOUT_MS,
+  VOICE_SESSION_START_TIMEOUT_MS,
 } from "../utils/voiceTelemetry";
 import {
   createOpenAIRealtimePeerConnection,
@@ -33,7 +34,7 @@ type VoicePeerHandle = VoicePeerConnectionHandle | OpenAIRealtimePeerConnectionH
 
 export type StartVoiceSessionOptions = {
   recordId: string;
-  provider: VoiceProvider;
+  provider: LegacyVoiceProvider;
   hasQuestions: boolean;
   remoteAudioRef: RefObject<HTMLAudioElement>;
   voiceSessionRef: MutableRefObject<VoiceSessionResponse | null>;
@@ -95,11 +96,12 @@ export async function startVoiceSession(options: StartVoiceSessionOptions): Prom
   setStatus("checking");
   let failedStage = "voice_session";
   const startStartedAt = performance.now();
-  const markStartup = (event: string) => logVoiceStartupEvent({
+  const markStartup = (event: string, details?: Record<string, unknown>) => logVoiceStartupEvent({
     event,
     provider,
     voiceSessionId: voiceSessionRef.current?.id,
     startStartedAt,
+    details,
   });
   markStartup("start_clicked");
   const trace = createVoiceStartupTrace();
@@ -136,7 +138,7 @@ export async function startVoiceSession(options: StartVoiceSessionOptions): Prom
     markStartup("voice_session_request_started");
     const voiceSession = await withTimeout(
       (signal) => createVoiceSession(recordId, provider, signal),
-      VOICE_SIGNALING_TIMEOUT_MS,
+      VOICE_SESSION_START_TIMEOUT_MS,
     );
     trace.voice_session_ms = Math.round(performance.now() - stageStartedAt);
     voiceSessionRef.current = voiceSession;
@@ -236,11 +238,13 @@ export async function startVoiceSession(options: StartVoiceSessionOptions): Prom
     failedStage = "microphone_or_ice_config";
     const iceStartedAt = performance.now();
     setStatus("connecting");
+    markStartup("ice_config_request_started");
     const iceConfigPromise = withTimeout(
       (signal) => getVoiceIceConfig(voiceSession.id, signal),
       VOICE_SIGNALING_TIMEOUT_MS,
     ).then((config) => {
       trace.ice_config_ms = Math.round(performance.now() - iceStartedAt);
+      markStartup("ice_config_ready", { ice_config_ms: trace.ice_config_ms });
       return config;
     });
     const [microphoneResult, iceConfigResult] = await Promise.allSettled([
@@ -271,6 +275,8 @@ export async function startVoiceSession(options: StartVoiceSessionOptions): Prom
       iceServers: iceConfig.iceServers,
       microphoneStream,
       remoteAudioElement: remoteAudioRef.current,
+      provider: voiceSession.provider,
+      startupStartedAt: startStartedAt,
       onEvent: handleEvent,
       onConnectionStateChange: (state) => {
         setConnectionState(state);
@@ -289,16 +295,19 @@ export async function startVoiceSession(options: StartVoiceSessionOptions): Prom
     peerRef.current = peerHandle;
     failedStage = "offer";
     markStartup("provider_connect_started");
+    markStartup("backend_offer_request_started");
     stageStartedAt = performance.now();
     const answer = await withTimeout(
       (signal) => sendVoiceOffer(voiceSession.id, peerHandle.offer, signal),
       VOICE_SIGNALING_TIMEOUT_MS,
     );
     trace.offer_ms = Math.round(performance.now() - stageStartedAt);
+    markStartup("backend_answer_received", { signaling_ms: trace.offer_ms });
     failedStage = "answer";
     stageStartedAt = performance.now();
     await peerHandle.peerConnection.setRemoteDescription(answer);
     trace.answer_ms = Math.round(performance.now() - stageStartedAt);
+    markStartup("remote_description_set", { answer_apply_ms: trace.answer_ms });
     failedStage = "playback";
     await remoteAudioRef.current?.play().catch(() => undefined);
     trace.total_ms = Math.round(performance.now() - startStartedAt);

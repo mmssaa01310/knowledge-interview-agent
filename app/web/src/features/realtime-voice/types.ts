@@ -31,12 +31,13 @@ export type VoiceConversationStatus =
   | "completed"
   | "error";
 
-export type VoiceProvider = "transcribe_polly" | "nova_sonic" | "openai_realtime";
+export type VoiceProvider = "transcribe_polly" | "nova_sonic" | "openai_realtime" | "gpt_live";
+export type LegacyVoiceProvider = Exclude<VoiceProvider, "gpt_live">;
 
 export type VoiceSessionResponse = {
   id: string;
   recordId: string;
-  provider: VoiceProvider;
+  provider: LegacyVoiceProvider;
   interviewLocale?: InterviewLocale | null;
   status: string;
   currentQuestionId?: string | null;

@@ -3,9 +3,9 @@ import { useI18n } from "../../../i18n";
 import type { ChatMessage } from "../../../types/app";
 import {
   deleteVoicePeerConnection,
-  VOICE_RUNTIME_PROVIDER,
+  getDefaultLegacyVoiceProvider,
 } from "../api/realtimeVoiceClient";
-import type { VoiceProvider, VoiceSessionResponse } from "../types";
+import type { LegacyVoiceProvider, VoiceSessionResponse } from "../types";
 import { createOpenAIRealtimeEventHandler } from "../runtime/openaiRealtimeEventHandler";
 import { createVoiceRuntimeEventHandler } from "../runtime/voiceRuntimeEventHandler";
 import { startVoiceSession, withTimeout } from "../runtime/startVoiceSession";
@@ -14,7 +14,7 @@ import { useVoiceConversationState } from "./useVoiceConversationState";
 
 type UseRealtimeVoiceInterviewArgs = {
   recordId?: string;
-  provider?: VoiceProvider;
+  provider?: LegacyVoiceProvider;
   hasQuestions: boolean;
   remoteAudioRef: RefObject<HTMLAudioElement>;
   onMessage: (message: ChatMessage) => void;
@@ -25,7 +25,7 @@ type UseRealtimeVoiceInterviewArgs = {
 export function useRealtimeVoiceInterview(args: UseRealtimeVoiceInterviewArgs) {
   const {
     recordId,
-    provider = VOICE_RUNTIME_PROVIDER as VoiceProvider,
+    provider = getDefaultLegacyVoiceProvider(),
     hasQuestions,
     remoteAudioRef,
     onMessage,

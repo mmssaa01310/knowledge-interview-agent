@@ -2,6 +2,10 @@ export const VOICE_SIGNALING_TIMEOUT_MS = Number.parseInt(
   import.meta.env.VITE_VOICE_SIGNALING_TIMEOUT_MS ?? "8000",
   10,
 );
+export const VOICE_SESSION_START_TIMEOUT_MS = Number.parseInt(
+  import.meta.env.VITE_VOICE_SESSION_START_TIMEOUT_MS ?? "30000",
+  10,
+);
 
 export type VoiceStartupTrace = {
   voice_session_ms: number;
@@ -40,11 +44,13 @@ export function logVoiceStartupEvent({
   provider,
   voiceSessionId,
   startStartedAt,
+  details,
 }: {
   event: string;
   provider: string;
   voiceSessionId?: string;
   startStartedAt: number;
+  details?: Record<string, unknown>;
 }): void {
   const monotonicMs = performance.now();
   console.info("voice_startup_latency", {
@@ -54,5 +60,6 @@ export function logVoiceStartupEvent({
     monotonic_ms: monotonicMs,
     timestamp_ms: Date.now(),
     start_elapsed_ms: Math.round(monotonicMs - startStartedAt),
+    ...details,
   });
 }
