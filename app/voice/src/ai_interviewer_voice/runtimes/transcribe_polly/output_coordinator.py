@@ -123,6 +123,27 @@ class AudioOutputCoordinator:
             await asyncio.gather(task, return_exceptions=True)
         return response_id
 
+    async def wait_for_response(self, response_id: str) -> bool:
+        """Wait for one active output to finish without cancelling its playback."""
+
+        async with self._lock:
+            active = self._active
+            if active is None or active.request.response_id != response_id:
+                return False
+            task = active.task
+        if task is None:
+            return False
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                return False
+            raise
+        except Exception:
+            # A failed notice should not prevent the formal reply from starting.
+            return False
+        return True
+
     async def cancel_notices(self) -> None:
         async with self._lock:
             active = self._active

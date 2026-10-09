@@ -242,6 +242,30 @@ class StreamingBridge(FakeBridge):
         yield InterviewBridgeStreamCompleted(result=result)
 
 
+class DeferredStreamingBridge(FakeBridge):
+    def __init__(self) -> None:
+        super().__init__()
+        self.process_started = asyncio.Event()
+        self.release_stream = asyncio.Event()
+
+    async def process_turn_stream(self, **kwargs):
+        self.process_calls.append(kwargs)
+        self.process_started.set()
+        await self.release_stream.wait()
+        result = InterviewBridgeResult(
+            turn_id="turn-stream-ack",
+            response_id="response-stream-ack",
+            reply_text="次の質問です。",
+            action="NEXT_QUESTION",
+            question_id="q-2",
+            state_version=2,
+            interview_status="active",
+        )
+        yield InterviewBridgeStreamStarted(response_id=result.response_id)
+        yield InterviewBridgeTextDelta(text=result.reply_text)
+        yield InterviewBridgeStreamCompleted(result=result)
+
+
 class IncompleteStreamingBridge(FakeBridge):
     async def process_turn_stream(self, **kwargs):
         self.process_calls.append(kwargs)
@@ -1611,6 +1635,72 @@ async def test_question_stream_starts_audio_before_api_commit_and_next_delta() -
 
 
 @pytest.mark.anyio
+async def test_streaming_formal_reply_waits_for_active_processing_ack() -> None:
+    bridge = DeferredStreamingBridge()
+    transcribe = FakeTranscribe()
+    polly = FakePolly()
+    polly.cache["回答を確認しています。"] = bytes(32000)
+    runtime = TranscribePollyRuntime(
+        config=replace(
+            _config(),
+            processing_ack_delay_ms=20,
+            long_processing_notice_ms=5_000,
+        ),
+        interview_bridge=bridge,  # type: ignore[arg-type]
+        transcribe=transcribe,
+        polly=polly,
+    )
+    await runtime.start(_robustness_context())
+
+    processing = asyncio.create_task(
+        runtime._process_interview_turn(
+            transcript="回答です。",
+            generation=runtime._generation,
+            expected_state_version=runtime._state_version,
+            client_turn_id="client-stream-ack",
+        )
+    )
+    await asyncio.wait_for(bridge.process_started.wait(), timeout=1.0)
+    await _wait_until(
+        lambda: any(
+            isinstance(event, AssistantBackchannel)
+            and event.kind == "processing_ack"
+            for event in runtime._events._queue
+        )
+    )
+
+    bridge.release_stream.set()
+    await processing
+    events = list(runtime._events._queue)
+    ack_event = next(
+        event
+        for event in events
+        if isinstance(event, AssistantBackchannel)
+        and event.kind == "processing_ack"
+    )
+    ack_ended_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, AssistantSpeechEnded)
+        and event.response_id == ack_event.response_id
+    )
+    formal_started_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, AssistantSpeechStarted)
+        and event.response_id == "response-stream-ack"
+    )
+
+    assert ack_ended_index < formal_started_index
+    assert not any(
+        isinstance(event, AssistantInterrupted)
+        and event.response_id == ack_event.response_id
+        for event in events
+    )
+    await runtime.close()
+
+
+@pytest.mark.anyio
 async def test_incomplete_question_stream_reopens_input_without_committing_reply() -> None:
     bridge = IncompleteStreamingBridge()
     runtime = TranscribePollyRuntime(
@@ -2305,6 +2395,8 @@ async def test_slow_response_plays_one_processing_ack_before_main_response(
     caplog.set_level(logging.INFO)
     bridge = BlockingBridge()
     transcribe = FakeTranscribe()
+    polly = FakePolly()
+    polly.cache["回答を確認しています。"] = bytes(32000)
     runtime = TranscribePollyRuntime(
         config=replace(
             _config(),
@@ -2316,7 +2408,7 @@ async def test_slow_response_plays_one_processing_ack_before_main_response(
         ),
         interview_bridge=bridge,  # type: ignore[arg-type]
         transcribe=transcribe,
-        polly=FakePolly(),
+        polly=polly,
     )
     await runtime.start(_robustness_context())
 
@@ -2342,6 +2434,13 @@ async def test_slow_response_plays_one_processing_ack_before_main_response(
         if isinstance(event, AssistantBackchannel)
         and event.kind == "processing_ack"
     )
+    ack_response_id = events[ack_index].response_id
+    ack_ended_index = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, AssistantSpeechEnded)
+        and event.response_id == ack_response_id
+    )
     main_index = next(
         index
         for index, event in enumerate(events)
@@ -2349,6 +2448,12 @@ async def test_slow_response_plays_one_processing_ack_before_main_response(
         and event.response_id == "response-1"
     )
     assert ack_index < main_index
+    assert ack_ended_index < main_index
+    assert not any(
+        isinstance(event, AssistantInterrupted)
+        and event.response_id == ack_response_id
+        for event in events
+    )
     assert sum(
         isinstance(event, AssistantBackchannel) and event.kind == "processing_ack"
         for event in events

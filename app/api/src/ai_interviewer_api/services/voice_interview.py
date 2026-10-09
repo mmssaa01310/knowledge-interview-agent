@@ -64,6 +64,7 @@ from ai_interviewer_api.schemas.voice import (
 from ai_interviewer_api.services.ai_interview import (
     generate_interview_reply,
     get_interview_state_snapshot,
+    render_resumed_interview_question,
 )
 from ai_interviewer_api.services.conversation_policy import (
     CanonicalAction,
@@ -1629,13 +1630,21 @@ def _initialize_initial_question(
     interview_state = snapshot.get("interviewState", {})
     current_question_text = _find_current_question_text(interview_state)
     if current_question_text:
+        rendered_question = render_resumed_interview_question(
+            record,
+            user,
+            interview_state=interview_state,
+            messages=snapshot.get("messages", []),
+        )
+        initial_question_text = rendered_question or current_question_text
         logger.info(
-            "voice_initial_question_reused record_id=%s question_id=%s elapsed_ms=%s",
+            "voice_initial_question_reused record_id=%s question_id=%s contextual_render=%s elapsed_ms=%s",
             record.get("id"),
             interview_state.get("currentQuestionId"),
+            initial_question_text != current_question_text,
             round((monotonic() - started_at) * 1000),
         )
-        return f"{greeting}{current_question_text}"
+        return f"{greeting}{initial_question_text}"
     if interview_state.get("status") == "completed":
         return None
     result = generate_interview_reply(record, user, persist_assistant_messages=False)

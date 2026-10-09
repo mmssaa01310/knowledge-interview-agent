@@ -2934,6 +2934,77 @@ def get_structured_interview_state_snapshot(
     }
 
 
+def render_current_question_for_resumption(
+    record: Mapping[str, Any],
+    knowledge: Mapping[str, Any],
+    user: UserContext,
+    *,
+    interview_state: Mapping[str, Any],
+    messages: Sequence[Mapping[str, Any]],
+) -> str | None:
+    """Rephrase the selected question with prior confirmed answers for a resumed session.
+
+    This only renders the existing backend-selected target. It does not change
+    the question ID, interview state, or persisted question text.
+    """
+
+    current_question = get_current_structured_question(interview_state)
+    if current_question is None:
+        return None
+    fallback = str(current_question.get("text") or "").strip()
+    if not fallback or interview_state.get("questionGenerationPending"):
+        return fallback or None
+
+    target = _target_from_question(current_question)
+    if not target:
+        return fallback
+    target_type = str(target.get("targetType") or "")
+    if (
+        target_type == "transcript_confirmation"
+        or interview_state.get("pendingTranscriptConfirmation")
+        or _is_awaiting_confirmation_target(target, interview_state)
+        or _candidate_value_for_target(target, interview_state)
+    ):
+        return fallback
+
+    fields = _list_interview_fields(knowledge, user)
+    has_prior_utterance = any(
+        message.get("role") == "user"
+        and message.get("isActualUtterance") is not False
+        and str(message.get("rawTranscript") or message.get("content") or "").strip()
+        for message in messages
+    )
+    if not has_prior_utterance and not _build_structured_draft(interview_state, fields):
+        return fallback
+
+    try:
+        provider = _get_structured_provider(
+            None,
+            model_id=resolve_structured_model_id(knowledge),
+        )
+        question_text, _, _ = _generate_question_text(
+            provider,
+            profile=_effective_profile(interview_state, resolve_profile(knowledge)),
+            target=target,
+            record=record,
+            knowledge=knowledge,
+            user=user,
+            fields=fields,
+            state=interview_state,
+            messages=messages,
+            use_retrieval=False,
+        )
+    except Exception:  # noqa: BLE001 - persisted question remains a safe fallback
+        logger.warning(
+            "resumed_question_render_failed record_id=%s question_id=%s",
+            record.get("id"),
+            current_question.get("questionId"),
+            exc_info=True,
+        )
+        return fallback
+    return question_text or fallback
+
+
 def preview_structured_interview_output(
     record: Mapping[str, Any],
     knowledge: Mapping[str, Any],
@@ -5001,6 +5072,7 @@ def _generate_question_text(
     latency_metrics: dict[str, float] | None = None,
     speculative_retrieval: SpeculativeInterviewRetrieval | None = None,
     on_question_delta: Callable[[str], None] | None = None,
+    use_retrieval: bool = True,
 ) -> tuple[str, list[RetrievedKnowledgeContext], DocumentQuestionCandidate | None]:
     started_at = monotonic()
     pending_transcript = state.get("pendingTranscriptConfirmation")
@@ -5020,7 +5092,7 @@ def _generate_question_text(
         )
     current_field = _field_for_target(target, fields)
     retrieval_policy = _retrieval_policy_for_target(target, current_field)
-    if str(retrieval_policy or "auto").strip().lower() == "never":
+    if not use_retrieval or str(retrieval_policy or "auto").strip().lower() == "never":
         # Do not even enter the retrieval path for a target that prohibits
         # document context. This keeps the request trace unambiguous and
         # avoids needless query construction on every voice turn.
@@ -5146,6 +5218,10 @@ def _generate_question_text(
             else None
         ),
         "currentAnswer": _latest_utterance_context(messages, _get_current_question(state) or {}),
+        "confirmedAnswers": [
+            {"field": field_name, "value": value}
+            for field_name, value in _build_structured_draft(state, fields).items()
+        ],
         "acquiredInformation": _target_acquired_information(state, target),
         "missingInformation": _target_missing_information(state, target)
         or question_state["missingInformation"],

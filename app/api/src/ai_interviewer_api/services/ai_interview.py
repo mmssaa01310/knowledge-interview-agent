@@ -16,6 +16,7 @@ from ai_interviewer_api.agents.interview_knowledge.service import (
     generate_structured_interview_result,
     get_current_structured_question,
     get_structured_interview_state_snapshot,
+    render_current_question_for_resumption,
 )
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     is_current_question_confirmation_target,
@@ -193,6 +194,25 @@ def get_interview_state_snapshot(
 
     knowledge = store.get("knowledges", record["knowledgeId"]) or {}
     return get_structured_interview_state_snapshot(record, knowledge, user, persist=persist)
+
+
+def render_resumed_interview_question(
+    record: dict,
+    user: UserContext,
+    *,
+    interview_state: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> str | None:
+    """Render the existing question with context through Structured Interview."""
+
+    knowledge = store.get("knowledges", record["knowledgeId"]) or {}
+    return render_current_question_for_resumption(
+        record,
+        knowledge,
+        user,
+        interview_state=interview_state,
+        messages=messages,
+    )
 
 
 def _split_reply_chunks(reply_text: str) -> list[str]:

@@ -458,6 +458,12 @@ class VoiceSession:
 v1では固定挨拶「それではインタビューを開始します。」に続けて、Structured Interviewが決定した初回質問を含める。
 Novaに初回質問を独自生成させるための値ではない。
 
+既存のInterview Stateを引き継いで音声セッションを開始し、過去の回答または確定済みの回答がある場合、
+`app/api`は共通Structured Interview Question Generatorを使って現在の質問文を文脈に合わせて再描画できる。
+確定回答に含まれる対象名などを現在の質問に直接関係する場合だけ短く添え、確認済み情報の聞き直しや
+未確認情報の事実扱いはしない。再描画は発話文だけに適用し、現在の質問ID、対象、Interview Stateは変更しない。
+生成に失敗した場合は保存済みの質問文を使う。音声Runtimeは`initialReplyText`をそのまま音声化する。
+
 初回発話も通常ターンと同じTool Result経路で音声化する。
 初回質問本文を`role=USER`のinteractive text inputとして送信してはならない。
 

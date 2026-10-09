@@ -220,6 +220,7 @@ class TranscribePollyRuntime:
         self._reply_task: asyncio.Task[None] | None = None
         self._reply_lock = asyncio.Lock()
         self._notice_tasks: set[asyncio.Task[None]] = set()
+        self._notice_task_kinds: dict[asyncio.Task[None], OutputKind] = {}
         self._background_tasks: set[asyncio.Task[object]] = set()
         self._prepared_polly_tasks: dict[str, asyncio.Task[bytes]] = {}
         self._formal_response_id: str | None = None
@@ -1380,7 +1381,7 @@ class TranscribePollyRuntime:
                         streamed_response_id,
                         stream_error.__class__.__name__,
                     )
-            await self._cancel_notice_tasks()
+            await self._cancel_notice_tasks(preserve_processing_ack=result_received)
             if not result_received and not processing_may_continue:
                 self._clear_active_client_turn(client_turn_id)
         if generation != self._generation or self._closed:
@@ -1509,6 +1510,7 @@ class TranscribePollyRuntime:
             )
         )
         self._notice_tasks.add(task)
+        self._notice_task_kinds[task] = kind
         task.add_done_callback(self._notice_task_done)
 
     async def _play_delayed_notice(
@@ -1572,6 +1574,34 @@ class TranscribePollyRuntime:
             self._last_backchannel_at = monotonic()
         return result.accepted
 
+    async def _prepare_formal_reply_output(self) -> str | None:
+        active_notice_id = (
+            self._output.active_response_id
+            if self._output.active_kind is OutputKind.PROCESSING_ACK
+            else None
+        )
+        if active_notice_id is not None:
+            # Preserve the active acknowledgement, but cancel pending notices.
+            await self._cancel_notice_tasks(preserve_processing_ack=True)
+        else:
+            await self._cancel_notice_tasks()
+            await self._output.cancel_notices()
+        return active_notice_id
+
+    async def _wait_for_processing_ack(self, response_id: str | None) -> None:
+        if response_id is None:
+            return
+        logger.info(
+            "transcribe_polly_formal_reply_waiting_for_processing_ack response_id=%s",
+            response_id,
+        )
+        completed = await self._output.wait_for_response(response_id)
+        logger.info(
+            "transcribe_polly_formal_reply_processing_ack_finished response_id=%s completed=%s",
+            response_id,
+            completed,
+        )
+
     async def _play_formal_reply(self, reply: AssistantReply) -> None:
         generation = self._generation or 1
         if self._generation == 0:
@@ -1584,8 +1614,7 @@ class TranscribePollyRuntime:
         # Transcribe before browser playback has drained.
         self._close_input_gate(reason="formal_reply_started")
         self._assistant_response_states[reply.response_id] = AssistantResponseState.PLANNED
-        await self._cancel_notice_tasks()
-        await self._output.cancel_notices()
+        active_ack_id = await self._prepare_formal_reply_output()
         timing = self._pipeline_timings.get(reply.response_id)
         if timing is not None and "polly_started_at" not in timing:
             timing["polly_started_at"] = monotonic()
@@ -1604,6 +1633,7 @@ class TranscribePollyRuntime:
             reply.text,
             log_event="voice_formal_reply_audio_preload_scheduled",
         )
+        await self._wait_for_processing_ack(active_ack_id)
         await self._emit(
             AssistantResponsePreparing(
                 response_id=reply.response_id,
@@ -1708,8 +1738,8 @@ class TranscribePollyRuntime:
 
         self._close_input_gate(reason="formal_reply_stream_started")
         self._assistant_response_states[response_id] = AssistantResponseState.PLANNED
-        await self._cancel_notice_tasks()
-        await self._output.cancel_notices()
+        active_ack_id = await self._prepare_formal_reply_output()
+        await self._wait_for_processing_ack(active_ack_id)
         self._formal_response_id = response_id
         self._formal_generation = generation
         self._formal_playback_drained_event = asyncio.Event()
@@ -2542,9 +2572,16 @@ class TranscribePollyRuntime:
         if self._processing_task is not None and not self._processing_task.done():
             self._processing_task.cancel()
 
-    async def _cancel_notice_tasks(self) -> None:
-        tasks = tuple(self._notice_tasks)
-        self._notice_tasks.clear()
+    async def _cancel_notice_tasks(self, *, preserve_processing_ack: bool = False) -> None:
+        tasks = tuple(
+            task
+            for task in self._notice_tasks
+            if not (
+                preserve_processing_ack
+                and self._notice_task_kinds.get(task) is OutputKind.PROCESSING_ACK
+            )
+        )
+        self._notice_tasks.difference_update(tasks)
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -2794,6 +2831,7 @@ class TranscribePollyRuntime:
 
     def _notice_task_done(self, task: asyncio.Task[None]) -> None:
         self._notice_tasks.discard(task)
+        self._notice_task_kinds.pop(task, None)
         if task.cancelled():
             return
         exception = task.exception()
