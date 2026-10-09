@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping
 from copy import deepcopy
 
+import httpx
 import pytest
 from botocore.credentials import Credentials
 
@@ -14,6 +15,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     select_next_question_target,
 )
 from ai_interviewer_api.agents.interview_knowledge.provider import (
+    BedrockAPIError,
     BedrockResponsesStructuredProvider,
     _make_strict_schema,
     _interpreter_system_prompt,
@@ -382,6 +384,134 @@ def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
     assert request_body["max_output_tokens"] == 600
     assert request_body["text"]["format"]["type"] == "json_schema"
     assert request_body["text"]["format"]["strict"] is True
+
+
+def test_bedrock_responses_provider_retries_503_and_logs_safe_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: list[dict[str, object]] = []
+    failed_response = httpx.Response(
+        503,
+        headers={
+            "x-amzn-errortype": "ServiceUnavailableException",
+            "x-amzn-requestid": "request-id-503",
+            "retry-after": "0",
+        },
+        json={"message": "sensitive-provider-body"},
+        request=httpx.Request("POST", "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses"),
+    )
+    provider = BedrockResponsesStructuredProvider(
+        model_id="global.openai.gpt-5.6-luna",
+        region_name="us-east-1",
+        session=FakeBedrockSession(),
+        http_client_factory=SequenceHttpClientFactory(
+            [
+                failed_response,
+                SequenceHttpResponse(
+                    {"output_text": '{"questionText":"利用者は誰ですか？"}'}
+                ),
+            ],
+            captured,
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_interviewer_api.agents.interview_knowledge.provider.time.sleep",
+        lambda _: None,
+    )
+
+    with caplog.at_level("WARNING", logger="ai_interviewer_api.agents.interview_knowledge.provider"):
+        result = provider.generate_question(
+            profile="system_requirement",
+            context={"currentState": {}},
+            target={"targetType": "requirement", "targetId": "requirement.users", "label": "利用者"},
+            reasoning_effort="low",
+        )
+
+    assert result.questionText == "利用者は誰ですか？"
+    assert len(captured) == 2
+    assert "status_code=503" in caplog.text
+    assert "ServiceUnavailableException" in caplog.text
+    assert "request-id-503" in caplog.text
+    assert "sensitive-provider-body" not in caplog.text
+
+
+def test_bedrock_responses_provider_does_not_retry_non_transient_http_errors(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: list[dict[str, object]] = []
+    provider = BedrockResponsesStructuredProvider(
+        model_id="global.openai.gpt-5.6-luna",
+        region_name="us-east-1",
+        session=FakeBedrockSession(),
+        http_client_factory=SequenceHttpClientFactory(
+            [
+                httpx.Response(
+                    400,
+                    headers={"x-amzn-errortype": "ValidationException"},
+                    json={"message": "sensitive-provider-body"},
+                    request=httpx.Request(
+                        "POST",
+                        "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses",
+                    ),
+                )
+            ],
+            captured,
+        ),
+    )
+
+    with (
+        caplog.at_level("WARNING", logger="ai_interviewer_api.agents.interview_knowledge.provider"),
+        pytest.raises(BedrockAPIError, match="status_code=400"),
+    ):
+        provider.generate_question(
+            profile="system_requirement",
+            context={"currentState": {}},
+            target={"targetType": "requirement", "targetId": "requirement.users", "label": "利用者"},
+            reasoning_effort="low",
+        )
+
+    assert len(captured) == 1
+    assert "ValidationException" in caplog.text
+    assert "sensitive-provider-body" not in caplog.text
+
+
+def test_bedrock_responses_provider_stops_after_bounded_503_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: list[dict[str, object]] = []
+    url = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses"
+    provider = BedrockResponsesStructuredProvider(
+        model_id="global.openai.gpt-5.6-luna",
+        region_name="us-east-1",
+        session=FakeBedrockSession(),
+        http_client_factory=SequenceHttpClientFactory(
+            [
+                httpx.Response(503, request=httpx.Request("POST", url))
+                for _ in range(3)
+            ],
+            captured,
+        ),
+    )
+    monkeypatch.setattr(
+        "ai_interviewer_api.agents.interview_knowledge.provider.time.sleep",
+        lambda _: None,
+    )
+
+    with (
+        caplog.at_level("WARNING", logger="ai_interviewer_api.agents.interview_knowledge.provider"),
+        pytest.raises(BedrockAPIError, match="status_code=503"),
+    ):
+        provider.generate_question(
+            profile="system_requirement",
+            context={"currentState": {}},
+            target={"targetType": "requirement", "targetId": "requirement.users", "label": "利用者"},
+            reasoning_effort="low",
+        )
+
+    assert len(captured) == 3
+    assert caplog.text.count("structured_bedrock_http_error") == 3
 
 
 def test_bedrock_responses_provider_generates_question_help_from_structured_contract() -> None:

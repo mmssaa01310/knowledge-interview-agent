@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import random
+import re
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 import boto3
@@ -30,7 +36,15 @@ class StructuredInterviewProviderError(RuntimeError):
     """Raised when the configured structured-output provider cannot respond."""
 
 
+class BedrockAPIError(StructuredInterviewProviderError):
+    """Raised for Bedrock HTTP/API failures that should not trigger output retries."""
+
+
 logger = logging.getLogger(__name__)
+
+_RETRYABLE_BEDROCK_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_BEDROCK_MAX_REQUEST_ATTEMPTS = 3
+_BEDROCK_MAX_RETRY_AFTER_SECONDS = 5.0
 
 
 class StructuredInterviewProvider(Protocol):
@@ -134,6 +148,8 @@ class BedrockResponsesStructuredProvider:
                     max_output_tokens=max_output_tokens,
                 )
                 return output_type.model_validate(payload)
+            except BedrockAPIError:
+                raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
                 if attempt == 0:
@@ -167,6 +183,8 @@ class BedrockResponsesStructuredProvider:
                 if not output.questionText.strip():
                     raise StructuredInterviewProviderError("structured question text is empty")
                 return output
+            except BedrockAPIError:
+                raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
         raise StructuredInterviewProviderError("question output validation failed after retry") from error
@@ -198,6 +216,8 @@ class BedrockResponsesStructuredProvider:
                 if not all(item.strip() for item in output.examples + output.perspectives):
                     raise StructuredInterviewProviderError("question help contains empty guidance")
                 return output
+            except BedrockAPIError:
+                raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
         raise StructuredInterviewProviderError(
@@ -345,6 +365,8 @@ class BedrockResponsesStructuredProvider:
                 if not output.reply.strip():
                     raise StructuredInterviewProviderError("process model edit reply is empty")
                 return output
+            except BedrockAPIError:
+                raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
                 if attempt == 0:
@@ -433,19 +455,81 @@ class BedrockResponsesStructuredProvider:
         request_url = f"{self.endpoint_url}/responses"
         request_body_text = json.dumps(request_body, ensure_ascii=False, separators=(",", ":"))
         try:
-            signed_headers = self._signed_headers(request_url, request_body_text)
-            with self.http_client_factory(timeout=self.timeout) as client:
-                response = client.post(
-                    request_url,
-                    headers=signed_headers,
-                    content=request_body_text.encode("utf-8"),
-                )
-            response.raise_for_status()
-            response_json = response.json()
-        except StructuredInterviewProviderError:
+            for attempt in range(_BEDROCK_MAX_REQUEST_ATTEMPTS):
+                try:
+                    signed_headers = self._signed_headers(request_url, request_body_text)
+                    with self.http_client_factory(timeout=self.timeout) as client:
+                        response = client.post(
+                            request_url,
+                            headers=signed_headers,
+                            content=request_body_text.encode("utf-8"),
+                        )
+                    response.raise_for_status()
+                    response_json = response.json()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    response = exc.response
+                    status_code = response.status_code
+                    error_type = _safe_bedrock_header(
+                        response.headers.get("x-amzn-errortype")
+                        or response.headers.get("x-amzn-ErrorType")
+                    )
+                    request_id = _safe_bedrock_header(
+                        response.headers.get("x-amzn-requestid")
+                        or response.headers.get("x-amz-request-id")
+                        or response.headers.get("x-amz-apigw-id")
+                    )
+                    should_retry = (
+                        status_code in _RETRYABLE_BEDROCK_STATUS_CODES
+                        and attempt + 1 < _BEDROCK_MAX_REQUEST_ATTEMPTS
+                    )
+                    delay = (
+                        _bedrock_retry_delay_seconds(
+                            attempt,
+                            response.headers.get("retry-after"),
+                        )
+                        if should_retry
+                        else None
+                    )
+                    should_retry = should_retry and delay is not None
+                    logger.warning(
+                        "structured_bedrock_http_error schema=%s model_id=%s "
+                        "status_code=%s error_type=%s aws_request_id=%s attempt=%s retrying=%s",
+                        schema_name,
+                        model,
+                        status_code,
+                        error_type or "unknown",
+                        request_id or "unknown",
+                        attempt + 1,
+                        should_retry,
+                    )
+                    if should_retry and delay is not None:
+                        logger.info(
+                            "structured_bedrock_retry schema=%s model_id=%s "
+                            "attempt=%s delay_ms=%s",
+                            schema_name,
+                            model,
+                            attempt + 1,
+                            round(delay * 1000),
+                        )
+                        time.sleep(delay)
+                        continue
+                    raise BedrockAPIError(
+                        "Amazon Bedrock Structured Outputs request failed "
+                        f"(status_code={status_code}, error_type={error_type or 'unknown'})"
+                    ) from exc
+            else:
+                raise BedrockAPIError("Amazon Bedrock Structured Outputs request failed")
+        except BedrockAPIError:
             raise
         except (BotoCoreError, httpx.HTTPError, ValueError) as exc:
-            raise StructuredInterviewProviderError(
+            logger.warning(
+                "structured_bedrock_request_failed schema=%s model_id=%s error_type=%s",
+                schema_name,
+                model,
+                type(exc).__name__,
+            )
+            raise BedrockAPIError(
                 "Amazon Bedrock Structured Outputs request failed"
             ) from exc
 
@@ -499,7 +583,7 @@ class BedrockResponsesStructuredProvider:
     def _signed_headers(self, request_url: str, request_body_text: str) -> dict[str, str]:
         credentials = self.session.get_credentials()
         if credentials is None:
-            raise StructuredInterviewProviderError(
+            raise BedrockAPIError(
                 "AWS credentials are not configured for Bedrock"
             )
         signed_request = AWSRequest(
@@ -520,6 +604,46 @@ def _retry_max_output_tokens(current: int) -> int:
     """Give a truncated structured response a larger retry budget."""
 
     return max(current, min(current * 2, 10_000))
+
+
+def _safe_bedrock_header(value: str | None) -> str | None:
+    if not value:
+        return None
+    return re.sub(r"[^A-Za-z0-9_.:/-]", "", value)[:128] or None
+
+
+def _bedrock_retry_delay_seconds(attempt: int, retry_after: str | None) -> float | None:
+    """Return a bounded jittered delay, or skip retry when Retry-After is too long."""
+
+    retry_after_seconds: float | None = None
+    if retry_after:
+        try:
+            retry_after_seconds = float(retry_after)
+            if not math.isfinite(retry_after_seconds):
+                retry_after_seconds = None
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                retry_after_seconds = max(
+                    0.0,
+                    (retry_at - datetime.now(timezone.utc)).total_seconds(),
+                )
+            except (TypeError, ValueError, OverflowError):
+                retry_after_seconds = None
+
+    if retry_after_seconds is not None:
+        if retry_after_seconds < 0:
+            retry_after_seconds = None
+        elif retry_after_seconds > _BEDROCK_MAX_RETRY_AFTER_SECONDS:
+            return None
+        else:
+            jitter_limit = min(0.25, _BEDROCK_MAX_RETRY_AFTER_SECONDS - retry_after_seconds)
+            return retry_after_seconds + random.uniform(0.0, jitter_limit)
+
+    backoff_limit = min(2.0, 0.5 * (2**attempt))
+    return random.uniform(0.0, backoff_limit)
 
 
 def _estimated_input_tokens(system_prompt: str, user_payload_text: str) -> int:
