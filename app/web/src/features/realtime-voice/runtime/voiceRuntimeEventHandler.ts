@@ -191,6 +191,11 @@ export function createVoiceRuntimeEventHandler(
           setMessage(t("interview.voice.processingDelayed"));
           return;
         }
+        if (event.message === "transcribe_final_timeout" && event.fatal === false) {
+          setStatus("listening");
+          setMessage("");
+          return;
+        }
         if (event.message === "audio_playback_failed") {
           setRequiresManualPlayback(true);
           setMessage(toUserFacingError(event.message, t));
