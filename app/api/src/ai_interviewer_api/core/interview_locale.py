@@ -210,6 +210,7 @@ def _localized_clarification_role(
                 ("equipment", "asset", "facility", "machine", "device", "設備", "機器", "装置"),
                 "設備名",
             ),
+            (("unit_number", "machine_number", "serial_number", "号機", "機番"), "号機"),
             (("technology", "tech", "技術"), "技術名"),
             (("person", "人名", "氏名"), "人名"),
             (("department", "所属", "部署"), "所属"),
@@ -217,6 +218,7 @@ def _localized_clarification_role(
             (("number", "数字", "件数", "金額"), "数字"),
             (("date", "時期", "日付", "年月"), "時期"),
             (("location", "場所", "地域", "拠点"), "場所"),
+            (("unclear_answer_part",), "不明瞭な部分"),
         ):
             if any(token in compact or token in role for token in tokens):
                 return label
@@ -227,12 +229,14 @@ def _localized_clarification_role(
                 ("equipment", "asset", "facility", "machine", "device"),
                 "the equipment name",
             ),
+            (("unit_number", "machine_number", "serial_number"), "the unit number"),
             (("technology", "tech"), "the technology name"),
             (("person",), "the person's name"),
             (("organization", "company"), "the organization name"),
             (("number",), "the number"),
             (("date",), "the time or date"),
             (("location",), "the location"),
+            (("unclear_answer_part",), "the unclear part"),
         ):
             if any(token in compact for token in tokens):
                 return label
@@ -243,12 +247,14 @@ def _localized_clarification_role(
                 ("equipment", "asset", "facility", "machine", "device"),
                 "设备名称",
             ),
+            (("unit_number", "machine_number", "serial_number"), "设备号机"),
             (("technology", "tech"), "技术名称"),
             (("person",), "人名"),
             (("organization", "company"), "组织名称"),
             (("number",), "数字"),
             (("date",), "时间"),
             (("location",), "地点"),
+            (("unclear_answer_part",), "没有听清的部分"),
         ):
             if any(token in compact for token in tokens):
                 return label
@@ -258,12 +264,14 @@ def _localized_clarification_role(
             ("equipment", "asset", "facility", "machine", "device"),
             "o nome do equipamento",
         ),
+        (("unit_number", "machine_number", "serial_number"), "o número da unidade"),
         (("technology", "tech"), "o nome da tecnologia"),
         (("person",), "o nome da pessoa"),
         (("organization", "company"), "o nome da organização"),
         (("number",), "o número"),
         (("date",), "a data ou período"),
         (("location",), "o local"),
+        (("unclear_answer_part",), "a parte pouco clara"),
     ):
         if any(token in compact for token in tokens):
             return label
@@ -274,11 +282,13 @@ def localized_interview_ambiguous_part_prompt(
     locale: InterviewLocale,
     semantic_role: str | None = None,
     understood: str | None = None,
+    target_label: str | None = None,
 ) -> str:
     """Ask for only an important, ambiguous ASR span."""
 
     normalized_understood = (understood or "").strip()
-    if not (semantic_role or "").strip():
+    normalized_target_label = (target_label or "").strip()
+    if not (semantic_role or "").strip() and not normalized_target_label:
         return {
             "ja-JP": "音声を正しく認識できませんでした。回答がうまく聞き取れませんでしたが、聞き取れなかった部分だけ、もう一度お願いします。",
             "en-US": "I could not recognize part of the audio. Please repeat only the unclear part.",
@@ -286,6 +296,8 @@ def localized_interview_ambiguous_part_prompt(
             "pt-BR": "Não consegui reconhecer uma parte do áudio. Repita apenas a parte pouco clara, por favor.",
         }[locale]
     label = _localized_clarification_role(locale, semantic_role)
+    if locale == "ja-JP" and normalized_target_label:
+        label = normalized_target_label
     if normalized_understood:
         if locale == "en-US":
             return f"I understood {normalized_understood}. Please repeat only {label}."

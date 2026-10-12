@@ -19,6 +19,7 @@ from ai_interviewer_api.agents.interview_knowledge.provider import (
     BedrockResponsesStructuredProvider,
     _make_strict_schema,
     _interpreter_system_prompt,
+    _question_system_prompt,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
     AnswerAssessment,
@@ -243,6 +244,23 @@ def test_interpreter_prompt_separates_question_help_from_answer_unavailability()
     assert "UNANSWERABLE" in prompt
     assert "単に「よく分からない」とだけ言われた場合" in prompt
     assert "STTが不確実でない限りUNCERTAINにはしません" in prompt
+
+
+def test_question_prompt_uses_retrieved_facts_as_context_not_answer() -> None:
+    prompt = _question_system_prompt("fixed_form")
+
+    assert "具体的な条件・基準・手順" in prompt
+    assert "その条件が今回も当てはまるか、実施・確認したか" in prompt
+    assert (
+        "documentCandidateValueとその値を直接裏付ける"
+        "documentCandidateSourceIdsを必ず返してください"
+        in prompt
+    )
+    assert (
+        "対象者が今回経験した事実や実施済みの手順として断定してはいけません"
+        in prompt
+    )
+    assert "target以外の項目を追加したり" in prompt
 
 
 def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:

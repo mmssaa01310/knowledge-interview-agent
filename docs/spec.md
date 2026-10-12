@@ -791,7 +791,7 @@ Backendは、次の優先順位で1件だけ質問対象を決定する。
 
 LLMは質問対象、優先順位、完了状態を返してはならない。LLMはBackendが指定した対象について自然な質問文だけを生成する。
 
-質問対象に関連する取り込み済み文書があり、対象項目の値が本文またはタイトルに明示されている場合、Question Generatorはその値を`documentCandidateValue`と根拠の`documentCandidateSourceIds`として返してよい。Backendは返却値が検索済みの文書・チャンクに実在することと、根拠IDが同じテナント・Knowledgeの`indexed`または取り込み完了文書であることを検証する。検証に成功した値は、設備名などの設定済み項目を最初から聞き直す代わりに、文書由来の確認事項として提示する。
+質問対象に関連する取り込み済み文書があり、未回答の対象項目に直接対応する値が本文またはタイトルに明示されている場合、Question Generatorはその値を`documentCandidateValue`と根拠の`documentCandidateSourceIds`として必ず返す。Backendは返却値が検索済みの文書・チャンクに実在することと、根拠IDが同じテナント・Knowledgeの`indexed`または取り込み完了文書であることを検証する。検証に成功した値は、設備名などの設定済み項目を最初から聞き直す代わりに、文書由来の確認事項として提示する。
 
 文書由来の候補は、利用者が明示的に承認するまで正式回答へ保存してはならない。候補を持つ項目は`AWAITING_CONFIRMATION`として保持し、承認時だけ`CONFIRMED`へ移し、訂正時は文書候補を破棄して利用者発話の値へ置き換える。根拠がない、対象項目との意味的一致が弱い、または文書が`indexed`でない場合は候補を作らず、通常の質問を行う。`retrievalPolicy=never`の項目はこの候補化の対象外とする。
 
@@ -840,7 +840,7 @@ Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.fo
 
 質問項目設計の生成前に、Backendは同じテナントかつ同じKnowledgeに属する情報だけを読み取る。検索対象は、既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済みの文書・文書チャンクである。未承認の記録・提案、取り込み中の文書、別Knowledgeの情報をLLMへ渡してはならない。検索結果は`retrieved_knowledge`として入力へ埋め込み、LLMにDBアクセスやDB更新を許可してはならない。
 
-インタビューの次質問生成でも、Backendは同じテナントかつ同じKnowledgeに属する`indexed`または取り込み完了状態の文書・文書チャンクを共通検索サービスから取得し、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`として渡す。`retrievalPolicy=never`の項目では文書を検索せず、`auto`または`required`では質問・項目・会話文脈に関連する文書だけを渡す。生成された質問には`retrievedSources`として文書IDまたはチャンクID、タイトル、スコアを記録する。`app/voice`は検索・質問進行を実装せず、Backendが生成した同じ質問と出典を利用する。
+インタビューの次質問生成でも、Backendは同じテナントかつ同じKnowledgeに属する`indexed`または取り込み完了状態の文書・文書チャンクを共通検索サービスから取得し、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`として渡す。`retrievalPolicy=never`の項目では文書を検索せず、`auto`または`required`では質問・項目・会話文脈に関連する文書だけを渡す。取得文書に現在の質問対象や未回答の必須観点に直接関係する具体的な条件・基準・手順がある場合、Question Generatorはその情報を質問に反映し、今回のケースに当てはまるか、実施・確認したかを対象者へ尋ねる。文書の記載を対象者の経験・回答として断定せず、現在の質問対象以外の項目を追加しない。質問対象の回答値が文書に明記されている場合は、文書由来の確認候補として扱い、対象者の確認前に回答を確定しない。生成された質問には`retrievedSources`として文書IDまたはチャンクID、タイトル、スコアを記録する。`app/voice`は検索・質問進行を実装せず、Backendが生成した同じ質問と出典を利用する。
 
 Question Design AgentとValidatorは、同じ選択モデルへそれぞれStructured Outputリクエストを送る。生成結果と検証結果はBackendがPydantic Schemaで検証し、検証失敗時は各段階で1回だけ再実行する。Provider障害時に別モデルや別の自動フォールバックへ切り替えてはならない。
 

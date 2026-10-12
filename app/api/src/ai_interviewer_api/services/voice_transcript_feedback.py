@@ -78,6 +78,7 @@ def build_transcribe_polly_transcript_feedback(
             return localized_interview_ambiguous_part_prompt(
                 locale,
                 semantic_role,
+                target_label=_clean_text(clarification_target.get("label")) or None,
             )
 
         labels = _confirmation_labels(state, question, field_labels, locale)
@@ -127,6 +128,7 @@ def build_transcribe_polly_transcript_feedback(
                 locale,
                 _clean_text(clarification_target.get("semanticRole")) or None,
                 understood,
+                target_label=_clean_text(clarification_target.get("label")) or None,
             )
 
     # A persisted turn from before clarificationTarget was introduced may

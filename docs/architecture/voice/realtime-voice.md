@@ -212,7 +212,7 @@ class AssistantReply:
 
 次質問の対象値がBackendの検索した`indexed`文書に明示されている場合、APIは`document_reference`の候補を`AWAITING_CONFIRMATION`として保持し、音声には文書記載値の確認質問を返す。候補は「はい」などの明示承認後だけ正式回答へ移し、訂正発話があれば利用者の値へ更新する。音声Runtimeはこの判定や文書検索を複製せず、`app/api`が生成した確認質問、状態、出典を利用する。
 
-Transcribe + Pollyの聞き返し文は、Structured Interviewの状態を変更しない音声専用の表現層で整える。`answerEvaluation=NOT_HEARD`または文字起こしが`CORRECTED`/`UNCERTAIN`で、認識品質の根拠がある場合は、項目別の候補があれば「設備名は〇〇、号機は〇〇ですか」のように対応関係が分かる確認文を返す。候補がない場合は対象項目を聞き返し、発話全体を候補や確認文として復唱しない。発話全体を認識できない場合は回答全体をもう一度依頼する。`PARTIALLY_ANSWERED`、`OFF_TARGET`、`INCOMPLETE_UTTERANCE`の応答をこの層で「聞き取れなかった」と言い換えてはならない。通常のテキスト経路とNova Sonicの応答文生成にはこの表現層を適用しない。
+Transcribe + Pollyの聞き返し文は、Structured Interviewの状態を変更しない音声専用の表現層で整える。`answerEvaluation=NOT_HEARD`または文字起こしが`CORRECTED`/`UNCERTAIN`で、認識品質の根拠がある場合は、項目別の候補があれば「設備名は〇〇、号機は〇〇ですか」のように対応関係が分かる確認文を返す。候補がない場合は対象項目を聞き返し、発話全体を候補や確認文として復唱しない。重要な曖昧spanの`semanticRole`は、現在の質問定義で対応する`requiredItems`または`optionalItems`の`itemId`と一致させる。Backendはspanと`aspectAssessments`の不確かな観点を照合し、観点が一意に特定できる場合は質問定義の項目ID・ラベルを`clarificationTarget`へ反映する。一意に特定できない場合や質問項目の定義がない場合は、モデル由来の役割名を項目名として使わず、汎用の「不明瞭な部分」として聞き返す。これにより、設備名の曖昧さを「技術名」と案内するなど、聞き返し対象と質問項目が食い違う応答を防ぐ。発話全体を認識できない場合は回答全体をもう一度依頼する。`PARTIALLY_ANSWERED`、`OFF_TARGET`、`INCOMPLETE_UTTERANCE`の応答をこの層で「聞き取れなかった」と言い換えてはならない。通常のテキスト経路とNova Sonicの応答文生成にはこの表現層を適用しない。
 
 ## 5. VoiceRuntimeEvent契約
 

@@ -57,6 +57,7 @@ from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.service impo
     can_proceed,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
+    ASRAmbiguousSpan,
     ConversationAction,
     InterpretationMatch,
     InterviewProfile,
@@ -1629,6 +1630,7 @@ def _generate_structured_interview_result(
             # Normalize the independent transcript/semantic judgements before
             # any runtime-specific wording or state transition is selected.
             output = normalize_conversation_output(output)
+            output = _align_asr_ambiguous_span_roles(output, current_question)
             if (
                 output.utteranceCompleteness == "UNCERTAIN"
                 and output.transcriptAssessment.recognitionStatus == "CLEAR"
@@ -4141,13 +4143,20 @@ def _build_clarification_target(
         span = spans[0] if spans else None
         if span is None:
             return None
-        return {
+        target = {
             "type": "ASR_AMBIGUOUS",
             "questionId": question_id,
             "span": span.span,
             "semanticRole": span.semanticRole,
             "important": True,
         }
+        aspect = _clarification_aspect_for_span(output, span, current_question)
+        if aspect is not None:
+            aspect_id, aspect_label = aspect
+            target["semanticRole"] = aspect_id
+            target["aspectId"] = aspect_id
+            target["label"] = aspect_label
+        return target
 
     if output.answerEvaluation == "PARTIALLY_ANSWERED" or output.answerStatus == "PARTIAL":
         aspect = next(
@@ -4174,6 +4183,108 @@ def _build_clarification_target(
                 "label": label,
             }
     return None
+
+
+def _clarification_aspect_for_span(
+    output: StructuredInterviewOutput,
+    span: ASRAmbiguousSpan,
+    current_question: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    """Resolve an ASR span to the current question's uncertain aspect when clear."""
+
+    configured_items = _question_aspect_labels(current_question)
+    if not configured_items:
+        # Without question-owned item IDs there is no authoritative basis for
+        # turning a provider role into a user-facing field label.
+        return None
+    unresolved = [
+        aspect
+        for aspect in output.aspectAssessments
+        if aspect.status in {"MISSING", "UNCERTAIN"}
+        and aspect.aspectId in configured_items
+    ]
+    if not unresolved:
+        return None
+
+    normalized_span = span.span.casefold().strip()
+    evidence_matches = [
+        aspect
+        for aspect in unresolved
+        if normalized_span and normalized_span in aspect.evidence.casefold()
+    ]
+    if len(evidence_matches) == 1:
+        selected = evidence_matches[0]
+    elif evidence_matches:
+        return None
+    else:
+        required_unresolved = [aspect for aspect in unresolved if aspect.required]
+        if len(required_unresolved) != 1:
+            return None
+        selected = required_unresolved[0]
+
+    aspect_id = selected.aspectId.strip()
+    if not aspect_id:
+        return None
+    configured_label = configured_items.get(aspect_id, "")
+    return aspect_id, configured_label or selected.label.strip()
+
+
+def _question_aspect_labels(current_question: Mapping[str, Any]) -> dict[str, str]:
+    question_definition = current_question.get("questionDefinition")
+    if not isinstance(question_definition, Mapping):
+        return {}
+    return {
+        str(item.get("itemId") or "").strip(): str(item.get("label") or "").strip()
+        for key in ("requiredItems", "optionalItems")
+        for item in (
+            question_definition.get(key)
+            if isinstance(question_definition.get(key), list)
+            else []
+        )
+        if isinstance(item, Mapping) and str(item.get("itemId") or "").strip()
+    }
+
+
+def _align_asr_ambiguous_span_roles(
+    output: StructuredInterviewOutput,
+    current_question: Mapping[str, Any],
+) -> StructuredInterviewOutput:
+    """Align ASR roles to question items or use a generic unclear-part label."""
+
+    if (
+        (
+            output.answerEvaluation != "NOT_HEARD"
+            and output.transcriptAssessment.correctionStatus
+            not in {"CORRECTED", "UNCERTAIN"}
+        )
+        or not output.transcriptAssessment.ambiguousSpans
+    ):
+        return output
+
+    aligned_spans: list[ASRAmbiguousSpan] = []
+    changed = False
+    for span in output.transcriptAssessment.ambiguousSpans:
+        aspect = (
+            _clarification_aspect_for_span(output, span, current_question)
+            if span.important
+            else None
+        )
+        if not span.important:
+            aligned_spans.append(span)
+            continue
+        semantic_role = aspect[0] if aspect is not None else "unclear_answer_part"
+        if span.semanticRole != semantic_role:
+            aligned_spans.append(span.model_copy(update={"semanticRole": semantic_role}))
+            changed = True
+        else:
+            aligned_spans.append(span)
+    if not changed:
+        return output
+
+    transcript_assessment = output.transcriptAssessment.model_copy(
+        update={"ambiguousSpans": aligned_spans}
+    )
+    return output.model_copy(update={"transcriptAssessment": transcript_assessment})
 
 
 def _remember_clarification_target(
@@ -4262,6 +4373,7 @@ def _clarification_target_prompt(
             locale,
             semantic_role,
             "、".join(understood_values[:3])[:240] or None,
+            target_label=str(target.get("label") or "") or None,
         )
     if target_type == "MISSING_INFORMATION":
         return localized_interview_missing_information_prompt(
