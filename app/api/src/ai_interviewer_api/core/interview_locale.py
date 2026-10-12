@@ -113,6 +113,32 @@ def localized_interview_document_confirmation_question(
     }[locale]
 
 
+def localized_interview_prior_knowledge_confirmation_question(
+    locale: InterviewLocale,
+    values: Sequence[tuple[str, str]],
+) -> str:
+    """Ask the participant to verify registered values by their target labels."""
+
+    normalized = [
+        (str(label or "").strip(), str(value or "").strip())
+        for label, value in values
+        if str(label or "").strip() and str(value or "").strip()
+    ]
+    if not normalized:
+        return ""
+    if locale == "ja-JP":
+        details = "、".join(f"{label}は「{value}」" for label, value in normalized)
+        return f"{details}で合っていますか？"
+    if locale == "en-US":
+        details = " and ".join(f"{label} is “{value}”" for label, value in normalized)
+        return f"Is it correct that {details}?"
+    if locale == "zh-CN":
+        details = "、".join(f"{label}是“{value}”" for label, value in normalized)
+        return f"{details}，对吗？"
+    details = " e ".join(f"{label} é “{value}”" for label, value in normalized)
+    return f"Está correto que {details}?"
+
+
 def localized_interview_incomplete_prompt(locale: InterviewLocale) -> str:
     """Ask the speaker to continue without repeating the partial transcript."""
 
@@ -180,8 +206,12 @@ def _localized_clarification_role(
     compact = role.casefold().replace(" ", "_")
     if locale == "ja-JP":
         for tokens, label in (
+            (
+                ("equipment", "asset", "facility", "machine", "device", "設備", "機器", "装置"),
+                "設備名",
+            ),
             (("technology", "tech", "技術"), "技術名"),
-            (("person", "人名", "氏名", "name"), "人名"),
+            (("person", "人名", "氏名"), "人名"),
             (("department", "所属", "部署"), "所属"),
             (("organization", "company", "組織", "会社", "所属"), "組織名"),
             (("number", "数字", "件数", "金額"), "数字"),
@@ -193,8 +223,12 @@ def _localized_clarification_role(
         return role or "回答の不明瞭な部分"
     if locale == "en-US":
         for tokens, label in (
+            (
+                ("equipment", "asset", "facility", "machine", "device"),
+                "the equipment name",
+            ),
             (("technology", "tech"), "the technology name"),
-            (("person", "name"), "the person's name"),
+            (("person",), "the person's name"),
             (("organization", "company"), "the organization name"),
             (("number",), "the number"),
             (("date",), "the time or date"),
@@ -205,8 +239,12 @@ def _localized_clarification_role(
         return role or "the unclear part of your answer"
     if locale == "zh-CN":
         for tokens, label in (
+            (
+                ("equipment", "asset", "facility", "machine", "device"),
+                "设备名称",
+            ),
             (("technology", "tech"), "技术名称"),
-            (("person", "name"), "人名"),
+            (("person",), "人名"),
             (("organization", "company"), "组织名称"),
             (("number",), "数字"),
             (("date",), "时间"),
@@ -216,8 +254,12 @@ def _localized_clarification_role(
                 return label
         return role or "回答中没有听清的部分"
     for tokens, label in (
+        (
+            ("equipment", "asset", "facility", "machine", "device"),
+            "o nome do equipamento",
+        ),
         (("technology", "tech"), "o nome da tecnologia"),
-        (("person", "name"), "o nome da pessoa"),
+        (("person",), "o nome da pessoa"),
         (("organization", "company"), "o nome da organização"),
         (("number",), "o número"),
         (("date",), "a data ou período"),
@@ -495,16 +537,18 @@ def localized_interview_unanswerable_prompt(locale: InterviewLocale, target_labe
 
 def localized_interview_transcript_confirmation_question(
     locale: InterviewLocale,
-    normalized_transcript: str,
+    candidate_summary: str,
 ) -> str:
-    """Confirm a corrected transcript before it is used as an answer."""
+    """Confirm target-mapped candidate values before they are used as answers."""
 
-    transcript = normalized_transcript.strip()
+    summary = candidate_summary.strip()
+    if not summary:
+        return localized_interview_transcript_retry(locale)
     return {
-        "ja-JP": f"「{transcript}」という理解でよろしいですか？",
-        "en-US": f"Is my understanding correct: “{transcript}”?",
-        "zh-CN": f"我的理解是“{transcript}”，这样对吗？",
-        "pt-BR": f"Entendi que “{transcript}”. Está correto?",
+        "ja-JP": f"{summary}という理解でよろしいですか？",
+        "en-US": f"Just to confirm, {summary}. Is that right?",
+        "zh-CN": f"请确认：{summary}，对吗？",
+        "pt-BR": f"Só para confirmar: {summary}. Está correto?",
     }[locale]
 
 

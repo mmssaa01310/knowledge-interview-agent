@@ -15,6 +15,7 @@ from typing import Any
 from ai_interviewer_api.core.interview_locale import (
     InterviewLocale,
     localized_interview_ambiguous_part_prompt,
+    localized_interview_not_heard_prompt,
 )
 
 
@@ -46,24 +47,49 @@ def build_transcribe_polly_transcript_feedback(
     ).upper()
     correction_candidates = _unique_texts(assessment.get("correctionCandidates"))
 
-    if status == "CORRECTED":
-        normalized = _correction_candidate(state, assessment)
-        has_confirmation_target = _has_confirmation_target(state)
-        if (
-            has_confirmation_target
-            and normalized
-            and len(correction_candidates) <= 1
-            and len(normalized) <= _MAX_CANDIDATE_LENGTH
-        ):
-            labels = _confirmation_labels(state, question, field_labels, locale)
-            return _correction_confirmation_message(
-                labels=labels,
-                candidate=normalized,
-                locale=locale,
+    if status in {"CORRECTED", "UNCERTAIN"}:
+        candidate_items = _correction_candidate_items(
+            state,
+            assessment,
+            field_labels=field_labels,
+            locale=locale,
+        )
+        if candidate_items and (status == "UNCERTAIN" or len(correction_candidates) <= 1):
+            return _correction_confirmation_message(candidate_items, locale)
+
+        clarification_target = _as_mapping(
+            state.get("lastClarificationTarget")
+            or result.get("clarificationTarget")
+        )
+        semantic_role = _clean_text(clarification_target.get("semanticRole"))
+        if not semantic_role:
+            ambiguous_spans = assessment.get("ambiguousSpans")
+            if isinstance(ambiguous_spans, list):
+                semantic_role = next(
+                    (
+                        _clean_text(_as_mapping(span).get("semanticRole"))
+                        for span in ambiguous_spans
+                        if _as_mapping(span).get("important", True)
+                        and _clean_text(_as_mapping(span).get("semanticRole"))
+                    ),
+                    "",
+                )
+        if semantic_role:
+            return localized_interview_ambiguous_part_prompt(
+                locale,
+                semantic_role,
             )
-        # A malformed or non-unique correction must not be spoken as if it
-        # were a reliable candidate. Use targeted retry wording instead.
-        status = "UNCERTAIN"
+
+        labels = _confirmation_labels(state, question, field_labels, locale)
+        if labels:
+            return localized_interview_not_heard_prompt(
+                locale,
+                _join_labels(labels, locale),
+            )
+        source_question = _source_question_text(state, question)
+        if source_question:
+            return _repeat_source_question_message(locale, source_question)
+        return localized_interview_not_heard_prompt(locale, _previous_question_label(locale))
 
     # The shared evaluator is authoritative when it is available. Semantic
     # insufficiency, off-target answers, and incomplete utterances must never
@@ -342,50 +368,179 @@ def _confirmation_labels(
     return _unique_labels(labels, locale)
 
 
-def _has_confirmation_target(
+def _source_question_text(
     state: Mapping[str, Any],
-) -> bool:
-    pending = _as_mapping(state.get("pendingTranscriptConfirmation"))
-    target_refs = pending.get("targetRefs")
-    return isinstance(target_refs, list) and bool(target_refs)
-
-
-def _correction_candidate(
-    state: Mapping[str, Any],
-    assessment: Mapping[str, Any],
+    question: Mapping[str, Any],
 ) -> str:
     pending = _as_mapping(state.get("pendingTranscriptConfirmation"))
+    source_question = _as_mapping(pending.get("sourceQuestion"))
+    text = _clean_text(source_question.get("text"))
+    if text:
+        return text[:240]
+
+    # A transcript-confirmation question may contain an unsafe summary. Use
+    # the current question text only when it is the original interview item.
+    if _clean_text(question.get("targetType")) != "transcript_confirmation":
+        return _clean_text(question.get("text"))[:240]
+    return ""
+
+
+def _repeat_source_question_message(locale: InterviewLocale, question: str) -> str:
+    if locale == "en-US":
+        return f"I couldn't confirm your answer. Please answer this question again: {question}"
+    if locale == "zh-CN":
+        return f"我没能确认您的回答。请重新回答这个问题：{question}"
+    if locale == "pt-BR":
+        return f"Não consegui confirmar sua resposta. Por favor, responda novamente a esta pergunta: {question}"
+    return f"回答を確認できませんでした。先ほどの質問「{question}」にもう一度お答えください。"
+
+
+def _previous_question_label(locale: InterviewLocale) -> str:
+    return {
+        "ja-JP": "先ほどの質問",
+        "en-US": "the previous question",
+        "zh-CN": "刚才的问题",
+        "pt-BR": "a pergunta anterior",
+    }[locale]
+
+
+def _correction_candidate_items(
+    state: Mapping[str, Any],
+    assessment: Mapping[str, Any],
+    *,
+    field_labels: Mapping[str, str],
+    locale: InterviewLocale,
+) -> list[tuple[str, str]]:
+    pending = _as_mapping(state.get("pendingTranscriptConfirmation"))
     target_refs = pending.get("targetRefs")
-    candidates: list[str] = []
-    if isinstance(target_refs, list):
-        field_states = state.get("fieldStates")
-        requirement_states = state.get("requirementStates")
-        for item in target_refs:
-            target = _as_mapping(item)
-            target_id = _clean_text(target.get("targetId"))
-            target_type = _clean_text(target.get("targetType"))
-            if target_type == "field" and isinstance(field_states, Mapping):
-                target_state = _as_mapping(field_states.get(target_id))
-                value = _clean_text(target_state.get("candidateAnswer"))
-            elif target_type in {"requirement", "process"} and isinstance(
-                requirement_states, Mapping
-            ):
-                target_state = _as_mapping(requirement_states.get(target_id))
-                value = _clean_text(target_state.get("candidateValue"))
-            else:
-                value = ""
-            if value and value not in candidates:
-                candidates.append(value)
-    if candidates:
-        concise_candidates = [
-            concise
-            for value in candidates
-            if (concise := _display_value(value))
-        ]
-        concise_candidate = "、".join(concise_candidates)
-        if concise_candidate and len(concise_candidate) <= _MAX_CANDIDATE_LENGTH:
-            return concise_candidate
-    return _clean_text(assessment.get("normalizedTranscript"))
+    if not isinstance(target_refs, list) or not target_refs:
+        return []
+
+    message_id = _clean_text(pending.get("messageId"))
+    legacy_mapping = pending.get("candidateMappingVersion") != 1
+    unique_target_count = len(
+        {
+            (
+                _clean_text(_as_mapping(item).get("targetType")),
+                _clean_text(_as_mapping(item).get("targetId")),
+            )
+            for item in target_refs
+            if _clean_text(_as_mapping(item).get("targetId"))
+        }
+    )
+    full_transcript_values = {
+        re.sub(r"\s+", "", _clean_text(value))
+        for value in (
+            pending.get("normalizedTranscript"),
+            pending.get("rawTranscript"),
+            assessment.get("normalizedTranscript"),
+            assessment.get("rawTranscript"),
+        )
+        if _clean_text(value)
+    }
+    field_states = state.get("fieldStates")
+    requirement_states = state.get("requirementStates")
+    candidates: list[tuple[str, str]] = []
+    seen_targets: set[tuple[str, str]] = set()
+
+    def add_candidate(
+        label: str,
+        value: object,
+        *,
+        reject_full_transcript: bool,
+    ) -> None:
+        normalized_value = _clean_text(value)
+        if (
+            not label
+            or not normalized_value
+            or (
+                reject_full_transcript
+                and re.sub(r"\s+", "", normalized_value) in full_transcript_values
+            )
+        ):
+            return
+        display_value = _display_value(normalized_value)
+        if not display_value:
+            return
+        item = (_spoken_label(label, locale), display_value)
+        if item[0] and item not in candidates:
+            candidates.append(item)
+
+    for item in target_refs:
+        target = _as_mapping(item)
+        target_id = _clean_text(target.get("targetId"))
+        target_type = _clean_text(target.get("targetType"))
+        target_key = (target_type, target_id)
+        if not target_id or target_key in seen_targets:
+            continue
+        seen_targets.add(target_key)
+
+        if target_type == "field" and isinstance(field_states, Mapping):
+            target_state = _as_mapping(field_states.get(target_id))
+            plan = _as_mapping(target_state.get("questionPlan"))
+            required_items = plan.get("requiredItems")
+            item_labels: dict[str, str] = {}
+            if isinstance(required_items, list):
+                for required_item in required_items:
+                    item = _as_mapping(required_item)
+                    item_id = _clean_text(item.get("itemId"))
+                    label = _clean_text(item.get("label"))
+                    if item_id and label:
+                        item_labels[item_id] = label
+            candidate_items = target_state.get("candidateItems")
+            if isinstance(candidate_items, list):
+                for candidate_item in candidate_items:
+                    candidate = _as_mapping(candidate_item)
+                    candidate_evidence_ids = candidate.get("evidenceTranscriptIds")
+                    evidence_ids = {
+                        _clean_text(evidence_id)
+                        for evidence_id in (
+                            candidate_evidence_ids
+                            if isinstance(candidate_evidence_ids, list)
+                            else []
+                        )
+                        if _clean_text(evidence_id)
+                    }
+                    if message_id and message_id not in evidence_ids:
+                        continue
+                    item_id = _clean_text(candidate.get("itemId"))
+                    label = item_labels.get(item_id, "")
+                    if not label and len(item_labels) <= 1:
+                        label = _clean_text(field_labels.get(target_id))
+                    add_candidate(
+                        label,
+                        candidate.get("value"),
+                        reject_full_transcript=(
+                            legacy_mapping
+                            or unique_target_count > 1
+                            or len(item_labels) > 1
+                        ),
+                    )
+        elif target_type in {"requirement", "process"} and isinstance(
+            requirement_states, Mapping
+        ):
+            target_state = _as_mapping(requirement_states.get(target_id))
+            requirement_evidence_ids = target_state.get("evidenceTranscriptIds")
+            evidence_ids = {
+                _clean_text(evidence_id)
+                for evidence_id in (
+                    requirement_evidence_ids
+                    if isinstance(requirement_evidence_ids, list)
+                    else []
+                )
+                if _clean_text(evidence_id)
+            }
+            if message_id and message_id not in evidence_ids:
+                continue
+            add_candidate(
+                _clean_text(target_state.get("label")),
+                target_state.get("candidateValue"),
+                reject_full_transcript=(legacy_mapping or unique_target_count > 1),
+            )
+
+    if sum(len(label) + len(value) for label, value in candidates) > _MAX_CANDIDATE_LENGTH:
+        return []
+    return candidates
 
 
 def _unclear_labels(
@@ -584,20 +739,17 @@ def _join_labels(labels: list[str], locale: InterviewLocale) -> str:
 
 
 def _correction_confirmation_message(
-    *,
-    labels: list[str],
-    candidate: str,
+    items: list[tuple[str, str]],
     locale: InterviewLocale,
 ) -> str:
-    subject = _join_labels(labels, locale) if labels else ""
     if locale == "en-US":
-        prefix = f"For {subject}, " if subject else ""
-        return f"{prefix}did you mean {candidate!r}?"
+        parts = [f"{label} is {value!r}" for label, value in items]
+        return f"Just to confirm, {_join_labels(parts, locale)}. Is that right?"
     if locale == "zh-CN":
-        prefix = f"关于{subject}，" if subject else ""
-        return f"{prefix}您的意思是“{candidate}”吗？"
+        parts = [f"{label}是“{value}”" for label, value in items]
+        return f"请确认：{'、'.join(parts)}，对吗？"
     if locale == "pt-BR":
-        prefix = f"Sobre {subject}, " if subject else ""
-        return f"{prefix}você quis dizer {candidate!r}?"
-    prefix = f"{subject}は" if subject else "この内容は"
-    return f"{prefix}「{candidate}」という理解でよろしいですか？"
+        parts = [f"{label} é {value!r}" for label, value in items]
+        return f"Só para confirmar: {_join_labels(parts, locale)}. Está correto?"
+    parts = [f"{label}は「{value}」" for label, value in items]
+    return f"{'、'.join(parts)}という理解でよろしいですか？"

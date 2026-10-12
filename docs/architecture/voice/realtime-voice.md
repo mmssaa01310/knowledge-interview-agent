@@ -85,6 +85,8 @@ GPT-Liveでは、上記のうちApplication Backendは認証・認可、Question
 * 割り込み時の再生停止
 * 古いgenerationの音声破棄
 
+音声インタビュー中もテキスト回答を入力できる。聞き取り中にテキストを送信する場合、WebはVoice Sessionを閉じてから共通のInterview APIへ送信し、音声とテキストのUser Turnを直列化する。接続中、処理中、発話中は入力内容を下書きとして保持し、音声が聞き取り状態へ戻るまで送信を待つ。音声を再開するときは同じRecordの最新Interview Stateを使う。
+
 WebへNova Sonic、Transcribe、Polly、Strands固有イベントや固有型を露出してはいけない。
 
 ## 3. Runtime分離
@@ -204,13 +206,13 @@ class AssistantReply:
 
 ### 4.1 回答確認と次質問
 
-音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは発話完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で、認識品質を`recognitionStatus=CLEAR/PARTIAL/MISSING/AMBIGUOUS`で、質問への意味的成立性を`answerEvaluation`と`answerAssessment`で評価する。`PARTIALLY_ANSWERED`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`は別の評価であり、認識できたが情報が不足している回答を`NOT_HEARD`に変換してはならない。Backendは、未完了の発話に完結した回答観点が含まれる場合はその観点の根拠を保持して不足部分だけを質問し、完結した観点がない場合だけ現在質問を維持して続行を促す。認識品質の根拠がある`NOT_HEARD`だけ再発話を要求し、意味不足なら`missingInformation`に基づいて不足部分だけを質問する。`CORRECTED`または`UNCERTAIN`なら確認・再発話を要求してから正式回答を更新する。`UNCERTAIN`でも補正対象とは独立して明確な項目だけは`TENTATIVE`候補として保持できるが、確認前に確定・次質問へ進めない。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
+音声の確定Transcriptは、テキスト経路と共通のStructured Interpreterへ渡す。Interpreterは発話完結性を`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`で、認識品質を`recognitionStatus=CLEAR/PARTIAL/MISSING/AMBIGUOUS`で、質問への意味的成立性を`answerEvaluation`と`answerAssessment`で評価する。`PARTIALLY_ANSWERED`、`NOT_HEARD`、`INCOMPLETE_UTTERANCE`は別の評価であり、認識できたが情報が不足している回答を`NOT_HEARD`に変換してはならない。Backendは、未完了の発話に完結した回答観点が含まれる場合はその観点の根拠を保持して不足部分だけを質問し、完結した観点がない場合だけ現在質問を維持して続行を促す。認識品質の根拠がある`NOT_HEARD`だけ再発話を要求し、意味不足なら`missingInformation`に基づいて不足部分だけを質問する。`CORRECTED`または`UNCERTAIN`なら、質問項目と値を個別に対応づけられる候補だけを確認対象にする。候補対象を決められない値や発話全文は候補として保存せず、該当項目を聞き返す。発話全体を認識できない場合はもう一度回答を依頼する。候補は利用者の確認前に正式回答へ反映しない。`AUTO_CONFIRM`、`TENTATIVE`、`RETRY`、`CONFIRM_REQUIRED`を含む候補の確定・訂正・再確認は`app/api`の状態機械が保証する。
 
 回答確定後に次項目がある場合、Voice Turnの`reply_text`は次質問本文を必ず含む。完了案内だけを返して別turnで質問を補う構成にはしない。`TENTATIVE`の候補は次質問本文に自然に織り込む。確認文の発話用表現は自然な名詞句へ整えてよいが、確定候補や`answerSummary`の保存値は変更しない。
 
 次質問の対象値がBackendの検索した`indexed`文書に明示されている場合、APIは`document_reference`の候補を`AWAITING_CONFIRMATION`として保持し、音声には文書記載値の確認質問を返す。候補は「はい」などの明示承認後だけ正式回答へ移し、訂正発話があれば利用者の値へ更新する。音声Runtimeはこの判定や文書検索を複製せず、`app/api`が生成した確認質問、状態、出典を利用する。
 
-Transcribe + Pollyの聞き返し文は、Structured Interviewの状態を変更しない音声専用の表現層で整える。`answerEvaluation=NOT_HEARD`または旧状態の`UNCERTAIN`で、認識品質の根拠がある場合だけ、最新Transcriptをそのまま復唱せず、信頼できる項目を短く示して再回答を依頼する。`PARTIALLY_ANSWERED`、`OFF_TARGET`、`INCOMPLETE_UTTERANCE`の応答をこの層で「聞き取れなかった」と言い換えてはならない。単一候補の`CORRECTED`はBackendが確認待ち状態を作成した場合だけ補正候補を確認し、候補が曖昧な場合は推測を発話しない。通常のテキスト経路とNova Sonicの応答文生成にはこの表現層を適用しない。
+Transcribe + Pollyの聞き返し文は、Structured Interviewの状態を変更しない音声専用の表現層で整える。`answerEvaluation=NOT_HEARD`または文字起こしが`CORRECTED`/`UNCERTAIN`で、認識品質の根拠がある場合は、項目別の候補があれば「設備名は〇〇、号機は〇〇ですか」のように対応関係が分かる確認文を返す。候補がない場合は対象項目を聞き返し、発話全体を候補や確認文として復唱しない。発話全体を認識できない場合は回答全体をもう一度依頼する。`PARTIALLY_ANSWERED`、`OFF_TARGET`、`INCOMPLETE_UTTERANCE`の応答をこの層で「聞き取れなかった」と言い換えてはならない。通常のテキスト経路とNova Sonicの応答文生成にはこの表現層を適用しない。
 
 ## 5. VoiceRuntimeEvent契約
 

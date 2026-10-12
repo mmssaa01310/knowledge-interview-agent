@@ -833,6 +833,22 @@ Question Generatorには次の制約を課す。
 * `closing`では、ここまでの質問で扱わなかった重要事項を尋ねるopen-endedな質問を1件だけ生成する。
 * Mermaid、図、座標、JSONのProcessPatchを返さない。
 
+`prior_knowledge`に現在の質問対象の未回答項目へ直接対応する値がある場合は、該当する候補をすべて項目ごとに次の形式で返す。
+
+```json
+{
+  "priorKnowledgeCandidates": [
+    {
+      "aspectId": "equipment_name",
+      "value": "BX",
+      "sourceId": "prior-knowledge-document-id"
+    }
+  ]
+}
+```
+
+`field`の`aspectId`は`questionDefinition.requiredItems[].itemId`、`requirement`または`process`の`aspectId`は現在の`targetId`と一致させる。`applicability`では`aspectId`を現在のtopic IDと一致させ、出典が存在または不存在を明記する場合だけ`applicabilityStatus`に`present`または`not_applicable`を設定する。`applicability_overview`では`priorKnowledgeAspects`に列挙されたtopic IDを使う。`value`は指定した`sourceId`のタイトルまたは本文にそのまま含まれる短い値に限る。Backendは出典、値、質問対象、未回答状態を検証し、複数項目が一致した場合は設定順に項目名と値をまとめて確認する。候補を設定した対象は`AWAITING_CONFIRMATION`（Applicabilityでは確認用候補を保持し、状態を`unknown`のまま維持）となり、肯定を受けるまで正式回答や完了項目に含めない。候補を拒否した値は同一質問対象に再提示しない。検証できない候補は破棄し、発話全文など別の文字列で代用しない。
+
 ## 12. ProcessModelと図表示
 
 ### 12.1 ProcessModelの位置付け

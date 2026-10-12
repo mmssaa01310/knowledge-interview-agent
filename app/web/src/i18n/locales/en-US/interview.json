@@ -74,7 +74,7 @@
   "completedMessage": "The interview is complete. Review the answers.",
   "reviewNote": "Administrator revision request: {note}",
   "completedInput": "Input is disabled because this interview is complete.",
-  "voiceInputDisabled": "Text input is unavailable during a voice interview.",
+  "voiceTextInputNotice": "You can type during a voice interview. Send while listening to stop voice and submit the text.",
   "answerInput": "Answer input",
   "receiving": "Receiving your answer…",
   "done": "Done",

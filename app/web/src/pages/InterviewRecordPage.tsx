@@ -75,7 +75,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   );
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const switchingToTextRef = useRef(false);
   const [isResettingDemo, setIsResettingDemo] = useState(false);
+  const [isSwitchingToText, setIsSwitchingToText] = useState(false);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
   const [summaryView, setSummaryView] = useState<"requirements" | "process">("requirements");
   const [isInterviewContextOpen, setIsInterviewContextOpen] = useState(false);
@@ -212,7 +214,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       return;
     }
     event.preventDefault();
-    handleSendInterviewMessage();
+    void handleSendInterviewMessage();
   }
 
   function handleConfiguredAnswerChange(answerKey: string, value: string) {
@@ -260,21 +262,32 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       : null;
   }
 
-  function handleSendInterviewMessage() {
+  async function handleSendInterviewMessage() {
     if (
       !props.chatInput.trim()
       || props.isInterviewStreaming
       || props.interviewState?.status === "completed"
       || !canAnswerRecord
-      || activeVoice.isActive
+      || switchingToTextRef.current
+      || (activeVoice.isActive && activeVoice.status !== "listening")
     ) {
       return;
     }
-    void props.onSendInterviewMessage(
-      resolveInterviewAnswerTarget(),
-      undefined,
-      selectedInterviewLocale,
-    );
+    switchingToTextRef.current = true;
+    setIsSwitchingToText(true);
+    try {
+      if (activeVoice.isActive) {
+        await activeVoice.stop();
+      }
+      await props.onSendInterviewMessage(
+        resolveInterviewAnswerTarget(),
+        undefined,
+        selectedInterviewLocale,
+      );
+    } finally {
+      switchingToTextRef.current = false;
+      setIsSwitchingToText(false);
+    }
   }
 
   async function handleStartVoiceInterview() {
@@ -333,7 +346,11 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID
   );
   const hasReviewActions = isManagementUser && props.selectedRecord?.status === "submitted";
-  const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && activeVoice.isActive);
+  const isTextInputDisabled = !canAnswerRecord || isCompleted;
+  const isTextSendDisabled = isTextInputDisabled
+    || props.isInterviewStreaming
+    || isSwitchingToText
+    || (activeVoice.isActive && activeVoice.status !== "listening");
   const interviewLaunchPath = props.selectedKnowledgeDb && props.selectedKnowledge
     ? `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}/interview`
     : null;
@@ -705,12 +722,15 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 placeholder={
                   isCompleted
                     ? t("interview.completedInput")
-                    : activeVoice.isActive
-                      ? t("interview.voiceInputDisabled")
-                      : t("interview.answerPlaceholder")
+                    : t("interview.answerPlaceholder")
                 }
                 disabled={isTextInputDisabled}
               />
+              {activeVoice.isActive ? (
+                <p className="notice interview-inline-notice" role="status">
+                  {t("interview.voiceTextInputNotice")}
+                </p>
+              ) : null}
               {!isChatOnlyInterview ? (
                 <audio ref={remoteAudioRef} className="voice-remote-audio" autoPlay playsInline />
               ) : null}
@@ -720,8 +740,8 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 </button>
               ) : null}
               <div className="answer-composer-actions">
-                <button className="primary" onClick={handleSendInterviewMessage} disabled={props.isInterviewStreaming || isTextInputDisabled}>
-                  {props.isInterviewStreaming ? t("interview.receiving") : isCompleted ? t("interview.done") : t("interview.send")}
+                <button className="primary" onClick={() => void handleSendInterviewMessage()} disabled={isTextSendDisabled}>
+                  {props.isInterviewStreaming || isSwitchingToText ? t("interview.receiving") : isCompleted ? t("interview.done") : t("interview.send")}
                 </button>
                 {!isChatOnlyInterview ? (
                   <div className="voice-controls">
@@ -730,7 +750,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                       <select
                         value={voiceProvider}
                         onChange={(event) => setVoiceProvider(normalizeVoiceProvider(event.target.value))}
-                        disabled={activeVoice.isActive}
+                        disabled={activeVoice.isActive || props.isInterviewStreaming || isSwitchingToText}
                       >
                         <option value="transcribe_polly">transcribe_polly</option>
                         <option value="nova_sonic">nova_sonic</option>
@@ -740,7 +760,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                     </label>
                     <VoiceConversationButton
                       status={activeVoice.status}
-                      disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || activeVoice.status === "completed"}
+                      disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || props.isInterviewStreaming || isSwitchingToText || activeVoice.status === "completed"}
                       onStart={() => void handleStartVoiceInterview()}
                       onStop={() => void activeVoice.stop()}
                     />

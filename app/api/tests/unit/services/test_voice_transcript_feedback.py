@@ -8,49 +8,10 @@ from ai_interviewer_api.services.voice_transcript_feedback import (
 
 
 FIELD_LABELS = {
-    "field-name": "氏名",
+    "field-equipment-name": "設備名",
+    "field-machine-number": "号機",
     "field-department": "部署",
-    "field-responsibility": "担当領域",
-    "field-profile": "基本プロフィール",
 }
-
-
-def _uncertain_result(
-    updates: list[dict[str, Any]],
-    *,
-    target_id: str = "field-profile",
-    raw_transcript: str = "え山田太郎でかい家族部に所属しています。",
-) -> dict[str, Any]:
-    return {
-        "reply": "この部分をもう一度お願いします。",
-        "question": {
-            "questionId": "q-profile",
-            "targetType": "field",
-            "targetId": target_id,
-        },
-        "interviewState": {
-            "lastTranscriptAssessment": {
-                "rawTranscript": raw_transcript,
-                "normalizedTranscript": raw_transcript,
-                "correctionStatus": "UNCERTAIN",
-            },
-            "lastProcessedUserMessageId": "voice-msg-turn-1",
-            "lastStructuredOutput": {"fieldUpdates": updates},
-            "fieldStates": {
-                field_id: {"answerState": "UNANSWERED"}
-                for field_id in FIELD_LABELS
-            },
-        },
-    }
-
-
-def _update(field_id: str, value: str) -> dict[str, Any]:
-    return {
-        "fieldId": field_id,
-        "value": value,
-        "evidenceTranscriptIds": ["voice-msg-turn-1"],
-        "answerResolution": "AUTO_CONFIRM",
-    }
 
 
 def _feedback(result: dict[str, Any]) -> str:
@@ -64,166 +25,191 @@ def _feedback(result: dict[str, Any]) -> str:
     return feedback
 
 
-def test_only_unclear_affiliation_is_requested_again_without_raw_asr_text() -> None:
-    reply = _feedback(
-        _uncertain_result(
-            [
-                _update("field-name", "山田太郎"),
-                _update("field-responsibility", "社内システムの開発"),
-            ]
-        )
-    )
-
-    assert "山田太郎" in reply
-    assert "社内システムの開発" in reply
-    assert "所属がうまく聞き取れなかった" in reply
-    assert "所属だけもう一度お願いします" in reply
-    assert "家族部" not in reply
-    assert "この部分をもう一度お願いします" not in reply
-
-
-def test_multiple_unclear_profile_items_are_named() -> None:
-    reply = _feedback(
-        _uncertain_result([_update("field-responsibility", "社内システムの開発")])
-    )
-
-    assert "社内システムの開発" in reply
-    assert "お名前と所属" in reply
-    assert "お名前と所属だけもう一度お願いします" in reply
-
-
-def test_almost_unheard_profile_requests_the_profile_again() -> None:
-    reply = _feedback(_uncertain_result([]))
-
-    assert "回答がうまく聞き取れませんでした" in reply
-    assert "プロフィール" in reply
-    assert "この部分をもう一度お願いします" not in reply
-
-
-def test_unique_correction_candidate_is_confirmed_without_auto_accepting_it() -> None:
-    result = {
+def _correction_result(
+    *,
+    raw_transcript: str,
+    normalized_transcript: str,
+    target_refs: list[dict[str, str]],
+    field_states: dict[str, Any] | None = None,
+    source_question: str = "対象の設備名と号機を教えてください。",
+) -> dict[str, Any]:
+    return {
         "reply": "この部分をもう一度お願いします。",
         "question": {
             "questionId": "q-transcript-confirmation",
             "targetType": "transcript_confirmation",
             "targetId": "transcript_confirmation",
+            "text": "安全でない文字起こし確認文",
         },
         "interviewState": {
             "lastTranscriptAssessment": {
-                "rawTranscript": "家族部",
-                "normalizedTranscript": "開発部",
+                "rawTranscript": raw_transcript,
+                "normalizedTranscript": normalized_transcript,
                 "correctionStatus": "CORRECTED",
-                "correctionCandidates": ["開発部"],
+                "correctionCandidates": [normalized_transcript],
             },
             "pendingTranscriptConfirmation": {
-                "targetRefs": [
-                    {"targetType": "field", "targetId": "field-department"}
-                ]
+                "messageId": "voice-msg-turn-1",
+                "rawTranscript": raw_transcript,
+                "normalizedTranscript": normalized_transcript,
+                "correctionCandidates": [normalized_transcript],
+                "candidateMappingVersion": 1,
+                "targetRefs": target_refs,
+                "sourceQuestion": {"text": source_question},
             },
+            "fieldStates": field_states or {},
         },
     }
 
+
+def test_mapped_equipment_and_number_are_confirmed_item_by_item() -> None:
+    utterance = "対象の設備名はB一Xです。号機は007です。"
+    result = _correction_result(
+        raw_transcript="対象の設備名はビー一エックスです。号機は007です。",
+        normalized_transcript=utterance,
+        target_refs=[
+            {"targetType": "field", "targetId": "field-equipment-name"},
+            {"targetType": "field", "targetId": "field-machine-number"},
+        ],
+        field_states={
+            "field-equipment-name": {
+                "questionPlan": {
+                    "requiredItems": [{"itemId": "equipment", "label": "設備名"}]
+                },
+                "candidateItems": [
+                    {
+                        "itemId": "equipment",
+                        "value": "B一X",
+                        "evidenceTranscriptIds": ["voice-msg-turn-1"],
+                    }
+                ],
+            },
+            "field-machine-number": {
+                "questionPlan": {
+                    "requiredItems": [{"itemId": "number", "label": "号機"}]
+                },
+                "candidateItems": [
+                    {
+                        "itemId": "number",
+                        "value": "007",
+                        "evidenceTranscriptIds": ["voice-msg-turn-1"],
+                    }
+                ],
+            },
+        },
+    )
+
     reply = _feedback(result)
 
-    assert reply == "所属は「開発部」という理解でよろしいですか？"
-    assert "家族部" not in reply
+    assert reply == "設備名は「B一X」、号機は「007」という理解でよろしいですか？"
+    assert utterance not in reply
 
 
-def test_ambiguous_correction_does_not_speak_a_guessed_candidate() -> None:
-    result = _uncertain_result(
-        [],
-        target_id="field-department",
-        raw_transcript="家族部か開発部か聞き取れませんでした。",
-    )
-    result["interviewState"]["lastTranscriptAssessment"].update(
-        {
-            "correctionCandidates": ["開発部", "改善部"],
-            "normalizedTranscript": "",
-        }
+def test_missing_item_mapping_repeats_the_named_target_without_the_full_transcript() -> None:
+    utterance = "対象の設備名はB一Xです。号機は007です。"
+    result = _correction_result(
+        raw_transcript="対象の設備名はビー一エックスです。号機は007です。",
+        normalized_transcript=utterance,
+        target_refs=[
+            {"targetType": "field", "targetId": "field-equipment-name"}
+        ],
     )
 
     reply = _feedback(result)
 
-    assert reply == "回答がうまく聞き取れませんでした。もう一度、所属についてお話しください。"
-    assert "開発部" not in reply
-    assert "改善部" not in reply
+    assert "設備名" in reply
+    assert "もう一度" in reply
+    assert utterance not in reply
+    assert "この部分" not in reply
+    assert "confirmation" not in reply.lower()
 
 
-def test_ambiguous_correction_does_not_read_back_a_field_candidate() -> None:
-    result = _uncertain_result(
-        [_update("field-responsibility", "運用まで関わっています")],
-        target_id="field-responsibility",
-    )
-    result["interviewState"]["lastTranscriptAssessment"].update(
-        {
-            "correctionCandidates": ["運用まで関わっています", "輸送まで関わっています"],
-        }
+def test_unmapped_confirmation_uses_the_original_question_as_a_clear_retry() -> None:
+    utterance = "対象の設備名はB一Xです。号機は007です。"
+    source_question = "対象の設備名と号機を教えてください。"
+    result = _correction_result(
+        raw_transcript=utterance,
+        normalized_transcript=utterance,
+        target_refs=[],
+        source_question=source_question,
     )
 
     reply = _feedback(result)
 
-    assert "運用まで関わっています" not in reply
-    assert "輸送まで関わっています" not in reply
-    assert "担当業務" in reply
+    assert source_question in reply
+    assert utterance not in reply
+    assert "この部分" not in reply
 
 
-def test_long_grounded_value_is_not_read_back_as_the_whole_answer() -> None:
-    long_value = "社内システムの設計と開発を担当しています。" + ("詳細" * 40)
-    reply = _feedback(_uncertain_result([_update("field-name", long_value)]))
-
-    assert long_value not in reply
-    assert "お名前は聞き取れました" in reply
-
-
-def test_rejected_correction_uses_the_original_item_for_voice_retry() -> None:
+def test_ambiguous_equipment_role_is_not_described_as_a_person_name() -> None:
     result = {
         "reply": "この部分をもう一度お願いします。",
         "question": {
-            "questionId": "q-role",
+            "questionId": "q-equipment",
             "targetType": "field",
-            "targetId": "field-responsibility",
+            "targetId": "field-equipment-name",
         },
         "interviewState": {
-            "lastTranscriptAssessment": {"correctionStatus": "NONE"},
-            "lastStructuredOutput": {"dialogueAct": "REJECTION"},
+            "lastTranscriptAssessment": {
+                "rawTranscript": "b一xです",
+                "normalizedTranscript": "",
+                "correctionStatus": "UNCERTAIN",
+                "correctionCandidates": ["B一X", "B一S"],
+                "ambiguousSpans": [
+                    {
+                        "span": "b一x",
+                        "semanticRole": "equipment_name",
+                        "important": True,
+                    }
+                ],
+            },
+            "fieldStates": {},
         },
     }
-    turn = {
-        "id": "turn-2",
-        "baseInterviewState": {
-            "pendingTranscriptConfirmation": {
-                "targetRefs": [
+
+    reply = _feedback(result)
+
+    assert "設備名の部分だけ" in reply
+    assert "人名" not in reply
+    assert "B一X" not in reply
+    assert "B一S" not in reply
+
+
+def test_non_correction_asr_retry_can_report_the_item_that_was_understood() -> None:
+    result = {
+        "reply": "回答がうまく聞き取れませんでした。",
+        "question": {
+            "questionId": "q-department",
+            "targetType": "field",
+            "targetId": "field-department",
+        },
+        "answerEvaluation": "NOT_HEARD",
+        "interviewState": {
+            "lastTranscriptAssessment": {
+                "correctionStatus": "NONE",
+                "correctionCandidates": [],
+            },
+            "lastClarificationTarget": {
+                "type": "ASR_AMBIGUOUS",
+                "span": "開発部",
+                "semanticRole": "department",
+            },
+            "lastProcessedUserMessageId": "voice-msg-turn-1",
+            "lastStructuredOutput": {
+                "fieldUpdates": [
                     {
-                        "targetType": "field",
-                        "targetId": "field-responsibility",
+                        "fieldId": "field-equipment-name",
+                        "value": "B一X",
+                        "evidenceTranscriptIds": ["voice-msg-turn-1"],
+                        "answerResolution": "AUTO_CONFIRM",
                     }
                 ]
-            }
+            },
         },
     }
 
-    reply = build_transcribe_polly_transcript_feedback(
-        result,
-        turn,
-        field_labels=FIELD_LABELS,
-        locale="ja-JP",
-    )
+    reply = _feedback(result)
 
-    assert reply is not None
-    assert "担当業務" in reply
-    assert "この部分をもう一度お願いします" not in reply
-
-
-def test_generic_retry_reply_is_replaced_when_voice_path_requests_a_retry() -> None:
-    result = _uncertain_result([], target_id="field-department")
-    result["interviewState"]["lastTranscriptAssessment"]["correctionStatus"] = "NONE"
-
-    reply = build_transcribe_polly_transcript_feedback(
-        result,
-        {"id": "turn-1"},
-        field_labels=FIELD_LABELS,
-        locale="ja-JP",
-        force_retry=True,
-    )
-
-    assert reply == "回答がうまく聞き取れませんでした。もう一度、所属についてお話しください。"
+    assert "設備名は「B一X」" in reply
+    assert "所属" in reply
+    assert "だけもう一度" in reply

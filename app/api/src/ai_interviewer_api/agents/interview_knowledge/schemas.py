@@ -368,7 +368,24 @@ class ProcessModelEditOutput(StrictModel):
     processPatch: ProcessPatch = Field(default_factory=ProcessPatch)
 
 
+class PriorKnowledgeQuestionCandidate(StrictModel):
+    """A source-backed value the backend may ask the participant to verify."""
+
+    aspectId: str = Field(min_length=1, max_length=120)
+    value: str = Field(min_length=1, max_length=1000)
+    sourceId: str = Field(min_length=1, max_length=120)
+    applicabilityStatus: Literal["present", "not_applicable"] | None = None
+
+
 class QuestionGenerationOutput(StrictModel):
     questionText: str
     documentCandidateValue: str | None = Field(default=None, max_length=1000)
     documentCandidateSourceIds: list[str] = Field(default_factory=list, max_length=6)
+    priorKnowledgeCandidates: list[PriorKnowledgeQuestionCandidate] = Field(
+        default_factory=list,
+        max_length=12,
+        description=(
+            "現在の質問対象の未回答項目に直接対応し、出典に明記された"
+            "事前知識候補をすべて返す。"
+        ),
+    )

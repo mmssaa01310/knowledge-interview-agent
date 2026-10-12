@@ -74,7 +74,7 @@
   "completedMessage": "访谈已完成，请确认回答内容。",
   "reviewNote": "管理员的修改请求：{note}",
   "completedInput": "访谈已完成，无法输入。",
-  "voiceInputDisabled": "语音访谈期间无法使用文本输入。",
+  "voiceTextInputNotice": "语音访谈期间可以输入。处于聆听状态时发送会停止语音并提交文本回答。",
   "answerInput": "回答输入",
   "receiving": "正在接收回答…",
   "done": "完成",

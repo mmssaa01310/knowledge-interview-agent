@@ -64,6 +64,7 @@ class FakeStructuredProvider:
     def __init__(self) -> None:
         self.interpret_calls: list[dict[str, object]] = []
         self.question_calls: list[dict[str, object]] = []
+        self.prior_knowledge_candidates: list[dict[str, str]] = []
 
     def generate_question(
         self,
@@ -79,10 +80,12 @@ class FakeStructuredProvider:
             )
         if context.get("interviewLocale") == "en-US":
             return QuestionGenerationOutput(
-                questionText=f"Please tell me about {target.get('label') or 'that'}."
+                questionText=f"Please tell me about {target.get('label') or 'that'}.",
+                priorKnowledgeCandidates=self.prior_knowledge_candidates,
             )
         return QuestionGenerationOutput(
-            questionText=f"{target.get('label') or 'その点'}について教えてください。"
+            questionText=f"{target.get('label') or 'その点'}について教えてください。",
+            priorKnowledgeCandidates=self.prior_knowledge_candidates,
         )
 
     def interpret(
@@ -389,6 +392,91 @@ def test_initial_question_is_not_saved_before_it_is_spoken() -> None:
 
     assert session["initialReplyText"] == "これからインタビューを開始します。氏名について教えてください。"
     assert [row for row in store.list("messages", user.tenant_id) if row.get("recordId") == record["id"]] == []
+
+
+def test_resumed_voice_question_confirms_exact_prior_knowledge_by_item(
+    stub_structured_provider: FakeStructuredProvider,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(user, [("対象設備", "short_text")])
+    knowledge_id = str(record["knowledgeId"])
+    field = next(
+        row
+        for row in store.list("knowledge_fields", user.tenant_id)
+        if row.get("knowledgeId") == knowledge_id
+    )
+    field["questionPlan"] = {
+        "version": 1,
+        "requiredItems": [
+            {"itemId": "equipment_name", "label": "設備名"},
+            {"itemId": "unit_number", "label": "号機"},
+        ],
+        "optionalItems": [],
+    }
+    store.upsert("knowledge_fields", field)
+
+    first_session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    first_question_id = first_session["currentQuestionId"]
+    store.upsert(
+        "documents",
+        {
+            "id": "prior-equipment-facts",
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge_id,
+            "sourceType": "prior_knowledge",
+            "title": "設備の登録情報",
+            "content": "設備名はBX、号機は007です。",
+            "ingestionStatus": "indexed",
+            "deletedAt": None,
+        },
+    )
+    stub_structured_provider.prior_knowledge_candidates = [
+        {
+            "aspectId": "equipment_name",
+            "value": "BX",
+            "sourceId": "prior-equipment-facts",
+        },
+        {
+            "aspectId": "unit_number",
+            "value": "007",
+            "sourceId": "prior-equipment-facts",
+        },
+    ]
+
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    assert state is not None
+    question = next(
+        item for item in state["askedQuestions"] if item["questionId"] == first_question_id
+    )
+    field_state = state["fieldStates"][field["id"]]
+    assert session["initialReplyText"] == (
+        "これからインタビューを開始します。設備名は「BX」、号機は「007」で合っていますか？"
+    )
+    assert question["questionId"] == first_question_id
+    assert question["candidateSource"] == "prior_knowledge"
+    assert field_state["answerState"] == "AWAITING_CONFIRMATION"
+    assert field_state["recordAnswer"] is None
+    assert field_state["candidateAnswer"] == "BX、007"
+
+    mark_internal_initial_reply_sent(session["id"])
+
+    def confirm_candidate(**_: object) -> StructuredInterviewOutput:
+        return StructuredInterviewOutput(dialogueAct="CONFIRMATION")
+
+    stub_structured_provider.interpret = confirm_candidate  # type: ignore[method-assign]
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript="はい"),
+    )
+    process_internal_voice_turn(session["id"], turn["id"])
+
+    confirmed_state = store.get("interview_states", f"interview-state-{record['id']}")
+    assert confirmed_state is not None
+    confirmed_field = confirmed_state["fieldStates"][field["id"]]
+    assert confirmed_field["answerState"] == "CONFIRMED"
+    assert confirmed_field["recordAnswer"] == "BX、007"
 
 
 def test_initial_question_reuses_canonical_question_without_llm(
@@ -816,7 +904,7 @@ def test_incomplete_final_transcript_stays_on_current_question() -> None:
     assert store.get("voice_turns", turn["id"])["lifecycleStatus"] == "COMMITTED"
 
 
-def test_transcribe_polly_retry_names_only_the_unheard_profile_item(
+def test_transcribe_polly_uncertain_turn_confirms_only_item_mapped_values(
     stub_structured_provider: FakeStructuredProvider,
 ) -> None:
     user = DEV_TOKENS["dev-manager"]
@@ -877,11 +965,56 @@ def test_transcribe_polly_retry_names_only_the_unheard_profile_item(
 
     result = process_internal_voice_turn(session["id"], turn["id"])
 
-    assert "山田太郎" in result["text"]
-    assert "社内システムの開発" in result["text"]
-    assert "所属だけもう一度お願いします" in result["text"]
+    assert result["text"] == (
+        "お名前は「山田太郎」、担当業務は「社内システムの開発」という理解でよろしいですか？"
+    )
     assert "家族部" not in result["text"]
+    assert result["questionId"] != turn["answerToQuestionId"]
+
+
+def test_transcribe_polly_without_item_mapping_reasks_the_named_question(
+    stub_structured_provider: FakeStructuredProvider,
+) -> None:
+    user = DEV_TOKENS["dev-manager"]
+    record = _create_record_with_fields(
+        user,
+        [("設備名", "short_text"), ("号機", "short_text")],
+    )
+    session = create_record_voice_session(record["id"], VoiceSessionCreate(), user)
+    mark_internal_initial_reply_sent(session["id"])
+    utterance = "対象の設備名はB一Xです。号機は007です。"
+
+    def unmapped_correction_provider(
+        *, context: Mapping[str, object], **_: object
+    ) -> StructuredInterviewOutput:
+        latest = context["latestUtterance"]
+        assert isinstance(latest, Mapping)
+        return StructuredInterviewOutput(
+            transcriptAssessment=TranscriptAssessment(
+                rawTranscript=utterance,
+                normalizedTranscript=utterance,
+                correctionStatus="CORRECTED",
+                correctionCandidates=[utterance],
+            )
+        )
+
+    stub_structured_provider.interpret = unmapped_correction_provider  # type: ignore[method-assign]
+    turn = create_internal_voice_turn(
+        session["id"],
+        VoiceTurnCreate(transcript=utterance),
+    )
+
+    result = process_internal_voice_turn(session["id"], turn["id"])
+
+    assert "設備名" in result["text"]
+    assert "もう一度" in result["text"]
+    assert utterance not in result["text"]
+    assert "この部分" not in result["text"]
     assert result["questionId"] == turn["answerToQuestionId"]
+    state = store.get("interview_states", f"interview-state-{record['id']}")
+    assert state is not None
+    assert state["pendingTranscriptConfirmation"] is None
+    assert state["fieldStates"][state["currentFieldId"]]["candidateAnswer"] is None
 
 
 def test_corrected_transcript_is_confirmed_before_field_commit() -> None:

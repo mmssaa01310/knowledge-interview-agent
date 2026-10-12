@@ -8,9 +8,11 @@ import pytest
 from botocore.credentials import Credentials
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
+    apply_prior_knowledge_candidates,
     apply_structured_output,
     build_initial_structured_state,
     evaluate_completion,
+    is_current_question_confirmation_target,
     select_next_question_target,
 )
 from ai_interviewer_api.agents.interview_knowledge.provider import (
@@ -33,6 +35,7 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     TranscriptAssessment,
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
+    _generate_question_text,
     generate_structured_interview_result,
     get_structured_interview_state_snapshot,
     resolve_structured_model_id,
@@ -3233,6 +3236,382 @@ def test_question_generator_receives_the_configured_question_definition() -> Non
     }
     assert result["question"]["sourceQuestion"] == question_text
     assert result["question"]["sourceDescription"] == "氏名、所属部署、役職または担当領域を確認する。"
+
+
+def test_prior_knowledge_candidate_is_ignored_when_value_is_not_in_its_source() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-unmatched-prior-value",
+        (("field-equipment", "設備名"),),
+    )
+    store.upsert(
+        "documents",
+        {
+            "id": "prior-equipment-source",
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge["id"],
+            "sourceType": "prior_knowledge",
+            "title": "設備情報",
+            "content": "登録済みの設備名はBXです。",
+            "ingestionStatus": "indexed",
+            "deletedAt": None,
+        },
+    )
+
+    class UnmatchedCandidateProvider(FakeStructuredProvider):
+        def generate_question(
+            self,
+            *,
+            target: Mapping[str, object],
+            **_: object,
+        ) -> QuestionGenerationOutput:
+            return QuestionGenerationOutput(
+                questionText="設備名を教えてください。",
+                priorKnowledgeCandidates=[
+                    {
+                        "aspectId": "field-equipment",
+                        "value": "AX",
+                        "sourceId": "prior-equipment-source",
+                    }
+                ],
+            )
+
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=UnmatchedCandidateProvider([StructuredInterviewOutput()]),
+    )
+
+    field_state = result["interviewState"]["fieldStates"]["field-equipment"]
+    assert result["question"]["text"] == "設備名を教えてください。"
+    assert field_state["answerState"] == "UNANSWERED"
+    assert field_state["candidateAnswer"] is None
+    assert field_state["recordAnswer"] is None
+
+
+def test_rejected_prior_knowledge_candidate_is_not_repeated_for_same_field() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-rejected-prior-value",
+        (("field-equipment", "設備名"),),
+    )
+    fields = [
+        row
+        for row in store.list("knowledge_fields", user.tenant_id)
+        if row.get("knowledgeId") == knowledge["id"]
+    ]
+    state = build_initial_structured_state("fixed_form", fields)
+    question = {
+        "targetType": "field",
+        "targetId": "field-equipment",
+        "targetLabel": "設備名",
+    }
+    target = dict(question)
+    candidate = {
+        "aspectId": "field-equipment",
+        "value": "BX",
+        "sourceIds": ["prior-rejected-equipment-source"],
+    }
+    store.upsert(
+        "documents",
+        {
+            "id": "prior-rejected-equipment-source",
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge["id"],
+            "sourceType": "prior_knowledge",
+            "title": "設備情報",
+            "content": "登録済みの設備名はBXです。",
+            "ingestionStatus": "indexed",
+            "deletedAt": None,
+        },
+    )
+    assert apply_prior_knowledge_candidates(state, target, candidates=[candidate]) is True
+    apply_structured_output(
+        state,
+        StructuredInterviewOutput(dialogueAct="REJECTION"),
+        latest_message_id="prior-value-rejection",
+        raw_transcript="いいえ",
+        fields=fields,
+        profile="fixed_form",
+        current_question=question,
+    )
+
+    class RepeatingCandidateProvider(FakeStructuredProvider):
+        def generate_question(self, **_: object) -> QuestionGenerationOutput:
+            return QuestionGenerationOutput(
+                questionText="設備名を教えてください。",
+                priorKnowledgeCandidates=[
+                    {
+                        "aspectId": "field-equipment",
+                        "value": "BX",
+                        "sourceId": "prior-rejected-equipment-source",
+                    }
+                ],
+            )
+
+    question_text, _, _ = _generate_question_text(
+        RepeatingCandidateProvider([]),
+        profile="fixed_form",
+        target={**question},
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        fields=fields,
+        state=state,
+        messages=[],
+        use_retrieval=False,
+    )
+
+    assert state["priorKnowledgeRejectedCandidates"] == [
+        {
+            "targetType": "field",
+            "targetId": "field-equipment",
+            "aspectId": "field-equipment",
+            "value": "BX",
+        }
+    ]
+    assert question_text == "設備名を教えてください。"
+    assert state["fieldStates"]["field-equipment"]["answerState"] == "UNANSWERED"
+    assert state["fieldStates"]["field-equipment"]["candidateAnswer"] is None
+
+
+def test_prior_knowledge_applicability_value_is_only_applied_after_confirmation() -> None:
+    state = build_initial_structured_state("business_process", [])
+    target = {
+        "targetType": "applicability",
+        "targetId": "exception",
+        "label": "例外処理",
+    }
+    question = {
+        "targetType": "applicability",
+        "targetId": "exception",
+        "targetLabel": "例外処理",
+    }
+    candidate = {
+        "aspectId": "exception",
+        "value": "例外処理はありません",
+        "sourceIds": ["prior-exception-source"],
+        "applicabilityStatus": "not_applicable",
+    }
+
+    assert apply_prior_knowledge_candidates(state, target, candidates=[candidate]) is True
+    assert state["applicabilityState"]["exception"]["status"] == "unknown"
+    assert state["applicabilityState"]["exception"]["candidateStatus"] == "not_applicable"
+    assert is_current_question_confirmation_target(state, question) is True
+
+    apply_structured_output(
+        state,
+        StructuredInterviewOutput(
+            dialogueAct="CONFIRMATION",
+            applicability=[
+                ApplicabilityUpdate(
+                    topic="exception",
+                    status="present",
+                    evidenceTranscriptIds=["applicability-confirmation"],
+                )
+            ],
+        ),
+        latest_message_id="applicability-confirmation",
+        raw_transcript="はい",
+        fields=[],
+        profile="business_process",
+        valid_evidence_ids={"applicability-confirmation"},
+        current_question=question,
+    )
+
+    assert state["applicabilityState"]["exception"]["status"] == "not_applicable"
+    assert state["applicabilityState"]["exception"]["candidateStatus"] is None
+    assert state["applicabilityState"]["exception"]["confirmedSource"] == "prior_knowledge"
+
+
+def test_prior_knowledge_overview_candidate_group_confirms_each_mapped_topic() -> None:
+    state = build_initial_structured_state("business_process", [])
+    target = {
+        "targetType": "applicability_overview",
+        "targetId": "optional_cases",
+        "label": "通常と異なるケースや条件による処理変更の有無",
+    }
+    question = {
+        "targetType": "applicability_overview",
+        "targetId": "optional_cases",
+        "targetLabel": target["label"],
+    }
+    candidates = [
+        {
+            "aspectId": "branch",
+            "value": "承認額で分岐します",
+            "sourceIds": ["prior-process-source"],
+            "applicabilityStatus": "present",
+        },
+        {
+            "aspectId": "exception",
+            "value": "例外処理はありません",
+            "sourceIds": ["prior-process-source"],
+            "applicabilityStatus": "not_applicable",
+        },
+    ]
+
+    assert apply_prior_knowledge_candidates(state, target, candidates=candidates) is True
+    assert is_current_question_confirmation_target(state, question) is True
+    assert state["applicabilityState"]["branch"]["status"] == "unknown"
+    assert state["applicabilityState"]["exception"]["status"] == "unknown"
+
+    apply_structured_output(
+        state,
+        StructuredInterviewOutput(dialogueAct="CONFIRMATION"),
+        latest_message_id="overview-confirmation",
+        raw_transcript="はい",
+        fields=[],
+        profile="business_process",
+        current_question=question,
+    )
+
+    assert state["applicabilityState"]["branch"]["status"] == "present"
+    assert state["applicabilityState"]["exception"]["status"] == "not_applicable"
+    assert is_current_question_confirmation_target(state, question) is False
+
+
+def test_question_generator_maps_prior_knowledge_to_applicability_overview_topics() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-prior-applicability-overview",
+        (),
+    )
+    knowledge["interviewPlan"] = {"profile": "business_process"}
+    state = build_initial_structured_state("business_process", [])
+    target = {
+        "targetType": "applicability_overview",
+        "targetId": "optional_cases",
+        "label": "通常と異なるケースや条件による処理変更の有無",
+    }
+    source_id = "prior-process-overview"
+    store.upsert(
+        "documents",
+        {
+            "id": source_id,
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge["id"],
+            "sourceType": "prior_knowledge",
+            "title": "業務条件",
+            "content": "承認額で分岐します。例外処理はありません。",
+            "ingestionStatus": "indexed",
+            "deletedAt": None,
+        },
+    )
+
+    class ApplicabilityCandidateProvider(FakeStructuredProvider):
+        def generate_question(
+            self,
+            **_: object,
+        ) -> QuestionGenerationOutput:
+            return QuestionGenerationOutput(
+                questionText="通常と異なるケースはありますか？",
+                priorKnowledgeCandidates=[
+                    {
+                        "aspectId": "branch",
+                        "value": "承認額で分岐します",
+                        "sourceId": source_id,
+                        "applicabilityStatus": "present",
+                    },
+                    {
+                        "aspectId": "exception",
+                        "value": "例外処理はありません",
+                        "sourceId": source_id,
+                        "applicabilityStatus": "not_applicable",
+                    },
+                ],
+            )
+
+    question_text, _, _ = _generate_question_text(
+        ApplicabilityCandidateProvider([]),
+        profile="business_process",
+        target=target,
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        fields=[],
+        state=state,
+        messages=[],
+        use_retrieval=False,
+    )
+
+    assert question_text == (
+        "分岐は「承認額で分岐します」、例外処理は「例外処理はありません」で合っていますか？"
+    )
+    assert state["applicabilityState"]["branch"]["status"] == "unknown"
+    assert state["applicabilityState"]["branch"]["candidateStatus"] == "present"
+    assert state["applicabilityState"]["exception"]["status"] == "unknown"
+    assert state["applicabilityState"]["exception"]["candidateStatus"] == "not_applicable"
+
+
+@pytest.mark.parametrize(
+    ("profile", "target_type", "target_id", "label"),
+    [
+        ("system_requirement", "requirement", "requirement.expected_result", "期待結果"),
+        ("business_process", "process", "process.start", "開始条件"),
+    ],
+)
+def test_prior_knowledge_candidate_mapping_works_for_scalar_structured_targets(
+    profile: str,
+    target_type: str,
+    target_id: str,
+    label: str,
+) -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        f"record-prior-scalar-{target_type}",
+        (),
+    )
+    knowledge["interviewPlan"] = {"profile": profile}
+    state = build_initial_structured_state(profile, [])
+    target = {"targetType": target_type, "targetId": target_id, "label": label}
+    source_id = f"prior-{target_type}-source"
+    store.upsert(
+        "documents",
+        {
+            "id": source_id,
+            "tenantId": user.tenant_id,
+            "knowledgeId": knowledge["id"],
+            "sourceType": "prior_knowledge",
+            "title": "登録済み情報",
+            "content": "登録値は確認済みの内容です。",
+            "ingestionStatus": "indexed",
+            "deletedAt": None,
+        },
+    )
+
+    class ScalarCandidateProvider(FakeStructuredProvider):
+        def generate_question(self, **_: object) -> QuestionGenerationOutput:
+            return QuestionGenerationOutput(
+                questionText=f"{label}を教えてください。",
+                priorKnowledgeCandidates=[
+                    {
+                        "aspectId": target_id,
+                        "value": "確認済みの内容",
+                        "sourceId": source_id,
+                    }
+                ],
+            )
+
+    question_text, _, _ = _generate_question_text(
+        ScalarCandidateProvider([]),
+        profile=profile,
+        target=target,
+        record=record,
+        knowledge=knowledge,
+        user=user,
+        fields=[],
+        state=state,
+        messages=[],
+        use_retrieval=False,
+    )
+
+    assert question_text == f"{label}は「確認済みの内容」で合っていますか？"
+    target_state = (
+        state["requirementStates"][target_id]
+        if target_type in {"requirement", "process"}
+        else None
+    )
+    assert target_state is not None
+    assert target_state["status"] == "AWAITING_CONFIRMATION"
+    assert target_state["value"] is None
 
 
 def test_generated_reply_does_not_echo_a_long_answer_with_a_fixed_reaction() -> None:

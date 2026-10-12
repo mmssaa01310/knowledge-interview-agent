@@ -74,7 +74,7 @@
   "completedMessage": "インタビューが完了しました。回答内容を確認してください。",
   "reviewNote": "管理者からの修正依頼：{note}",
   "completedInput": "回答済みのため入力できません。",
-  "voiceInputDisabled": "音声インタビュー中はテキスト入力できません。",
+  "voiceTextInputNotice": "音声中も入力できます。聞き取り中に送信すると、音声を停止してテキストで回答します。",
   "answerInput": "回答入力",
   "receiving": "回答を受け付けています…",
   "done": "完了",

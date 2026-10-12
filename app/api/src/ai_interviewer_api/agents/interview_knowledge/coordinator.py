@@ -36,6 +36,9 @@ APPLICABILITY_TOPICS: tuple[str, ...] = (
     "handoff",
     "input_output",
 )
+APPLICABILITY_OVERVIEW_TOPICS: frozenset[str] = frozenset(
+    {"branch", "exception", "external_system", "error_handling", "handoff", "input_output"}
+)
 
 APPLICABILITY_LABELS: dict[str, str] = {
     "process": "処理の流れ",
@@ -342,6 +345,182 @@ def apply_document_candidate(
     return True
 
 
+def apply_prior_knowledge_candidates(
+    state: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    candidates: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Stage exact prior-knowledge values for explicit participant confirmation."""
+
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "").strip()
+    normalized: list[dict[str, Any]] = []
+    for candidate in candidates:
+        aspect_id = str(candidate.get("aspectId") or "").strip()
+        value = str(candidate.get("value") or "").strip()
+        applicability_status = str(candidate.get("applicabilityStatus") or "").strip()
+        source_ids = list(
+            dict.fromkeys(
+                str(source_id).strip()
+                for source_id in candidate.get("sourceIds", [])
+                if str(source_id).strip()
+            )
+        )
+        if aspect_id and value and source_ids:
+            normalized.append({
+                "aspectId": aspect_id,
+                "value": value,
+                "sourceIds": source_ids,
+                "applicabilityStatus": applicability_status,
+            })
+    if not target_id or not normalized:
+        return False
+
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id)
+        if not isinstance(target_state, dict):
+            return False
+        if target_state.get("answerState") == "CONFIRMED":
+            return False
+        if str(target_state.get("candidateAnswer") or "").strip():
+            return False
+        required_items = _field_required_items(target_state)
+        required_by_id = {
+            str(item.get("itemId") or ""): item
+            for item in required_items
+            if str(item.get("itemId") or "").strip()
+        }
+        missing_ids = {
+            str(item.get("itemId") or "")
+            for item in _field_missing_required_items(target_state)
+        }
+        candidate_items: list[dict[str, Any]] = []
+        seen_item_ids: set[str] = set()
+        for candidate in normalized:
+            item_id = str(candidate["aspectId"])
+            if item_id not in required_by_id or item_id not in missing_ids or item_id in seen_item_ids:
+                return False
+            seen_item_ids.add(item_id)
+            candidate_items.append(
+                {
+                    "itemId": item_id,
+                    "value": candidate["value"],
+                    "evidenceTranscriptIds": [],
+                    "sourceIds": list(candidate["sourceIds"]),
+                }
+            )
+        source_ids = list(
+            dict.fromkeys(
+                source_id
+                for item in candidate_items
+                for source_id in item["sourceIds"]
+            )
+        )
+        target_state.update(
+            {
+                "answerState": "AWAITING_CONFIRMATION",
+                "answerResolution": "CONFIRM_REQUIRED",
+                "status": "asking",
+                "recordAnswer": None,
+                "candidateItems": candidate_items,
+                "capturedItems": deepcopy(candidate_items),
+                "candidateAnswer": _compose_field_answer(candidate_items, required_items),
+                "candidateSource": "prior_knowledge",
+                "candidateSourceIds": source_ids,
+            }
+        )
+        _sync_field_progress(target_state)
+    elif target_type in {"requirement", "process"}:
+        if len(normalized) != 1 or normalized[0]["aspectId"] != target_id:
+            return False
+        target_state = state.get("requirementStates", {}).get(target_id)
+        if not isinstance(target_state, dict):
+            return False
+        if target_state.get("status") == "CONFIRMED":
+            return False
+        if str(target_state.get("candidateValue") or "").strip():
+            return False
+        candidate = normalized[0]
+        target_state.update(
+            {
+                "status": "AWAITING_CONFIRMATION",
+                "answerResolution": "CONFIRM_REQUIRED",
+                "value": None,
+                "candidateValue": candidate["value"],
+                "candidateSource": "prior_knowledge",
+                "candidateSourceIds": list(candidate["sourceIds"]),
+                "evidenceTranscriptIds": [],
+            }
+        )
+    elif target_type in {"applicability", "applicability_overview"}:
+        applicability_states = state.get("applicabilityState", {})
+        if not isinstance(applicability_states, dict):
+            return False
+        if target_type == "applicability":
+            if len(normalized) != 1 or normalized[0]["aspectId"] != target_id:
+                return False
+            candidates_by_topic = {target_id: normalized[0]}
+            group_type = None
+            group_id = None
+        else:
+            candidates_by_topic = {}
+            for candidate in normalized:
+                topic = str(candidate["aspectId"])
+                if topic not in APPLICABILITY_OVERVIEW_TOPICS or topic in candidates_by_topic:
+                    return False
+                candidates_by_topic[topic] = candidate
+            if not candidates_by_topic:
+                return False
+            group_type = target_type
+            group_id = target_id
+
+        for topic, candidate in candidates_by_topic.items():
+            applicability_state = applicability_states.get(topic)
+            if (
+                not isinstance(applicability_state, dict)
+                or applicability_state.get("status") != "unknown"
+                or applicability_state.get("candidateStatus")
+                or candidate["applicabilityStatus"] not in {"present", "not_applicable"}
+            ):
+                return False
+        for topic, candidate in candidates_by_topic.items():
+            applicability_state = applicability_states[topic]
+            applicability_state.update(
+                {
+                    "candidateStatus": candidate["applicabilityStatus"],
+                    "candidateValue": candidate["value"],
+                    "candidateSource": "prior_knowledge",
+                    "candidateSourceIds": list(candidate["sourceIds"]),
+                    "candidateGroupTargetType": group_type,
+                    "candidateGroupTargetId": group_id,
+                }
+            )
+        target["candidateSource"] = "prior_knowledge"
+        target["candidateValue"] = "、".join(
+            str(candidate["value"]) for candidate in candidates_by_topic.values()
+        )
+        target["candidateSourceIds"] = list(
+            dict.fromkeys(
+                source_id
+                for candidate in candidates_by_topic.values()
+                for source_id in candidate["sourceIds"]
+            )
+        )
+        return True
+    else:
+        return False
+
+    target["candidateSource"] = "prior_knowledge"
+    target["candidateValue"] = (
+        str(target_state.get("candidateAnswer") or "")
+        if target_type == "field"
+        else str(target_state.get("candidateValue") or "")
+    )
+    target["candidateSourceIds"] = list(target_state.get("candidateSourceIds") or [])
+    return True
+
+
 def record_interpretation_assessment(
     state: dict[str, Any],
     output: StructuredInterviewOutput,
@@ -423,11 +602,14 @@ def stage_transcript_correction(
     valid_evidence_ids: Set[str] | None = None,
     current_question: Mapping[str, Any] | None = None,
 ) -> bool:
-    """Store a single corrected transcript as a confirmation-only candidate."""
+    """Stage only transcript corrections that are mapped to explicit targets."""
 
     assessment = output.transcriptAssessment
     normalized = assessment.normalizedTranscript.strip()
-    if assessment.correctionStatus != "CORRECTED" or not normalized:
+    correction_status = assessment.correctionStatus
+    if correction_status not in {"CORRECTED", "UNCERTAIN"}:
+        return False
+    if correction_status == "CORRECTED" and not normalized:
         return False
 
     record_interpretation_assessment(
@@ -437,8 +619,58 @@ def stage_transcript_correction(
         raw_transcript=raw_transcript,
     )
     target_refs: list[dict[str, str]] = []
+    previous_field_states: dict[str, Any] = {}
+    previous_requirement_states: dict[str, Any] = {}
+    previous_progress = {
+        key: deepcopy(state.get(key))
+        for key in (
+            "completedFieldIds",
+            "pendingFieldIds",
+            "lastTentativeTarget",
+            "pendingTranscriptConfirmation",
+        )
+    }
     field_ids = {str(field.get("id")) for field in fields if field.get("id")}
-    current_target = _target_for_current_question(state, current_question)
+    full_transcripts = tuple(
+        normalized_value
+        for value in (raw_transcript, normalized)
+        if (normalized_value := _lightly_normalize_transcript(value))
+    )
+    uncertain_candidates = tuple(
+        normalized_value
+        for value in assessment.correctionCandidates
+        if (normalized_value := _lightly_normalize_transcript(value))
+    )
+
+    def is_full_transcript_candidate(value: str, *, multiple_targets: bool) -> bool:
+        if not multiple_targets:
+            return False
+        normalized_value = _lightly_normalize_transcript(value)
+        return any(
+            normalized_value == transcript
+            or (len(transcript) >= 12 and transcript in normalized_value)
+            for transcript in full_transcripts
+        )
+
+    def is_unsupported_uncertain_candidate(value: str) -> bool:
+        if correction_status != "UNCERTAIN":
+            return False
+        normalized_value = _lightly_normalize_transcript(value)
+        if not normalized_value:
+            return True
+        if not any(normalized_value in transcript for transcript in full_transcripts):
+            return True
+        if len(uncertain_candidates) > 1:
+            overlaps = [
+                normalized_value == candidate
+                or normalized_value in candidate
+                or candidate in normalized_value
+                for candidate in uncertain_candidates
+            ]
+            if any(overlaps) and not all(overlaps):
+                return True
+        return False
+
     for update in output.fieldUpdates:
         if (
             update.fieldId not in field_ids
@@ -447,6 +679,25 @@ def stage_transcript_correction(
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
             continue
+        field_state = state.get("fieldStates", {}).get(update.fieldId, {})
+        required_items = _field_required_items(field_state)
+        required_item_ids = {str(item.get("itemId") or "") for item in required_items}
+        if (update.itemId and update.itemId not in required_item_ids) or (
+            len(required_item_ids) > 1 and not update.itemId
+        ):
+            continue
+        if is_full_transcript_candidate(
+            update.value,
+            multiple_targets=(
+                len(required_item_ids) > 1
+                or len(output.fieldUpdates) + len(output.requirementUpdates) > 1
+            ),
+        ) or is_unsupported_uncertain_candidate(update.value):
+            continue
+        previous_field_states.setdefault(
+            update.fieldId,
+            deepcopy(state.get("fieldStates", {}).get(update.fieldId)),
+        )
         _apply_field_update(
             state,
             update.model_copy(update={"answerResolution": "CONFIRM_REQUIRED"}),
@@ -454,7 +705,9 @@ def stage_transcript_correction(
             valid_evidence_ids,
             force_awaiting_confirmation=True,
         )
-        target_refs.append({"targetType": "field", "targetId": update.fieldId})
+        target_ref = {"targetType": "field", "targetId": update.fieldId}
+        if target_ref not in target_refs:
+            target_refs.append(target_ref)
 
     for update in output.requirementUpdates:
         if (
@@ -464,6 +717,17 @@ def stage_transcript_correction(
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
             continue
+        if is_full_transcript_candidate(
+            update.value,
+            multiple_targets=(
+                len(output.fieldUpdates) + len(output.requirementUpdates) > 1
+            ),
+        ) or is_unsupported_uncertain_candidate(update.value):
+            continue
+        previous_requirement_states.setdefault(
+            update.requirementId,
+            deepcopy(state["requirementStates"].get(update.requirementId)),
+        )
         _apply_requirement_update(
             state,
             update.model_copy(update={"answerResolution": "CONFIRM_REQUIRED"}),
@@ -471,59 +735,46 @@ def stage_transcript_correction(
             valid_evidence_ids,
             force_awaiting_confirmation=True,
         )
-        target_refs.append(
-            {
-                "targetType": (
-                    "requirement"
-                    if update.requirementId.startswith("requirement.")
-                    else "process"
-                ),
-                "targetId": update.requirementId,
-            }
-        )
-
-    if not target_refs and current_target is not None:
-        target_type = str(current_target.get("targetType") or "")
-        target_id = str(current_target.get("targetId") or "")
-        if target_type == "field" and target_id in field_ids:
-            _apply_field_update(
-                state,
-                FieldUpdate(
-                    fieldId=target_id,
-                    value=normalized,
-                    evidenceTranscriptIds=[latest_message_id],
-                    answerResolution="CONFIRM_REQUIRED",
-                ),
-                latest_message_id,
-                valid_evidence_ids,
-                force_awaiting_confirmation=True,
-            )
-            target_refs.append({"targetType": "field", "targetId": target_id})
-        elif target_type in {"requirement", "process"} and target_id in state["requirementStates"]:
-            _apply_requirement_update(
-                state,
-                RequirementUpdate(
-                    requirementId=target_id,
-                    value=normalized,
-                    evidenceTranscriptIds=[latest_message_id],
-                    answerResolution="CONFIRM_REQUIRED",
-                ),
-                latest_message_id,
-                valid_evidence_ids,
-                force_awaiting_confirmation=True,
-            )
-            target_refs.append({"targetType": target_type, "targetId": target_id})
+        target_ref = {
+            "targetType": (
+                "requirement"
+                if update.requirementId.startswith("requirement.")
+                else "process"
+            ),
+            "targetId": update.requirementId,
+        }
+        if target_ref not in target_refs:
+            target_refs.append(target_ref)
 
     if not target_refs:
         return False
-    state["pendingTranscriptConfirmation"] = {
+    pending_confirmation = {
         "messageId": latest_message_id,
         "rawTranscript": raw_transcript.strip(),
         "normalizedTranscript": normalized,
         "correctionCandidates": list(assessment.correctionCandidates),
         "targetRefs": target_refs,
         "sourceQuestion": dict(current_question) if current_question else None,
+        "candidateMappingVersion": 1,
     }
+    state["pendingTranscriptConfirmation"] = pending_confirmation
+    if not _pending_transcript_confirmation_value(state, pending_confirmation):
+        for target_id, previous in previous_field_states.items():
+            if previous is None:
+                state.get("fieldStates", {}).pop(target_id, None)
+            else:
+                state.setdefault("fieldStates", {})[target_id] = previous
+        for target_id, previous in previous_requirement_states.items():
+            if previous is None:
+                state.get("requirementStates", {}).pop(target_id, None)
+            else:
+                state.setdefault("requirementStates", {})[target_id] = previous
+        for key, previous in previous_progress.items():
+            if previous is None:
+                state.pop(key, None)
+            else:
+                state[key] = previous
+        return False
     state["activeProbeTarget"] = None
     state["lastProcessedUserMessageId"] = latest_message_id
     return True
@@ -563,6 +814,23 @@ def apply_structured_output(
     field_ids = {str(field.get("id")) for field in fields if field.get("id")}
     current_target = _target_for_current_question(state, current_question)
     confirmation_target = current_target
+    confirmation_applicability_topics: set[str] = set()
+    if output.dialogueAct == "CONFIRMATION" and isinstance(current_target, Mapping):
+        current_target_type = str(current_target.get("targetType") or "")
+        current_target_id = str(current_target.get("targetId") or "")
+        if current_target_type == "applicability":
+            confirmation_applicability_topics.add(current_target_id)
+        elif current_target_type == "applicability_overview":
+            confirmation_applicability_topics.update(
+                str(topic)
+                for topic, applicability_state in state.get("applicabilityState", {}).items()
+                if isinstance(applicability_state, Mapping)
+                and applicability_state.get("candidateGroupTargetType")
+                == current_target_type
+                and str(applicability_state.get("candidateGroupTargetId") or "")
+                == current_target_id
+                and applicability_state.get("candidateStatus")
+            )
     if confirmation_target is None and output.dialogueAct in {"CONFIRMATION", "REJECTION"}:
         pending_targets = list_pending_confirmation_targets(state)
         confirmation_target = pending_targets[0] if pending_targets else None
@@ -698,6 +966,15 @@ def apply_structured_output(
 
     for update in output.applicability:
         if update.topic not in state.setdefault("applicabilityState", {}):
+            continue
+        if (
+            confirmation_applied
+            and output.dialogueAct == "CONFIRMATION"
+            and update.topic in confirmation_applicability_topics
+        ):
+            # The participant confirmed the exact candidate values already
+            # staged for this target. Do not replace them with a second,
+            # transcript-derived interpretation in the same turn.
             continue
         if (
             profile == "system_requirement"
@@ -871,6 +1148,139 @@ def evaluate_completion(
     }
 
 
+def _pending_transcript_confirmation_value(
+    state: Mapping[str, Any],
+    pending: Mapping[str, Any],
+) -> str:
+    """Build a confirmation value only from current-turn, target-mapped items."""
+
+    target_refs = pending.get("targetRefs")
+    if not isinstance(target_refs, list):
+        return ""
+    message_id = str(pending.get("messageId") or "").strip()
+    legacy_mapping = pending.get("candidateMappingVersion") != 1
+    unique_target_count = len(
+        {
+            (
+                str(item.get("targetType") or ""),
+                str(item.get("targetId") or "").strip(),
+            )
+            for item in target_refs
+            if isinstance(item, Mapping)
+        }
+    )
+    full_transcripts = tuple(
+        _lightly_normalize_transcript(str(value))
+        for value in (
+            pending.get("normalizedTranscript"),
+            pending.get("rawTranscript"),
+        )
+        if str(value or "").strip()
+    )
+    field_states = state.get("fieldStates")
+    requirement_states = state.get("requirementStates")
+    pairs: list[tuple[str, str]] = []
+    seen_targets: set[tuple[str, str]] = set()
+
+    def add_pair(
+        label: str,
+        value: object,
+        *,
+        reject_full_transcript: bool,
+    ) -> None:
+        normalized_value = str(value or "").strip()
+        if (
+            not label
+            or not normalized_value
+            or len(normalized_value) > 64
+            or (
+                reject_full_transcript
+                and any(
+                    normalized_value == transcript
+                    or (len(transcript) >= 12 and transcript in normalized_value)
+                    for transcript in full_transcripts
+                )
+            )
+        ):
+            return
+        pair = (label, normalized_value)
+        if pair not in pairs:
+            pairs.append(pair)
+
+    for reference in target_refs:
+        target = reference if isinstance(reference, Mapping) else {}
+        target_type = str(target.get("targetType") or "")
+        target_id = str(target.get("targetId") or "").strip()
+        key = (target_type, target_id)
+        if not target_id or key in seen_targets:
+            continue
+        seen_targets.add(key)
+
+        if target_type == "field" and isinstance(field_states, Mapping):
+            field_state = field_states.get(target_id)
+            if not isinstance(field_state, Mapping):
+                continue
+            plan = field_state.get("questionPlan")
+            required_items = (
+                plan.get("requiredItems")
+                if isinstance(plan, Mapping)
+                else None
+            )
+            item_labels: dict[str, str] = {}
+            if isinstance(required_items, list):
+                for required_item in required_items:
+                    if not isinstance(required_item, Mapping):
+                        continue
+                    item_id = str(required_item.get("itemId") or "").strip()
+                    label = str(required_item.get("label") or "").strip()
+                    if item_id and label:
+                        item_labels[item_id] = label
+            candidate_items = field_state.get("candidateItems")
+            if isinstance(candidate_items, list):
+                for candidate in candidate_items:
+                    if not isinstance(candidate, Mapping):
+                        continue
+                    evidence_ids = candidate.get("evidenceTranscriptIds")
+                    if message_id and (
+                        not isinstance(evidence_ids, list)
+                        or message_id not in evidence_ids
+                    ):
+                        continue
+                    item_id = str(candidate.get("itemId") or "").strip()
+                    label = item_labels.get(item_id, "")
+                    if not label and len(item_labels) <= 1:
+                        label = str(field_state.get("fieldId") or target_id)
+                    add_pair(
+                        label,
+                        candidate.get("value"),
+                        reject_full_transcript=(
+                            legacy_mapping
+                            or unique_target_count > 1
+                            or len(item_labels) > 1
+                        ),
+                    )
+        elif target_type in {"requirement", "process"} and isinstance(
+            requirement_states, Mapping
+        ):
+            requirement_state = requirement_states.get(target_id)
+            if not isinstance(requirement_state, Mapping):
+                continue
+            evidence_ids = requirement_state.get("evidenceTranscriptIds")
+            if message_id and (
+                not isinstance(evidence_ids, list)
+                or message_id not in evidence_ids
+            ):
+                continue
+            add_pair(
+                str(requirement_state.get("label") or "").strip(),
+                requirement_state.get("candidateValue"),
+                reject_full_transcript=(legacy_mapping or unique_target_count > 1),
+            )
+
+    summary = "、".join(f"{label}は「{value}」" for label, value in pairs)
+    return summary if len(summary) <= 120 else ""
+
+
 def select_next_question_target(
     state: dict[str, Any],
     profile: InterviewProfile,
@@ -926,15 +1336,28 @@ def select_next_question_target(
     pending_transcript = state.get("pendingTranscriptConfirmation")
     if isinstance(pending_transcript, Mapping):
         message_id = str(pending_transcript.get("messageId") or "").strip()
-        normalized = str(pending_transcript.get("normalizedTranscript") or "").strip()
-        if message_id and normalized:
+        candidate_value = _pending_transcript_confirmation_value(
+            state,
+            pending_transcript,
+        )
+        if message_id and candidate_value:
             return _target(
                 "transcript_confirmation",
                 message_id,
-                "発話内容",
+                "回答項目",
                 1,
-                candidate_value=normalized,
+                candidate_value=candidate_value,
             )
+        # Older persisted turns could stage the entire transcript as a field
+        # candidate. Drop any pending target that cannot be rendered from
+        # item-mapped values so the interview asks for the target again.
+        _reject_target(
+            state,
+            {
+                "targetType": "transcript_confirmation",
+                "targetId": message_id,
+            },
+        )
 
     active_probe = _active_probe_target(state)
     if active_probe is not None and target_key(active_probe) not in excluded:
@@ -999,17 +1422,9 @@ def select_next_question_target(
             and "applicability:process" not in excluded
         ):
             return _target("applicability", "process", "処理の流れがあるか", 4)
-        grouped_topics = {
-            "branch",
-            "exception",
-            "external_system",
-            "error_handling",
-            "handoff",
-            "input_output",
-        }
         if (
             not state.get("applicabilityOverviewAsked")
-            and any(topic in grouped_topics for topic in unknown_applicability)
+                and any(topic in APPLICABILITY_OVERVIEW_TOPICS for topic in unknown_applicability)
             and "applicability_overview:optional_cases" not in excluded
         ):
             return _target(
@@ -1398,6 +1813,41 @@ def list_pending_confirmation_targets(state: Mapping[str, Any]) -> list[dict[str
                     candidate_source=requirement_state.get("candidateSource"),
                 )
             )
+    applicability_groups: dict[tuple[str, str], list[tuple[str, Mapping[str, Any]]]] = {}
+    for topic, applicability_state in state.get("applicabilityState", {}).items():
+        if not isinstance(applicability_state, Mapping) or not applicability_state.get("candidateStatus"):
+            continue
+        group_type = str(
+            applicability_state.get("candidateGroupTargetType") or "applicability"
+        )
+        group_id = str(applicability_state.get("candidateGroupTargetId") or topic)
+        applicability_groups.setdefault((group_type, group_id), []).append(
+            (str(topic), applicability_state)
+        )
+    for (group_type, group_id), candidates in applicability_groups.items():
+        if group_type == "applicability_overview":
+            label = "通常と異なるケースや条件による処理変更の有無"
+        else:
+            label = APPLICABILITY_LABELS.get(group_id, group_id)
+        target = _target(
+            group_type,
+            group_id,
+            label,
+            2,
+            candidate_source="prior_knowledge",
+            candidate_value="、".join(
+                str(candidate.get("candidateValue") or "").strip()
+                for _, candidate in candidates
+                if str(candidate.get("candidateValue") or "").strip()
+            ),
+            candidate_source_ids=[
+                source_id
+                for _, candidate in candidates
+                for source_id in candidate.get("candidateSourceIds", [])
+                if str(source_id).strip()
+            ],
+        )
+        targets.append(target)
     return targets
 
 
@@ -1922,7 +2372,7 @@ def _target(
         "label": label,
         "priority": priority,
     }
-    if candidate_source in {"assistant_proposal", "document_reference"}:
+    if candidate_source in {"assistant_proposal", "document_reference", "prior_knowledge"}:
         target["candidateSource"] = candidate_source
     if candidate_value:
         target["candidateValue"] = str(candidate_value).strip()
@@ -1969,12 +2419,13 @@ def _target_for_current_question(
         pending = state.get("pendingTranscriptConfirmation")
         if not isinstance(pending, Mapping):
             return None
+        candidate_value = _pending_transcript_confirmation_value(state, pending)
         return _target(
             "transcript_confirmation",
             target_id,
-            "発話内容",
+            "回答項目",
             1,
-            candidate_value=str(pending.get("normalizedTranscript") or "").strip(),
+            candidate_value=candidate_value,
         )
     target = _target(
         target_type,
@@ -1998,12 +2449,69 @@ def _target_for_current_question(
         target["candidateSource"] = field_state.get("candidateSource")
         target["candidateValue"] = field_state.get("candidateAnswer")
         target["candidateSourceIds"] = list(field_state.get("candidateSourceIds") or [])
+    elif target_type == "applicability":
+        applicability_state = state.get("applicabilityState", {}).get(target_id, {})
+        target["candidateSource"] = applicability_state.get("candidateSource")
+        target["candidateValue"] = applicability_state.get("candidateValue")
+        target["candidateSourceIds"] = list(
+            applicability_state.get("candidateSourceIds") or []
+        )
+    elif target_type == "applicability_overview":
+        candidates = [
+            applicability_state
+            for applicability_state in state.get("applicabilityState", {}).values()
+            if isinstance(applicability_state, Mapping)
+            and applicability_state.get("candidateGroupTargetType") == target_type
+            and str(applicability_state.get("candidateGroupTargetId") or "") == target_id
+            and applicability_state.get("candidateStatus")
+        ]
+        target["candidateSource"] = "prior_knowledge" if candidates else None
+        target["candidateValue"] = "、".join(
+            str(candidate.get("candidateValue") or "").strip()
+            for candidate in candidates
+            if str(candidate.get("candidateValue") or "").strip()
+        )
+        target["candidateSourceIds"] = list(
+            dict.fromkeys(
+                source_id
+                for candidate in candidates
+                for source_id in candidate.get("candidateSourceIds", [])
+                if str(source_id).strip()
+            )
+        )
     else:
         requirement_state = state.get("requirementStates", {}).get(target_id, {})
         target["candidateSource"] = requirement_state.get("candidateSource")
         target["candidateValue"] = requirement_state.get("candidateValue")
         target["candidateSourceIds"] = list(requirement_state.get("candidateSourceIds") or [])
     return target
+
+
+def _applicability_confirmation_candidates(
+    state: Mapping[str, Any],
+    target_type: str,
+    target_id: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    applicability_states = state.get("applicabilityState", {})
+    if not isinstance(applicability_states, Mapping):
+        return []
+    if target_type == "applicability":
+        applicability_state = applicability_states.get(target_id)
+        if isinstance(applicability_state, dict) and applicability_state.get(
+            "candidateStatus"
+        ):
+            return [(target_id, applicability_state)]
+        return []
+    if target_type != "applicability_overview":
+        return []
+    return [
+        (str(topic), applicability_state)
+        for topic, applicability_state in applicability_states.items()
+        if isinstance(applicability_state, dict)
+        and applicability_state.get("candidateGroupTargetType") == target_type
+        and str(applicability_state.get("candidateGroupTargetId") or "") == target_id
+        and applicability_state.get("candidateStatus")
+    ]
 
 
 def _is_confirmation_target(state: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
@@ -2014,7 +2522,7 @@ def _is_confirmation_target(state: Mapping[str, Any], target: Mapping[str, Any])
         return bool(
             isinstance(pending, Mapping)
             and str(pending.get("messageId") or "") == target_id
-            and str(pending.get("normalizedTranscript") or "").strip()
+            and _pending_transcript_confirmation_value(state, pending)
         )
     if target_type == "contradiction":
         return any(
@@ -2026,6 +2534,12 @@ def _is_confirmation_target(state: Mapping[str, Any], target: Mapping[str, Any])
         return state.get("fieldStates", {}).get(target_id, {}).get("answerState") == "AWAITING_CONFIRMATION"
     if target_type in {"requirement", "process"}:
         return state.get("requirementStates", {}).get(target_id, {}).get("status") == "AWAITING_CONFIRMATION"
+    if target_type == "applicability":
+        return bool(_applicability_confirmation_candidates(state, str(target_type), target_id))
+    if target_type == "applicability_overview":
+        return bool(
+            _applicability_confirmation_candidates(state, str(target_type), target_id)
+        )
     return False
 
 
@@ -2085,6 +2599,22 @@ def is_current_question_confirmation_target(
     return target is not None and _is_confirmation_target(state, target)
 
 
+def reject_pending_transcript_confirmation(state: dict[str, Any]) -> bool:
+    """Discard a legacy transcript confirmation without item-mapped values."""
+
+    pending = state.get("pendingTranscriptConfirmation")
+    if not isinstance(pending, Mapping):
+        return False
+    _reject_target(
+        state,
+        {
+            "targetType": "transcript_confirmation",
+            "targetId": str(pending.get("messageId") or ""),
+        },
+    )
+    return True
+
+
 def _confirm_target(
     state: dict[str, Any],
     target: Mapping[str, Any],
@@ -2120,6 +2650,33 @@ def _confirm_target(
             target_id,
             confirmation_message_id=confirmation_message_id,
         )
+        return
+    if kind in {"applicability", "applicability_overview"}:
+        for _, applicability_state in _applicability_confirmation_candidates(
+            state,
+            str(kind),
+            target_id,
+        ):
+            applicability_state.update(
+                {
+                    "status": applicability_state.get("candidateStatus"),
+                    "reason": applicability_state.get("candidateValue"),
+                    "evidenceTranscriptIds": [],
+                    "confirmedSource": applicability_state.get("candidateSource"),
+                    "confirmedSourceIds": list(
+                        applicability_state.get("candidateSourceIds") or []
+                    ),
+                    "confirmationEvidenceTranscriptIds": (
+                        [confirmation_message_id] if confirmation_message_id else []
+                    ),
+                    "candidateStatus": None,
+                    "candidateValue": None,
+                    "candidateSource": None,
+                    "candidateSourceIds": [],
+                    "candidateGroupTargetType": None,
+                    "candidateGroupTargetId": None,
+                }
+            )
         return
     if kind == "field":
         field_state = state.get("fieldStates", {}).get(target_id)
@@ -2260,6 +2817,33 @@ def _confirm_candidate_for_contradiction(
     )
 
 
+def _remember_rejected_prior_knowledge_candidate(
+    state: dict[str, Any],
+    *,
+    target_type: str,
+    target_id: str,
+    aspect_id: str,
+    value: str,
+) -> None:
+    candidate_value = str(value or "").strip()
+    if not candidate_value:
+        return
+    rejected = state.setdefault("priorKnowledgeRejectedCandidates", [])
+    if not isinstance(rejected, list):
+        rejected = []
+        state["priorKnowledgeRejectedCandidates"] = rejected
+    item = {
+        "targetType": target_type,
+        "targetId": target_id,
+        "aspectId": aspect_id,
+        "value": candidate_value,
+    }
+    if item not in rejected:
+        rejected.append(item)
+    if len(rejected) > 100:
+        del rejected[:-100]
+
+
 def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
     kind = target.get("targetType") or target.get("kind")
     target_id = str(target.get("targetId") or "")
@@ -2297,9 +2881,43 @@ def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
                         )
         state["pendingTranscriptConfirmation"] = None
         return
+    if kind in {"applicability", "applicability_overview"}:
+        for topic, applicability_state in _applicability_confirmation_candidates(
+            state,
+            str(kind),
+            target_id,
+        ):
+            _remember_rejected_prior_knowledge_candidate(
+                state,
+                target_type="applicability",
+                target_id=topic,
+                aspect_id=topic,
+                value=str(applicability_state.get("candidateValue") or ""),
+            )
+            applicability_state.update(
+                {
+                    "candidateStatus": None,
+                    "candidateValue": None,
+                    "candidateSource": None,
+                    "candidateSourceIds": [],
+                    "candidateGroupTargetType": None,
+                    "candidateGroupTargetId": None,
+                }
+            )
+        return
     if kind == "field":
         field_state = state.get("fieldStates", {}).get(target_id)
         if field_state:
+            if field_state.get("candidateSource") == "prior_knowledge":
+                for candidate in field_state.get("candidateItems", []):
+                    if isinstance(candidate, Mapping):
+                        _remember_rejected_prior_knowledge_candidate(
+                            state,
+                            target_type="field",
+                            target_id=target_id,
+                            aspect_id=str(candidate.get("itemId") or ""),
+                            value=str(candidate.get("value") or ""),
+                        )
             field_state["answerState"] = "UNANSWERED"
             field_state["answerResolution"] = None
             field_state["status"] = "asking"
@@ -2315,6 +2933,14 @@ def _reject_target(state: dict[str, Any], target: Mapping[str, Any]) -> None:
         return
     requirement_state = state.get("requirementStates", {}).get(target_id)
     if requirement_state:
+        if requirement_state.get("candidateSource") == "prior_knowledge":
+            _remember_rejected_prior_knowledge_candidate(
+                state,
+                target_type=str(kind or "requirement"),
+                target_id=target_id,
+                aspect_id=target_id,
+                value=str(requirement_state.get("candidateValue") or ""),
+            )
         requirement_state["status"] = "UNANSWERED"
         requirement_state["answerResolution"] = None
         requirement_state["candidateValue"] = None

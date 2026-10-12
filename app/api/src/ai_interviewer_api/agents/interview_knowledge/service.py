@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
@@ -14,8 +15,11 @@ from typing import Any
 from uuid import uuid4
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
+    APPLICABILITY_LABELS,
+    APPLICABILITY_OVERVIEW_TOPICS,
     accept_no_answer,
     apply_document_candidate,
+    apply_prior_knowledge_candidates,
     apply_structured_output,
     build_initial_structured_state,
     clear_probe,
@@ -29,6 +33,7 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     MAX_PROBE_COUNT,
     process_patch_validation_errors,
     record_interpretation_assessment,
+    reject_pending_transcript_confirmation,
     resolve_profile,
     select_optional_deepening_target,
     select_next_question_target,
@@ -72,11 +77,13 @@ from ai_interviewer_api.core.interview_locale import (
     localized_interview_meta_question_reply,
     localized_interview_confirmation_question,
     localized_interview_document_confirmation_question,
+    localized_interview_prior_knowledge_confirmation_question,
     localized_interview_ambiguous_part_prompt,
     localized_interview_clarification_target_reply,
     localized_interview_incomplete_prompt,
     localized_interview_fallbacks,
     localized_interview_missing_information_prompt,
+    localized_interview_not_heard_prompt,
     localized_interview_off_target_prompt,
     localized_interview_proposal_question,
     localized_interview_question_guidance,
@@ -1364,9 +1371,46 @@ def _generate_structured_interview_result(
         _persist_state(state, user, persist=persist_state)
 
     current_question = _get_current_question(state)
+    was_transcript_confirmation = bool(
+        current_question
+        and str(
+            current_question.get("targetType")
+            or current_question.get("kind")
+            or ""
+        )
+        == "transcript_confirmation"
+    )
     if _repair_current_confirmation_question(state, locale=interview_locale):
         _persist_state(state, user, persist=persist_state)
         current_question = _get_current_question(state)
+        if (
+            was_transcript_confirmation
+            and current_question
+            and str(
+                current_question.get("targetType")
+                or current_question.get("kind")
+                or ""
+            )
+            != "transcript_confirmation"
+        ):
+            target_label = str(
+                current_question.get("targetLabel")
+                or current_question.get("label")
+                or ""
+            ).strip()
+            return _build_result(
+                record=record,
+                state=state,
+                messages=messages,
+                fields=fields,
+                reply=localized_interview_not_heard_prompt(
+                    interview_locale,
+                    target_label or None,
+                ),
+                question=current_question,
+                action="ask_follow_up",
+                status="in_progress",
+            )
     probe_turn = bool(
         current_question
         and current_question.get("turnType") == "PROBE"
@@ -2107,7 +2151,7 @@ def _generate_structured_interview_result(
                 )
 
             staged_transcript_correction = False
-            if transcript_assessment_status == "CORRECTED":
+            if transcript_assessment_status in {"CORRECTED", "UNCERTAIN"}:
                 staged_transcript_correction = stage_transcript_correction(
                     state,
                     output,
@@ -2942,10 +2986,10 @@ def render_current_question_for_resumption(
     interview_state: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
 ) -> str | None:
-    """Rephrase the selected question with prior confirmed answers for a resumed session.
+    """Rephrase the selected question and stage matching prior knowledge for confirmation.
 
-    This only renders the existing backend-selected target. It does not change
-    the question ID, interview state, or persisted question text.
+    The backend-selected target and question ID remain unchanged. A validated
+    prior-knowledge candidate is persisted as awaiting participant confirmation.
     """
 
     current_question = get_current_structured_question(interview_state)
@@ -2968,16 +3012,22 @@ def render_current_question_for_resumption(
         return fallback
 
     fields = _list_interview_fields(knowledge, user)
+    prior_knowledge_context = build_prior_knowledge_context(knowledge, user)
     has_prior_utterance = any(
         message.get("role") == "user"
         and message.get("isActualUtterance") is not False
         and str(message.get("rawTranscript") or message.get("content") or "").strip()
         for message in messages
     )
-    if not has_prior_utterance and not _build_structured_draft(interview_state, fields):
+    if (
+        not has_prior_utterance
+        and not _build_structured_draft(interview_state, fields)
+        and not prior_knowledge_context
+    ):
         return fallback
 
     try:
+        working_state = deepcopy(dict(interview_state))
         provider = _get_structured_provider(
             None,
             model_id=resolve_structured_model_id(knowledge),
@@ -2990,7 +3040,7 @@ def render_current_question_for_resumption(
             knowledge=knowledge,
             user=user,
             fields=fields,
-            state=interview_state,
+            state=working_state,
             messages=messages,
             use_retrieval=False,
         )
@@ -3002,6 +3052,30 @@ def render_current_question_for_resumption(
             exc_info=True,
         )
         return fallback
+    if target.get("candidateSource") == "prior_knowledge":
+        persisted_question = next(
+            (
+                question
+                for question in working_state.get("askedQuestions", [])
+                if str(question.get("questionId") or "")
+                == str(current_question.get("questionId") or "")
+            ),
+            None,
+        )
+        if isinstance(persisted_question, dict):
+            persisted_question["text"] = question_text or fallback
+            persisted_question["renderedQuestionText"] = question_text or fallback
+            persisted_question["candidateSource"] = "prior_knowledge"
+            persisted_question["candidateValue"] = target.get("candidateValue")
+            persisted_question["candidateSourceIds"] = list(
+                target.get("candidateSourceIds") or []
+            )
+            working_state["nextQuestionTarget"] = deepcopy(target)
+            _persist_state(
+                working_state,
+                user,
+                source="prior_knowledge_confirmation_prepared",
+            )
     return question_text or fallback
 
 
@@ -5019,6 +5093,249 @@ def _should_implicitly_confirm_tentative_target(
     return False
 
 
+def _normalize_prior_knowledge_match_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _prior_knowledge_value_is_grounded(value: str, source: Mapping[str, Any]) -> bool:
+    candidate = _normalize_prior_knowledge_match_text(value)
+    if not candidate:
+        return False
+    source_text = " ".join(
+        text
+        for text in (
+            str(source.get("title") or ""),
+            str(source.get("content") or ""),
+        )
+        if text
+    )
+    normalized_source = _normalize_prior_knowledge_match_text(source_text)
+    if candidate.isdecimal():
+        return re.search(rf"(?<!\d){re.escape(candidate)}(?!\d)", normalized_source) is not None
+    return candidate in normalized_source
+
+
+def _question_prior_knowledge_aspects(
+    target: Mapping[str, Any],
+    question_definition: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "").strip()
+    if target_type == "field":
+        field_state = state.get("fieldStates", {}).get(target_id, {})
+        captured_ids = {
+            str(item.get("itemId") or "").strip()
+            for key in ("candidateItems", "capturedItems", "confirmedItems")
+            for item in (field_state.get(key, []) if isinstance(field_state, Mapping) else []) or []
+            if isinstance(item, Mapping) and str(item.get("value") or "").strip()
+        }
+        required_items = question_definition.get("requiredItems")
+        if not isinstance(required_items, Sequence) or isinstance(required_items, (str, bytes)):
+            return []
+        return [
+            {
+                "aspectId": str(item.get("itemId") or "").strip(),
+                "label": str(item.get("label") or item.get("itemId") or "").strip(),
+            }
+            for item in required_items
+            if isinstance(item, Mapping)
+            and str(item.get("itemId") or "").strip()
+            and str(item.get("itemId") or "").strip() not in captured_ids
+        ]
+    if target_type in {"requirement", "process"}:
+        label = str(question_definition.get("title") or target.get("label") or target_id)
+        return [{"aspectId": target_id, "label": label}] if target_id else []
+    if target_type == "applicability":
+        label = APPLICABILITY_LABELS.get(target_id, str(target.get("label") or target_id))
+        return [{"aspectId": target_id, "label": label}] if target_id else []
+    if target_type == "applicability_overview":
+        applicability_states = state.get("applicabilityState", {})
+        if not isinstance(applicability_states, Mapping):
+            return []
+        return [
+            {"aspectId": str(topic), "label": APPLICABILITY_LABELS.get(str(topic), str(topic))}
+            for topic, applicability_state in applicability_states.items()
+            if str(topic) in APPLICABILITY_OVERVIEW_TOPICS
+            and isinstance(applicability_state, Mapping)
+            and applicability_state.get("status") == "unknown"
+            and not applicability_state.get("candidateStatus")
+        ]
+    return []
+
+
+def _validate_prior_knowledge_question_candidates(
+    raw_candidates: Any,
+    *,
+    prior_knowledge: Sequence[Mapping[str, Any]],
+    target: Mapping[str, Any],
+    question_definition: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Keep only exact values tied to a missing aspect of the selected target."""
+
+    if not isinstance(raw_candidates, Sequence) or isinstance(raw_candidates, (str, bytes)):
+        return []
+    target_type = str(target.get("targetType") or target.get("kind") or "")
+    target_id = str(target.get("targetId") or "").strip()
+    if not target_id or target_type not in {
+        "field",
+        "requirement",
+        "process",
+        "applicability",
+        "applicability_overview",
+    }:
+        return []
+
+    sources = {
+        str(source.get("source_id") or "").strip(): source
+        for source in prior_knowledge
+        if str(source.get("source_id") or "").strip()
+    }
+    if not sources:
+        return []
+
+    if target_type == "field":
+        field_state = state.get("fieldStates", {}).get(target_id, {})
+        if not isinstance(field_state, Mapping) or field_state.get("answerState") == "CONFIRMED":
+            return []
+        if str(field_state.get("candidateAnswer") or "").strip():
+            return []
+        required_items = question_definition.get("requiredItems")
+        if not isinstance(required_items, Sequence) or isinstance(required_items, (str, bytes)):
+            return []
+        aspect_order = [
+            str(item.get("itemId") or "").strip()
+            for item in required_items
+            if isinstance(item, Mapping) and str(item.get("itemId") or "").strip()
+        ]
+        allowed_aspects = set(aspect_order)
+        captured_ids = {
+            str(item.get("itemId") or "").strip()
+            for key in ("candidateItems", "capturedItems", "confirmedItems")
+            for item in field_state.get(key, []) or []
+            if isinstance(item, Mapping) and str(item.get("value") or "").strip()
+        }
+        allowed_aspects.difference_update(captured_ids)
+    elif target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        if not isinstance(target_state, Mapping) or target_state.get("status") == "CONFIRMED":
+            return []
+        if str(target_state.get("candidateValue") or "").strip():
+            return []
+        allowed_aspects = {target_id}
+        aspect_order = [target_id]
+    else:
+        applicability_states = state.get("applicabilityState", {})
+        if not isinstance(applicability_states, Mapping):
+            return []
+        if target_type == "applicability":
+            applicability_state = applicability_states.get(target_id, {})
+            if (
+                not isinstance(applicability_state, Mapping)
+                or applicability_state.get("status") != "unknown"
+                or applicability_state.get("candidateStatus")
+            ):
+                return []
+            allowed_aspects = {target_id}
+            aspect_order = [target_id]
+        else:
+            aspect_order = [
+                str(topic)
+                for topic, applicability_state in applicability_states.items()
+                if str(topic) in APPLICABILITY_OVERVIEW_TOPICS
+                and isinstance(applicability_state, Mapping)
+                and applicability_state.get("status") == "unknown"
+                and not applicability_state.get("candidateStatus")
+            ]
+            allowed_aspects = set(aspect_order)
+            if not allowed_aspects:
+                return []
+
+    validated: dict[str, dict[str, Any]] = {}
+    conflicts: set[str] = set()
+    rejected_candidates = state.get("priorKnowledgeRejectedCandidates", [])
+    if not isinstance(rejected_candidates, Sequence) or isinstance(
+        rejected_candidates,
+        (str, bytes),
+    ):
+        rejected_candidates = []
+    for raw_candidate in raw_candidates[:12]:
+        if isinstance(raw_candidate, Mapping):
+            aspect_id = str(raw_candidate.get("aspectId") or "").strip()
+            value = str(raw_candidate.get("value") or "").strip()
+            source_id = str(raw_candidate.get("sourceId") or "").strip()
+            applicability_status = str(
+                raw_candidate.get("applicabilityStatus") or ""
+            ).strip()
+        else:
+            aspect_id = str(getattr(raw_candidate, "aspectId", "") or "").strip()
+            value = str(getattr(raw_candidate, "value", "") or "").strip()
+            source_id = str(getattr(raw_candidate, "sourceId", "") or "").strip()
+            applicability_status = str(
+                getattr(raw_candidate, "applicabilityStatus", "") or ""
+            ).strip()
+        source = sources.get(source_id)
+        if (
+            not aspect_id
+            or aspect_id not in allowed_aspects
+            or not value
+            or source is None
+            or not _prior_knowledge_value_is_grounded(value, source)
+            or (
+                target_type in {"applicability", "applicability_overview"}
+                and applicability_status not in {"present", "not_applicable"}
+            )
+        ):
+            continue
+        rejected_target_type = (
+            "applicability"
+            if target_type == "applicability_overview"
+            else target_type
+        )
+        rejected_target_id = (
+            aspect_id
+            if target_type == "applicability_overview"
+            else target_id
+        )
+        normalized_value = _normalize_prior_knowledge_match_text(value)
+        if any(
+            isinstance(rejected, Mapping)
+            and str(rejected.get("targetType") or "") == rejected_target_type
+            and str(rejected.get("targetId") or "") == rejected_target_id
+            and str(rejected.get("aspectId") or "") == aspect_id
+            and _normalize_prior_knowledge_match_text(rejected.get("value"))
+            == normalized_value
+            for rejected in rejected_candidates
+        ):
+            continue
+        previous = validated.get(aspect_id)
+        if previous is not None:
+            if (
+                _normalize_prior_knowledge_match_text(previous["value"]) != normalized_value
+                or previous.get("applicabilityStatus") != applicability_status
+            ):
+                conflicts.add(aspect_id)
+            elif source_id not in previous["sourceIds"]:
+                previous["sourceIds"].append(source_id)
+            continue
+        validated[aspect_id] = {
+            "aspectId": aspect_id,
+            "value": value,
+            "sourceIds": [source_id],
+            "applicabilityStatus": applicability_status or None,
+        }
+    return sorted(
+        (
+            candidate
+            for aspect_id, candidate in validated.items()
+            if aspect_id not in conflicts
+        ),
+        key=lambda candidate: aspect_order.index(str(candidate["aspectId"])),
+    )
+
+
 def _has_multiple_process_components(
     process_state: Mapping[str, Any],
     patch: Any,
@@ -5085,7 +5402,7 @@ def _generate_question_text(
         return (
             localized_interview_transcript_confirmation_question(
                 resolve_interview_locale(record, knowledge),
-                str(pending_transcript.get("normalizedTranscript") or ""),
+                str(target.get("candidateValue") or ""),
             ),
             [],
             None,
@@ -5181,6 +5498,7 @@ def _generate_question_text(
                 latency_metrics["rag_end_ms"] = float(int(time() * 1000))
     question_state = _question_generator_state_context(state)
     question_definition = _question_definition_context(target, current_field)
+    prior_knowledge_context = build_prior_knowledge_context(knowledge, user)
     context = {
         "knowledgeName": knowledge.get("name"),
         "recordTitle": record.get("title"),
@@ -5205,6 +5523,11 @@ def _generate_question_text(
         if current_field is not None
         else [],
         "questionDefinition": question_definition,
+        "priorKnowledgeAspects": _question_prior_knowledge_aspects(
+            target,
+            question_definition,
+            state,
+        ),
         "questionProgress": _question_progress_context(target),
         "tentativeCandidates": question_state["tentativeCandidates"],
         "answerAssessment": question_state["answerAssessment"],
@@ -5235,7 +5558,7 @@ def _generate_question_text(
         # Registered facts and glossary entries are configuration context,
         # not optional lexical RAG. They remain available when retrievalPolicy
         # is "never" and are never treated as the participant's answer.
-        "prior_knowledge": build_prior_knowledge_context(knowledge, user),
+        "prior_knowledge": prior_knowledge_context,
         "retrieved_knowledge": [item.model_dump() for item in retrieved_context],
     }
     question_generation_started_at = monotonic()
@@ -5273,6 +5596,7 @@ def _generate_question_text(
         )
         and not _is_awaiting_confirmation_target(target, state)
         and not _candidate_value_for_target(target, state)
+        and not prior_knowledge_context
     )
     if stream_allowed:
         try:
@@ -5319,6 +5643,45 @@ def _generate_question_text(
         round((monotonic() - started_at) * 1000),
     )
     question_text = _sanitize_question_text(generated.questionText)
+    prior_knowledge_candidates = _validate_prior_knowledge_question_candidates(
+        getattr(generated, "priorKnowledgeCandidates", []),
+        prior_knowledge=prior_knowledge_context,
+        target=target,
+        question_definition=question_definition,
+        state=state,
+    )
+    labels_by_aspect = {
+        aspect["aspectId"]: aspect["label"]
+        for aspect in _question_prior_knowledge_aspects(
+            target,
+            question_definition,
+            state,
+        )
+    }
+    if prior_knowledge_candidates and isinstance(state, dict) and isinstance(target, dict):
+        if apply_prior_knowledge_candidates(
+            state,
+            target,
+            candidates=prior_knowledge_candidates,
+        ):
+            confirmation_pairs = [
+                (
+                    labels_by_aspect.get(
+                        str(candidate["aspectId"]),
+                        str(target.get("label") or target.get("targetId") or "この項目"),
+                    ),
+                    str(candidate["value"]),
+                )
+                for candidate in prior_knowledge_candidates
+            ]
+            return (
+                localized_interview_prior_knowledge_confirmation_question(
+                    resolve_interview_locale(record, knowledge),
+                    confirmation_pairs,
+                ),
+                retrieved_context,
+                None,
+            )
     document_candidate = validate_document_question_candidate(
         value=generated.documentCandidateValue,
         source_ids=generated.documentCandidateSourceIds,
@@ -5422,12 +5785,11 @@ def _repair_current_confirmation_question(
     *,
     locale: InterviewLocale,
 ) -> bool:
-    """Repair persisted questions that lost their confirmation candidate.
+    """Repair persisted confirmation questions without reading whole transcripts.
 
-    Older turns could persist a generic field question while the field was
-    already awaiting confirmation. Keep the question ID and audit history, but
-    restore the domain-independent confirmation wording for the next client
-    render or voice session.
+    Older turns could store the complete transcript as a field candidate.
+    Discard those candidates and return to their source question; only mapped
+    item values can remain in a transcript confirmation.
     """
 
     current_question = _get_current_question(state)
@@ -5439,9 +5801,25 @@ def _repair_current_confirmation_question(
         pending = state.get("pendingTranscriptConfirmation")
         if not isinstance(pending, Mapping):
             return False
+        candidate_value = str(current_question.get("candidateValue") or "").strip()
+        candidate_key = re.sub(r"\s+", "", candidate_value)
+        transcript_keys = {
+            re.sub(r"\s+", "", str(value or "").strip())
+            for value in (pending.get("normalizedTranscript"), pending.get("rawTranscript"))
+            if str(value or "").strip()
+        }
+        if pending.get("candidateMappingVersion") != 1 and any(
+            candidate_key == transcript_key
+            or (len(transcript_key) >= 12 and transcript_key in candidate_key)
+            for transcript_key in transcript_keys
+        ):
+            candidate_value = ""
+        if not candidate_value:
+            reject_pending_transcript_confirmation(state)
+            return True
         question_text = localized_interview_transcript_confirmation_question(
             locale,
-            str(pending.get("normalizedTranscript") or ""),
+            candidate_value,
         )
         if str(current_question.get("text") or "") == question_text:
             return False
@@ -5459,6 +5837,18 @@ def _repair_current_confirmation_question(
         is_pending = target_state.get("status") == "AWAITING_CONFIRMATION"
         candidate_value = str(target_state.get("candidateValue") or "").strip()
         candidate_source = target_state.get("candidateSource")
+    elif target_type == "applicability":
+        target_state = state.get("applicabilityState", {}).get(target_id, {})
+        is_pending = bool(target_state.get("candidateStatus"))
+        candidate_value = str(target_state.get("candidateValue") or "").strip()
+        candidate_source = target_state.get("candidateSource")
+    elif target_type == "applicability_overview":
+        candidate_value = _candidate_value_for_target(
+            {"targetType": target_type, "targetId": target_id},
+            state,
+        )
+        is_pending = bool(candidate_value)
+        candidate_source = "prior_knowledge" if is_pending else None
     else:
         return False
     if not is_pending or not candidate_value:
@@ -5471,6 +5861,14 @@ def _repair_current_confirmation_question(
             locale,
             str(current_question.get("targetLabel") or current_question.get("label") or "").strip(),
             candidate_value,
+        )
+    elif candidate_source == "prior_knowledge":
+        pairs = _prior_knowledge_confirmation_pairs(state, target_type, target_id)
+        if not pairs:
+            return False
+        question_text = localized_interview_prior_knowledge_confirmation_question(
+            locale,
+            pairs,
         )
     elif _contains_question_candidate(str(current_question.get("text") or ""), candidate_value):
         return False
@@ -5485,6 +5883,50 @@ def _repair_current_confirmation_question(
     return True
 
 
+def _prior_knowledge_confirmation_pairs(
+    state: Mapping[str, Any],
+    target_type: str,
+    target_id: str,
+) -> list[tuple[str, str]]:
+    if target_type == "field":
+        target_state = state.get("fieldStates", {}).get(target_id, {})
+        plan = target_state.get("questionPlan") if isinstance(target_state, Mapping) else None
+        labels = {
+            str(item.get("itemId") or ""): str(item.get("label") or item.get("itemId") or "")
+            for item in (plan.get("requiredItems", []) if isinstance(plan, Mapping) else [])
+            if isinstance(item, Mapping) and item.get("itemId")
+        }
+        return [
+            (labels.get(str(item.get("itemId") or ""), target_id), str(item.get("value") or ""))
+            for item in (target_state.get("candidateItems", []) if isinstance(target_state, Mapping) else [])
+            if isinstance(item, Mapping) and str(item.get("value") or "").strip()
+        ]
+    if target_type in {"requirement", "process"}:
+        target_state = state.get("requirementStates", {}).get(target_id, {})
+        label = str(target_state.get("label") or target_id)
+        value = str(target_state.get("candidateValue") or "").strip()
+        return [(label, value)] if value else []
+    applicability_states = state.get("applicabilityState", {})
+    if target_type == "applicability":
+        candidate = applicability_states.get(target_id, {})
+        value = str(candidate.get("candidateValue") or "").strip()
+        label = APPLICABILITY_LABELS.get(target_id, target_id)
+        return [(label, value)] if value else []
+    if target_type == "applicability_overview":
+        return [
+            (
+                APPLICABILITY_LABELS.get(str(topic), str(topic)),
+                str(candidate.get("candidateValue") or "").strip(),
+            )
+            for topic, candidate in applicability_states.items()
+            if isinstance(candidate, Mapping)
+            and candidate.get("candidateGroupTargetType") == target_type
+            and str(candidate.get("candidateGroupTargetId") or "") == target_id
+            and str(candidate.get("candidateValue") or "").strip()
+        ]
+    return []
+
+
 def _candidate_value_for_target(
     target: Mapping[str, Any],
     state: Mapping[str, Any],
@@ -5497,6 +5939,19 @@ def _candidate_value_for_target(
     if target_type in {"requirement", "process"}:
         target_state = state.get("requirementStates", {}).get(target_id, {})
         return str(target_state.get("candidateValue") or "").strip()
+    if target_type == "applicability":
+        return str(
+            state.get("applicabilityState", {}).get(target_id, {}).get("candidateValue") or ""
+        ).strip()
+    if target_type == "applicability_overview":
+        return "、".join(
+            str(applicability_state.get("candidateValue") or "").strip()
+            for applicability_state in state.get("applicabilityState", {}).values()
+            if isinstance(applicability_state, Mapping)
+            and applicability_state.get("candidateGroupTargetType") == target_type
+            and str(applicability_state.get("candidateGroupTargetId") or "") == target_id
+            and str(applicability_state.get("candidateValue") or "").strip()
+        )
     return ""
 
 
@@ -5510,6 +5965,14 @@ def _candidate_source_for_target(
         value = state.get("fieldStates", {}).get(target_id, {}).get("candidateSource")
     elif target_type in {"requirement", "process"}:
         value = state.get("requirementStates", {}).get(target_id, {}).get("candidateSource")
+    elif target_type == "applicability":
+        value = state.get("applicabilityState", {}).get(target_id, {}).get("candidateSource")
+    elif target_type == "applicability_overview":
+        value = (
+            "prior_knowledge"
+            if _candidate_value_for_target(target, state)
+            else None
+        )
     else:
         return None
     return str(value) if value else None
@@ -5525,6 +5988,12 @@ def _is_awaiting_confirmation_target(
         return state.get("fieldStates", {}).get(target_id, {}).get("answerState") == "AWAITING_CONFIRMATION"
     if target_type in {"requirement", "process"}:
         return state.get("requirementStates", {}).get(target_id, {}).get("status") == "AWAITING_CONFIRMATION"
+    if target_type == "applicability":
+        return bool(
+            state.get("applicabilityState", {}).get(target_id, {}).get("candidateStatus")
+        )
+    if target_type == "applicability_overview":
+        return bool(_candidate_value_for_target(target, state))
     return False
 
 
