@@ -17,7 +17,11 @@ from ai_interviewer_api.models.domain import (
     KnowledgeDb,
     KnowledgeField,
 )
-from ai_interviewer_api.models.interview_plan import InterviewPlan
+from ai_interviewer_api.models.interview_plan import (
+    InterviewPlan,
+    InterviewPlanItem,
+    InterviewQuestionPlan,
+)
 from ai_interviewer_api.repositories.store import store
 
 DEV_TENANT_ID = "tenant-demo"
@@ -120,7 +124,19 @@ def ensure_dev_maintenance_demo() -> dict[str, str]:
     for display_order, definition in enumerate(field_definitions, start=1):
         suffix, name, description, input_type, question = definition
         field_id = f"dev-maintenance-demo-field-{suffix}"
-        if store.get("knowledge_fields", field_id) is not None:
+        question_plan = _equipment_question_plan() if suffix == "equipment" else None
+        existing_field = store.get("knowledge_fields", field_id)
+        if existing_field is not None:
+            existing_plan = existing_field.get("questionPlan")
+            if (
+                question_plan is not None
+                and (
+                    not isinstance(existing_plan, dict)
+                    or not existing_plan.get("requiredItems")
+                )
+            ):
+                existing_field["questionPlan"] = question_plan.model_dump()
+                store.upsert("knowledge_fields", existing_field)
             continue
         store.upsert(
             "knowledge_fields",
@@ -137,6 +153,7 @@ def ensure_dev_maintenance_demo() -> dict[str, str]:
                 askByAi=True,
                 retrievalPolicy="never",
                 aiQuestionExamples=[question],
+                questionPlan=question_plan,
                 displayOrder=display_order,
             ).model_dump(),
         )
@@ -164,3 +181,20 @@ def ensure_dev_maintenance_demo() -> dict[str, str]:
         "knowledgeId": MAINTENANCE_DEMO_KNOWLEDGE_ID,
         "recordId": MAINTENANCE_DEMO_RECORD_ID,
     }
+
+
+def _equipment_question_plan() -> InterviewQuestionPlan:
+    return InterviewQuestionPlan(
+        requiredItems=[
+            InterviewPlanItem(
+                itemId="equipment_name",
+                label="設備名",
+                description="対象設備の名称",
+            ),
+            InterviewPlanItem(
+                itemId="unit_number",
+                label="号機",
+                description="対象設備の号機番号",
+            ),
+        ]
+    )
