@@ -1479,10 +1479,16 @@ def _generate_structured_interview_result(
             )
             initial_reasoning_effort = _select_reasoning_effort(state)
             selected_reasoning_effort = initial_reasoning_effort
+            confirmation_text = str(
+                latest_user_message.get("content")
+                or latest_user_message.get("normalizedTranscript")
+                or latest_user_message.get("rawTranscript")
+                or ""
+            )
             if (
                 is_current_question_confirmation_target(state, current_question)
                 and is_unambiguous_confirmation(
-                    str(latest_user_message.get("content") or ""),
+                    confirmation_text,
                     locale=interview_locale,
                 )
             ):
@@ -2101,7 +2107,10 @@ def _generate_structured_interview_result(
             if (
                 output.dialogueAct == "CONFIRMATION"
                 and is_current_question_confirmation_target(state, current_question)
-                and not is_unambiguous_confirmation(raw_transcript, locale=interview_locale)
+                and not is_unambiguous_confirmation(
+                    confirmation_text,
+                    locale=interview_locale,
+                )
             ):
                 # A qualified reply must not promote a candidate merely because
                 # the interpreter labeled it CONFIRMATION. The user needs a
