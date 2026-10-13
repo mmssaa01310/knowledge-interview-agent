@@ -111,13 +111,21 @@ def test_voice_source_item_reuses_one_canonical_turn() -> None:
 class DeterministicIntentProvider:
     """Small provider double for the canonical intent contract tests."""
 
-    def __init__(self, dialogue_act: StructuredDialogueAct) -> None:
+    def __init__(
+        self,
+        dialogue_act: StructuredDialogueAct,
+        user_intent: str = "USER_RESPONSE",
+    ) -> None:
         self.dialogue_act = dialogue_act
+        self.user_intent = user_intent
         self.contexts: list[dict] = []
 
     def classify(self, *, context: dict) -> CanonicalIntentOutput:
         self.contexts.append(context)
-        return CanonicalIntentOutput(dialogueAct=self.dialogue_act)
+        return CanonicalIntentOutput(
+            dialogueAct=self.dialogue_act,
+            userIntent=self.user_intent,
+        )
 
 
 @pytest.mark.parametrize(
@@ -185,3 +193,40 @@ def test_canonical_action_policy_does_not_mutate_inputs() -> None:
 
     assert action == "CONFIRM_PENDING_CANDIDATE"
     assert current_target == {"targetType": "field", "targetId": "field-profile"}
+
+
+def test_pending_field_candidate_ignores_a_stale_asr_target_and_accepts_correction() -> None:
+    stale_target = {
+        "type": "ASR_AMBIGUOUS",
+        "span": "圧力器",
+        "semanticRole": "equipment_name",
+    }
+    provider = DeterministicIntentProvider(
+        "CORRECTION",
+        user_intent="ASR_CLARIFICATION_REQUEST",
+    )
+
+    decision = resolve_canonical_intent(
+        utterance="はい、設備名は圧力機で大丈夫です。",
+        current_question={
+            "questionId": "q-confirm-equipment",
+            "targetType": "field",
+            "targetId": "field-equipment-name",
+            "targetLabel": "設備名",
+            "text": "設備名は「圧力器」で正しいですか。",
+        },
+        current_target={
+            "targetType": "field",
+            "targetId": "field-equipment-name",
+            "label": "設備名",
+        },
+        pending_confirmation=True,
+        clarification_target=stale_target,
+        interview_state={"lastClarificationTarget": stale_target},
+        provider=provider,
+    )
+
+    assert provider.contexts[0]["clarificationTarget"] is None
+    assert provider.contexts[0]["conversationState"]["clarificationTarget"] is None
+    assert decision.dialogueAct == "CORRECTION"
+    assert decision.user_intent == "ANSWER_CLARIFICATION"

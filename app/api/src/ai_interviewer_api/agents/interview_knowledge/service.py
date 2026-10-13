@@ -1632,6 +1632,22 @@ def _generate_structured_interview_result(
             output = normalize_conversation_output(output)
             output = _align_asr_ambiguous_span_roles(output, current_question)
             if (
+                canonical_action == "CONFIRM_PENDING_CANDIDATE"
+                and _has_explicit_candidate_correction(
+                    state,
+                    current_question,
+                    output,
+                    latest_message_id,
+                )
+            ):
+                # A mixed reply may start with "yes" and then state a different
+                # value. The structured extraction of that value takes priority
+                # over the router's coarse confirmation action.
+                canonical_intent = "CORRECTION"
+                canonical_action = "APPLY_CORRECTION"
+                canonical_user_intent = "ANSWER_CLARIFICATION"
+                canonical_conversation_action = "APPLY_CORRECTION"
+            if (
                 output.utteranceCompleteness == "UNCERTAIN"
                 and output.transcriptAssessment.recognitionStatus == "CLEAR"
                 and output.transcriptAssessment.correctionStatus == "NONE"
@@ -2145,7 +2161,15 @@ def _generate_structured_interview_result(
                     reply=(
                         localized_interview_incomplete_prompt(interview_locale)
                         if wait_for_continuation
-                        else localized_interview_transcript_retry(interview_locale)
+                        else localized_interview_transcript_retry(
+                            interview_locale,
+                            str(
+                                current_question.get("targetLabel")
+                                or current_question.get("label")
+                                or ""
+                            )
+                            or None,
+                        )
                     ),
                     question=current_question,
                     action="ask_follow_up",
@@ -2189,7 +2213,15 @@ def _generate_structured_interview_result(
                         state=state,
                         messages=messages,
                         fields=fields,
-                        reply=localized_interview_transcript_retry(interview_locale),
+                        reply=localized_interview_transcript_retry(
+                            interview_locale,
+                            str(
+                                current_question.get("targetLabel")
+                                or current_question.get("label")
+                                or ""
+                            )
+                            or None,
+                        ),
                         question=current_question,
                         action="ask_follow_up",
                         status="in_progress",
@@ -2438,7 +2470,15 @@ def _generate_structured_interview_result(
                     state=state,
                     messages=messages,
                     fields=fields,
-                    reply=localized_interview_transcript_retry(interview_locale),
+                    reply=localized_interview_transcript_retry(
+                        interview_locale,
+                        str(
+                            retry_question.get("targetLabel")
+                            or retry_question.get("label")
+                            or ""
+                        )
+                        or None,
+                    ),
                     question=retry_question,
                     action="ask_follow_up",
                     status="in_progress",
@@ -3861,6 +3901,10 @@ def _build_interpreter_context(
     messages: Sequence[Mapping[str, Any]],
     current_question: Mapping[str, Any],
 ) -> dict[str, Any]:
+    is_candidate_confirmation = is_current_question_confirmation_target(
+        state,
+        current_question,
+    )
     current_target = _target_from_question(current_question) or {}
     current_field = _field_for_target(current_target, fields)
     question_definition = _question_definition_context(current_target, current_field)
@@ -3911,6 +3955,43 @@ def _build_interpreter_context(
         for item in (question_definition.get(key) or [])
         if isinstance(item, Mapping) and item.get("itemId")
     ]
+    interpreter_state = _compact_state(state)
+    clarification_target = state.get("lastClarificationTarget")
+    clarification_kind = state.get("lastClarificationKind", "NONE")
+    answer_evaluation = state.get("lastAnswerEvaluation")
+    answer_status = state.get("lastAnswerStatus")
+    answer_assessment = state.get("lastAnswerAssessment")
+    aspect_assessments = list(state.get("lastAspectAssessments") or [])
+    covered_information = list(state.get("lastAspectAssessments") or [])
+    missing_information_context = missing_information
+    probe_decision = state.get("lastProbeDecision")
+    probe_dimension = state.get("lastProbeDimension")
+    if is_candidate_confirmation:
+        # This turn responds to the current candidate. Clear any preceding
+        # ASR retry context from both flattened and nested input.
+        clarification_target = None
+        clarification_kind = "NONE"
+        answer_evaluation = None
+        answer_status = None
+        answer_assessment = None
+        aspect_assessments = []
+        covered_information = []
+        missing_information_context = []
+        probe_decision = None
+        probe_dimension = None
+        for key, value in (
+            ("lastClarificationTarget", None),
+            ("lastClarificationKind", "NONE"),
+            ("lastTranscriptAssessment", None),
+            ("lastAnswerEvaluation", None),
+            ("lastAnswerStatus", None),
+            ("lastAnswerAssessment", None),
+            ("lastAspectAssessments", []),
+            ("lastMissingInformation", []),
+            ("lastProbeDecision", None),
+            ("lastProbeDimension", None),
+        ):
+            interpreter_state[key] = value
     return {
         "profile": state.get("interviewProfile"),
         "knowledge": {
@@ -3942,6 +4023,7 @@ def _build_interpreter_context(
             for field in fields
         ],
         "currentQuestion": dict(current_question),
+        "pendingConfirmation": is_candidate_confirmation,
         "currentAnswer": latest_utterance,
         "questionPurpose": question_definition.get("purpose"),
         "questionGoal": question_definition.get("questionGoal"),
@@ -3953,19 +4035,20 @@ def _build_interpreter_context(
             *question_definition.get("optionalItems", []),
         ],
         "acquiredInformation": acquired_information,
-        "missingInformation": missing_information,
-        "aspectAssessments": list(state.get("lastAspectAssessments") or []),
+        "missingInformation": missing_information_context,
+        "aspectAssessments": aspect_assessments,
         "previousAssistantMessage": previous_assistant_message,
         "previousUserAnswer": previous_user_answer,
         "knownFacts": acquired_information,
-        "coveredInformation": list(state.get("lastAspectAssessments") or []),
+        "coveredInformation": covered_information,
         "currentQuestionSlots": current_question_slots,
-        "clarificationTarget": state.get("lastClarificationTarget"),
-        "clarificationKind": state.get("lastClarificationKind", "NONE"),
-        "answerEvaluation": state.get("lastAnswerEvaluation"),
-        "answerStatus": state.get("lastAnswerStatus"),
-        "probeDecision": state.get("lastProbeDecision"),
-        "probeDimension": state.get("lastProbeDimension"),
+        "clarificationTarget": clarification_target,
+        "clarificationKind": clarification_kind,
+        "answerEvaluation": answer_evaluation,
+        "answerStatus": answer_status,
+        "answerAssessment": answer_assessment,
+        "probeDecision": probe_decision,
+        "probeDimension": probe_dimension,
         "currentTurnType": state.get("currentTurnType", "BASIC"),
         "questionAnswer": (
             state.get("questionAnswers", {}).get(current_question.get("questionId"))
@@ -3973,7 +4056,7 @@ def _build_interpreter_context(
             else None
         ),
         "sameQuestionAskedBefore": same_question_asked_before,
-        "interviewState": _compact_state(state),
+        "interviewState": interpreter_state,
         "latestUtterance": latest_utterance,
         "conversation": [
             {
@@ -4363,6 +4446,14 @@ def _clarification_target_prompt(
         semantic_role = str(target.get("semanticRole") or "").strip()
         if not span or not semantic_role:
             return localized_interview_hesitation_prompt(locale)
+        target_label = str(target.get("label") or "").strip()
+        candidate_value = _safe_clarification_candidate_span(
+            span,
+            str(output.transcriptAssessment.rawTranscript or "")
+            if output is not None
+            else "",
+            target_label,
+        )
         understood_values: list[str] = []
         if output is not None:
             for update in (*output.fieldUpdates, *output.requirementUpdates):
@@ -4373,7 +4464,8 @@ def _clarification_target_prompt(
             locale,
             semantic_role,
             "、".join(understood_values[:3])[:240] or None,
-            target_label=str(target.get("label") or "") or None,
+            target_label=target_label or None,
+            candidate_value=candidate_value or None,
         )
     if target_type == "MISSING_INFORMATION":
         return localized_interview_missing_information_prompt(
@@ -4381,6 +4473,39 @@ def _clarification_target_prompt(
             str(target.get("label") or ""),
         )
     return localized_interview_ambiguous_part_prompt(locale)
+
+
+def _safe_clarification_candidate_span(
+    span: str,
+    raw_transcript: str,
+    target_label: str,
+) -> str:
+    """Do not turn a whole utterance into the candidate for one item."""
+
+    compact_span = re.sub(
+        r"[\W_]+",
+        "",
+        unicodedata.normalize("NFKC", span).casefold(),
+    )
+    compact_transcript = re.sub(
+        r"[\W_]+",
+        "",
+        unicodedata.normalize("NFKC", raw_transcript).casefold(),
+    )
+    if not compact_span or not compact_transcript or compact_span != compact_transcript:
+        return span
+    compact_label = re.sub(
+        r"[\W_]+",
+        "",
+        unicodedata.normalize("NFKC", target_label).casefold(),
+    )
+    if len(compact_span) >= 12 or (
+        compact_label
+        and compact_label in compact_span
+        and len(compact_span) > len(compact_label) + 2
+    ):
+        return ""
+    return span
 
 
 def _clarification_target_description(
@@ -5151,6 +5276,97 @@ def _has_structured_updates(output: StructuredInterviewOutput) -> bool:
     )
 
 
+def _has_explicit_candidate_correction(
+    state: Mapping[str, Any],
+    current_question: Mapping[str, Any],
+    output: StructuredInterviewOutput,
+    latest_message_id: str,
+) -> bool:
+    if output.dialogueAct != "CORRECTION":
+        return False
+
+    target_type = str(
+        current_question.get("targetType") or current_question.get("kind") or ""
+    )
+    target_id = str(current_question.get("targetId") or "")
+    if target_type == "transcript_confirmation":
+        pending = state.get("pendingTranscriptConfirmation")
+        refs = pending.get("targetRefs") if isinstance(pending, Mapping) else None
+        targets = [
+            (str(item.get("targetType") or ""), str(item.get("targetId") or ""))
+            for item in refs
+            if isinstance(item, Mapping)
+        ] if isinstance(refs, list) else []
+    else:
+        targets = [(target_type, target_id)] if target_type and target_id else []
+    if not targets:
+        return False
+
+    def normalize(value: object) -> str:
+        normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+        return re.sub(r"[\W_]+", "", normalized)
+
+    field_states = state.get("fieldStates")
+    requirement_states = state.get("requirementStates")
+    for update in output.fieldUpdates:
+        if latest_message_id not in update.evidenceTranscriptIds:
+            continue
+        if ("field", update.fieldId) not in targets:
+            continue
+        field_state = (
+            field_states.get(update.fieldId)
+            if isinstance(field_states, Mapping)
+            else None
+        )
+        if not isinstance(field_state, Mapping):
+            continue
+        candidate_items = field_state.get("candidateItems")
+        existing_values = (
+            [
+                str(item.get("value") or "")
+                for item in candidate_items
+                if isinstance(item, Mapping)
+                and (
+                    not update.itemId
+                    or str(item.get("itemId") or "") == update.itemId
+                )
+            ]
+            if isinstance(candidate_items, list)
+            else []
+        )
+        if not existing_values and field_state.get("candidateAnswer"):
+            existing_values = [str(field_state.get("candidateAnswer"))]
+        new_value = normalize(update.value)
+        if new_value and existing_values and all(
+            new_value != normalize(value) for value in existing_values
+        ):
+            return True
+
+    for update in output.requirementUpdates:
+        if latest_message_id not in update.evidenceTranscriptIds:
+            continue
+        target_kind = (
+            "requirement"
+            if update.requirementId.startswith("requirement.")
+            else "process"
+        )
+        if (target_kind, update.requirementId) not in targets:
+            continue
+        requirement_state = (
+            requirement_states.get(update.requirementId)
+            if isinstance(requirement_states, Mapping)
+            else None
+        )
+        existing_value = (
+            requirement_state.get("candidateValue")
+            if isinstance(requirement_state, Mapping)
+            else None
+        )
+        if existing_value and normalize(update.value) != normalize(existing_value):
+            return True
+    return False
+
+
 def _should_implicitly_confirm_tentative_target(
     output: StructuredInterviewOutput,
     tentative_target: Mapping[str, Any] | None,
@@ -5860,6 +6076,7 @@ def _generate_question_text(
             localized_interview_confirmation_question(
                 resolve_interview_locale(record, knowledge),
                 candidate_value,
+                str(target.get("label") or "") or None,
             ),
             retrieved_context,
             None,
@@ -5985,7 +6202,16 @@ def _repair_current_confirmation_question(
     elif _contains_question_candidate(str(current_question.get("text") or ""), candidate_value):
         return False
     else:
-        question_text = localized_interview_confirmation_question(locale, candidate_value)
+        question_text = localized_interview_confirmation_question(
+            locale,
+            candidate_value,
+            str(
+                current_question.get("targetLabel")
+                or current_question.get("label")
+                or ""
+            )
+            or None,
+        )
 
     if str(current_question.get("text") or "") == question_text:
         return False

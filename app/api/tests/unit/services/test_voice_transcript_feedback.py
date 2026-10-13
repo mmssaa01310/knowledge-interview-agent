@@ -101,7 +101,7 @@ def test_mapped_equipment_and_number_are_confirmed_item_by_item() -> None:
 
     reply = _feedback(result)
 
-    assert reply == "設備名は「B一X」、号機は「007」という理解でよろしいですか？"
+    assert reply == "設備名は「B一X」で正しいですか。"
     assert utterance not in reply
 
 
@@ -118,7 +118,7 @@ def test_missing_item_mapping_repeats_the_named_target_without_the_full_transcri
     reply = _feedback(result)
 
     assert "設備名" in reply
-    assert "もう一度" in reply
+    assert reply == "設備名を回答してください。"
     assert utterance not in reply
     assert "この部分" not in reply
     assert "confirmation" not in reply.lower()
@@ -141,7 +141,7 @@ def test_unmapped_confirmation_uses_the_original_question_as_a_clear_retry() -> 
     assert "この部分" not in reply
 
 
-def test_ambiguous_equipment_role_is_not_described_as_a_person_name() -> None:
+def test_ambiguous_equipment_role_asks_between_item_candidates() -> None:
     result = {
         "reply": "この部分をもう一度お願いします。",
         "question": {
@@ -169,10 +169,9 @@ def test_ambiguous_equipment_role_is_not_described_as_a_person_name() -> None:
 
     reply = _feedback(result)
 
-    assert "設備名の部分だけ" in reply
+    assert reply == "設備名はB一X、B一Sのどちらですか。"
     assert "人名" not in reply
-    assert "B一X" not in reply
-    assert "B一S" not in reply
+    assert "対象の設備名は" not in reply
 
 
 def test_non_correction_asr_retry_can_report_the_item_that_was_understood() -> None:
@@ -210,6 +209,36 @@ def test_non_correction_asr_retry_can_report_the_item_that_was_understood() -> N
 
     reply = _feedback(result)
 
-    assert "設備名は「B一X」" in reply
-    assert "所属" in reply
-    assert "だけもう一度" in reply
+    assert reply == "部署は「開発部」で正しいですか。"
+    assert "設備名は「B一X」" not in reply
+    assert "だけもう一度" not in reply
+
+
+def test_full_transcript_candidate_falls_back_to_the_item_label() -> None:
+    utterance = "対象の設備名は圧力器です。号機は002です。"
+    result = _correction_result(
+        raw_transcript="対象の設備名は圧力器です。号機は002です。",
+        normalized_transcript=utterance,
+        target_refs=[
+            {"targetType": "field", "targetId": "field-equipment-name"}
+        ],
+        field_states={
+            "field-equipment-name": {
+                "questionPlan": {
+                    "requiredItems": [{"itemId": "equipment", "label": "設備名"}]
+                },
+                "candidateItems": [
+                    {
+                        "itemId": "equipment",
+                        "value": utterance,
+                        "evidenceTranscriptIds": ["voice-msg-turn-1"],
+                    }
+                ],
+            }
+        },
+    )
+
+    reply = _feedback(result)
+
+    assert reply == "設備名を回答してください。"
+    assert utterance not in reply

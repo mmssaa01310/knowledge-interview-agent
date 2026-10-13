@@ -592,6 +592,11 @@ def _lightly_normalize_transcript(value: str) -> str:
     )
 
 
+def _compact_transcript(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[\W_]+", "", normalized)
+
+
 def stage_transcript_correction(
     state: dict[str, Any],
     output: StructuredInterviewOutput,
@@ -621,6 +626,8 @@ def stage_transcript_correction(
     target_refs: list[dict[str, str]] = []
     previous_field_states: dict[str, Any] = {}
     previous_requirement_states: dict[str, Any] = {}
+    unchanged_field_updates: list[FieldUpdate] = []
+    unchanged_requirement_updates: list[RequirementUpdate] = []
     previous_progress = {
         key: deepcopy(state.get(key))
         for key in (
@@ -642,15 +649,29 @@ def stage_transcript_correction(
         if (normalized_value := _lightly_normalize_transcript(value))
     )
 
-    def is_full_transcript_candidate(value: str, *, multiple_targets: bool) -> bool:
-        if not multiple_targets:
+    def is_full_transcript_candidate(
+        value: str,
+        *,
+        multiple_targets: bool,
+        item_labels: Sequence[str] = (),
+    ) -> bool:
+        normalized_value = _compact_transcript(value)
+        if not normalized_value:
             return False
-        normalized_value = _lightly_normalize_transcript(value)
-        return any(
-            normalized_value == transcript
-            or (len(transcript) >= 12 and transcript in normalized_value)
-            for transcript in full_transcripts
+        has_target_label = any(
+            (normalized_label := _compact_transcript(label))
+            and normalized_label in normalized_value
+            and len(normalized_value) > len(normalized_label) + 2
+            for label in item_labels
         )
+        return any(
+            normalized_value == _compact_transcript(transcript)
+            or (
+                len(_compact_transcript(transcript)) >= 12
+                and _compact_transcript(transcript) in normalized_value
+            )
+            for transcript in full_transcripts
+        ) and (multiple_targets or has_target_label)
 
     def is_unsupported_uncertain_candidate(value: str) -> bool:
         if correction_status != "UNCERTAIN":
@@ -670,6 +691,14 @@ def stage_transcript_correction(
             if any(overlaps) and not all(overlaps):
                 return True
         return False
+
+    def is_unchanged_candidate(value: str) -> bool:
+        normalized_value = _compact_transcript(value)
+        if not normalized_value or not raw_transcript.strip() or not normalized:
+            return False
+        raw_value = _compact_transcript(raw_transcript)
+        corrected_value = _compact_transcript(normalized)
+        return normalized_value in raw_value and normalized_value in corrected_value
 
     for update in output.fieldUpdates:
         if (
@@ -692,7 +721,15 @@ def stage_transcript_correction(
                 len(required_item_ids) > 1
                 or len(output.fieldUpdates) + len(output.requirementUpdates) > 1
             ),
+            item_labels=[str(item.get("label") or "") for item in required_items],
         ) or is_unsupported_uncertain_candidate(update.value):
+            continue
+        if (
+            correction_status == "CORRECTED"
+            and len(output.fieldUpdates) + len(output.requirementUpdates) > 1
+            and is_unchanged_candidate(update.value)
+        ):
+            unchanged_field_updates.append(update)
             continue
         previous_field_states.setdefault(
             update.fieldId,
@@ -717,12 +754,21 @@ def stage_transcript_correction(
             or not _has_valid_evidence(update.evidenceTranscriptIds, valid_evidence_ids)
         ):
             continue
+        requirement_state = state["requirementStates"].get(update.requirementId, {})
         if is_full_transcript_candidate(
             update.value,
             multiple_targets=(
                 len(output.fieldUpdates) + len(output.requirementUpdates) > 1
             ),
+            item_labels=[str(requirement_state.get("label") or "")],
         ) or is_unsupported_uncertain_candidate(update.value):
+            continue
+        if (
+            correction_status == "CORRECTED"
+            and len(output.fieldUpdates) + len(output.requirementUpdates) > 1
+            and is_unchanged_candidate(update.value)
+        ):
+            unchanged_requirement_updates.append(update)
             continue
         previous_requirement_states.setdefault(
             update.requirementId,
@@ -775,6 +821,29 @@ def stage_transcript_correction(
             else:
                 state[key] = previous
         return False
+    pending_target_keys = {
+        (str(item.get("targetType") or ""), str(item.get("targetId") or ""))
+        for item in target_refs
+    }
+    for update in unchanged_field_updates:
+        _apply_field_update(
+            state,
+            update,
+            latest_message_id,
+            valid_evidence_ids,
+            defer_auto_confirm=("field", update.fieldId) in pending_target_keys,
+        )
+    for update in unchanged_requirement_updates:
+        _apply_requirement_update(
+            state,
+            update,
+            latest_message_id,
+            valid_evidence_ids,
+        )
+    # The previous ASR retry target belongs to the turn that produced this
+    # candidate. Once the candidate is being confirmed, that target is stale.
+    state["lastClarificationTarget"] = None
+    state["lastClarificationKind"] = "NONE"
     state["activeProbeTarget"] = None
     state["lastProcessedUserMessageId"] = latest_message_id
     return True
@@ -1189,16 +1258,30 @@ def _pending_transcript_confirmation_value(
         reject_full_transcript: bool,
     ) -> None:
         normalized_value = str(value or "").strip()
+        compact_value = _compact_transcript(normalized_value)
+        compact_label = _compact_transcript(label)
+        full_transcript_match = any(
+            compact_value == _compact_transcript(transcript)
+            or (
+                len(_compact_transcript(transcript)) >= 12
+                and _compact_transcript(transcript) in compact_value
+            )
+            for transcript in full_transcripts
+        )
+        label_in_value = bool(
+            compact_label
+            and compact_label in compact_value
+            and len(compact_value) > len(compact_label) + 2
+        )
         if (
             not label
             or not normalized_value
             or len(normalized_value) > 64
             or (
-                reject_full_transcript
-                and any(
-                    normalized_value == transcript
-                    or (len(transcript) >= 12 and transcript in normalized_value)
-                    for transcript in full_transcripts
+                full_transcript_match
+                and (
+                    reject_full_transcript
+                    or label_in_value
                 )
             )
         ):

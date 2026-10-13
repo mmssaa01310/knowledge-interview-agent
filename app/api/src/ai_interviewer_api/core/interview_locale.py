@@ -69,13 +69,34 @@ def localized_interview_greeting(locale: InterviewLocale) -> str:
     }[locale]
 
 
-def localized_interview_confirmation_question(locale: InterviewLocale, candidate: str) -> str:
+def localized_interview_confirmation_question(
+    locale: InterviewLocale,
+    candidate: str,
+    target_label: str | None = None,
+) -> str:
     candidate_text = candidate.strip()
+    label_text = (target_label or "").strip()
     return {
-        "ja-JP": f"「{candidate_text}」でよろしいですか？",
-        "en-US": f"To confirm, is your answer “{candidate_text}”?",
-        "zh-CN": f"请确认，您的回答是“{candidate_text}”吗？",
-        "pt-BR": f"Para confirmar, sua resposta é “{candidate_text}”?",
+        "ja-JP": (
+            f"{label_text}は「{candidate_text}」で正しいですか。"
+            if label_text
+            else f"「{candidate_text}」で正しいですか。"
+        ),
+        "en-US": (
+            f"Is {label_text} “{candidate_text}” correct?"
+            if label_text
+            else f"Is your answer “{candidate_text}” correct?"
+        ),
+        "zh-CN": (
+            f"请确认，{label_text}是“{candidate_text}”吗？"
+            if label_text
+            else f"请确认，您的回答是“{candidate_text}”吗？"
+        ),
+        "pt-BR": (
+            f"{label_text} é “{candidate_text}”?"
+            if label_text
+            else f"Sua resposta é “{candidate_text}”?"
+        ),
     }[locale]
 
 
@@ -150,14 +171,25 @@ def localized_interview_incomplete_prompt(locale: InterviewLocale) -> str:
     }[locale]
 
 
-def localized_interview_transcript_retry(locale: InterviewLocale) -> str:
+def localized_interview_transcript_retry(
+    locale: InterviewLocale,
+    target_label: str | None = None,
+) -> str:
     """Ask for a re-utterance when the transcript cannot be safely corrected."""
 
+    label = (target_label or "").strip()
+    if label:
+        return {
+            "ja-JP": f"{label}をもう一度ご回答ください。",
+            "en-US": f"Please provide {label} again.",
+            "zh-CN": f"请重新回答{label}。",
+            "pt-BR": f"Por favor, informe novamente {label}.",
+        }[locale]
     return {
-        "ja-JP": "この部分をもう一度お願いします。",
-        "en-US": "Please repeat that part.",
-        "zh-CN": "请再说一遍这一部分。",
-        "pt-BR": "Repita essa parte, por favor.",
+        "ja-JP": "先ほどの質問にもう一度お答えください。",
+        "en-US": "Please answer the previous question again.",
+        "zh-CN": "请重新回答刚才的问题。",
+        "pt-BR": "Por favor, responda novamente à pergunta anterior.",
     }[locale]
 
 
@@ -283,36 +315,87 @@ def localized_interview_ambiguous_part_prompt(
     semantic_role: str | None = None,
     understood: str | None = None,
     target_label: str | None = None,
+    candidate_value: str | None = None,
+    candidate_values: Sequence[str] = (),
 ) -> str:
-    """Ask for only an important, ambiguous ASR span."""
+    """Ask about only the unclear item's candidate value, when available."""
 
     normalized_understood = (understood or "").strip()
     normalized_target_label = (target_label or "").strip()
+    candidates = []
+    for value in (candidate_value, *candidate_values):
+        normalized = (value or "").strip()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
     if not (semantic_role or "").strip() and not normalized_target_label:
+        if candidates:
+            label = {
+                "ja-JP": "回答",
+                "en-US": "answer",
+                "zh-CN": "回答",
+                "pt-BR": "resposta",
+            }[locale]
+        else:
+            return {
+                "ja-JP": "回答が不明瞭です。回答をもう一度お願いします。",
+                "en-US": "I could not hear the answer clearly. Please answer again.",
+                "zh-CN": "回答没有听清。请重新回答。",
+                "pt-BR": "Não consegui ouvir a resposta com clareza. Responda novamente, por favor.",
+            }[locale]
+    else:
+        label = _localized_clarification_role(locale, semantic_role)
+        if locale == "ja-JP" and normalized_target_label:
+            label = normalized_target_label
+
+    if candidates:
+        if len(candidates) == 1:
+            value = candidates[0]
+            return {
+                "ja-JP": f"{label}は「{value}」で正しいですか。",
+                "en-US": f"Is {label} “{value}” correct?",
+                "zh-CN": f"{label}是“{value}”吗？",
+                "pt-BR": f"{label} é “{value}”?",
+            }[locale]
+        joined = _join_clarification_candidates(candidates, locale)
+        if len(candidates) == 2:
+            return {
+                "ja-JP": f"{label}は{joined}のどちらですか。",
+                "en-US": f"Is {label} {joined}?",
+                "zh-CN": f"{label}是{joined}中的哪一个？",
+                "pt-BR": f"{label} é {joined}?",
+            }[locale]
         return {
-            "ja-JP": "音声を正しく認識できませんでした。回答がうまく聞き取れませんでしたが、聞き取れなかった部分だけ、もう一度お願いします。",
-            "en-US": "I could not recognize part of the audio. Please repeat only the unclear part.",
-            "zh-CN": "有一部分语音没有听清。请只重复没有听清的部分。",
-            "pt-BR": "Não consegui reconhecer uma parte do áudio. Repita apenas a parte pouco clara, por favor.",
+            "ja-JP": f"{label}は、{joined}の候補のうちどれですか。",
+            "en-US": f"Which of these values is {label}: {joined}?",
+            "zh-CN": f"{label}是以下哪个候选：{joined}？",
+            "pt-BR": f"Qual destes valores corresponde a {label}: {joined}?",
         }[locale]
-    label = _localized_clarification_role(locale, semantic_role)
-    if locale == "ja-JP" and normalized_target_label:
-        label = normalized_target_label
     if normalized_understood:
         if locale == "en-US":
-            return f"I understood {normalized_understood}. Please repeat only {label}."
+            return f"I understood {normalized_understood}. Please provide {label}."
         if locale == "zh-CN":
-            return f"我听懂了{normalized_understood}。请只重复{label}。"
+            return f"我听懂了{normalized_understood}。请回答{label}。"
         if locale == "pt-BR":
-            return f"Entendi {normalized_understood}. Repita apenas {label}, por favor."
-        return f"{normalized_understood}は分かりました。{label}だけもう一度お願いします。"
+            return f"Entendi {normalized_understood}. Informe {label}, por favor."
+        return f"{normalized_understood}は確認できました。{label}を回答してください。"
     if locale == "en-US":
-        return f"Please repeat only {label}."
+        return f"Please provide {label}."
     if locale == "zh-CN":
-        return f"请只重复{label}。"
+        return f"请回答{label}。"
     if locale == "pt-BR":
-        return f"Repita apenas {label}, por favor."
-    return f"{label}の部分だけ、もう一度教えてください。"
+        return f"Informe {label}, por favor."
+    return f"{label}を回答してください。"
+
+
+def _join_clarification_candidates(
+    candidates: Sequence[str],
+    locale: InterviewLocale,
+) -> str:
+    if locale == "en-US":
+        return ", ".join(candidates[:-1]) + f" or {candidates[-1]}"
+    if locale == "pt-BR":
+        return ", ".join(candidates[:-1]) + f" ou {candidates[-1]}"
+    return "、".join(candidates)
 
 
 def localized_interview_clarification_target_reply(
@@ -322,26 +405,29 @@ def localized_interview_clarification_target_reply(
     semantic_role: str | None = None,
     span: str | None = None,
 ) -> str:
-    """Explain the last clarification target without restating the question."""
+    """Name the uncertain item and its candidate without replaying the question."""
 
     if target_type == "ASR_AMBIGUOUS":
         normalized_span = (span or "").strip()
+        target_label = (label or "").strip() or _localized_clarification_role(
+            locale,
+            semantic_role,
+        )
         if normalized_span:
             if locale == "en-US":
-                return f'The unclear part was "{normalized_span}".'
+                return f'The candidate for {target_label} is “{normalized_span}”. Is that correct?'
             if locale == "zh-CN":
-                return f"是被识别为“{normalized_span}”的部分。"
+                return f"{target_label}的候选值是“{normalized_span}”，正确吗？"
             if locale == "pt-BR":
-                return f'Foi a parte reconhecida como "{normalized_span}".'
-            return f"「{normalized_span}」と認識された部分です。"
-        target_label = _localized_clarification_role(locale, semantic_role)
+                return f'O candidato para {target_label} é “{normalized_span}”. Está correto?'
+            return f"{target_label}として認識した候補は「{normalized_span}」です。この値で正しいですか。"
         if locale == "en-US":
-            return f"The unclear part was {target_label}."
+            return f"The item to confirm is {target_label}. Please provide its value."
         if locale == "zh-CN":
-            return f"是{target_label}的部分。"
+            return f"需要确认的是{target_label}。请提供该项的值。"
         if locale == "pt-BR":
-            return f"Foi {target_label}."
-        return f"{target_label}の部分です。"
+            return f"O item a confirmar é {target_label}. Informe o valor, por favor."
+        return f"確認対象は{target_label}です。{target_label}を回答してください。"
 
     normalized_label = (label or "").strip()
     if locale == "en-US":
@@ -557,7 +643,7 @@ def localized_interview_transcript_confirmation_question(
     if not summary:
         return localized_interview_transcript_retry(locale)
     return {
-        "ja-JP": f"{summary}という理解でよろしいですか？",
+        "ja-JP": f"{summary}で正しいですか。",
         "en-US": f"Just to confirm, {summary}. Is that right?",
         "zh-CN": f"请确认：{summary}，对吗？",
         "pt-BR": f"Só para confirmar: {summary}. Está correto?",

@@ -36,6 +36,8 @@ from ai_interviewer_api.agents.interview_knowledge.schemas import (
     TranscriptAssessment,
 )
 from ai_interviewer_api.agents.interview_knowledge.service import (
+    _build_interpreter_context,
+    _clarification_target_prompt,
     _generate_question_text,
     generate_structured_interview_result,
     get_structured_interview_state_snapshot,
@@ -244,6 +246,98 @@ def test_interpreter_prompt_separates_question_help_from_answer_unavailability()
     assert "UNANSWERABLE" in prompt
     assert "単に「よく分からない」とだけ言われた場合" in prompt
     assert "STTが不確実でない限りUNCERTAINにはしません" in prompt
+
+
+def test_pending_field_confirmation_hides_stale_asr_context_from_interpreter() -> None:
+    stale_target = {
+        "type": "ASR_AMBIGUOUS",
+        "span": "圧力器",
+        "semanticRole": "equipment_name",
+    }
+    question = {
+        "questionId": "q-confirm-equipment",
+        "targetType": "field",
+        "targetId": "field-equipment-name",
+        "targetLabel": "設備名",
+        "text": "設備名は「圧力器」で正しいですか。",
+    }
+    state = {
+        "fieldStates": {
+            "field-equipment-name": {
+                "answerState": "AWAITING_CONFIRMATION",
+                "candidateAnswer": "圧力器",
+                "questionPlan": {
+                    "requiredItems": [
+                        {"itemId": "equipment", "label": "設備名"}
+                    ]
+                },
+            }
+        },
+        "lastClarificationTarget": stale_target,
+        "lastClarificationKind": "ASR_TARGET",
+        "lastTranscriptAssessment": {
+            "ambiguousSpans": [
+                {
+                    "span": "圧力器",
+                    "semanticRole": "equipment_name",
+                    "important": True,
+                }
+            ]
+        },
+    }
+
+    context = _build_interpreter_context(
+        record={"id": "record-confirmation"},
+        knowledge={"id": "knowledge-confirmation"},
+        user=DEV_TOKENS["dev-manager"],
+        fields=[
+            {
+                "id": "field-equipment-name",
+                "name": "設備名",
+                "required": True,
+            }
+        ],
+        state=state,
+        messages=[],
+        current_question=question,
+    )
+
+    assert context["pendingConfirmation"] is True
+    assert context["clarificationTarget"] is None
+    assert context["interviewState"]["lastClarificationTarget"] is None
+    assert context["interviewState"]["lastTranscriptAssessment"] is None
+
+
+def test_asr_clarification_uses_one_item_candidate_and_never_the_whole_transcript() -> None:
+    answer = "設備名は圧力器です。号機は002です。"
+    output = StructuredInterviewOutput(
+        transcriptAssessment=TranscriptAssessment(rawTranscript=answer)
+    )
+
+    reply = _clarification_target_prompt(
+        {
+            "type": "ASR_AMBIGUOUS",
+            "span": "圧力器",
+            "semanticRole": "equipment_name",
+            "label": "設備名",
+        },
+        "ja-JP",
+        output,
+    )
+    whole_transcript_reply = _clarification_target_prompt(
+        {
+            "type": "ASR_AMBIGUOUS",
+            "span": answer,
+            "semanticRole": "equipment_name",
+            "label": "設備名",
+        },
+        "ja-JP",
+        output,
+    )
+
+    assert reply == "設備名は「圧力器」で正しいですか。"
+    assert whole_transcript_reply == "設備名を回答してください。"
+    assert answer not in whole_transcript_reply
 
 
 def test_question_prompt_uses_retrieved_facts_as_context_not_answer() -> None:
@@ -1063,7 +1157,7 @@ def test_state_snapshot_repairs_generic_question_for_pending_candidate() -> None
         if question["questionId"] == "q-name"
     )
 
-    assert current_question["text"] == 'To confirm, is your answer “Miyazaki Masashi”?'
+    assert current_question["text"] == 'Is your answer “Miyazaki Masashi” correct?'
     persisted_state = store.get("interview_states", state["id"])
     assert persisted_state["askedQuestions"][0]["text"] == current_question["text"]
 
@@ -2860,6 +2954,172 @@ def test_corrected_transcript_is_confirmed_before_becoming_a_formal_answer() -> 
     assert confirmed["question"]["targetId"] == "field-department"
 
 
+def test_corrected_transcript_confirms_only_changed_fields() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-transcript-one-changed-field",
+        (("field-equipment-name", "設備名"), ("field-machine-number", "号機")),
+    )
+    raw = "対象の設備名はビー一エックスです。号機は007です。"
+    corrected = "対象の設備名はB一Xです。号機は007です。"
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                transcriptAssessment=TranscriptAssessment(
+                    rawTranscript=raw,
+                    normalizedTranscript=corrected,
+                    correctionStatus="CORRECTED",
+                    correctionCandidates=[corrected],
+                ),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-equipment-name",
+                        value="B一X",
+                        evidenceTranscriptIds=["one-changed-field-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                    FieldUpdate(
+                        fieldId="field-machine-number",
+                        value="007",
+                        evidenceTranscriptIds=["one-changed-field-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    ),
+                ],
+            ),
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="one-changed-field-answer",
+        question=first["question"],
+        content=raw,
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    pending = result["interviewState"]["pendingTranscriptConfirmation"]
+    assert pending["targetRefs"] == [
+        {"targetType": "field", "targetId": "field-equipment-name"}
+    ]
+    assert result["question"]["targetType"] == "transcript_confirmation"
+    assert "設備名" in result["question"]["text"]
+    assert "007" not in result["question"]["text"]
+    number_state = result["interviewState"]["fieldStates"]["field-machine-number"]
+    assert number_state["answerState"] == "CONFIRMED"
+    assert number_state["recordAnswer"] == "007"
+
+
+def test_full_utterance_is_rejected_as_a_single_equipment_candidate() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-full-utterance-candidate",
+        (("field-equipment-name", "設備名"),),
+    )
+    raw = "対象の設備名は圧力器です。"
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                transcriptAssessment=TranscriptAssessment(
+                    rawTranscript=raw,
+                    normalizedTranscript="圧力器",
+                    correctionStatus="CORRECTED",
+                    correctionCandidates=["圧力器"],
+                ),
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-equipment-name",
+                        value=raw,
+                        evidenceTranscriptIds=["full-utterance-candidate-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            )
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="full-utterance-candidate-answer",
+        question=first["question"],
+        content=raw,
+    )
+
+    result = generate_structured_interview_result(record, knowledge, user, provider=provider)
+
+    assert result["reply"] == "設備名をもう一度ご回答ください。"
+    assert raw not in result["reply"]
+    assert result["interviewState"]["pendingTranscriptConfirmation"] is None
+    equipment_state = result["interviewState"]["fieldStates"]["field-equipment-name"]
+    assert equipment_state["candidateAnswer"] is None
+
+
+def test_explicit_new_value_overrides_a_coarse_candidate_confirmation() -> None:
+    user, record, knowledge = _seed_fixed_form_case(
+        "record-corrected-candidate-confirmation",
+        (("field-equipment-name", "設備名"), ("field-machine-number", "号機")),
+    )
+    provider = FakeStructuredProvider(
+        [
+            StructuredInterviewOutput(
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-equipment-name",
+                        value="圧力器",
+                        evidenceTranscriptIds=["candidate-source-answer"],
+                        answerResolution="CONFIRM_REQUIRED",
+                    )
+                ]
+            ),
+            StructuredInterviewOutput(
+                dialogueAct="CORRECTION",
+                fieldUpdates=[
+                    FieldUpdate(
+                        fieldId="field-equipment-name",
+                        value="圧力機",
+                        evidenceTranscriptIds=["candidate-correction-answer"],
+                        answerResolution="AUTO_CONFIRM",
+                    )
+                ],
+            ),
+        ]
+    )
+    first = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    _add_structured_answer(
+        record,
+        user,
+        message_id="candidate-source-answer",
+        question=first["question"],
+        content="圧力器",
+    )
+    candidate = generate_structured_interview_result(record, knowledge, user, provider=provider)
+    assert candidate["question"]["targetType"] == "field"
+    assert candidate["question"]["targetId"] == "field-equipment-name"
+    assert "圧力器" in candidate["question"]["text"]
+
+    _add_structured_answer(
+        record,
+        user,
+        message_id="candidate-correction-answer",
+        question=candidate["question"],
+        content="はい、設備名は圧力機で大丈夫です。",
+    )
+    result = generate_structured_interview_result(
+        record,
+        knowledge,
+        user,
+        provider=provider,
+        canonical_intent="CONFIRMATION",
+        canonical_action="CONFIRM_PENDING_CANDIDATE",
+        canonical_user_intent="USER_RESPONSE",
+    )
+
+    equipment_state = result["interviewState"]["fieldStates"]["field-equipment-name"]
+    assert equipment_state["recordAnswer"] == "圧力機"
+    assert equipment_state["answerState"] == "CONFIRMED"
+    assert result["interviewState"]["lastCanonicalIntent"] == "CORRECTION"
+
+
 def test_GEN_017_numeric_self_correction_keeps_the_latest_value_only() -> None:
     user, record, knowledge = _seed_fixed_form_case(
         "record-gen-017-numeric-correction",
@@ -2953,7 +3213,7 @@ def test_ambiguous_transcript_correction_requests_repetition_without_committing(
 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert result["reply"] == "担当領域をもう一度ご回答ください。"
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert result["interviewState"]["pendingTranscriptConfirmation"] is None
     assert result["interviewState"]["fieldStates"]["field-role"]["candidateAnswer"] is None
@@ -2996,7 +3256,7 @@ def test_multiple_corrected_candidates_are_not_confirmed_automatically() -> None
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert result["reply"] == "担当領域をもう一度ご回答ください。"
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "UNANSWERED"
     assert field_state["recordAnswer"] is None
@@ -3040,7 +3300,7 @@ def test_empty_corrected_candidate_is_treated_as_uncertain_without_committing() 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert result["reply"] == "担当領域をもう一度ご回答ください。"
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert field_state["answerState"] == "UNANSWERED"
     assert field_state["candidateAnswer"] is None
@@ -3091,7 +3351,7 @@ def test_rejected_transcript_correction_is_discarded_and_original_question_is_re
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
 
     field_state = result["interviewState"]["fieldStates"]["field-role"]
-    assert result["reply"] == "この部分をもう一度お願いします。"
+    assert result["reply"] == "担当領域をもう一度ご回答ください。"
     assert result["question"]["targetId"] == "field-role"
     assert result["question"]["questionId"] == first["question"]["questionId"]
     assert result["interviewState"]["pendingTranscriptConfirmation"] is None

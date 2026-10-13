@@ -48,12 +48,67 @@ def build_transcribe_polly_transcript_feedback(
     correction_candidates = _unique_texts(assessment.get("correctionCandidates"))
 
     if status in {"CORRECTED", "UNCERTAIN"}:
+        if status == "UNCERTAIN":
+            clarification_target = _as_mapping(
+                state.get("lastClarificationTarget")
+                or result.get("clarificationTarget")
+            )
+            ambiguous_span = _important_ambiguous_span(
+                assessment,
+                clarification_target,
+            )
+            if ambiguous_span:
+                semantic_role = _clean_text(ambiguous_span.get("semanticRole"))
+                target_label = _clean_text(clarification_target.get("label"))
+                if not target_label:
+                    target_label = _label_for_role_target(
+                        state,
+                        question,
+                        clarification_target,
+                        field_labels,
+                        locale,
+                    )
+                transcript_values = _transcript_values(assessment, state)
+                candidate_values = _safe_candidate_values(
+                    correction_candidates,
+                    transcript_values,
+                    target_label,
+                )
+                span = _safe_candidate_value(
+                    _clean_text(ambiguous_span.get("span")),
+                    transcript_values,
+                    target_label,
+                )
+                return localized_interview_ambiguous_part_prompt(
+                    locale,
+                    semantic_role or None,
+                    target_label=target_label or None,
+                    candidate_value=span if not candidate_values else None,
+                    candidate_values=candidate_values,
+                )
+
         candidate_items = _correction_candidate_items(
             state,
             assessment,
             field_labels=field_labels,
             locale=locale,
         )
+        if status == "CORRECTED":
+            candidate_items = _changed_correction_items(
+                candidate_items,
+                _clean_text(
+                    _as_mapping(state.get("pendingTranscriptConfirmation")).get(
+                        "rawTranscript"
+                    )
+                    or assessment.get("rawTranscript")
+                ),
+                _clean_text(
+                    _as_mapping(state.get("pendingTranscriptConfirmation")).get(
+                        "normalizedTranscript"
+                    )
+                    or assessment.get("normalizedTranscript")
+                ),
+            )
         if candidate_items and (status == "UNCERTAIN" or len(correction_candidates) <= 1):
             return _correction_confirmation_message(candidate_items, locale)
 
@@ -62,30 +117,48 @@ def build_transcribe_polly_transcript_feedback(
             or result.get("clarificationTarget")
         )
         semantic_role = _clean_text(clarification_target.get("semanticRole"))
+        ambiguous_span = _important_ambiguous_span(assessment, clarification_target)
         if not semantic_role:
-            ambiguous_spans = assessment.get("ambiguousSpans")
-            if isinstance(ambiguous_spans, list):
-                semantic_role = next(
-                    (
-                        _clean_text(_as_mapping(span).get("semanticRole"))
-                        for span in ambiguous_spans
-                        if _as_mapping(span).get("important", True)
-                        and _clean_text(_as_mapping(span).get("semanticRole"))
-                    ),
-                    "",
-                )
+            semantic_role = _clean_text(_as_mapping(ambiguous_span).get("semanticRole"))
         if semantic_role:
+            transcript_values = _transcript_values(assessment, state)
+            span = _safe_candidate_value(
+                _clean_text(
+                    clarification_target.get("span")
+                    or _as_mapping(ambiguous_span).get("span")
+                ),
+                transcript_values,
+                _clean_text(clarification_target.get("label"))
+                or _label_for_role_target(
+                    state,
+                    question,
+                    clarification_target,
+                    field_labels,
+                    locale,
+                ),
+            )
             return localized_interview_ambiguous_part_prompt(
                 locale,
                 semantic_role,
-                target_label=_clean_text(clarification_target.get("label")) or None,
+                target_label=(
+                    _clean_text(clarification_target.get("label"))
+                    or _label_for_role_target(
+                        state,
+                        question,
+                        clarification_target,
+                        field_labels,
+                        locale,
+                    )
+                    or None
+                ),
+                candidate_value=span,
             )
 
         labels = _confirmation_labels(state, question, field_labels, locale)
         if labels:
-            return localized_interview_not_heard_prompt(
+            return localized_interview_ambiguous_part_prompt(
                 locale,
-                _join_labels(labels, locale),
+                target_label=_join_labels(labels, locale),
             )
         source_question = _source_question_text(state, question)
         if source_question:
@@ -124,11 +197,34 @@ def build_transcribe_polly_transcript_feedback(
         if target_type == "ASR_AMBIGUOUS" and _clean_text(
             clarification_target.get("semanticRole")
         ):
+            span = _safe_candidate_value(
+                _clean_text(clarification_target.get("span")),
+                _transcript_values(assessment, state),
+                _clean_text(clarification_target.get("label"))
+                or _label_for_role_target(
+                    state,
+                    question,
+                    clarification_target,
+                    field_labels,
+                    locale,
+                ),
+            )
             return localized_interview_ambiguous_part_prompt(
                 locale,
                 _clean_text(clarification_target.get("semanticRole")) or None,
                 understood,
-                target_label=_clean_text(clarification_target.get("label")) or None,
+                target_label=(
+                    _clean_text(clarification_target.get("label"))
+                    or _label_for_role_target(
+                        state,
+                        question,
+                        clarification_target,
+                        field_labels,
+                        locale,
+                    )
+                    or None
+                ),
+                candidate_value=span,
             )
 
     # A persisted turn from before clarificationTarget was introduced may
@@ -144,10 +240,23 @@ def build_transcribe_polly_transcript_feedback(
             None,
         )
         if important_span:
+            span = _safe_candidate_value(
+                _clean_text(important_span.get("span")),
+                _transcript_values(assessment, state),
+                _clean_text(important_span.get("label"))
+                or _label_for_role_target(
+                    state,
+                    question,
+                    important_span,
+                    field_labels,
+                    locale,
+                ),
+            )
             return localized_interview_ambiguous_part_prompt(
                 locale,
                 _clean_text(important_span.get("semanticRole")) or None,
                 understood,
+                candidate_value=span,
             )
 
     unclear_labels = _unclear_labels(
@@ -273,6 +382,137 @@ def _has_concrete_asr_target(
         and _clean_text(_as_mapping(item).get("semanticRole"))
         for item in spans
     )
+
+
+def _important_ambiguous_span(
+    assessment: Mapping[str, Any],
+    clarification_target: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    if (
+        _clean_text(clarification_target.get("type")).upper() == "ASR_AMBIGUOUS"
+        and _clean_text(clarification_target.get("span"))
+    ):
+        return clarification_target
+    spans = assessment.get("ambiguousSpans")
+    if not isinstance(spans, list):
+        return None
+    return next(
+        (
+            _as_mapping(item)
+            for item in spans
+            if _as_mapping(item).get("important", True)
+            and _clean_text(_as_mapping(item).get("span"))
+        ),
+        None,
+    )
+
+
+def _label_for_role_target(
+    state: Mapping[str, Any],
+    question: Mapping[str, Any],
+    clarification_target: Mapping[str, Any],
+    field_labels: Mapping[str, str],
+    locale: InterviewLocale,
+) -> str:
+    target_type = (
+        _clean_text(clarification_target.get("targetType"))
+        or _clean_text(question.get("targetType") or question.get("kind"))
+    )
+    target_id = (
+        _clean_text(clarification_target.get("targetId"))
+        or _clean_text(question.get("targetId"))
+    )
+    label = _label_for_target(state, target_type, target_id, field_labels)
+    if not label and target_id:
+        label = _clean_text(field_labels.get(target_id))
+    if not label:
+        label = _clean_text(question.get("targetLabel") or question.get("label"))
+    if not label and locale == "ja-JP":
+        role = _clean_text(clarification_target.get("semanticRole"))
+        compact = role.casefold().replace(" ", "_")
+        if any(token in compact for token in ("equipment", "asset", "facility", "machine", "device")):
+            label = "設備名"
+        elif any(token in compact for token in ("unit_number", "machine_number", "serial_number")):
+            label = "号機"
+    return label
+
+
+def _transcript_values(
+    assessment: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> list[str]:
+    pending = _as_mapping(state.get("pendingTranscriptConfirmation"))
+    values = [
+        _clean_text(value)
+        for value in (
+            assessment.get("rawTranscript"),
+            assessment.get("normalizedTranscript"),
+            pending.get("rawTranscript"),
+            pending.get("normalizedTranscript"),
+        )
+    ]
+    return [value for value in values if value]
+
+
+def _normalized_for_matching(value: str) -> str:
+    compact = value.casefold()
+    return re.sub(r"[\W_]+", "", compact)
+
+
+def _safe_candidate_value(
+    value: str,
+    transcripts: list[str],
+    target_label: str = "",
+) -> str:
+    normalized_value = _normalized_for_matching(value)
+    if not normalized_value:
+        return ""
+    label = _normalized_for_matching(target_label)
+    for transcript in transcripts:
+        normalized_transcript = _normalized_for_matching(transcript)
+        is_full_transcript = normalized_value == normalized_transcript or (
+            len(normalized_transcript) >= 12
+            and normalized_transcript in normalized_value
+        )
+        includes_target_label = bool(
+            label
+            and label in normalized_value
+            and len(normalized_value) > len(label) + 2
+        )
+        if is_full_transcript and includes_target_label:
+            return ""
+    return value
+
+
+def _safe_candidate_values(
+    values: list[str],
+    transcripts: list[str],
+    target_label: str = "",
+) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        safe_value = _safe_candidate_value(value, transcripts, target_label)
+        if safe_value and safe_value not in result:
+            result.append(safe_value)
+    return result
+
+
+def _changed_correction_items(
+    items: list[tuple[str, str]],
+    raw_transcript: str,
+    normalized_transcript: str,
+) -> list[tuple[str, str]]:
+    if not raw_transcript or not normalized_transcript:
+        return items
+    raw = _normalized_for_matching(raw_transcript)
+    normalized = _normalized_for_matching(normalized_transcript)
+    changed: list[tuple[str, str]] = []
+    for label, value in items:
+        candidate = _normalized_for_matching(value)
+        if not candidate or candidate in raw or candidate not in normalized:
+            continue
+        changed.append((label, value))
+    return changed
 
 
 def _unique_texts(value: object) -> list[str]:
@@ -452,16 +692,19 @@ def _correction_candidate_items(
         reject_full_transcript: bool,
     ) -> None:
         normalized_value = _clean_text(value)
-        if (
-            not label
-            or not normalized_value
-            or (
-                reject_full_transcript
-                and re.sub(r"\s+", "", normalized_value) in full_transcript_values
-            )
+        if not label or not normalized_value:
+            return
+        safe_value = _safe_candidate_value(
+            normalized_value,
+            list(full_transcript_values),
+            label,
+        )
+        if not safe_value or (
+            reject_full_transcript
+            and re.sub(r"\s+", "", normalized_value) in full_transcript_values
         ):
             return
-        display_value = _display_value(normalized_value)
+        display_value = _display_value(safe_value)
         if not display_value:
             return
         item = (_spoken_label(label, locale), display_value)
@@ -754,4 +997,4 @@ def _correction_confirmation_message(
         parts = [f"{label} é {value!r}" for label, value in items]
         return f"Só para confirmar: {_join_labels(parts, locale)}. Está correto?"
     parts = [f"{label}は「{value}」" for label, value in items]
-    return f"{'、'.join(parts)}という理解でよろしいですか？"
+    return f"{'、'.join(parts)}で正しいですか。"

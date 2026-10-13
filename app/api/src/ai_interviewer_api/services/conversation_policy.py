@@ -140,6 +140,7 @@ def build_canonical_intent_context(
 
     question = current_question or {}
     target = current_target or {}
+    is_candidate_confirmation = pending_confirmation
     recent: list[dict[str, str]] = []
     for message in recent_conversation[-4:]:
         content = str(
@@ -218,12 +219,19 @@ def build_canonical_intent_context(
             if value:
                 resolved_known_facts.append({"source": key, "value": value})
 
+    resolved_clarification_target = (
+        None
+        if is_candidate_confirmation
+        else (
+            clarification_target
+            if clarification_target is not None
+            else state.get("lastClarificationTarget")
+        )
+    )
     conversation_state = {
         "currentTurnType": current_turn_type or state.get("currentTurnType", "BASIC"),
         "pendingConfirmation": bool(pending_confirmation),
-        "clarificationTarget": clarification_target
-        if clarification_target is not None
-        else state.get("lastClarificationTarget"),
+        "clarificationTarget": resolved_clarification_target,
         "probeTarget": probe_target
         if probe_target is not None
         else state.get("activeProbeTarget"),
@@ -323,6 +331,24 @@ def resolve_canonical_intent(
         output = selected_provider.classify(context=context)
         dialogue_act = output.dialogueAct
         user_intent = output.userIntent
+        if (
+            pending_confirmation
+            and user_intent
+            in {
+                "QUESTION_CLARIFICATION",
+                "QUESTION_INTENT_CONFIRMATION",
+                "ASR_CLARIFICATION_REQUEST",
+                "META_QUESTION",
+            }
+            and dialogue_act in {"ANSWER", "CORRECTION", "CONFIRMATION", "REJECTION"}
+        ):
+            # A substantive act about the active candidate outranks a
+            # contradictory assistant-directed intent label.
+            user_intent = (
+                "ANSWER_CLARIFICATION"
+                if dialogue_act == "CORRECTION"
+                else "USER_RESPONSE"
+            )
         interpretation_match = output.interpretationMatch
         user_interpretation = output.userInterpretation
         original_question_intent = output.originalQuestionIntent
@@ -450,6 +476,7 @@ def _canonical_intent_system_prompt() -> str:
         "回答内容の抽出、回答の十分性、状態更新はしません。\n\n"
         "まずuserIntentを選び、userIntentに整合するdialogueAct、interpretationMatch、conversationActionを返してください。\n"
         "直前のassistant発話、clarificationTarget、probeTarget、取得済み情報、不足情報を優先し、発話単独で判断しないでください。\n\n"
+        "pendingConfirmation=trueの場合、会話の対象は現在確認中の候補です。現在のtargetTypeにかかわらず、以前のclarificationTargetやASR曖昧箇所を今回の話題として使ってはいけません。候補への同意、否定、訂正、または現在の候補についての質問として最新発話を分類してください。値を明示して現在の候補を補足・訂正する発話は回答として処理し、ASR_CLARIFICATION_REQUESTにしてはいけません。ASR_CLARIFICATION_REQUESTは、最新発話そのものが認識対象を尋ねている場合に限ります。\n"
         "userIntent:\n"
         "- USER_RESPONSE: 現在の質問への事実、経験、判断、追加情報\n"
         "- QUESTION_CLARIFICATION: 現在の質問の意味、対象、答え方の理解支援を求める\n"
