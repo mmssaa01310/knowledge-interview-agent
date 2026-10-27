@@ -9,7 +9,7 @@ const roles: UserRole[] = ["admin", "knowledge_manager", "interviewer", "viewer"
 const pageSize = 20;
 const emptyPage: ManagedUserPage = { items: [], total: 0, activeCount: 0, adminCount: 0 };
 
-export function SettingsPage({ user: currentUser }: { user: UserProfile | null }) {
+export function SettingsPage({ user: currentUser, onNavigate }: { user: UserProfile | null; onNavigate: (path: string) => void }) {
   const { t, locale } = useI18n();
   const [tab, setTab] = useState<"users" | "audit">("users");
   const [page, setPage] = useState<ManagedUserPage>(emptyPage);
@@ -117,7 +117,7 @@ export function SettingsPage({ user: currentUser }: { user: UserProfile | null }
   return (
     <section className="panel account-management">
       <header className="account-management-header">
-        <div><p className="eyebrow">{t("common.settings")}</p><h2>{t("common.account.users")}</h2><p>{t("common.account.management.subtitle")}</p></div>
+        <div><button className="ghost compact account-back" type="button" onClick={() => onNavigate("/knowledge-dbs")}>← {t("navigation.backToKnowledgeList")}</button><p className="eyebrow">{t("common.settings")}</p><h2>{t("common.account.users")}</h2><p>{t("common.account.management.subtitle")}</p></div>
         <button className="primary" type="button" onClick={() => openForm()} disabled={!currentUser || currentUser.role !== "admin"}>{t("common.account.addUser")}</button>
       </header>
       <div className="account-summary" aria-label={t("common.account.management.summary")}>

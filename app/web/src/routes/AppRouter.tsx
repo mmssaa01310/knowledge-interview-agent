@@ -57,7 +57,7 @@ export function AppRouter() {
       >
       <Suspense fallback={<p className="empty" role="status">{t("common.loading")}</p>}>
         {currentSection === "settings"
-          ? <SettingsPage user={user} />
+          ? <SettingsPage user={user} onNavigate={navigate} />
             : route.name === "dashboard"
             ? <AdminDashboardPage user={user} knowledges={knowledgeLayoutProps.knowledges} onNavigate={navigate} />
             : <KnowledgeLayout {...knowledgeLayoutProps} />}
