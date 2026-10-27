@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import time
 
 from ai_interviewer_api.agents.interview_knowledge import service as structured_service
+from ai_interviewer_api.auth.deps import DEV_TOKENS
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.services import voice_interview as voice_interview_service
 from ai_interviewer_api.services.conversation_policy import CanonicalIntentDecision
@@ -13,6 +15,10 @@ from .support import FakeStructuredProvider
 @pytest.fixture(autouse=True)
 def clear_store() -> None:
     store.tables.clear()
+    for user in DEV_TOKENS.values():
+        user.auth_session_id = f"test-session-{user.user_id}"
+        store.upsert("users", {"id": user.user_id, "tenantId": user.tenant_id, "displayName": user.display_name, "role": user.role, "active": True, "sessionVersion": 0})
+        store.upsert("auth_sessions", {"id": user.auth_session_id, "tenantId": user.tenant_id, "userId": user.user_id, "sessionVersion": 0, "expiresAt": time.time() + 3600})
 
 
 @pytest.fixture(autouse=True)

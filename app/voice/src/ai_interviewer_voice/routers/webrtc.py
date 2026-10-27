@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from time import monotonic
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 from ai_interviewer_voice.config import settings
@@ -59,10 +59,8 @@ _openai_realtime_coordinator = OpenAIRealtimeCoordinator(
 )
 
 
-def _extract_bearer_token(authorization: str | None) -> str:
-    if authorization is None or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="invalid_token")
-    token = authorization.removeprefix("Bearer ").strip()
+def _extract_bearer_token(authorization: str | None, session: str | None = None) -> str:
+    token = authorization.removeprefix("Bearer ").strip() if authorization and authorization.startswith("Bearer ") else session
     if not token:
         raise HTTPException(status_code=401, detail="invalid_token")
     return token
@@ -72,8 +70,9 @@ def _extract_bearer_token(authorization: str | None) -> str:
 async def get_ice_config(
     voice_session_id: str,
     authorization: str | None = Header(default=None),
+    session: str | None = Cookie(default=None, alias="kikiori_session"),
 ) -> IceConfigResponse:
-    bearer_token = _extract_bearer_token(authorization)
+    bearer_token = _extract_bearer_token(authorization, session)
     session = await _voice_session_service.authorize_session(
         voice_session_id,
         bearer_token=bearer_token,
@@ -102,9 +101,10 @@ async def post_offer(
     voice_session_id: str,
     payload: OfferRequest,
     authorization: str | None = Header(default=None),
+    session: str | None = Cookie(default=None, alias="kikiori_session"),
 ) -> AnswerResponse:
     offer_started_at = monotonic()
-    bearer_token = _extract_bearer_token(authorization)
+    bearer_token = _extract_bearer_token(authorization, session)
     log_voice_startup_stage(
         logger,
         voice_session_id=voice_session_id,
@@ -182,6 +182,7 @@ async def post_openai_offer(
     voice_session_id: str,
     request: Request,
     authorization: str | None = Header(default=None),
+    session: str | None = Cookie(default=None, alias="kikiori_session"),
 ) -> Response:
     """Forward a browser SDP offer to OpenAI's current WebRTC Calls API.
 
@@ -189,7 +190,7 @@ async def post_openai_offer(
     browser receives only the SDP answer required by its RTCPeerConnection.
     """
 
-    bearer_token = _extract_bearer_token(authorization)
+    bearer_token = _extract_bearer_token(authorization, session)
     session = await _voice_session_service.authorize_session(
         voice_session_id,
         bearer_token=bearer_token,
@@ -227,8 +228,9 @@ async def delete_peer_connection(
     voice_session_id: str,
     reason: str = "client_requested",
     authorization: str | None = Header(default=None),
+    session: str | None = Cookie(default=None, alias="kikiori_session"),
 ) -> Response:
-    bearer_token = _extract_bearer_token(authorization)
+    bearer_token = _extract_bearer_token(authorization, session)
     await _voice_session_service.get_session(voice_session_id, bearer_token=bearer_token)
     await _openai_realtime_coordinator.close(voice_session_id, reason=reason)
     peer = await _registry.remove(voice_session_id)

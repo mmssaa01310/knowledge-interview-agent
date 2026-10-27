@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 
+from ai_interviewer_api.routers.auth import router as auth_router
+
 from ai_interviewer_api.routers.documents import (
     acknowledge_document,
     create_prior_knowledge,
@@ -91,6 +93,7 @@ from ai_interviewer_api.routers.voice_sessions import (
 )
 
 router = APIRouter()
+router.include_router(auth_router)
 router.include_router(health_router)
 router.include_router(dev_tools_router)
 router.include_router(interview_prompt_profiles_router)

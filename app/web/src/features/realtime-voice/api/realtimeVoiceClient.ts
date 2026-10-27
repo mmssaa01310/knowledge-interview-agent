@@ -2,7 +2,6 @@ import { API_BASE_URL, ApiError } from "../../../lib/api";
 import type { LegacyVoiceProvider, VoiceIceConfigResponse, VoiceSessionResponse } from "../types";
 
 const VOICE_API_BASE_URL = "";
-const DEV_AUTH_TOKEN = import.meta.env.VITE_DEV_TOKEN ?? "dev-manager";
 export const VOICE_RUNTIME_PROVIDER = import.meta.env.VITE_VOICE_RUNTIME_PROVIDER ?? "transcribe_polly";
 
 export type GPTLiveSessionResponse = {
@@ -86,8 +85,6 @@ async function requestJson<T>(baseUrl: string, path: string, options: RequestOpt
       method: options.method ?? "GET",
       headers: {
         "content-type": "application/json",
-        "x-dev-token": DEV_AUTH_TOKEN,
-        Authorization: `Bearer ${DEV_AUTH_TOKEN}`,
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
       signal: options.signal,
@@ -207,8 +204,6 @@ export async function sendOpenAIRealtimeOffer(
       method: "POST",
       headers: {
         "content-type": "application/sdp",
-        "x-dev-token": DEV_AUTH_TOKEN,
-        Authorization: `Bearer ${DEV_AUTH_TOKEN}`,
       },
       body: offer.sdp ?? "",
       signal,

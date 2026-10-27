@@ -1,6 +1,8 @@
 import { useI18n } from "../i18n";
 import { LocaleSwitcher } from "../components/ui/LocaleSwitcher";
 import { ThemeLogo } from "../components/ui/ThemeLogo";
+import { useState } from "react";
+import { login } from "../lib/api";
 
 type LoginPageProps = {
   onLogin: () => void;
@@ -8,6 +10,25 @@ type LoginPageProps = {
 
 export function LoginPage({ onLogin }: LoginPageProps) {
   const { t } = useI18n();
+  const [loginId, setLoginId] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(false);
+    try {
+      await login(loginId, password);
+      onLogin();
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <main className="login-page">
       <section className="login-story" aria-label={t("common.appName")}>
@@ -29,8 +50,12 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           <p className="eyebrow">{t("common.appName")}</p>
           <h2 id="login-title">{t("common.loginTitle")}</h2>
         </div>
-        <p className="login-development-note">{t("common.developmentAuthNotice")}</p>
-        <button className="primary" onClick={onLogin}>{t("common.continue")}</button>
+        <form onSubmit={(event) => void submit(event)}>
+          <label>{t("common.account.loginId")}<input autoComplete="username" required maxLength={128} value={loginId} onChange={(event) => setLoginId(event.target.value)} /></label>
+          <label>{t("common.account.password")}<input type="password" autoComplete="current-password" required maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+          {error ? <p role="alert">{t("common.account.loginFailed")}</p> : null}
+          <button className="primary" type="submit" disabled={busy}>{busy ? t("common.loading") : t("common.account.login")}</button>
+        </form>
       </section>
     </main>
   );

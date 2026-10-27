@@ -27,6 +27,9 @@ POSTGRES_SCHEMA_STATEMENTS = (
         CONSTRAINT entity_store_type_check CHECK (
             entity_type IN (
                 'audit_logs',
+                'users',
+                'auth_sessions',
+                'auth_attempts',
                 'document_read_status',
                 'documents',
                 'document_chunks',
@@ -58,6 +61,9 @@ POSTGRES_SCHEMA_STATEMENTS = (
     ADD CONSTRAINT entity_store_type_check CHECK (
         entity_type IN (
             'audit_logs',
+            'users',
+            'auth_sessions',
+            'auth_attempts',
             'document_read_status',
             'documents',
             'document_chunks',
@@ -93,6 +99,21 @@ POSTGRES_SCHEMA_STATEMENTS = (
     """
     CREATE INDEX IF NOT EXISTS entity_store_record_lookup_idx
         ON kikiori.entity_store (entity_type, tenant_id, ((payload ->> 'recordId')))
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS active_user_login_unique_idx
+        ON kikiori.entity_store (lower(payload ->> 'loginId'))
+        WHERE entity_type = 'users' AND payload ->> 'active' = 'true'
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS active_user_display_page_idx
+        ON kikiori.entity_store (tenant_id, lower(payload ->> 'displayName'), entity_id)
+        WHERE entity_type = 'users' AND payload ->> 'active' = 'true'
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS user_audit_page_idx
+        ON kikiori.entity_store (tenant_id, created_at DESC, entity_id DESC)
+        WHERE entity_type = 'audit_logs' AND payload ->> 'resourceType' = 'user'
     """,
     """
     CREATE UNIQUE INDEX IF NOT EXISTS voice_turn_session_client_id_unique_idx
@@ -135,6 +156,18 @@ class InMemoryStore:
 
     def list(self, table: str, tenant_id: str) -> list[dict[str, Any]]:
         return [row for row in self.tables[table].values() if row["tenantId"] == tenant_id]
+
+    def list_users_page(self, tenant_id: str, search: str, role: str, limit: int, offset: int) -> dict[str, Any]:
+        active = [row for row in self.list("users", tenant_id) if row.get("active")]
+        term = search.casefold()
+        matched = [row for row in active if (not role or row.get("role") == role) and (not term or term in str(row.get("loginId", "")).casefold() or term in str(row.get("displayName", "")).casefold())]
+        matched.sort(key=lambda row: (str(row.get("displayName", "")).casefold(), row["id"]))
+        return {"items": matched[offset:offset + limit], "total": len(matched), "activeCount": len(active), "adminCount": sum(row.get("role") == "admin" for row in active)}
+
+    def list_user_audit_page(self, tenant_id: str, action: str, limit: int, offset: int) -> dict[str, Any]:
+        rows = [row for row in self.list("audit_logs", tenant_id) if row.get("resourceType") == "user" and (not action or row.get("action") == action)]
+        rows.sort(key=lambda row: (str(row.get("createdAt", "")), row["id"]), reverse=True)
+        return {"items": rows[offset:offset + limit], "total": len(rows)}
 
     def get(self, table: str, item_id: str) -> dict[str, Any] | None:
         return self.tables[table].get(item_id)
@@ -223,6 +256,26 @@ class PostgresStore:
                 (table, tenant_id),
             ).fetchall()
         return [dict(row["payload"]) for row in rows]
+
+    def list_users_page(self, tenant_id: str, search: str, role: str, limit: int, offset: int) -> dict[str, Any]:
+        where = """entity_type = 'users' AND tenant_id = %s AND payload ->> 'active' = 'true'
+            AND (%s = '' OR payload ->> 'role' = %s)
+            AND (%s = '' OR strpos(lower(COALESCE(payload ->> 'loginId', '')), lower(%s)) > 0
+                OR strpos(lower(COALESCE(payload ->> 'displayName', '')), lower(%s)) > 0)"""
+        params = (tenant_id, role, role, search, search, search)
+        with self._connection() as connection:
+            total = connection.execute(f"SELECT count(*) AS count FROM kikiori.entity_store WHERE {where}", params).fetchone()["count"]
+            counts = connection.execute("""SELECT count(*) AS active_count, count(*) FILTER (WHERE payload ->> 'role' = 'admin') AS admin_count
+                FROM kikiori.entity_store WHERE entity_type = 'users' AND tenant_id = %s AND payload ->> 'active' = 'true'""", (tenant_id,)).fetchone()
+            rows = connection.execute(f"SELECT payload FROM kikiori.entity_store WHERE {where} ORDER BY lower(payload ->> 'displayName'), entity_id LIMIT %s OFFSET %s", (*params, limit, offset)).fetchall()
+        return {"items": [dict(row["payload"]) for row in rows], "total": int(total), "activeCount": int(counts["active_count"]), "adminCount": int(counts["admin_count"])}
+
+    def list_user_audit_page(self, tenant_id: str, action: str, limit: int, offset: int) -> dict[str, Any]:
+        with self._connection() as connection:
+            total = connection.execute("SELECT count(*) AS count FROM kikiori.entity_store WHERE entity_type = 'audit_logs' AND tenant_id = %s AND payload ->> 'resourceType' = 'user' AND (%s = '' OR payload ->> 'action' = %s)", (tenant_id, action, action)).fetchone()["count"]
+            rows = connection.execute("""SELECT payload FROM kikiori.entity_store WHERE entity_type = 'audit_logs' AND tenant_id = %s AND payload ->> 'resourceType' = 'user'
+                AND (%s = '' OR payload ->> 'action' = %s) ORDER BY created_at DESC, entity_id DESC LIMIT %s OFFSET %s""", (tenant_id, action, action, limit, offset)).fetchall()
+        return {"items": [dict(row["payload"]) for row in rows], "total": int(total)}
 
     def get(self, table: str, item_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:

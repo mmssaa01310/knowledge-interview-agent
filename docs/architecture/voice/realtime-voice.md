@@ -258,7 +258,7 @@ GET  /api/voice-sessions/{voice_session_id}
 POST /api/voice-sessions/{voice_session_id}/stop
 ```
 
-公開APIは認証済みユーザーによるJWT認証を必須とする。採用するIdPは未確定で、Entra IDを候補とする。
+公開APIはアプリ内ログインのセッションを検証し、認証済みユーザーだけにアクセスを許可する。音声サービスはセッションをAPIへ渡して記録の認可を確認する。
 
 ### 6.2 WebRTC API
 
@@ -452,7 +452,7 @@ class VoiceSession:
     created_at: datetime
 ```
 
-`owner_user_id`は採用した認証プロバイダーのユーザーIDを保存する必須項目である。
+`owner_user_id`はアプリが発行したユーザーIDを保存する必須項目である。
 
 `initial_reply_text`は、Session開始時点で`app/api`が決定した初回発話文である。
 v1では固定挨拶「それではインタビューを開始します。」に続けて、Structured Interviewが決定した初回質問を含める。

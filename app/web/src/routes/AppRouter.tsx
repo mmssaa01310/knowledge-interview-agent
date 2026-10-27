@@ -4,7 +4,7 @@ import { KnowledgeLayout } from "../layouts/KnowledgeLayout";
 import { LoginPage } from "../pages/LoginPage";
 import { HelpPage } from "../pages/HelpPage";
 import { useI18n } from "../i18n";
-import { clearDevelopmentToken } from "../lib/api";
+import { logout } from "../lib/api";
 import { useAppRouterController } from "./useAppRouterController";
 
 const SettingsPage = lazy(() => import("../pages/SettingsPage").then(({ SettingsPage: page }) => ({ default: page })));
@@ -25,16 +25,20 @@ export function AppRouter() {
   }, [setProfileLocale, user?.uiLocale]);
 
   if (route.name === "login") {
-    return <LoginPage onLogin={() => navigate("/knowledge-dbs")} />;
+    return <LoginPage onLogin={() => window.location.replace("/knowledge-dbs")} />;
   }
 
   if (route.name === "help") {
     return <HelpPage />;
   }
 
-  function handleLogout() {
-    if (import.meta.env.DEV) clearDevelopmentToken();
-    window.location.replace("/login");
+  async function handleLogout() {
+    try {
+      await logout();
+      window.location.replace("/login");
+    } catch {
+      window.alert(t("common.account.operationFailed"));
+    }
   }
 
   return (
@@ -53,7 +57,7 @@ export function AppRouter() {
       >
       <Suspense fallback={<p className="empty" role="status">{t("common.loading")}</p>}>
         {currentSection === "settings"
-          ? <SettingsPage />
+          ? <SettingsPage user={user} />
             : route.name === "dashboard"
             ? <AdminDashboardPage user={user} knowledges={knowledgeLayoutProps.knowledges} onNavigate={navigate} />
             : <KnowledgeLayout {...knowledgeLayoutProps} />}

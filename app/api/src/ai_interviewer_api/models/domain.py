@@ -78,6 +78,7 @@ class InterviewRecord(BaseEntity):
 
 class VoiceSession(BaseEntity):
     recordId: str
+    authSessionId: str | None = None
     ownerRole: Literal["admin", "knowledge_manager", "interviewer", "viewer"] = "interviewer"
     provider: str = "transcribe_polly"
     interviewLocale: InterviewLocale | None = None

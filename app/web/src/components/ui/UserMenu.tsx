@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { UserProfile } from "../../lib/api";
-import { getDevelopmentToken, setDevelopmentToken } from "../../lib/api";
 import { useI18n } from "../../i18n";
 import { LocaleSwitcher } from "./LocaleSwitcher";
-import { OptionPicker } from "./OptionPicker";
 import { ThemeToggle } from "./ThemeToggle";
 import type { AppSection } from "../../types/app";
 
@@ -32,10 +30,6 @@ function SettingsGlyph() {
       <circle cx="10.7" cy="12.3" r="2.5" />
     </svg>
   );
-}
-
-function ChevronGlyph({ direction = "right" }: { direction?: "down" | "right" }) {
-  return <span className={`user-menu-chevron ${direction}`} aria-hidden="true" />;
 }
 
 function ExternalLinkGlyph() {
@@ -77,8 +71,6 @@ export function UserMenu({
 }: UserMenuProps) {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
-  const [isDeveloperSettingsOpen, setIsDeveloperSettingsOpen] = useState(false);
-  const [developmentToken, setDevelopmentTokenState] = useState(getDevelopmentToken);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -94,21 +86,18 @@ export function UserMenu({
     function handlePointerDown(event: PointerEvent) {
       if (!rootRef.current?.contains(event.target as Node)) {
         setIsOpen(false);
-        setIsDeveloperSettingsOpen(false);
       }
     }
 
     function handleFocusIn(event: FocusEvent) {
       if (!rootRef.current?.contains(event.target as Node)) {
         setIsOpen(false);
-        setIsDeveloperSettingsOpen(false);
       }
     }
 
     function handleKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key !== "Escape") return;
       setIsOpen(false);
-      setIsDeveloperSettingsOpen(false);
       triggerRef.current?.focus();
     }
 
@@ -131,15 +120,7 @@ export function UserMenu({
 
   function closeMenu(restoreFocus = false) {
     setIsOpen(false);
-    setIsDeveloperSettingsOpen(false);
     if (restoreFocus) triggerRef.current?.focus();
-  }
-
-  function handleDevelopmentUserChange(token: string) {
-    setDevelopmentToken(token);
-    setDevelopmentTokenState(token);
-    closeMenu();
-    window.location.reload();
   }
 
   function handleNavigate(path: string) {
@@ -222,40 +203,6 @@ export function UserMenu({
               </button>
             ) : null}
           </div>
-
-          {import.meta.env.DEV ? (
-            <div className="user-menu-developer">
-              <button
-                type="button"
-                className="user-menu-item user-menu-developer-toggle"
-                role="menuitem"
-                aria-expanded={isDeveloperSettingsOpen}
-                onClick={() => setIsDeveloperSettingsOpen((value) => !value)}
-              >
-                <span className="user-menu-item-icon"><SettingsGlyph /></span>
-                <span>{t("navigation.developerSettings")}</span>
-                <ChevronGlyph direction={isDeveloperSettingsOpen ? "down" : "right"} />
-              </button>
-              {isDeveloperSettingsOpen ? (
-                <div className="user-menu-developer-panel">
-                  <span className="user-menu-developer-label">{t("navigation.developmentUser")}</span>
-                  <OptionPicker
-                    value={developmentToken}
-                    options={[
-                      { value: "dev-admin", label: t("navigation.roles.admin") },
-                      { value: "dev-manager", label: t("navigation.roles.knowledge_manager") },
-                      { value: "dev-interviewer", label: t("navigation.roles.interviewer") },
-                      { value: "dev-viewer", label: t("navigation.roles.viewer") },
-                    ]}
-                    onChange={handleDevelopmentUserChange}
-                    ariaLabel={t("navigation.developmentUser")}
-                    className="dev-user-picker"
-                    placement="bottom"
-                  />
-                </div>
-              ) : null}
-            </div>
-          ) : null}
 
           <div className="user-menu-divider" role="separator" />
           <button type="button" className="user-menu-item destructive" role="menuitem" onClick={handleLogout}>

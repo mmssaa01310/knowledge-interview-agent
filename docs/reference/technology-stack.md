@@ -33,7 +33,7 @@ MVPでは以下を使わない。
 * Pydantic
 * psycopg（PostgreSQL接続）
 * boto3
-* 本番IdP JWT検証（候補: Microsoft Entra ID。未実装）
+* アプリ内アカウント認証とサーバー側セッション
 * SSE
 
 リアルタイム音声は現行の`app/voice`によるWebRTC + HTTP SDP signalingを使用する。WebSocketは現行の公開経路ではなく、Trickle ICEなどを採用する場合の将来検討である。
@@ -48,7 +48,7 @@ ECS Worker、SQS、PostgreSQL接続、boto3、Bedrockは、Workerを本実装す
 
 ローカル開発ではDocker ComposeによりWeb、API、Voice、PostgreSQLを起動する。PostgreSQLは`postgres:16-alpine`で、初期スキーマは`infra/postgres/init/001_schema.sql`に置く。
 
-AWS CDKの雛形は`infra/cdk`にある。ECS Fargate上のFrontend、API、Voice、Worker、ALB、企業IdP（Entra ID候補）、SQS、Secrets Manager、CloudWatch Logs、IAM、KMSは目標アーキテクチャとして`docs/architecture/aws/aws-architecture.md`に記載する。導入済みの実行環境として断定しない。
+AWS CDKの雛形は`infra/cdk`にある。ECS Fargate上のFrontend、API、Voice、Worker、ALB、SQS、Secrets Manager、CloudWatch Logs、IAM、KMSは目標アーキテクチャとして`docs/architecture/aws/aws-architecture.md`に記載する。導入済みの実行環境として断定しない。
 
 ## 6. データベース方針
 

@@ -1581,6 +1581,9 @@ def _knowledge_profile(knowledge: Mapping[str, Any]) -> str | None:
 def _display_name(user_id: str | None) -> str | None:
     if not user_id:
         return None
+    account = store.get("users", user_id)
+    if account:
+        return str(account.get("displayName") or user_id)
     for context in DEV_TOKENS.values():
         if context.user_id == user_id:
             return context.display_name

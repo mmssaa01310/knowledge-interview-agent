@@ -35,6 +35,7 @@ from ai_interviewer_api.agents.interview_knowledge.service import (
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import StructuredInterviewOutput
 from ai_interviewer_api.auth.deps import UserContext
+from ai_interviewer_api.auth.accounts import get_session_user_by_id
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_configuration import require_interview_configuration
 from ai_interviewer_api.core.interview_locale import (
@@ -163,6 +164,7 @@ def create_voice_session(record_id: str, payload: VoiceSessionCreate, user: User
         updatedByUserId=user.user_id,
         ownerUserId=user.user_id,
         ownerRole=user.role,
+        authSessionId=user.auth_session_id,
         recordId=record_id,
         provider=payload.provider,
         interviewLocale=interview_locale,
@@ -476,6 +478,7 @@ def create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
 
 def _create_voice_turn(voice_session_id: str, payload: VoiceTurnCreate) -> dict:
     session = _get_voice_session_for_internal_use(voice_session_id)
+    _build_user_context_from_session(session)
     client_turn_id = str(payload.clientTurnId or "").strip() or None
     if client_turn_id:
         existing = voice_turn_repository.find_by_client_turn_id(
@@ -857,6 +860,7 @@ def _process_voice_turn(
 ) -> dict:
     api_started_at = monotonic()
     session = _get_voice_session_for_internal_use(voice_session_id)
+    _build_user_context_from_session(session)
     turn = _get_voice_turn_for_session(turn_id, session)
     lifecycle_status = _voice_turn_lifecycle_status(turn)
     if lifecycle_status == "CANCELLED":
@@ -1755,6 +1759,12 @@ def _ensure_session_accepts_turns(session: dict) -> None:
             status_code=409,
             detail=f"voice_session_{session.get('status')}",
         )
+    account = get_session_user_by_id(str(session.get("authSessionId") or ""))
+    if not account or account["id"] != session.get("ownerUserId") or account["tenantId"] != session.get("tenantId"):
+        raise HTTPException(status_code=401, detail="invalid_token")
+    user = UserContext(account["id"], account["tenantId"], account["role"], account["displayName"])
+    record = get_scoped_item("records", session["recordId"], user, "record_not_found")
+    require_record_action(record, user, "answer")
 
 
 def _delete_voice_turn_messages(turn_id: str, tenant_id: str) -> None:
@@ -1816,11 +1826,14 @@ def _voice_turn_matches_payload(existing: Mapping[str, Any], payload: VoiceTurnC
 
 def _build_user_context_from_session(session: dict) -> UserContext:
     user_id = session.get("ownerUserId") or session.get("createdByUserId")
+    account = get_session_user_by_id(str(session.get("authSessionId") or ""))
+    if not account or account["id"] != user_id or account["tenantId"] != session.get("tenantId"):
+        raise HTTPException(status_code=401, detail="invalid_token")
     return UserContext(
         user_id=user_id,
         tenant_id=session["tenantId"],
-        role=session.get("ownerRole", "interviewer"),
-        display_name=user_id,
+        role=account["role"],
+        display_name=account["displayName"],
     )
 
 

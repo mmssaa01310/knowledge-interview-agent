@@ -322,6 +322,10 @@ def create_profile_voice_session(
     extra_required_field: bool = False,
 ) -> tuple[UserContext, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     user = user or DEV_TOKENS["dev-manager"]
+    import time
+    user.auth_session_id = f"test-session-{user.user_id}"
+    store.upsert("users", {"id": user.user_id, "tenantId": user.tenant_id, "displayName": user.display_name, "role": user.role, "active": True, "sessionVersion": 0})
+    store.upsert("auth_sessions", {"id": user.auth_session_id, "tenantId": user.tenant_id, "userId": user.user_id, "sessionVersion": 0, "expiresAt": time.time() + 3600})
     knowledge_db = create_knowledge_db(KnowledgeDbCreate(name="E2E voice test"), user)
     knowledge = create_knowledge(
         knowledge_db["id"],

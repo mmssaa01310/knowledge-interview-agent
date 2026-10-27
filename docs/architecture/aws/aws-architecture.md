@@ -8,11 +8,11 @@
 | --- | --- | --- |
 | Web / API / Voice | Docker Composeで起動 | ECS Fargate各サービス + ALB |
 | 保存 | PostgreSQL `entity_store` | マネージドPostgreSQL |
-| 認証 | 開発用トークン | 企業IdP（Entra ID候補）のJWT |
+| 認証 | アプリ内アカウントとセッション | アプリ内アカウントとセッション |
 | AI | Bedrock呼び出しの実装あり | Bedrock |
 | Worker / Queue | Workerはサンプル処理。Composeで未起動 | SQS + ECS Worker |
 
-以降のECS、ALB、企業IdP（Entra ID候補）、音声関連AWSサービス、SQS、Secrets Manager、CloudWatch Logs、KMSに関する記述は、実装済みのローカル構成ではなく目標アーキテクチャである。IdPはまだ確定していない。
+以降のECS、ALB、音声関連AWSサービス、SQS、Secrets Manager、CloudWatch Logs、KMSに関する記述は、実装済みのローカル構成ではなく目標アーキテクチャである。
 
 MVPでは以下を基本構成とする。
 
@@ -20,7 +20,7 @@ MVPでは以下を基本構成とする。
 * Backend API: ECS Fargate + FastAPI
 * Voice: ECS Fargate + WebRTC / 音声I/Oサービス
 * Worker: ECS Fargate Worker
-* 認証: 企業IdP（Entra ID候補。未確定）
+* 認証: アプリ内のログインID・パスワードとセッション
 * 検索・保存: PostgreSQL
 * AI処理: Amazon Bedrock
 * 非同期処理: SQS + ECS Worker
@@ -42,7 +42,7 @@ MVPでは以下を基本構成とする。
    |       - FastAPI
    |       - REST API
    |       - SSE streaming
-   |       - Enterprise IdP JWT verification (candidate: Entra ID)
+   |       - Application session validation
    |
    +--> [ECS Fargate Voice Service]
    |       - HTTP SDP signaling
@@ -59,7 +59,6 @@ MVPでは以下を基本構成とする。
 
 [Backend API / Voice / Worker]
    |
-   +--> [Enterprise IdP (candidate: Entra ID)]
    +--> [PostgreSQL]
    +--> [Bedrock]
    +--> [SQS]
@@ -111,7 +110,7 @@ Backend APIはFastAPIで実装する。
 
 * REST API
 * SSEストリーミング
-* 本番IdP JWT検証（候補: Microsoft Entra ID）
+* アプリ内セッションの検証
 * 認可チェック
 * PostgreSQL検索・保存
 * Bedrock呼び出し
@@ -133,17 +132,16 @@ WorkerはSQSからジョブを受け取り、非同期処理を実行する。
 
 重い処理はAPIリクエスト内で完結させず、SQS + Worker に逃がす。
 
-## 7. 本番認証（IdP未確定）
+## 7. 認証
 
-* 企業IdPでログインする。現時点の候補はMicrosoft Entra IDである。
-* FrontendはJWTを取得し、APIリクエスト時に送信する。
-* Backend APIでは採用したIdPのJWTを検証する。
-* IdPのsubjectをアプリ上のユーザーIDとして扱う。
+* アプリ内のログインIDとパスワードで認証する。
+* ブラウザーはHttpOnly Cookieでセッションを保持し、Backend APIが検証する。
+* アプリが発行したユーザーIDを利用する。
 * 認証なしAPIを作らない。
 
 ## 8. 認証・認可
 
-* 保存データには認証プロバイダーが発行したユーザーIDを含める。
+* 保存データにはアプリが発行したユーザーIDを含める。
 * 認可チェックを省略しない。
 * ユーザーが参照権限を持つデータだけを検索・表示する。
 * 権限フィルタなしでPostgreSQL検索を行わない。
@@ -194,7 +192,7 @@ CloudWatch Logsにはアプリケーションログを出力する。
 
 ただし、以下をログに出さない。
 
-* JWT
+* セッショントークン
 * APIキー
 * パスワード
 * 個人情報

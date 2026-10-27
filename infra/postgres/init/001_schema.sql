@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS kikiori.entity_store (
     CONSTRAINT entity_store_type_check CHECK (
         entity_type IN (
             'audit_logs',
+            'users',
+            'auth_sessions',
+            'auth_attempts',
             'document_read_status',
             'documents',
             'document_chunks',
@@ -44,6 +47,18 @@ CREATE INDEX IF NOT EXISTS entity_store_knowledge_lookup_idx
 
 CREATE INDEX IF NOT EXISTS entity_store_record_lookup_idx
     ON kikiori.entity_store (entity_type, tenant_id, ((payload ->> 'recordId')));
+
+CREATE UNIQUE INDEX IF NOT EXISTS active_user_login_unique_idx
+    ON kikiori.entity_store (lower(payload ->> 'loginId'))
+    WHERE entity_type = 'users' AND payload ->> 'active' = 'true';
+
+CREATE INDEX IF NOT EXISTS active_user_display_page_idx
+    ON kikiori.entity_store (tenant_id, lower(payload ->> 'displayName'), entity_id)
+    WHERE entity_type = 'users' AND payload ->> 'active' = 'true';
+
+CREATE INDEX IF NOT EXISTS user_audit_page_idx
+    ON kikiori.entity_store (tenant_id, created_at DESC, entity_id DESC)
+    WHERE entity_type = 'audit_logs' AND payload ->> 'resourceType' = 'user';
 
 CREATE UNIQUE INDEX IF NOT EXISTS voice_turn_session_client_id_unique_idx
     ON kikiori.entity_store (

@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
+from ai_interviewer_api.auth.accounts import get_session_user_by_id
 from ai_interviewer_api.core.config import settings
+from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.schemas.voice import (
     AssistantEventCreate,
     ConnectionEventCreate,
@@ -30,9 +32,15 @@ from ai_interviewer_api.services.voice_interview import (
 router = APIRouter()
 
 
-def require_internal_api_token(x_internal_api_token: str | None = Header(default=None)) -> None:
+def require_internal_api_token(voice_session_id: str, x_internal_api_token: str | None = Header(default=None)) -> None:
     if x_internal_api_token != settings.internal_api_token:
         raise HTTPException(status_code=401, detail="invalid_internal_api_token")
+    session = store.get("voice_sessions", voice_session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="voice_session_not_found")
+    account = get_session_user_by_id(str(session.get("authSessionId") or ""))
+    if not account or account["id"] != session.get("ownerUserId") or account["tenantId"] != session.get("tenantId"):
+        raise HTTPException(status_code=401, detail="invalid_token")
 
 
 @router.post("/internal/voice-sessions/{voice_session_id}/turns")

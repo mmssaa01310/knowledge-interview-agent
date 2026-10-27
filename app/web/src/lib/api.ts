@@ -13,7 +13,6 @@ import type {
 } from "../types/dashboard";
 
 export const API_BASE_URL = "";
-export const DEV_TOKEN_STORAGE_KEY = "ai-interviewer-dev-token";
 
 type ApiRequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
@@ -35,12 +34,10 @@ export class ApiError extends Error {
 async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   let response: Response;
   try {
-    const devToken = getDevelopmentToken();
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers: {
-        "content-type": "application/json",
-        "x-dev-token": devToken
+        "content-type": "application/json"
       },
       body: options.body ? JSON.stringify(options.body) : undefined
     });
@@ -50,6 +47,9 @@ async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Pro
   }
 
   if (!response.ok) {
+    if (response.status === 401 && path !== "/api/auth/login" && window.location.pathname !== "/login") {
+      window.location.replace("/login");
+    }
     const responseText = await response.text();
     let detail = responseText;
     try {
@@ -80,28 +80,34 @@ export type UserProfile = {
   timezone?: string | null;
 };
 
-export function getDevelopmentToken() {
-  if (typeof window === "undefined") return "dev-manager";
-  try {
-    return window.localStorage.getItem(DEV_TOKEN_STORAGE_KEY) ?? "dev-manager";
-  } catch {
-    return "dev-manager";
-  }
+export function login(loginId: string, password: string) {
+  return apiRequest<{ ok: boolean }>("/api/auth/login", { method: "POST", body: { loginId, password } });
 }
 
-export function setDevelopmentToken(token: string) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(DEV_TOKEN_STORAGE_KEY, token);
+export function logout() {
+  return apiRequest<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
 }
 
-export function clearDevelopmentToken() {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(DEV_TOKEN_STORAGE_KEY);
-  } catch {
-    // Storageが使えない環境でも、ログアウト導線は継続する。
-  }
+export type ManagedUser = { id: string; loginId: string; displayName: string; role: UserRole; active: boolean };
+export type ManagedUserPage = { items: ManagedUser[]; total: number; activeCount: number; adminCount: number };
+export type UserAuditEvent = { id: string; action: string; createdAt: string; actorUserId: string; actorName: string; targetUserId: string; targetName: string; fields: string[]; role: UserRole | null; result: string };
+export type UserAuditPage = { items: UserAuditEvent[]; total: number };
+export function listUsers() { return apiRequest<ManagedUser[]>("/api/users"); }
+export function listUsersPage(search: string, role: string, limit: number, offset: number) {
+  const query = new URLSearchParams({ search, role, limit: String(limit), offset: String(offset) });
+  return apiRequest<ManagedUserPage>(`/api/users/page?${query}`);
 }
+export function listUserAudit(action: string, limit: number, offset: number) {
+  const query = new URLSearchParams({ action, limit: String(limit), offset: String(offset) });
+  return apiRequest<UserAuditPage>(`/api/users/audit?${query}`);
+}
+export function createUser(body: { loginId: string; displayName: string; role: UserRole; password: string }) {
+  return apiRequest<ManagedUser>("/api/users", { method: "POST", body });
+}
+export function updateUser(id: string, body: { loginId?: string; displayName?: string; role?: UserRole; password?: string }) {
+  return apiRequest<ManagedUser>(`/api/users/${encodeURIComponent(id)}`, { method: "PATCH", body });
+}
+export function deleteUser(id: string) { return apiRequest<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`, { method: "DELETE" }); }
 
 export type DocumentSummary = {
   id: string;

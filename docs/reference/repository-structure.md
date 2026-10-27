@@ -225,7 +225,7 @@ Backend APIはFastAPIで実装する。
 主な責務は以下。
 
 * HTTP API
-* 本番IdP JWT検証（候補: Microsoft Entra ID）
+* アプリ内アカウント認証とセッション検証
 * 認可チェック
 * リクエスト/レスポンスschema管理
 * ユースケース実行
