@@ -92,12 +92,13 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isResettingDemo, setIsResettingDemo] = useState(false);
+  const [isTextSendPreparing, setIsTextSendPreparing] = useState(false);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
   const [summaryView, setSummaryView] = useState<"requirements" | "process">("requirements");
   const [isInterviewContextOpen, setIsInterviewContextOpen] = useState(false);
   const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
   const [selectedInterviewLocale, setSelectedInterviewLocale] = useState<InterviewLocale>(resolvedInterviewLocale);
-  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>(normalizeVoiceProvider(VOICE_RUNTIME_PROVIDER));
+  const voiceProvider: VoiceProvider = normalizeVoiceProvider(VOICE_RUNTIME_PROVIDER);
   const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isInterviewConfigured = isInterviewConfigurationComplete(props.selectedKnowledge);
   const canAnswerRecord = Boolean(
@@ -129,6 +130,17 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   );
   const hasInterviewConversationMessages = props.interviewMessages.some(
     (message) => !isProcessModelEditMessage(message),
+  );
+  const hasStructuredInterviewProgress = Boolean(
+    props.interviewState?.currentQuestionId
+      || props.interviewState?.askedQuestions?.length
+      || props.interviewState?.lastProcessedUserMessageId
+      || props.interviewState?.completedFieldIds?.length,
+  );
+  const hasActualInterviewResponse = props.interviewMessages.some(
+    (message) => message.role === "user"
+      && message.isActualUtterance !== false
+      && Boolean(message.text.trim()),
   );
   const configuredQuestionMessages = useMemo(
     () => assistantMessages.filter(
@@ -285,21 +297,29 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       : null;
   }
 
-  function handleSendInterviewMessage() {
+  async function handleSendInterviewMessage() {
+    const content = props.chatInput.trim();
     if (
-      !props.chatInput.trim()
+      !content
       || props.isInterviewStreaming
+      || isTextSendPreparing
       || props.interviewState?.status === "completed"
       || !canAnswerRecord
-      || activeVoice.isActive
     ) {
       return;
     }
-    void props.onSendInterviewMessage(
-      resolveInterviewAnswerTarget(),
-      undefined,
-      selectedInterviewLocale,
-    );
+    const target = resolveInterviewAnswerTarget();
+    setIsTextSendPreparing(true);
+    try {
+      if (activeVoice.isActive) {
+        await activeVoice.stop();
+      }
+      await props.onSendInterviewMessage(target, content, selectedInterviewLocale);
+    } catch (error) {
+      console.error("Failed to stop voice before sending an interview message", error);
+    } finally {
+      setIsTextSendPreparing(false);
+    }
   }
 
   async function handleStartVoiceInterview() {
@@ -350,7 +370,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     && canAnswerRecord
     && !props.isInterviewStreaming
     && !activeVoice.isActive
-    && !hasInterviewConversationMessages
+    && (!hasInterviewConversationMessages || (!hasStructuredInterviewProgress && !hasActualInterviewResponse))
     && props.interviewState?.status !== "completed";
   const isCompleted = props.interviewState?.status === "completed";
   const hasDemoResetAction = import.meta.env.DEV && isManagementUser && (
@@ -358,7 +378,10 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       || props.selectedRecord?.id === DEV_SYSTEM_REQUIREMENT_DEMO_RECORD_ID
   );
   const hasReviewActions = isManagementUser && props.selectedRecord?.status === "submitted";
-  const isTextInputDisabled = !canAnswerRecord || isCompleted || (!isChatOnlyInterview && activeVoice.isActive);
+  const isTextInputDisabled = !canAnswerRecord || isCompleted;
+  const isTextSendDisabled = isTextInputDisabled
+    || props.isInterviewStreaming
+    || isTextSendPreparing;
   const interviewLaunchPath = props.selectedKnowledgeDb && props.selectedKnowledge
     ? `/knowledge-dbs/${props.selectedKnowledgeDb.id}/knowledges/${props.selectedKnowledge.id}/interview`
     : null;
@@ -366,9 +389,9 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const currentTargetLabel = props.interviewState?.nextQuestionTarget?.label;
   const currentTargetMessage = currentTargetLabel
     ? t("interview.targetNow", { target: currentTargetLabel })
-    : hasInterviewConversationMessages
-      ? t("interview.organizing")
-      : t("interview.startPrompt");
+    : canStartInterview || !hasInterviewConversationMessages
+      ? t("interview.startPrompt")
+      : t("interview.organizing");
   const publishedLearningGuidance = props.user?.role === "interviewer"
     ? props.publishedGuidance
     : [];
@@ -772,10 +795,12 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   isCompleted
                     ? t("interview.completedInput")
                     : activeVoice.isActive
-                      ? t("interview.voiceInputDisabled")
+                      ? t("interview.voiceInputPendingSend")
+                      : canStartInterview
+                        ? t("interview.startByMessagePlaceholder")
                       : t("interview.answerPlaceholder")
                 }
-                disabled={isTextInputDisabled}
+                disabled={isTextInputDisabled || isTextSendPreparing}
               />
               {!isChatOnlyInterview ? (
                 <audio ref={remoteAudioRef} className="voice-remote-audio" autoPlay playsInline />
@@ -786,27 +811,14 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 </button>
               ) : null}
               <div className="answer-composer-actions">
-                <button className="primary" onClick={handleSendInterviewMessage} disabled={props.isInterviewStreaming || isTextInputDisabled}>
-                  {props.isInterviewStreaming ? t("interview.receiving") : isCompleted ? t("interview.done") : t("interview.send")}
+                <button className="primary" onClick={handleSendInterviewMessage} disabled={isTextSendDisabled}>
+                  {props.isInterviewStreaming || isTextSendPreparing ? t("interview.receiving") : isCompleted ? t("interview.done") : t("interview.send")}
                 </button>
                 {!isChatOnlyInterview ? (
                   <div className="voice-controls">
-                    <label className="voice-provider-select">
-                      <span>{t("interview.voice.providerLabel")}</span>
-                      <select
-                        value={voiceProvider}
-                        onChange={(event) => setVoiceProvider(normalizeVoiceProvider(event.target.value))}
-                        disabled={activeVoice.isActive}
-                      >
-                        <option value="transcribe_polly">transcribe_polly</option>
-                        <option value="nova_sonic">nova_sonic</option>
-                        <option value="openai_realtime">openai_realtime</option>
-                        <option value="gpt_live">gpt_live</option>
-                      </select>
-                    </label>
                     <VoiceConversationButton
                       status={activeVoice.status}
-                      disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || activeVoice.status === "completed"}
+                      disabled={!props.selectedRecord || !canAnswerRecord || isCompleted || props.isInterviewStreaming || isTextSendPreparing || activeVoice.status === "completed"}
                       onStart={() => void handleStartVoiceInterview()}
                       onStop={() => void activeVoice.stop()}
                     />

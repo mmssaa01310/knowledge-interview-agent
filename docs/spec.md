@@ -73,6 +73,10 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 
 音声機能は、既存のインタビュー機能に対する別の入出力経路として扱う。
 
+音声会話中もチャット入力欄で回答文を入力・送信できる。送信時は音声セッションを終了してから文章を送信し、入力済みの文章を保持する。
+
+インタビュー開始前もチャットからメッセージを送信できる。この送信で最初の質問を開始し、送信文は質問への回答として扱わない。
+
 `system_requirement`の実行画面はテキストチャット専用とする。音声会話の開始操作、音声接続状態、音声再生操作を表示してはならない。これは音声経路とテキスト経路の状態処理を分けることを意味しない。将来このProfileへ音声入力を提供する場合も、同じ共通Interview Coordinatorを使用する。
 
 回答処理はテキスト・音声共通の契約（入力、意味解釈、回答妥当性評価、`answerResolution`判定、チャネル別応答）を使用する。生発話は監査用会話履歴として保持する。`answerResolution`は、意味的一致、対象フィールドの型・用途、必要情報量、前後の矛盾、音声の場合のSTT信頼度を合わせて、会話を止める必要性を判定する。`AUTO_CONFIRM`はユーザーの事実回答を確認質問なしで`CONFIRMED`へ遷移し、`TENTATIVE`は候補を`CANDIDATE_PENDING`で保持して次の質問へ進み、`RETRY`は候補を保存せず聞き直す。`CONFIRM_REQUIRED`は重大な矛盾など例外的に会話を止める場合だけ使用する。状態は`UNANSWERED`、`CANDIDATE_PENDING`、`AWAITING_CONFIRMATION`、`CONFIRMED`で管理し、`answerSummary`と`completedFieldIds`を更新できるのは`CONFIRMED`への遷移時だけとする。`assistant_proposal`由来のAI提案は、`AUTO_CONFIRM`や`TENTATIVE`の判定にかかわらず、対象者の明示的な採用・修正を経てから確定候補とする。
