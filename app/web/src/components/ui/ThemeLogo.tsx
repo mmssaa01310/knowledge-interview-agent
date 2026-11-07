@@ -5,7 +5,7 @@ type ThemeLogoProps = Omit<HTMLAttributes<HTMLSpanElement>, "role" | "aria-label
   compact?: boolean;
 };
 
-export function ThemeLogo({ alt = "MUSUBI", compact = false, className, ...props }: ThemeLogoProps) {
+export function ThemeLogo({ alt = "AIインタビュー", compact = false, className, ...props }: ThemeLogoProps) {
   const classes = ["brand-lockup", className, compact ? "compact" : ""].filter(Boolean).join(" ");
 
   return (
@@ -16,7 +16,7 @@ export function ThemeLogo({ alt = "MUSUBI", compact = false, className, ...props
           <path d="M5 23c5.3 0 5.3-10 10.6-10s5.3 10 10.6 10S31.5 13 31.5 13" />
         </svg>
       </span>
-      <span className="brand-wordmark" aria-hidden="true">MUSUBI</span>
+      <span className="brand-wordmark" aria-hidden="true">AIインタビュー</span>
     </span>
   );
 }
