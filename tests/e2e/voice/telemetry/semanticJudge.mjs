@@ -73,7 +73,7 @@ function parseJudgeOutput(response) {
  */
 export function createResponsesJudgeEvaluator({
   apiKey = process.env.OPENAI_SECRET_KEY || process.env.OPENAI_API_KEY || "",
-  model = process.env.VOICE_TEST_LLM_JUDGE_MODEL || "gpt-5.6-luna",
+  model = process.env.VOICE_TEST_LLM_JUDGE_MODEL || "gpt-6-luna",
   fetchImpl = globalThis.fetch,
 } = {}) {
   return async (input) => {

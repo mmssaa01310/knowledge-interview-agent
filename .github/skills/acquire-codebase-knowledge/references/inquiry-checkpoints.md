@@ -48,7 +48,7 @@ Per-template investigation questions for Phase 2 of the acquire-codebase-knowled
 - What databases are connected? (check manifest for `pg`, `mongoose`, `prisma`, `typeorm`, `sqlalchemy`)
 - Is there an API gateway, service mesh, or proxy between the app and external services?
 - What monitoring or observability tools are used? (APM, Prometheus, logging pipeline)
-- Are there message queues or event buses? (Kafka, RabbitMQ, SQS, Pub/Sub)
+- Are there message queues or event buses? (Kafka, RabbitMQ, Pub/Sub)
 
 ## 6. TESTING.md — Test Setup
 

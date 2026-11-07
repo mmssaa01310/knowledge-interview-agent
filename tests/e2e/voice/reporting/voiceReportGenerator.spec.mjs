@@ -54,7 +54,7 @@ test("generates a self-contained report that renders from file://", async ({ pag
           sessionId: "s2",
           index: 2,
           level: 3,
-          engine: "transcribe_polly",
+          engine: "gpt_live",
           status: "FAIL",
           turns: [
             {
@@ -101,7 +101,7 @@ test("generates a self-contained report that renders from file://", async ({ pag
     expect(html).toContain("失敗の詳細");
     expect(html).toContain("自己訂正を反映できない");
     expect(html).toContain("GPT-Live");
-    expect(html).toContain("Transcribe + Polly");
+    expect(html).toContain("GPT-Live");
     expect(html).toContain("文字起こしsegment確定 → ターン保存");
     expect(html).toContain("artifacts/session-s2/evidence/screenshot.png");
     expect(html).not.toMatch(/<script\s+src=/i);
@@ -171,13 +171,13 @@ test("keeps concrete turn sessions when aggregated runs reuse sessionIndex", () 
     writeJson(path.join(runDir, "run-b", "telemetry.json"), {
       sessionId: "run-b-container",
       level: 3,
-      engine: "transcribe_polly",
+      engine: "gpt_live",
       turns: [{
         sessionId: "run-b-session-1",
         sessionIndex: 1,
         turn: 1,
         behavior: "NORMAL",
-        engine: "transcribe_polly",
+        engine: "gpt_live",
         transcription: { finalText: "二つ目の実行" },
         hardGate: { status: "FAIL", codes: ["ANSWER_NOT_PERSISTED"] },
       }],

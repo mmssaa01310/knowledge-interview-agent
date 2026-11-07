@@ -2,72 +2,41 @@
 
 ## 1. 方式
 
-MUSUBIは、React/ViteのWeb、FastAPIのAPIとVoiceサービス、PostgreSQLからなるモノレポである。APIは`routers → services → repositories`で責務を分け、Webはページと機能単位で構成する。Voiceは内部HTTPを通じてAPIへ処理を委譲する。
+AIインタビューはReact/ViteのWeb、FastAPI API、PostgreSQLからなるモノレポである。APIは`routers → services/agents → repositories`で責務を分ける。OpenAI APIとの通信はBackendに集約する。
 
-主な制約は次のとおりである。
-
-* APIが認可、インタビュー状態、AI処理、保存の正本である。
-* Voiceは音声I/Oに限定し、APIのPythonモジュールを直接importしない。
-* AIの候補は人による承認前に正式ナレッジへ確定しない。
-
-## 2. 通常のテキストインタビュー
+## 2. テキストインタビュー
 
 ```text
-Browser
-  → React page / feature
-  → Vite proxy (/api)
-  → FastAPI router
-  → service (認可・状態遷移・AI処理)
-  → repository
-  → PostgreSQL kikiori.entity_store (JSONB payload)
-  → API response / SSE
+Browser → Web feature → /api → FastAPI router
+  → service / agent → OpenAI Responses API
+  → Structured Output検証 → Repository → PostgreSQL
 ```
-
-API起動時に`store.ensure_schema()`が`kikiori.entity_store`とインデックスを冪等に作成する。テストでは`DATABASE_URL=memory://test`で`InMemoryStore`を明示選択する。
 
 ## 3. 音声インタビュー
 
 ```text
-Browser WebRTC
-  → app/voice (音声フレーム、Runtime、Transcript / 音声再生)
-  → app/api internal HTTP
-  → Interview service (Turn、回答評価、状態遷移)
-  → PostgreSQL
+Browser WebRTC ↔ OpenAI GPT Live
+Backend /api/live → OpenAI Responses API delegation
+Backend → 認可・状態検証・PostgreSQL保存
 ```
 
-Voice Runtimeは`nova_sonic`と`transcribe_polly`を共通契約の下で分ける。ComposeのWeb既定Providerは`transcribe_polly`である。
+OpenAI Project APIキーは設定画面から登録し、AES-GCMで暗号化してBackendのDBに保存する。BrowserにはサーバーAPIキーを渡さない。GPT Liveの会話、意味評価の委譲、状態保存の詳細は[音声アーキテクチャ](../architecture/voice/realtime-voice.md)を参照する。
 
 ## 4. モジュール責務
 
-| モジュール | 所有する責務 | 所有しない責務 | 根拠 |
-| --- | --- | --- | --- |
-| `app/web` | 画面、i18n、Guide、API/Voiceクライアント | 認可保証、保存 | `app/web/src/` |
-| `app/api/src/ai_interviewer_api/routers` | HTTP境界 | SQL・AI Provider詳細 | `app/api/src/ai_interviewer_api/routers/` |
-| `app/api/src/ai_interviewer_api/services` | インタビュー・承認・分析の業務処理 | WebRTC、codec | `app/api/src/ai_interviewer_api/services/` |
-| `app/api/src/ai_interviewer_api/repositories` | Store契約とPostgreSQLアクセス | UI状態 | `app/api/src/ai_interviewer_api/repositories/` |
-| `app/voice` | WebRTC、音声Runtime、API bridge | RAG、回答確定 | `app/voice/src/ai_interviewer_voice/` |
-| `app/worker` | 現在は文書状態のサンプル | SQS受信・永続化（未実装） | `app/worker/src/` |
-
-## 5. 再利用しているパターン
-
-| パターン | 場所 | 目的 |
-| --- | --- | --- |
-| Repository Store | `repositories/store.py` | 辞書型ドメインデータをPostgreSQLへ永続化する |
-| Router集約 | `routers/routes.py` | APIルートを単一アプリへ結合する |
-| Provider / Runtime分離 | `app/voice/src/ai_interviewer_voice/runtimes/` | 音声Provider固有処理を隔離する |
-| Stable guide target | Webの`data-guide`属性と`features/guides/` | UI構造変更に強い操作案内にする |
-
-## 6. 既知の設計上の注意
-
-* 本番用認証は未実装で、APIは開発用トークンを受け付ける。
-* `entity_store`はJSONB互換Storeであり、業務データ量・検索要件に応じて正規化の検討が必要になる。
-* WorkerとSQSの実接続は未実装である。
+| モジュール | 責務 |
+| --- | --- |
+| `app/web` | UI、i18n、APIクライアント、GPT Live WebRTC |
+| `app/api/.../routers` | HTTP境界、認証・認可 |
+| `app/api/.../services` | 業務処理、状態遷移、検索 |
+| `app/api/.../agents` | Responses APIアダプターとAI出力の検証 |
+| `app/api/.../repositories` | PostgreSQL Store |
+| `app/worker` | 文書取り込み状態の最小サンプル |
 
 ## 根拠
 
-* `app/api/src/ai_interviewer_api/main.py`
-* `app/api/src/ai_interviewer_api/repositories/store.py`
-* `app/api/src/ai_interviewer_api/routers/routes.py`
-* `app/voice/src/ai_interviewer_voice/main.py`
-* `app/web/src/features/guides/`
-* `infra/docker-compose.yml`
+- `app/api/src/ai_interviewer_api/main.py`
+- `app/api/src/ai_interviewer_api/routers/routes.py`
+- `app/api/src/ai_interviewer_api/agents/interview_knowledge/provider.py`
+- `app/api/src/ai_interviewer_api/services/live_session.py`
+- `infra/docker-compose.yml`

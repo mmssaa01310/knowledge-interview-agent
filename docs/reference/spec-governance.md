@@ -16,7 +16,7 @@ MkDocsでは`docs/`全体を公開する。`docs/codebase/`は、ソースコー
 * アプリ全体の仕様
 * 業務ルール
 * 技術スタック
-* AWSアーキテクチャ
+* システムアーキテクチャ
 * リポジトリ構成
 * 現行実装の範囲とAPI・データモデル
 * API仕様
@@ -27,7 +27,6 @@ MkDocsでは`docs/`全体を公開する。`docs/codebase/`は、ソースコー
 
 * `docs/spec.md`
 * `docs/reference/technology-stack.md`
-* `docs/architecture/aws/aws-architecture.md`
 * `docs/reference/repository-structure.md`
 * `docs/reference/current-implementation.md`
 * `docs/guides/development-workflow.md`
@@ -75,7 +74,6 @@ specs/
 1. `AGENTS.md`
 2. `docs/spec.md`
 3. `docs/reference/technology-stack.md`
-4. `docs/architecture/aws/aws-architecture.md`
 5. `docs/reference/repository-structure.md`
 6. `docs/guides/development-workflow.md`
 7. `docs/guides/verification.md`
@@ -115,7 +113,7 @@ specs/
 * 新しいAPI
 * 新しい状態値
 * 新しい権限ルール
-* 新しいAWS構成
+* 新しい外部サービス構成
 * 新しいリポジトリ構成
 * 今後も守るべき実装方針
 

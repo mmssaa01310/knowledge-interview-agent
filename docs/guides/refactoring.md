@@ -33,7 +33,7 @@
 * 業務ロジック
 * 外部サービス呼び出し
 * PostgreSQLクエリ
-* Bedrock呼び出し
+* OpenAI Responses API呼び出し
 
 ただし、単に行数だけで分割しない。
 責務が分かれる場合に分割する。
@@ -66,7 +66,7 @@ FastAPIでは以下を避ける。
 
 * routerに業務ロジックを書く
 * routerにPostgreSQLクエリを書く
-* routerからBedrockを直接呼ぶ
+* routerからOpenAI APIを直接呼ぶ
 * Pydantic schemaと内部モデルを混在させる
 * 認証ユーザーIDの保存を忘れる
 * 認可チェックを省略する

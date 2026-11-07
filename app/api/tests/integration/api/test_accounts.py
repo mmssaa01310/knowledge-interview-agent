@@ -7,10 +7,7 @@ from ai_interviewer_api.auth.accounts import create_account, update_account
 from ai_interviewer_api.auth import recover_admin
 from ai_interviewer_api.auth.deps import get_current_user
 from ai_interviewer_api.repositories.store import store
-from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.routers.auth import LoginInput, UserCreate, UserUpdate, create_user, delete_user, edit_user, list_user_audit, list_users, list_users_page, login, logout
-from ai_interviewer_api.routers.internal_voice import require_internal_api_token
-from ai_interviewer_api.services.voice_interview import _ensure_session_accepts_turns
 from ai_interviewer_api.services.audit import write_audit_log
 
 
@@ -64,17 +61,9 @@ def test_login_user_management_and_revocation(clean_interview_store):
 
     record = {"id": "record-1", "tenantId": "tenant-demo", "ownerUserId": member.user_id, "status": "in_progress"}
     store.upsert("records", record)
-    voice = {"id": "voice-1", "recordId": record["id"], "tenantId": member.tenant_id, "ownerUserId": member.user_id, "authSessionId": member.auth_session_id, "status": "active"}
-    store.upsert("voice_sessions", voice)
-    _ensure_session_accepts_turns(voice)
-    require_internal_api_token("voice-1", settings.internal_api_token)
     edit_user(member.user_id, UserUpdate(displayName="変更後", role="viewer"), admin)
     with pytest.raises(HTTPException):
         authenticated(member_token)
-    with pytest.raises(HTTPException):
-        _ensure_session_accepts_turns(voice)
-    with pytest.raises(HTTPException):
-        require_internal_api_token("voice-1", settings.internal_api_token)
     member_token, _ = sign_in("member", PASSWORD)
     assert authenticated(member_token).role == "viewer"
     delete_user(member.user_id, admin)

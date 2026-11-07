@@ -1,14 +1,14 @@
-# MUSUBI ドキュメント
+# AIインタビュー ドキュメント
 
-MUSUBIは、インタビューを通じて知識を引き出し、人の確認を経て構造化ナレッジとして残すWebアプリです。
+AIインタビューは、インタビューを通じて知識を引き出し、人の確認を経て構造化ナレッジとして残すWebアプリです。
 
 ## 読む順番
 
 | 目的 | 読む資料 |
 | --- | --- |
-| 利用者向けの振る舞いを確認する | [MUSUBI仕様](spec.md) |
+| 利用者向けの振る舞いを確認する | [AIインタビュー仕様](spec.md) |
 | **現在コードで動く内容**を確認する | [現行実装](reference/current-implementation.md) |
-| システム構成・認可境界を理解する | [全体構成と実装状況](architecture/aws/aws-architecture.md)、[認可](architecture/access-control.md) |
+| システム構成・認可境界を理解する | [リアルタイム音声仕様](architecture/voice/realtime-voice.md)、[認可](architecture/access-control.md) |
 | ローカルで起動・検証する | [開発ガイド](guides/development-workflow.md)、[検証](guides/verification.md) |
 | コードの入口を短時間で把握する | [コードベースガイド](codebase/index.md) |
 

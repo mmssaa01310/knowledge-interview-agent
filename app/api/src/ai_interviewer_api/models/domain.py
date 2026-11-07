@@ -2,7 +2,6 @@ from typing import Literal
 
 from pydantic import Field
 
-from ai_interviewer_api.core.interview_locale import InterviewLocale
 from ai_interviewer_api.models.base import BaseEntity
 from ai_interviewer_api.models.interview_plan import InterviewPlan, InterviewQuestionPlan
 
@@ -74,97 +73,6 @@ class InterviewRecord(BaseEntity):
     approvedFieldCount: int = 0
     unapprovedFieldCount: int = 0
     rejectedFieldCount: int = 0
-
-
-class VoiceSession(BaseEntity):
-    recordId: str
-    authSessionId: str | None = None
-    ownerRole: Literal["admin", "knowledge_manager", "interviewer", "viewer"] = "interviewer"
-    provider: str = "transcribe_polly"
-    interviewLocale: InterviewLocale | None = None
-    status: str = "active"
-    connectionStatus: str = "created"
-    currentQuestionId: str | None = None
-    initialReplyText: str | None = None
-    initialQuestionId: str | None = None
-    initialReplyStatus: Literal["pending", "sending", "sent", "failed_retryable", "failed_terminal"] | None = None
-    initialReplySentAt: str | None = None
-    lastTurnSequence: int = 0
-    stateVersion: int = 0
-    provisionalQuestion: dict | None = None
-    provisionalSourceTurnId: str | None = None
-    provisionalAnsweredTargetKeys: list[str] = Field(default_factory=list)
-    startedAt: str | None = None
-    stoppedAt: str | None = None
-
-
-class VoiceTurn(BaseEntity):
-    voiceSessionId: str
-    recordId: str
-    sequence: int
-    speaker: Literal["user", "assistant"] = "user"
-    transcript: str
-    rawTranscript: str | None = None
-    normalizedTranscript: str | None = None
-    correctionStatus: Literal["NONE", "CORRECTED", "UNCERTAIN"] = "NONE"
-    transcriptAssessment: dict | None = None
-    runtime: str | None = None
-    dialogueAct: str | None = None
-    answerEvaluation: str | None = None
-    answerStatus: str | None = None
-    probeDecision: str | None = None
-    probeDimension: str | None = None
-    currentTurnType: str | None = None
-    missingInformation: list[str] = Field(default_factory=list)
-    extractedFields: list[dict] = Field(default_factory=list)
-    fieldStates: dict = Field(default_factory=dict)
-    nextAction: str | None = None
-    llmInput: dict | None = None
-    llmOutput: dict | None = None
-    conversationTrace: dict | None = None
-    sttConfidence: float | None = None
-    turnType: Literal["ANSWER", "CONTROL"] = "ANSWER"
-    answerToQuestionId: str | None = None
-    answerToFieldId: str | None = None
-    processingMode: Literal[
-        "answer_evaluation",
-        "confirmation_reply",
-        "structured_interpretation",
-        "control",
-    ] = "structured_interpretation"
-    processingStatus: Literal["pending", "processing", "completed", "failed", "cancelled"] = "pending"
-    lifecycleStatus: Literal[
-        "RECEIVED",
-        "EVALUATING",
-        "COMMITTED",
-        "CANCELLED",
-        "SUPERSEDED",
-    ] = "RECEIVED"
-    clientTurnId: str | None = None
-    processingId: str | None = None
-    expectedStateVersion: int | None = None
-    responseText: str | None = None
-    action: str | None = None
-    stateVersion: int | None = None
-    responseId: str | None = None
-    questionId: str | None = None
-    canonicalIntent: str | None = None
-    canonicalAction: str | None = None
-    canonicalRouterLatencyMs: float | None = None
-    fastCheckExecuted: bool = False
-    structuredDialogueAct: str | None = None
-    dialogueActMismatch: bool = False
-    retrievedSources: list[dict] = Field(default_factory=list)
-    latencyMetrics: dict[str, float | int] = Field(default_factory=dict)
-    fastAssessment: dict | None = None
-    fastCanProceed: bool | None = None
-    backgroundValidationStatus: str | None = None
-    backgroundCanProceed: bool | None = None
-    backgroundAgreesWithFast: bool | None = None
-    clarificationEnqueued: bool = False
-    startedAtMs: int | None = None
-    endedAtMs: int | None = None
-    speculativeId: str | None = None
 
 
 class AiProposal(BaseEntity):

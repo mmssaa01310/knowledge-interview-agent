@@ -19,7 +19,7 @@ export const REPORT_BEHAVIORS = Object.freeze([
   "USER_INTERRUPTION",
   "SPLIT_UTTERANCE",
   "SPLIT_UTTERANCE_LONG_PAUSE",
-  "MULTIPLE_TRANSCRIBE_FINALS",
+  "MULTIPLE_TRANSCRIPT_FINALS",
   "USER_RESUMES_BEFORE_COMMIT",
   "SLOW_RESPONSE_WITH_ACK",
   "FAST_RESPONSE_WITHOUT_ACK",
@@ -81,7 +81,7 @@ export const REPORT_BEHAVIOR_INFO = Object.freeze({
   USER_INTERRUPTION: { label: "ユーザー割り込み", description: "AIの発話中にユーザーが割り込んだケース" },
   SPLIT_UTTERANCE: { label: "分割発話", description: "一つの回答を複数回の発話に分けたケース" },
   SPLIT_UTTERANCE_LONG_PAUSE: { label: "長い間を含む分割発話", description: "長い無音を挟んで一つの回答を続けたケース" },
-  MULTIPLE_TRANSCRIBE_FINALS: { label: "複数の確定文字起こし", description: "一つの回答中に複数の文字起こし確定を受け取ったケース" },
+  MULTIPLE_TRANSCRIPT_FINALS: { label: "複数の確定文字起こし", description: "一つの回答中に複数の文字起こし確定を受け取ったケース" },
   USER_RESUMES_BEFORE_COMMIT: { label: "保存前の再発話", description: "ターン保存前にユーザーが発話を再開したケース" },
   SLOW_RESPONSE_WITH_ACK: { label: "遅延時の応答案内", description: "応答が遅い場合に待機案内を含めて処理したケース" },
   FAST_RESPONSE_WITHOUT_ACK: { label: "高速応答", description: "待機案内を出さずに応答したケース" },
@@ -1036,13 +1036,11 @@ function buildBehaviorCoverage(sessions) {
 
 const REPORT_ENGINE_INFO = Object.freeze({
   gpt_live: { label: "GPT-Live", description: "GPT-Live実音声経路" },
-  transcribe_polly: { label: "Transcribe + Polly", description: "Amazon Transcribe + Polly実音声経路" },
 });
 
 function normalizeEngine(value) {
   const normalized = text(value).trim().toLowerCase();
   if (normalized === "gpt-live" || normalized === "gptlive" || normalized === "gpt_live") return "gpt_live";
-  if (normalized === "transcribe+polly" || normalized === "transcribe-polly" || normalized === "transcribe_polly") return "transcribe_polly";
   return normalized || null;
 }
 
@@ -1200,14 +1198,6 @@ function buildUsage(data, sessions) {
         .filter((turn) => turn.llmJudge?.called || turn.semanticJudge?.called).length,
   );
   const gptLiveSessions = sessions.filter((session) => session.level === 3 || session.liveApiUsed).length;
-  const transcribeUsage = totals.transcribeUsage
-    ?? data.summary?.usage?.transcribe
-    ?? data.metrics?.usage?.transcribe
-    ?? null;
-  const pollyUsage = totals.pollyUsage
-    ?? data.summary?.usage?.polly
-    ?? data.metrics?.usage?.polly
-    ?? null;
   const responsesModels = unique([
     ...array(data.summary?.responsesModels),
     ...sessions.flatMap((session) => array(session.responsesModels)),
@@ -1222,8 +1212,6 @@ function buildUsage(data, sessions) {
     jevCacheMisses: cacheMisses,
     llmJudgeCalls: judgeCalls,
     gptLiveSessions,
-    transcribeUsage,
-    pollyUsage,
     responsesModels,
     liveModels,
     estimatedCost: null,
@@ -1330,7 +1318,6 @@ function buildSummary(
     latencyByEngine,
     engineComparison,
     gptLivePassRate: engineComparison.gpt_live?.successRate ?? null,
-    transcribePollyPassRate: engineComparison.transcribe_polly?.successRate ?? null,
     quality,
     usage,
     responsesModels: usage.responsesModels,
@@ -1579,7 +1566,6 @@ svg.spark { width: 100%; height: 46px; }
     card("Level 2（ローカル）", fmt(summary.level2Sessions)),
     card("Level 3（実音声API）", fmt(summary.level3Sessions)),
     card("GPT-Live 成功率", rate(summary.gptLivePassRate)),
-    card("Transcribe + Polly 成功率", rate(summary.transcribePollyPassRate)),
   ].join("");
   const engineComparison = summary.engineComparison || {};
   const engineComparisonRows = Object.values(engineComparison).map((engine) => {
@@ -1654,7 +1640,7 @@ svg.spark { width: 100%; height: 46px; }
     ["LLM Judge呼び出し回数", usage.llmJudgeCalls], ["GPT Liveセッション数", usage.gptLiveSessions],
     ["GPT-Live音声モデル", usage.liveModels?.join(", ") || null],
     ["Responses APIモデル", usage.responsesModels?.join(", ") || null],
-    ["Transcribe利用量", usage.transcribeUsage], ["Polly利用量", usage.pollyUsage], ["推測費用", null],
+    ["推測費用", null],
   ].map(([label, value]) => '<tr><td>' + esc(label) + '</td><td class="num">' + (value === null || value === undefined ? '<span class="muted">記録なし</span>' : fmt(value)) + '</td></tr>').join("");
   document.getElementById("usage").innerHTML = '<table><thead><tr><th>項目</th><th class="num">記録値</th></tr></thead><tbody>' + usageRows + '</tbody></table><p class="muted small">金額を正確に算出できないため、推測費用は表示していません。</p>';
   const previous = data.previous?.summary?.behaviorCoverage;

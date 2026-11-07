@@ -81,7 +81,6 @@ h3 { margin: 0 0 14px; color: var(--navy); font-size: 1rem; }
 
 .component-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; }
 .component-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 13px; background: var(--card); }
-.component-card[data-layer="aws"] { border-top: 3px solid var(--amber); }
 .component-card[data-layer="voice"] { border-top: 3px solid var(--teal); }
 .component-card[data-layer="backend"], .component-card[data-layer="domain"] { border-top: 3px solid var(--navy); }
 .component-card[data-layer="ai"] { border-top: 3px solid var(--violet); }

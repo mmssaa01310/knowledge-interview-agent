@@ -1,4 +1,4 @@
-# MUSUBI 現行実装リファレンス
+# AIインタビュー 現行実装リファレンス
 
 ## 1. 位置づけ
 
@@ -20,7 +20,6 @@
 * `app/web`: React + ViteのWebアプリ
   * 画面ページは`React.lazy`によるルート単位の遅延読み込みを使用し、インタビュー画面のReact Flow・音声機能を初期バンドルへ含めない。
 * `app/api`: FastAPI API
-* `app/voice`: 音声セッション用FastAPIサービス
 * `app/worker`: 将来の非同期処理を検討するための最小Workerサンプル（現行の事前知識登録経路では使用しない）
 * `packages/shared-types`: FrontendとBackendの共有型
 * `infra/docker-compose.yml`: ローカル開発用Compose
@@ -41,64 +40,31 @@
 * `models`: ドメインモデル
 * `agents`: 質問設計、構造化インタビューのAI処理
 
-### 2.2.1 現行音声インタビュー経路とコード分類
+### 2.2.1 現行AI・音声経路
 
-Transcribe + Pollyを既定の音声入力経路、Structured Interviewを意味解釈と質問進行の正本とする。Nova Sonicは別Runtimeとして保持し、`openai_realtime`は同じVoice Session APIから選択できる追加Providerである。既定Providerは変更しない。
-
-```text
-Transcribe
-  → app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py::_on_transcribe_result
-  → app/voice/src/ai_interviewer_voice/transports/webrtc/peer_connection.py::_finalize_user_turn
-  → app/api/src/ai_interviewer_api/routers/internal_voice.py::process_internal_voice_turn
-  → app/api/src/ai_interviewer_api/services/voice_interview.py::_process_structured_voice_turn
-  → app/api/src/ai_interviewer_api/agents/interview_knowledge/service.py::generate_structured_interview_result
-  → app/api/src/ai_interviewer_api/agents/interview_knowledge/coordinator.py::apply_structured_output
-  → app/api/src/ai_interviewer_api/agents/interview_knowledge/provider.py::BedrockResponsesStructuredProvider
-  → app/api/src/ai_interviewer_api/agents/interview_knowledge/service.py::_generate_question_text
-  → provider.generate_question (Question Generator)
-  → Voice API response → app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/runtime.py::_synthesize_chunks
-  → app/voice/src/ai_interviewer_voice/runtimes/transcribe_polly/polly_synthesizer.py (Polly)
-```
-
-OpenAI Realtime経路は既存の`aiortc`経路と分離している。
+テキストのStructured Interview、質問設計、GPT Liveの意味評価は、BackendのOpenAI SDKアダプターが保存済みのOpenAI Project APIキーを使って実行する。
 
 ```text
-Browser RTCPeerConnection
-  → POST /voice/webrtc/{voice_session_id}/openai-offer
-  → OpenAI /v1/realtime/calls (SDP answer)
-  → OpenAI Realtime音声・Data Channel
+Text interview / question design
+  → app/api service or agent
+  → OpenAI Responses API (Structured Outputs)
+  → Backend validation and state update
 
-app/voice/src/ai_interviewer_voice/runtimes/openai_realtime/coordinator.py::OpenAIRealtimeSession
-  → server-side sideband WebSocket
-  → conversation.item.input_audio_transcription.completed
-  → app/voice InterviewBridge
-  → app/api Structured Interpreter / RAG / Question Generator
-  → response.create (conversation=none, Backend reply_text)
-  → OpenAI Realtime audio
-```
-
-`openai_realtime`ではAmazon Transcribe、Amazon Polly、`PollyTextChunker`、既存の独自VADを使用しない。
-
-Transcribe + Pollyの正式な実AWS Acceptanceは`pnpm voice:acceptance:transcribe-polly`で実行する。Mock E2Eの結果とは独立して実AWSの結果を記録し、実Pollyに対する日本語chunk probeと複数ターンの実音声経路を含め、両方が成功したときだけAcceptanceを成功にする。
-OpenAI Secret Keyは`app/voice`だけで読み込み、Browserへ返さない。Provider failure時の自動fallbackも行わない。
-
-GPT-Live Phase 1は、上記の旧OpenAI Realtime経路とは別の、GPT-Liveを会話進行者とするWebRTC経路として実装している。Responses Delegationを意味評価境界、Application BackendをInterview Stateの保存境界とする。
-
-```text
-Browser RTCPeerConnection
+Live voice interview
+  → Browser WebRTC
   → POST /api/live/sessions
-  → OpenAI Live API /v1/live/sessions
-  → GPT-Live-1音声・Data Channelイベント
+  → OpenAI GPT Live
+  → POST /api/live/captures (transcript and state capture)
+  → OpenAI Responses API delegation
+  → Backend authorization, validation, and persistence
 ```
 
-`app/api/src/ai_interviewer_api/services/live_session.py`がOpenAI Python SDKの`client.live.create()`を呼び出し、`gpt-live-1`と短い日本語会話プロンプト、音声`marin`を固定する。GPT-Live経路では旧VoiceSession/VoiceTurn、InterviewBridge、`speech_stopped`、独自VAD、Transcribe、Pollyを使用しない。一方、Responses Delegationのネストされた`response.completed`は意味評価処理の監査イベントとして扱う。`response.completed`、Responses用`response.create`、`session.commentary.append`のACKは、GPT-Liveのユーザー向け出力や音声開始とは別である。詳細は[GPT-Live Phase 1](../architecture/voice/gpt-live-phase1.md)を参照する。
+OpenAI Project APIキーは管理画面から登録し、AES-GCMで暗号化してPostgreSQLへ保存する。Browserには短命なGPT Live接続用シークレットのみを返す。Provider failure時に別Providerへ自動切り替えない。詳細は[リアルタイム音声アーキテクチャ](../architecture/voice/realtime-voice.md)を参照する。
 
 分類は次のとおりである。
 
-* A（現行）: 上記のTranscribe + Polly、Voice API、Structured Interpreter、Coordinator、Question Generator。追加で旧OpenAI Realtime経路と、Responses Delegationを使うGPT-Live Browser WebRTC経路。
-* B（共通）: 認証・Record認可、Store/Repository、文書検索、メッセージ・イベントの冪等性。VoiceSession/VoiceTurnとInterview Bridgeは旧OpenAI Realtime・Transcribe + Polly・Nova Sonic等の共通音声経路で利用し、GPT-LiveのBrowser WebRTC経路はLive State APIとDataChannelの契約を利用する。
-* C（旧・削除済み）: 旧Strands Interview Agent、旧Voice回答評価、`dialogue_interpreter`、`interview_answer_processor`、Strands共通Tool、旧Feature Flagと旧専用設定。
-* D（判断不能）: なし。Structured Interviewのみを正式経路とする方針に確定したため、旧経路分岐も削除した。
+* 現行: OpenAI Responses APIによるテキスト生成・構造化抽出・質問設計と、GPT Liveによる音声対話。
+* 共通: 認証・Record認可、Store/Repository、文書検索、メッセージ・イベントの冪等性。
 
 ### 2.3 現在の保存方式
 
@@ -149,8 +115,6 @@ deletedAt?
 | `InterviewPromptProfile` | 実インタビューの追加カスタマイズ | テナントに属する |
 | `KnowledgeField` | 固定フォームの質問項目 | `Knowledge`に属する |
 | `InterviewRecord` | 1回のインタビュー記録 | `Knowledge`に属し、`ownerUserId`で回答担当者、`viewerUserIds`で明示閲覧者を管理する。 |
-| `VoiceSession` | Recordの音声セッション | `InterviewRecord`に属する |
-| `VoiceTurn` | 音声セッション内の発話 | `VoiceSession`とRecordに属する |
 | `AiProposal` | AIが作成した未承認候補 | Recordに属する |
 | `Document` | ナレッジに紐づく事前知識メタデータ | `Knowledge`に属し、`sourceType=prior_knowledge`ではタイトル・種別・正規化済み本文と内部判定形式を持つ |
 | `AuditLog` | 作成・更新・削除・承認、教育支援案の生成・公開の監査情報 | 操作対象を参照する |
@@ -167,8 +131,8 @@ deletedAt?
 
 構造化インタビューで選択できるモデルIDは次の2つだけである。
 
-* `global.openai.gpt-5.6-terra`
-* `global.openai.gpt-5.6-luna`
+* `gpt-6.1-terra`
+* `gpt-6-luna`
 
 設定画面の初期選択はLunaとする。記録を作成・開始するには、選択したモデルを`interviewPlan.modelId`へ保存しなければならない。画像生成モデルは使用しない。
 
@@ -229,7 +193,7 @@ APIのルートプレフィックスは`/api`である。`/api/health`を除く�
 * `PATCH /api/interview-prompt-profiles/{profile_id}`
 * `DELETE /api/interview-prompt-profiles/{profile_id}`
 
-`field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡し、直接登録した事前知識は検索結果の有無にかかわらず`prior_knowledge`として同じ入力へ渡す。生成とValidatorは選択されたGPT-5.6 LunaまたはTerraを使用する。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
+`field-suggestions`は、生成前に同じテナント・Knowledgeの既存質問項目、承認済み記録・AI提案、取り込み済み文書・チャンクをBackendで検索する。検索結果は`retrieved_knowledge`として質問設計のStructured Output入力へ渡し、直接登録した事前知識は検索結果の有無にかかわらず`prior_knowledge`として同じ入力へ渡す。生成とValidatorは選択されたGPT-6.1 TerraまたはGPT-6 Lunaを使用する。検索結果が1件以上ある場合、APIレスポンスに`retrievedSources`を含める。検索結果が0件の場合、このキーを返さない。
 
 通常の固定項目インタビューと構造化インタビューの次質問生成は、`interview_document_retrieval`と`services/prior_knowledge.py`の共通経路を利用する。追加検索の結果は`retrieved_knowledge`、直接登録した事前知識は`prior_knowledge`として、同じテナント・同じKnowledgeの有効な本文だけを質問コンテキストへ渡す。直接登録した事前知識は追加文書検索から除外し、文書由来の確認候補と混同しない。`retrievalPolicy=never`でも設定済み事前知識は渡し、追加検索は行わない。回答解釈・高速音声判定にも同じ`prior_knowledge`を渡し、事前知識だけで回答を確定しない。GPT-Liveは初期セッション指示とResponses Delegationの評価Contextへ事前知識を渡し、共通Structured Interpreterによる回答整理やBackendの次質問生成を再利用しない。
 
@@ -281,35 +245,19 @@ AI提案は`draft`または`needs_review`で保存し、人の操作なしに`ap
 
 事前知識APIはタイトル、`knowledgeType`（`known_fact`／`glossary`）、本文を受け取り、本文を正規化してからチャンク化・検索Repositoryへ同期反映する。`contentFormat`は入力項目ではなく、Backendが本文から内部メタデータとして判定する。改行コードをLFへ統一し、外側の空行と空白だけの行を整理し、連続空行は最大2行までにする。非空行の字下げ・改行・末尾空白は保持し、有効なJSONオブジェクト／配列だけは2スペースで整形する。不正なJSONは推測で書き換えない。管理者権限、同一テナント・Knowledgeのスコープ、空本文、サイズ上限をBackendで検証する。本文表示・編集・削除も同じ権限で行い、更新時は古いチャンクを置き換える。ファイルアップロードや本文抽出のAPIは提供しない。
 
-### 5.9 音声セッション
+### 5.9 OpenAI設定とリアルタイム音声
 
-ユーザー向け音声セッションAPI:
+* `GET /api/application-settings/openai`
+* `PUT /api/application-settings/openai`
+* `POST /api/application-settings/openai/connection-check`
+* `DELETE /api/application-settings/openai`
+* `POST /api/live/sessions`
+* `POST /api/live/captures`
+* `GET /api/live/captures/{record_id}?capture_id={capture_id}`
 
-* `POST /api/records/{record_id}/voice-sessions`
-* `GET /api/voice-sessions/{voice_session_id}`
-* `POST /api/voice-sessions/{voice_session_id}/stop`
-* `POST /api/live/sessions`（GPT-Live Phase 1。VoiceSessionとは分離）
-* `POST /api/live/captures`（字幕をDBに永続化して202を返す。API側で整理・再試行）
-* `GET /api/live/captures/{record_id}?capture_id={capture_id}`（認証・記録参照権限付き。対象captureに限定した整理状態・チェックリスト取得）
+OpenAI設定APIはアプリケーション管理者だけが使用できる。キーはテナント共通設定として暗号化保存し、画面には一部をマスクして返す。接続確認では、テキスト用GPT-6モデルと音声用GPT Liveへの接続を確認する。
 
-`POST /api/records/{record_id}/voice-sessions`の`provider`は`transcribe_polly`、`nova_sonic`、
-`openai_realtime`を受け付ける。省略時は`transcribe_polly`である。
-
-`openai_realtime`のWebRTC offer endpointは`app/voice`の
-`POST /voice/webrtc/{voice_session_id}/openai-offer`で、OpenAI Calls APIへserver-sideでSDPを中継する。
-
-音声サービス専用の内部API:
-
-* `POST /internal/voice-sessions/{voice_session_id}/turns`
-* `POST /internal/voice-sessions/{voice_session_id}/turn-intent`
-* `POST /internal/voice-sessions/{voice_session_id}/turns/cancel`
-* `GET /internal/voice-sessions/{voice_session_id}`
-* `POST /internal/voice-sessions/{voice_session_id}/initial-reply-sent`
-* `POST /internal/voice-sessions/{voice_session_id}/initial-reply-failed`
-* `POST /internal/voice-sessions/{voice_session_id}/initial-reply/claim`
-* `POST /internal/voice-sessions/{voice_session_id}/turns/{turn_id}/process`
-* `POST /internal/voice-sessions/{voice_session_id}/assistant-events`
-* `POST /internal/voice-sessions/{voice_session_id}/connection-events`
+GPT LiveのWebRTC接続は`app/web/src/features/realtime-voice/`が担当する。セッション作成、Responses APIへの意味評価委譲、認可、Interview Stateの保存は`app/api`が担当する。
 
 ### 5.10 開発用データ操作
 
@@ -382,10 +330,9 @@ docker compose --env-file .env -f infra/docker-compose.yml up --build
 |---|---|
 | Web | `http://localhost:5173` |
 | API | `http://localhost:8001` |
-| Voice | `http://localhost:8010` |
 | PostgreSQL | `localhost:5432`（DB: `kikiori`） |
 
-ソースコードはbind mountされ、Web、API、Voiceはホットリロードする。通常はWebのURLだけをブラウザで開く。
+ソースコードはbind mountされ、WebとAPIはホットリロードする。通常はWebのURLだけをブラウザで開く。
 
 PostgreSQLのデータは`postgres-data`ボリュームへ保存される。既定の接続先は`postgresql://kikiori:kikiori@localhost:5432/kikiori`で、Compose内のAPIからはホスト名`postgres`を使用する。
 
@@ -414,7 +361,7 @@ Composeを使用しない場合の詳細は、リポジトリ直下の`README.md
 
 次の項目はプロダクト仕様上の将来または本番対応であり、現在のローカル実装には含まれない。
 
-* SQSの実接続とAPI・Worker間の実ジョブ連携
+* Workerを使う非同期ジョブ実行
 * 承認済み項目値を正式ナレッジへ反映する永続モデル
 * 本番向けの監視、負荷対策、マルチテナント運用
 

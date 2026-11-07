@@ -94,28 +94,8 @@ def test_reset_dev_voice_demo_removes_only_conversation_state() -> None:
             "recordId": VOICE_DEMO_RECORD_ID,
         },
     )
-    store.upsert(
-        "voice_sessions",
-        {
-            "id": "demo-session",
-            "tenantId": DEV_TENANT_ID,
-            "recordId": VOICE_DEMO_RECORD_ID,
-        },
-    )
-    store.upsert(
-        "voice_turns",
-        {
-            "id": "demo-turn",
-            "tenantId": DEV_TENANT_ID,
-            "voiceSessionId": "demo-session",
-            "recordId": VOICE_DEMO_RECORD_ID,
-        },
-    )
-
     reset_dev_voice_demo()
 
     assert store.get("records", VOICE_DEMO_RECORD_ID) is not None
     assert store.get("interview_states", f"interview-state-{VOICE_DEMO_RECORD_ID}") is None
     assert store.get("messages", "demo-message") is None
-    assert store.get("voice_sessions", "demo-session") is None
-    assert store.get("voice_turns", "demo-turn") is None

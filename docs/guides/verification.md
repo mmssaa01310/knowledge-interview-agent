@@ -55,26 +55,12 @@ uv run --no-sync pytest -m integration
 uv run --no-sync pytest -m e2e
 ```
 
-Voice runtime tests are run from `app/voice` with the same level markers:
-
-```bash
-cd app/voice
-uv sync --locked
-uv run --no-sync pytest
-uv run --no-sync pytest tests/unit
-uv run --no-sync pytest tests/integration
-uv run --no-sync pytest -m unit
-uv run --no-sync pytest -m integration
-```
-
 Development should run `unit`; pull requests should run `unit` and
 `integration`; pushes to `main` and manual workflow dispatch also run API E2E.
 The `.github/workflows/test-levels.yml` workflow keeps these levels as separate
-jobs. Release checks also include real-provider smoke tests, which are not
-replaced by deterministic pytest fixtures. API E2E scenarios include a
-deterministic Transcribe + Polly Runtime over the real API and persisted
-Interview State; they do not test microphone, AWS, browser audio, or real LLM
-behavior.
+jobs. Release checks also include provider smoke tests, which are not replaced
+by deterministic pytest fixtures. Browser GPT Live E2E is maintained separately
+from the deterministic API tests.
 
 ## 4. Worker
 

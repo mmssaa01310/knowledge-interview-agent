@@ -77,7 +77,7 @@ export const REAL_VOICE_BEHAVIORS = Object.freeze([
   "USER_INTERRUPTION",
   "SPLIT_UTTERANCE",
   "SPLIT_UTTERANCE_LONG_PAUSE",
-  "MULTIPLE_TRANSCRIBE_FINALS",
+  "MULTIPLE_TRANSCRIPT_FINALS",
   "USER_RESUMES_BEFORE_COMMIT",
   "SLOW_RESPONSE_WITH_ACK",
   "FAST_RESPONSE_WITHOUT_ACK",
@@ -102,7 +102,6 @@ export const REAL_VOICE_BEHAVIORS_BY_ENGINE = Object.freeze({
     "ANSWER_FUTURE_QUESTION",
     "USER_INTERRUPTION",
   ]),
-  transcribe_polly: REAL_VOICE_BEHAVIORS,
 });
 
 export const REAL_VOICE_FIXTURE_TEXTS = Object.freeze({
@@ -189,7 +188,7 @@ export const REAL_VOICE_FIXTURE_TEXTS = Object.freeze({
   ]),
   SPLIT_UTTERANCE: Object.freeze([
     "名前は……|宮崎です。",
-    "担当は……|AWS基盤です。",
+    "担当は……|社内システムです。",
     "原因は……|たぶんセンサーですね。",
   ]),
   SPLIT_UTTERANCE_LONG_PAUSE: Object.freeze([
@@ -197,14 +196,14 @@ export const REAL_VOICE_FIXTURE_TEXTS = Object.freeze({
     "所属は……|スマート技術開発部です。",
     "役割は……|プロジェクトリーダーです。",
   ]),
-  MULTIPLE_TRANSCRIBE_FINALS: Object.freeze([
+  MULTIPLE_TRANSCRIPT_FINALS: Object.freeze([
     "最初に確認して……|その後で関係者へ共有します。",
     "原因を調べて……|再発防止策を決めます。",
     "要件を整理して……|優先順位を合わせます。",
   ]),
   USER_RESUMES_BEFORE_COMMIT: Object.freeze([
     "名前は……|宮崎です。",
-    "担当は……|AWS基盤です。",
+    "担当は……|社内システムです。",
     "そのときは……|まず設備を止めます。",
   ]),
   SLOW_RESPONSE_WITH_ACK: Object.freeze([

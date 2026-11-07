@@ -9,7 +9,7 @@ AIエージェント、GitHub Copilot、Cursor、Codex、Claude Code等は、こ
 * ユーザーの直近の明示指示を最優先する。
 * プロダクト仕様の正本は`docs/spec.md`とする。
 * `docs/`と`specs/`の扱いは`docs/reference/spec-governance.md`に従う。
-* 仕様にない機能、画面、ライブラリ、AWSサービス、DBを勝手に追加しない。
+* 仕様にない機能、画面、ライブラリ、外部サービス、DBを勝手に追加しない。
 * 既存の設計、命名、フォルダ構成、実装パターンに合わせる。
 * 依頼された範囲だけを変更する。
 * 依頼外の大規模リファクタリング、広範囲フォーマット、命名変更、ディレクトリ移動はしない。
@@ -63,20 +63,15 @@ Structured Interviewでは「判断はAI、保証はbackend」を原則とする
 
 ## 5. リアルタイム音声
 
-リアルタイム音声機能は以下に従う。
-
-* `docs/architecture/voice/realtime-voice.md`
-* `docs/plans/realtime-voice-v1.md`
+リアルタイム音声機能は`docs/architecture/voice/realtime-voice.md`に従う。
 
 基本原則:
 
-* 音声機能はStructured Interviewの別入出力経路として扱う。
-* 質問進行、回答評価、RAG、状態更新の正本は`app/api`に置く。
-* `app/voice`にインタビュー評価やRAGを複製しない。
-* `app/voice`から`app/api`のPythonモジュールを直接importしない。
-* `app/api`にNova Sonic、aiortc、PyAV、FFmpeg等の音声固有依存を追加しない。
-* Nova SonicとTranscribe + Pollyは共通Runtime契約の下で分離する。
-* 質問作成エージェントは音声対応の変更対象に含めない。
+* GPT Liveを音声対話の唯一のProviderとして使用する。
+* BrowserはWebRTCでGPT Liveへ接続し、OpenAI Project APIキーはBackendに保持する。
+* セッション作成、意味評価の委譲、認可、状態検証・保存は`app/api`が担当する。
+* 音声固有処理やインタビュー状態の別実装を追加しない。
+* 質問設計エージェントの処理は音声経路へ複製しない。
 
 ## 6. 相談と実装依頼
 
@@ -96,7 +91,7 @@ Structured Interviewでは「判断はAI、保証はbackend」を原則とする
 * データ保存形式やDB構造の変更
 * LLM出力の後処理変更
 * UI表示条件の変更
-* 新しいAWSサービスやライブラリの追加
+* 新しい外部サービスやライブラリの追加
 * サービスやデプロイ単位の追加
 
 ## 8. パッケージ管理と検証
@@ -116,7 +111,7 @@ Structured Interviewでは「判断はAI、保証はbackend」を原則とする
 
 ## 9. 禁止事項
 
-* 仕様にないDBやAWSサービスを追加する。
+* 仕様にないDBやクラウドサービスを追加する。
 * Elasticsearchを別DBへ無断で置き換える。
 * フロントエンドを別フレームワークへ変更する。
 * 認証なしAPIを作る。

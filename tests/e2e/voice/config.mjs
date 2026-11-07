@@ -27,7 +27,6 @@ function integerEnv(value, fallback) {
 }
 
 export function readVoiceTestConfig(env = process.env) {
-  const requestedProvider = env.VOICE_TEST_REAL_PROVIDER || "gpt_live";
   const agentMode = String(env.TEST_AGENT_MODE || "").trim().toLowerCase() === "jev"
     ? "jev"
     : "deterministic";
@@ -41,9 +40,7 @@ export function readVoiceTestConfig(env = process.env) {
     runId: String(env.VOICE_TEST_RUN_ID || DEFAULT_RUN_ID),
     runMode: String(env.VOICE_TEST_RUN_MODE || "robustness").trim().toLowerCase(),
     realApiEnabled: booleanEnv(env.VOICE_TEST_REAL_API_ENABLED, false),
-    realProvider: ["gpt_live", "transcribe_polly"].includes(requestedProvider)
-      ? requestedProvider
-      : "gpt_live",
+    realProvider: "gpt_live",
     maxSessions: integerEnv(env.VOICE_TEST_MAX_SESSIONS, jevMode ? 10 : 3),
     maxTurnsPerSession: integerEnv(env.VOICE_TEST_MAX_TURNS_PER_SESSION, 8),
     maxAudioSecondsPerSession: integerEnv(env.VOICE_TEST_MAX_AUDIO_SECONDS_PER_SESSION, 120),
@@ -51,7 +48,7 @@ export function readVoiceTestConfig(env = process.env) {
     maxJevCallsTotal,
     maxLlmJudgeCalls: integerEnv(env.VOICE_TEST_MAX_LLM_JUDGE_CALLS, 5),
     llmJudgeEnabled: booleanEnv(env.VOICE_TEST_LLM_JUDGE_ENABLED, false),
-    llmJudgeModel: String(env.VOICE_TEST_LLM_JUDGE_MODEL || "gpt-5.6-luna").trim(),
+    llmJudgeModel: String(env.VOICE_TEST_LLM_JUDGE_MODEL || "gpt-6-luna").trim(),
     maxRetries: integerEnv(env.VOICE_TEST_MAX_RETRIES, jevMode ? 0 : 1),
     maxLevel3Sessions: integerEnv(env.VOICE_TEST_MAX_LEVEL3_SESSIONS, 5),
     maxLevel3TurnsPerSession: integerEnv(env.VOICE_TEST_MAX_LEVEL3_TURNS_PER_SESSION, 6),

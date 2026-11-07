@@ -14,7 +14,7 @@ test("turn telemetry preserves final transcript and field progression counts", (
       sessionId: "session-1",
       scenario: "acceptance",
       seed: 1,
-      transcriptSource: "transcribe_polly",
+      transcriptSource: "gpt_live",
     });
     telemetry.recordTurn({
       turn: 1,

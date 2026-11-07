@@ -23,7 +23,6 @@ workspace 定義と pnpm 固有設定は `pnpm-workspace.yaml` に書く。
 packages:
   - "app/web"
   - "packages/shared-types"
-  - "infra/cdk"
 
 allowBuilds:
   esbuild: true
@@ -119,7 +118,7 @@ uv run --no-sync pytest
 
 ### `--no-sync`を使う場合
 
-`--no-sync`は、同じプロジェクトで`uv sync --locked`が成功した後の反復実行にだけ使います。未同期の環境で先に使うと、`pytest`や`botocore`などの依存が見つからず、テスト収集前に失敗します。
+`--no-sync`は、同じプロジェクトで`uv sync --locked`が成功した後の反復実行にだけ使います。未同期の環境で先に使うと、`pytest`などの依存が見つからず、テスト収集前に失敗します。
 
 依存関係のImportErrorやModuleNotFoundErrorが出た場合は、`--no-sync`を外して実行するのではなく、まず同期をやり直します。
 

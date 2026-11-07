@@ -1,8 +1,8 @@
-# MUSUBI UI多言語仕様
+# AIインタビュー UI多言語仕様
 
 ## 1. 対象範囲
 
-この仕様は、MUSUBI Webアプリの表示言語を管理する。
+この仕様は、AIインタビュー Webアプリの表示言語を管理する。
 
 対象は次のUI文言と表示形式である。
 
@@ -35,7 +35,7 @@ UI表示言語とAIインタビューの会話言語は別の状態として扱�
 * `zh-CN`: 简体中文
 * `th-TH`: ไทย
 
-`uiLocale`の対応言語とは別に、AIインタビューの会話言語はインタビュー開始時に記録ごとに選択できる。現在の会話言語は`ja-JP`、`en-US`、`zh-CN`、`pt-BR`（Português (Brasil)）である。音声経路（Amazon Transcribe + Polly）では、音声入力にTranscribeのコード、音声出力にPollyの言語・音声コードを使用する。
+`uiLocale`の対応言語とは別に、AIインタビューの会話言語はインタビュー開始時に記録ごとに選択できる。現在の会話言語は`ja-JP`、`en-US`、`zh-CN`、`pt-BR`（Português (Brasil)）である。音声経路では会話言語をGPT Liveのセッション指示に反映する。
 
 Localeのメタデータは`app/web/src/i18n/localeMetadata.ts`で一元管理する。各エントリは少なくとも`code`、`name`、`dir`、`fallback`、`dateLocale`、`numberLocale`を持つ。
 

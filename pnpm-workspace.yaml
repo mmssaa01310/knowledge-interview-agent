@@ -1,7 +1,6 @@
 packages:
   - "app/web"
   - "packages/shared-types"
-  - "infra/cdk"
 
 allowBuilds:
   esbuild: true

@@ -8,15 +8,15 @@
 
 ```text
 音声ファイル / マイク入力
-  → Transcribe 確定文字列
+  → GPT Liveの確定Transcript
   → Structured Interpreter
   → Backend 状態遷移
   → 必要な検索 / Question Generator
-  → Polly 音声
+  → GPT Liveの応答音声
   → UI 表示・再生開始
 ```
 
-回答評価と状態遷移の正本は `app/api` にあり、音声認識・音声再生の正本は `app/voice` にある。音声条件付きケースは、同じシナリオをテキストで代用せず、音声ファイルで実行する。
+回答評価と状態遷移の正本は `app/api` にあり、音声の認識・会話・再生はGPT Liveが担当する。音声条件付きケースは、同じシナリオをテキストで代用せず、音声ファイルで実行する。
 
 `interview_voice_e2e_test_cases-system.md`、`interview_voice_e2e_test_cases-work-flow.md`、
 `interview_voice_e2e_test_cases-hozen.md`、`interview_voice_e2e_test_cases-unmokuchi.md` は、
@@ -26,7 +26,7 @@
 
 各ターンで次の値を採取する。
 
-1. Transcribe の確定文字列、`sttConfidence`
+1. 確定TranscriptとLiveイベントの最終状態
 2. Dialogue Act
 3. 回答充足性 / `answerResolution`
 4. 対象 Field の `FieldState`
@@ -57,7 +57,7 @@
 | ID | パターン | 質問 | ユーザー発話 | 期待する判定 | 期待する動作 |
 |---|---|---|---|---|---|
 | GEN-001 | 正常回答 | 現在のお仕事を教えてください | システム開発をしています | `ANSWER` | 回答を保存し次へ進む |
-| GEN-002 | 詳細回答 | 現在のお仕事を教えてください | 社内システムの開発と AWS のインフラを担当しています | `ANSWER` | 複数情報を保存し次へ進む |
+| GEN-002 | 詳細回答 | 現在のお仕事を教えてください | 社内システムの開発と社内ネットワークを担当しています | `ANSWER` | 複数情報を保存し次へ進む |
 | GEN-003 | 部分回答 | 現在のお仕事を教えてください | 会社員です | `PARTIAL_ANSWER` | 職種を具体的に深掘りする |
 | GEN-004 | 極端に短い回答 | 現在のお仕事を教えてください | 開発です | `ANSWER` / `PARTIAL` | 同じ質問を繰り返さず、必要なら具体化する |
 | GEN-005 | 質問が分からない | ご自身の強みを教えてください | どういう意味ですか？ | `CLARIFICATION_REQUEST` | 質問を言い換える。聞き取り失敗として扱わない |
@@ -171,12 +171,12 @@ forbidden:
 
 ## E2E 変換時の判定ルール
 
-- 音声の `text` は期待値ではなく、Transcribe の実出力を評価する入力とする。
+- 音声の `text` は期待値ではなく、GPT Liveが返す確定Transcriptを評価する入力とする。
 - `dialogue_act.allow` は、同じ会話制御を表す複数の許容値を定義する。許容値以外は Fail とする。
 - `must_not_be` は、状態遷移後の実状態に対する禁止条件である。
 - `question_id.behavior` は、単純な一致だけでなく、同一維持・訂正フロー・次ターゲット変更を表現する。
 - `forbidden.response_contains` は、意味的な非回答を STT 聞き取り失敗として返す回帰を検出する。
-- Polly の再生開始まで確認するケースでは、`voice_turn_id` と `response_id` を保存し、API 評価完了から最初の音声チャンクまでを追跡する。
+- GPT Liveの応答音声開始まで確認するケースでは、`liveResponseId` を保存し、API 評価完了から最初の音声チャンクまでを追跡する。
 
 ## 実装時の配置
 
@@ -188,8 +188,8 @@ forbidden:
 
 - API の状態遷移・Dialogue Act 回帰: `app/api/tests/unit/services/`、`app/api/tests/unit/state/`
 - API の音声セッション契約: `app/api/tests/integration/api/`
-- Transcribe / Polly Runtime: `app/voice/tests/unit/runtimes/transcribe_polly/`
-- Runtime → Voice API → 永続Stateの複数Turn E2E: `app/api/tests/e2e/voice/`（外部LLM/AWS境界は決定論的stub）
-- 実マイク・ブラウザ・実AWSを含む E2E: 専用環境での手動確認が必要
+- GPT Live Browser E2E: `tests/e2e/voice/live/`
+- Live transcript capture → 永続Stateの決定論的E2E: `app/api/tests/e2e/`
+- 実マイク・ブラウザ・GPT Live APIを含むE2E: 専用環境での手動確認が必要
 
 実装コードへ変換した後も、この文書の ID（例: `GEN-014`）をテスト名・ログ・レポートに残し、テキスト単体テストと音声 E2E テストの対応を追跡できるようにする。

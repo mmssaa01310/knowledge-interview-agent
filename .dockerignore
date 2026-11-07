@@ -13,4 +13,3 @@
 **/*.pyc
 app/api/.venv/
 app/worker/.venv/
-infra/cdk/node_modules/

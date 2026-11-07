@@ -44,7 +44,7 @@ export async function readRealLiveTrace(page) {
 
 /**
  * Observe the application WebRTC data channel without replacing the runtime.
- * GPT-Live logs provider events to the console, while Transcribe + Polly sends
+ * GPT Live logs provider events to the console, while the browser test records
  * its runtime events only through this channel.  The observer is installed in
  * the page before the application creates its peer connection.
  */

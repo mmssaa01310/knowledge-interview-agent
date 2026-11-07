@@ -26,28 +26,12 @@ export function VoiceConversationStatus(props: VoiceConversationStatusProps) {
 
 function statusText(status: VoiceConversationStatus, t: Translate): string {
   switch (status) {
-    case "checking":
-      return t("interview.voice.checking");
-    case "requesting_microphone":
-      return t("interview.voice.requestingMicrophone");
     case "connecting":
       return t("interview.voice.connecting");
-    case "preparing_initial_reply":
-      return t("interview.voice.initialQuestion");
     case "listening":
       return t("interview.voice.listening");
-    case "finalizing_transcript":
-      return t("interview.voice.finalizingTranscript");
-    case "processing_interview":
-      return t("interview.voice.processingAnswer");
-    case "preparing_audio":
-      return t("interview.voice.preparingAudio");
     case "processing":
       return t("interview.voice.processingAnswer");
-    case "speaking":
-      return t("interview.voice.speaking");
-    case "interrupted":
-      return t("interview.voice.interrupted");
     case "disconnected":
       return t("interview.voice.disconnected");
     case "stopping":
@@ -67,15 +51,7 @@ function statusIcon(status: VoiceConversationStatus): string {
     case "listening":
       return "●";
     case "processing":
-    case "finalizing_transcript":
-    case "processing_interview":
-    case "preparing_initial_reply":
-    case "preparing_audio":
       return "◌";
-    case "speaking":
-      return "≋";
-    case "interrupted":
-      return "↪";
     case "disconnected":
       return "×";
     case "completed":

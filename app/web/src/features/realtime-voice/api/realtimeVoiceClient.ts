@@ -1,8 +1,4 @@
 import { API_BASE_URL, ApiError } from "../../../lib/api";
-import type { LegacyVoiceProvider, VoiceIceConfigResponse, VoiceSessionResponse } from "../types";
-
-const VOICE_API_BASE_URL = "";
-export const VOICE_RUNTIME_PROVIDER = import.meta.env.VITE_VOICE_RUNTIME_PROVIDER ?? "transcribe_polly";
 
 export type GPTLiveSessionResponse = {
   session: {
@@ -119,25 +115,6 @@ async function safeDetail(response: Response): Promise<string> {
   }
 }
 
-export async function createVoiceSession(
-  recordId: string,
-  provider: LegacyVoiceProvider = getDefaultLegacyVoiceProvider(),
-  signal?: AbortSignal,
-) {
-  return requestJson<VoiceSessionResponse>(
-    API_BASE_URL,
-    `/api/records/${recordId}/voice-sessions`,
-    { method: "POST", body: { provider }, signal },
-  );
-}
-
-export function getDefaultLegacyVoiceProvider(): LegacyVoiceProvider {
-  if (VOICE_RUNTIME_PROVIDER === "nova_sonic" || VOICE_RUNTIME_PROVIDER === "openai_realtime") {
-    return VOICE_RUNTIME_PROVIDER;
-  }
-  return "transcribe_polly";
-}
-
 export async function createGPTLiveSession(
   offerSdp: string,
   recordId?: string,
@@ -186,78 +163,5 @@ export async function submitGPTLiveStateUpdate(
       },
       signal,
     },
-  );
-}
-
-export async function sendOpenAIRealtimeOffer(
-  voiceSessionId: string,
-  offer: RTCSessionDescriptionInit,
-  signal?: AbortSignal,
-) {
-  let response: Response;
-  console.info("openai_realtime_call_request", {
-    voice_session_id: voiceSessionId,
-    offer_type: offer.type,
-  });
-  try {
-    response = await fetch(`${VOICE_API_BASE_URL}/voice/webrtc/${voiceSessionId}/openai-offer`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/sdp",
-      },
-      body: offer.sdp ?? "",
-      signal,
-    });
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "network_error";
-    throw new ApiError(detail, { detail });
-  }
-  if (!response.ok) {
-    const detail = await safeDetail(response);
-    throw new ApiError(
-      `${response.status} ${response.statusText}${detail ? `: ${detail}` : ""}`,
-      { status: response.status, detail },
-    );
-  }
-  return { type: "answer" as const, sdp: await response.text() };
-}
-
-export async function getVoiceIceConfig(voiceSessionId: string, signal?: AbortSignal) {
-  return requestJson<VoiceIceConfigResponse>(
-    VOICE_API_BASE_URL,
-    `/voice/webrtc/${voiceSessionId}/ice-config`,
-    { signal },
-  );
-}
-
-export async function sendVoiceOffer(
-  voiceSessionId: string,
-  offer: RTCSessionDescriptionInit,
-  signal?: AbortSignal,
-) {
-  return requestJson<{ type: "answer"; sdp: string }>(
-    VOICE_API_BASE_URL,
-    `/voice/webrtc/${voiceSessionId}/offer`,
-    {
-      method: "POST",
-      body: {
-        type: offer.type,
-        sdp: offer.sdp,
-      },
-      signal,
-    },
-  );
-}
-
-export async function deleteVoicePeerConnection(
-  voiceSessionId: string,
-  reason = "client_requested",
-  signal?: AbortSignal,
-  keepalive = false,
-) {
-  await requestJson<void>(
-    VOICE_API_BASE_URL,
-    `/voice/webrtc/${voiceSessionId}?reason=${encodeURIComponent(reason)}`,
-    { method: "DELETE", signal, keepalive },
   );
 }

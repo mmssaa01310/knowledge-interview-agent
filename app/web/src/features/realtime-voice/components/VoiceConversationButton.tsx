@@ -17,7 +17,7 @@ export function VoiceConversationButton(props: VoiceConversationButtonProps) {
     <button
       className={`voice-conversation-button ${isActive ? "active" : ""}`}
       type="button"
-      disabled={props.disabled || props.status === "checking" || props.status === "requesting_microphone" || props.status === "connecting" || props.status === "stopping"}
+      disabled={props.disabled || props.status === "connecting" || props.status === "stopping"}
       onClick={isActive ? props.onStop : props.onStart}
     >
       <span className="voice-button-icon" aria-hidden="true">
@@ -33,20 +33,10 @@ export function VoiceConversationButton(props: VoiceConversationButtonProps) {
 
 function buttonLabel(status: VoiceConversationStatus, t: Translate): string {
   switch (status) {
-    case "checking":
-      return t("interview.voice.checking");
-    case "requesting_microphone":
-      return t("interview.voice.requestingMicrophone");
     case "connecting":
       return t("interview.voice.connecting");
     case "listening":
     case "processing":
-    case "finalizing_transcript":
-    case "processing_interview":
-    case "preparing_initial_reply":
-    case "preparing_audio":
-    case "speaking":
-    case "interrupted":
       return t("interview.voice.endConversation");
     case "disconnected":
       return t("interview.voice.reconnect");
