@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     store.ensure_schema()
+    store.ensure_initial_application_settings_admin()
     document_knowledge_repository.ensure_ready()
     logger.info("database_ready backend=%s", store.health()["backend"])
     logger.info(

@@ -126,7 +126,20 @@ export type KnowledgeLayoutProps = {
   ) => Promise<void>;
   onBulkApproveRecords: () => void;
   onSaveInterviewDraft: () => void;
-  onSaveInterviewAnswer: (fieldId: string, recordAnswer: string) => Promise<void>;
+  onSaveInterviewAnswer: (
+    fieldId: string,
+    recordAnswer: string,
+    baseStateVersion: number,
+  ) => Promise<void>;
+  onSaveRequirementStateCorrections: (
+    changes: Record<string, string>,
+    baseStateVersion: number,
+  ) => Promise<InterviewState>;
+  onSaveQuestionAnswerCorrection: (
+    questionId: string,
+    answer: string,
+    baseStateVersion: number,
+  ) => Promise<void>;
   onDeleteInterviewAnswers: () => void;
   onDeleteInterviewChat: () => void;
   onSaveInterviewLocale: (interviewLocale: InterviewLocale) => Promise<boolean>;

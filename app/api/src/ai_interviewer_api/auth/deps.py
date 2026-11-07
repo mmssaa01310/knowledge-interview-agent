@@ -14,6 +14,7 @@ class UserContext:
     display_name: str
     timezone: str = "Asia/Tokyo"
     auth_session_id: str | None = None
+    application_settings_admin: bool = False
 
 
 DEV_TOKENS = {
@@ -39,7 +40,14 @@ def get_current_user(
     user = get_session_user(token)
     if not user:
         raise HTTPException(status_code=401, detail="invalid_token")
-    return UserContext(user["id"], user["tenantId"], user["role"], user["displayName"], auth_session_id=hashlib.sha256(token.encode()).hexdigest())
+    return UserContext(
+        user["id"],
+        user["tenantId"],
+        user["role"],
+        user["displayName"],
+        auth_session_id=hashlib.sha256(token.encode()).hexdigest(),
+        application_settings_admin=bool(user.get("applicationSettingsAdmin")),
+    )
 
 
 def validate_origin(request: Request, *, required: bool = False) -> None:

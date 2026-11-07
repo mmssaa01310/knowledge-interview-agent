@@ -1,9 +1,12 @@
+import { useEffect, useState } from "react";
 import type { InterviewState } from "../../../types/app";
 import { useI18n, type Translate } from "../../../i18n";
 import { formatNumber } from "../../../lib/date";
 
 type SystemRequirementProgressPanelProps = {
   interviewState: InterviewState | null;
+  canEdit?: boolean;
+  onSave?: (changes: Record<string, string>, baseStateVersion: number) => Promise<InterviewState>;
 };
 
 type RequirementEntry = NonNullable<InterviewState["requirementStates"]>[string];
@@ -96,14 +99,20 @@ function RequirementProgressItem({
   entry,
   current,
   t,
+  editable = false,
+  value,
+  onChange,
 }: {
   entry: RequirementEntry | undefined;
   current: boolean;
   t: Translate;
+  editable?: boolean;
+  value?: string;
+  onChange?: (value: string) => void;
 }) {
   if (!entry) return null;
   const status = statusForEntry(entry, t);
-  const value = valueForEntry(entry);
+  const shownValue = value ?? valueForEntry(entry);
   return (
     <div className={`system-progress-item ${status.className}${current ? " current" : ""}`}>
       <div className="system-progress-item-header">
@@ -113,14 +122,40 @@ function RequirementProgressItem({
         </div>
         <span className={`status-pill ${status.className}`}>{status.label}</span>
       </div>
-      <RequirementValue value={value} t={t} />
+      {editable ? (
+        <textarea
+          className="interview-answer-input"
+          value={shownValue}
+          onChange={(event) => onChange?.(event.target.value)}
+          aria-label={entry.label}
+          maxLength={10000}
+        />
+      ) : <RequirementValue value={shownValue} t={t} />}
       {current ? <span className="system-progress-current">{t("interview.system.currentTarget")}</span> : null}
     </div>
   );
 }
 
-export function SystemRequirementProgressPanel({ interviewState }: SystemRequirementProgressPanelProps) {
+export function SystemRequirementProgressPanel({
+  interviewState,
+  canEdit = false,
+  onSave,
+}: SystemRequirementProgressPanelProps) {
   const { t, locale } = useI18n();
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [draftValues, setDraftValues] = useState<Record<string, string>>({});
+  const [editBaseStateVersion, setEditBaseStateVersion] = useState(0);
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    if (isEditing) return;
+    const confirmedValues = Object.fromEntries(
+      Object.entries(interviewState?.requirementStates ?? {})
+        .filter(([, entry]) => entry?.status === "CONFIRMED")
+        .map(([id, entry]) => [id, entry.value?.trim() ?? ""]),
+    );
+    setDraftValues(confirmedValues);
+  }, [interviewState?.stateVersion, interviewState?.requirementStates, isEditing]);
   if (!interviewState || interviewState.interviewProfile !== "system_requirement") {
     return null;
   }
@@ -136,6 +171,45 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
   const isProcessApplicabilityCurrent = nextTarget?.targetType === "applicability"
     && nextTarget.targetId === "process";
 
+  function startEditing() {
+    if (!interviewState) return;
+    const confirmedValues = Object.fromEntries(
+      Object.entries(requirementStates)
+        .filter(([, entry]) => entry?.status === "CONFIRMED")
+        .map(([id, entry]) => [id, entry.value?.trim() ?? ""]),
+    );
+    setDraftValues(confirmedValues);
+    setEditBaseStateVersion(interviewState.stateVersion ?? 0);
+    setNotice("");
+    setIsEditing(true);
+  }
+
+  async function saveCorrections() {
+    if (!onSave || isSaving || !interviewState) return;
+    const changes = Object.fromEntries(
+      Object.entries(draftValues).filter(([id, value]) => {
+        const entry = requirementStates[id];
+        return entry?.status === "CONFIRMED" && value.trim() !== (entry.value?.trim() ?? "");
+      }),
+    );
+    if (!Object.keys(changes).length) {
+      setIsEditing(false);
+      setNotice(t("interview.system.noChanges"));
+      return;
+    }
+    setIsSaving(true);
+    setNotice("");
+    try {
+      await onSave(changes, editBaseStateVersion);
+      setIsEditing(false);
+      setNotice(t("interview.system.saved"));
+    } catch {
+      setNotice(t("interview.system.saveFailed"));
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   return (
     <div className="system-requirement-progress" aria-label={t("interview.system.ariaLabel")}>
       <div className="system-progress-header">
@@ -143,7 +217,24 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
           <strong>{t("interview.system.title")}</strong>
           <p>{t("interview.system.description")}</p>
         </div>
-        <span className="status-pill muted">{t("interview.system.confirmedCount", { confirmed: formatNumber(confirmedRequirementCount, locale), total: formatNumber(requirementEntries.length, locale) })}</span>
+        <div className="inline-actions">
+          <span className="status-pill muted">{t("interview.system.confirmedCount", { confirmed: formatNumber(confirmedRequirementCount, locale), total: formatNumber(requirementEntries.length, locale) })}</span>
+          {canEdit && !isEditing ? (
+            <button type="button" className="ghost compact" onClick={startEditing}>
+              {t("interview.system.editConfirmed")}
+            </button>
+          ) : null}
+          {isEditing ? (
+            <>
+              <button type="button" className="ghost compact" onClick={() => { setIsEditing(false); setNotice(""); }} disabled={isSaving}>
+                {t("common.cancel")}
+              </button>
+              <button type="button" className="primary compact" onClick={() => void saveCorrections()} disabled={isSaving}>
+                {isSaving ? t("common.saving") : t("common.save")}
+              </button>
+            </>
+          ) : null}
+        </div>
       </div>
 
       <section className="system-progress-section" aria-labelledby="system-requirement-items-title">
@@ -158,6 +249,9 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
               entry={requirementStates[id]}
               current={isCurrentTarget(interviewState, "requirement", id)}
               t={t}
+              editable={isEditing && requirementStates[id]?.status === "CONFIRMED"}
+              value={isEditing && requirementStates[id]?.status === "CONFIRMED" ? draftValues[id] ?? "" : undefined}
+              onChange={(value) => setDraftValues((current) => ({ ...current, [id]: value }))}
             />
           ))}
         </div>
@@ -189,6 +283,9 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
                   entry={requirementStates[id]}
                   current={isCurrentTarget(interviewState, "process", id)}
                   t={t}
+                  editable={isEditing && requirementStates[id]?.status === "CONFIRMED"}
+                  value={isEditing && requirementStates[id]?.status === "CONFIRMED" ? draftValues[id] ?? "" : undefined}
+                  onChange={(value) => setDraftValues((current) => ({ ...current, [id]: value }))}
                 />
               ))}
             </div>
@@ -201,6 +298,9 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
                     entry={requirementStates[id]}
                     current={isCurrentTarget(interviewState, "process", id)}
                     t={t}
+                  editable={isEditing && requirementStates[id]?.status === "CONFIRMED"}
+                  value={isEditing && requirementStates[id]?.status === "CONFIRMED" ? draftValues[id] ?? "" : undefined}
+                  onChange={(value) => setDraftValues((current) => ({ ...current, [id]: value }))}
                   />
                 ))}
               </div>
@@ -215,6 +315,7 @@ export function SystemRequirementProgressPanel({ interviewState }: SystemRequire
           <strong>{nextTarget.label}</strong>
         </div>
       ) : null}
+      {notice ? <p className="notice" role="status">{notice}</p> : null}
     </div>
   );
 }

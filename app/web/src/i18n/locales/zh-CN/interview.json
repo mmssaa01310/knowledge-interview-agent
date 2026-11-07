@@ -8,6 +8,7 @@
   },
   "answerStatus": {
     "candidate": "追加确认中",
+    "partial": "部分回答",
     "tentative": "暂定确认",
     "awaiting": "确认中",
     "confirmed": "已回答",
@@ -181,7 +182,19 @@
     "statusCandidate": "建议",
     "statusPending": "未确认",
     "statusPresent": "有",
-    "statusNotApplicable": "不适用"
+    "statusNotApplicable": "不适用",
+    "editConfirmed": "更正已确认的需求",
+    "saved": "已保存需求更正。",
+    "saveFailed": "无法保存需求。请重新加载最新内容后重试。",
+    "noChanges": "没有更改。"
+  },
+  "questionAnswers": {
+    "title": "访谈回答",
+    "description": "查看已完成的回答，并在需要时使用键盘更正。原始发言和证据会保留。",
+    "unnamed": "问题",
+    "answerAria": "关于 {question} 的回答",
+    "saved": "已保存回答更正。",
+    "saveFailed": "无法保存回答。请重新加载最新内容后重试。"
   },
   "proposal": {
     "title": "结构化建议",

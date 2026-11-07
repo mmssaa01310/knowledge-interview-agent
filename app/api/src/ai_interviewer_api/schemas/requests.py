@@ -142,6 +142,17 @@ class RecordUpdate(BaseModel):
 class InterviewAnswerUpdate(BaseModel):
     recordAnswer: str | None = Field(default=None, min_length=1, max_length=10000)
     answerSummary: str | None = Field(default=None, min_length=1, max_length=10000)
+    baseStateVersion: int = Field(ge=0)
+
+
+class RequirementStatesManualUpdate(BaseModel):
+    changes: dict[str, str] = Field(min_length=1, max_length=16)
+    baseStateVersion: int = Field(ge=0)
+
+
+class ManualQuestionAnswerUpdate(BaseModel):
+    answer: str = Field(min_length=1, max_length=10000)
+    baseStateVersion: int = Field(ge=0)
 
 
 class BulkApproveRequest(BaseModel):

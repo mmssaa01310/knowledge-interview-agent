@@ -31,6 +31,10 @@ from ai_interviewer_api.schemas.requests import ProcessModelCommand, ProcessMode
 from ai_interviewer_api.services.audit import write_audit_log
 from ai_interviewer_api.services.ai_interview import get_interview_state_snapshot
 from ai_interviewer_api.services.interview_state_transition import commit_interview_state
+from ai_interviewer_api.services.manual_corrections import (
+    commit_manual_correction_state,
+    require_manual_correction_access,
+)
 
 
 _PROCESS_PROFILES = {"business_process", "system_requirement"}
@@ -66,7 +70,7 @@ _EDITABLE_FIELDS = {
 
 
 def save_process_model(
-    record: Mapping[str, Any],
+    record: dict[str, Any],
     payload: ProcessModelUpdate,
     user: UserContext,
 ) -> dict[str, Any]:
@@ -77,8 +81,7 @@ def save_process_model(
     those higher-impact changes have an explicit instruction and audit trail.
     """
 
-    require_record_action(dict(record), user, "manage")
-    _require_process_model_editable_record(record)
+    require_manual_correction_access(record, user)
     state = _load_process_state(record, user)
     current_process = _copy_process_state(state)
     current_version = _process_version(current_process)
@@ -92,7 +95,13 @@ def save_process_model(
         next_process["sourceMessageIds"] = list(current_process.get("sourceMessageIds") or [])
         state["processState"] = next_process
         state["processVersion"] = next_process["version"]
-        _persist_state(state, user)
+        commit_manual_correction_state(
+            state,
+            record,
+            user,
+            source="process_state_manual_correction",
+            expected_state_version=_state_version(state),
+        )
 
     write_audit_log(
         user,
@@ -103,9 +112,12 @@ def save_process_model(
             "changed": changed,
             "changedIds": changed_ids,
             "processVersion": current_version + 1 if changed else current_version,
+            "recordStatus": record.get("status"),
         },
     )
-    return _snapshot(record, user)
+    result = _snapshot(record, user)
+    result["recordStatus"] = record.get("status")
+    return result
 
 
 def edit_process_model(
@@ -349,6 +361,11 @@ def _merge_manual_state(
                     merged_item[key] = deepcopy(incoming_item[key])
             _validate_entity(collection, merged_item)
             if _editable_values(merged_item, collection) != _editable_values(current_item, collection):
+                if current_item.get("confirmationStatus") != "confirmed":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="process_model_candidate_not_manually_editable",
+                    )
                 merged_item["confirmationStatus"] = "confirmed"
                 changed_ids.append(entity_id)
             merged_items.append(merged_item)

@@ -11,7 +11,9 @@ DEFAULT_QUESTION_DESIGN_MODEL_ID = DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID
 class Settings:
     app_name: str = os.getenv("APP_NAME", "KIKIORI API")
     app_env: str = os.getenv("APP_ENV", "local")
-    openai_secret_key: str = os.getenv("OPENAI_SECRET_KEY", "")
+    gpt_live_settings_encryption_key: str = os.getenv(
+        "GPT_LIVE_SETTINGS_ENCRYPTION_KEY", ""
+    )
     dev_auto_seed_voice_demo: bool = (
         os.getenv("DEV_AUTO_SEED_VOICE_DEMO", "false").lower() == "true"
     )

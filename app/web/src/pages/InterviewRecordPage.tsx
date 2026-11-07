@@ -12,6 +12,7 @@ import { VOICE_RUNTIME_PROVIDER } from "../features/realtime-voice/api/realtimeV
 import type { VoiceProvider } from "../features/realtime-voice/types";
 import { AssistantLabel, type AssistantLabelState } from "../features/interview-chat/components/AssistantLabel";
 import { ProcessModelPanel } from "../features/interviews/components/ProcessModelPanel";
+import { QuestionAnswerCorrectionsPanel } from "../features/interviews/components/QuestionAnswerCorrectionsPanel";
 import { SystemRequirementProgressPanel } from "../features/interviews/components/SystemRequirementProgressPanel";
 import {
   isInterviewConfigurationComplete,
@@ -105,6 +106,13 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     isInterviewConfigured
       && (isManagementUser
         || (props.user?.role === "interviewer" && ["in_progress", "returned"].includes(props.selectedRecord?.status ?? ""))),
+  );
+  const canCorrectRecord = Boolean(
+    props.selectedRecord
+      && ((isManagementUser && ["submitted", "returned", "approved"].includes(props.selectedRecord.status))
+        || (props.user?.role === "interviewer"
+          && props.selectedRecord.ownerUserId === props.user.userId
+          && ["in_progress", "returned"].includes(props.selectedRecord.status))),
   );
 
   async function handleResetDemo() {
@@ -272,7 +280,11 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     if (!item.fieldId || !item.answer?.trim() || savingFieldId) return;
     setSavingFieldId(item.fieldId);
     try {
-      await props.onSaveInterviewAnswer(item.fieldId, item.answer.trim());
+      await props.onSaveInterviewAnswer(
+        item.fieldId,
+        item.answer.trim(),
+        props.interviewState?.stateVersion ?? 0,
+      );
     } finally {
       setSavingFieldId(null);
     }
@@ -524,23 +536,41 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 </button>
               </div>
               {summaryView === "requirements" ? (
-                <SystemRequirementProgressPanel interviewState={props.interviewState} />
+                <SystemRequirementProgressPanel
+                  interviewState={props.interviewState}
+                  canEdit={canCorrectRecord}
+                  onSave={props.onSaveRequirementStateCorrections}
+                />
               ) : (
                 <ProcessModelPanel
                   interviewState={props.interviewState}
-                  canEdit={isManagementUser}
+                  canEdit={canCorrectRecord}
+                  canCommand={isManagementUser && props.selectedRecord?.status !== "approved"}
                   onSaveProcessModel={props.onSaveProcessModel}
                   onEditProcessModel={props.onEditProcessModel}
                 />
               )}
+              <QuestionAnswerCorrectionsPanel
+                interviewState={props.interviewState}
+                canEdit={canCorrectRecord}
+                onSave={props.onSaveQuestionAnswerCorrection}
+              />
             </>
           ) : interviewProfile === "business_process" ? (
-            <ProcessModelPanel
-              interviewState={props.interviewState}
-              canEdit={isManagementUser}
-              onSaveProcessModel={props.onSaveProcessModel}
-              onEditProcessModel={props.onEditProcessModel}
-            />
+            <>
+              <ProcessModelPanel
+                interviewState={props.interviewState}
+                canEdit={canCorrectRecord}
+                canCommand={isManagementUser && props.selectedRecord?.status !== "approved"}
+                onSaveProcessModel={props.onSaveProcessModel}
+                onEditProcessModel={props.onEditProcessModel}
+              />
+              <QuestionAnswerCorrectionsPanel
+                interviewState={props.interviewState}
+                canEdit={canCorrectRecord}
+                onSave={props.onSaveQuestionAnswerCorrection}
+              />
+            </>
           ) : <>
             <div className="interview-sidebar-header">
               <div className="interview-sidebar-title">
@@ -567,7 +597,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                         <strong>{item.label}</strong>
                         <div className="interview-question-actions">
                           <span className={`question-status ${item.status}`}>{statusLabel}</span>
-                          {fieldState?.answerState === "CONFIRMED" && canAnswerRecord ? (
+                          {fieldState?.answerState === "CONFIRMED" && canCorrectRecord ? (
                             <button
                               className="ghost compact"
                               type="button"
@@ -590,7 +620,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                           value={item.answer ?? ""}
                           onChange={(event) => handleConfiguredAnswerChange(item.label, event.target.value)}
                           placeholder={t("interview.answerPlaceholder")}
-                          disabled={!canAnswerRecord}
+                          disabled={!canCorrectRecord || fieldState?.answerState !== "CONFIRMED"}
                         />
                       </div>
                       {item.probes?.length ? (

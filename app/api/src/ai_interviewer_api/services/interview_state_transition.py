@@ -133,6 +133,7 @@ def commit_interview_state(
     source: str,
     increment_version: bool = True,
     expected_state_version: int | None = None,
+    reset_approved_record_for_review: bool = False,
 ) -> dict[str, Any]:
     """Commit Interview State through the single state-writer boundary."""
 
@@ -158,6 +159,15 @@ def commit_interview_state(
         working["updatedAt"] = utc_now()
         if latest is None:
             store.upsert("interview_states", working)
+        elif reset_approved_record_for_review:
+            if not store.compare_and_swap_interview_state_with_record_status_reset(
+                working,
+                current_version,
+                str(working.get("recordId") or ""),
+                user.user_id,
+                working["updatedAt"],
+            ):
+                raise ValueError("interview_state_version_conflict")
         elif not store.compare_and_swap_interview_state(working, current_version):
             raise ValueError("interview_state_version_conflict")
         state.clear()

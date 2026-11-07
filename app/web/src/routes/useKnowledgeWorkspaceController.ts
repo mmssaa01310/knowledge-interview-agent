@@ -32,6 +32,8 @@ import {
 import {
   ApiError,
   fetchPublishedGuidance,
+  updateQuestionAnswerCorrection,
+  updateRequirementStateCorrections,
 } from "../lib/api";
 import { useI18n, type Translate } from "../i18n";
 import {
@@ -342,6 +344,16 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       record.id === recordId && record.status === "in_progress"
         ? { ...record, status: "submitted" }
         : record
+    )));
+  }
+
+  function applyManualCorrectionRecordStatus(
+    recordId: string,
+    status: InterviewRecord["status"] | undefined,
+  ) {
+    if (!status) return;
+    setRecords((currentRecords) => currentRecords.map((record) => (
+      record.id === recordId ? { ...record, status } : record
     )));
   }
 
@@ -1197,8 +1209,44 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
       baseProcessVersion,
       baseStateVersion,
     });
+    applyManualCorrectionRecordStatus(selectedRecord.id, response.recordStatus);
     await loadInterviewSnapshot(selectedRecord.id);
     return response.interviewState;
+  }
+
+  async function handleSaveRequirementStateCorrections(
+    changes: Record<string, string>,
+    baseStateVersion: number,
+  ) {
+    if (!selectedRecord?.id) {
+      throw new Error("record_not_selected");
+    }
+    const response = await updateRequirementStateCorrections(
+      selectedRecord.id,
+      changes,
+      baseStateVersion,
+    );
+    applyManualCorrectionRecordStatus(selectedRecord.id, response.recordStatus);
+    await loadInterviewSnapshot(selectedRecord.id);
+    return response.interviewState;
+  }
+
+  async function handleSaveQuestionAnswerCorrection(
+    questionId: string,
+    answer: string,
+    baseStateVersion: number,
+  ) {
+    if (!selectedRecord?.id) {
+      throw new Error("record_not_selected");
+    }
+    const response = await updateQuestionAnswerCorrection(
+      selectedRecord.id,
+      questionId,
+      answer,
+      baseStateVersion,
+    );
+    applyManualCorrectionRecordStatus(selectedRecord.id, response.recordStatus);
+    await loadInterviewSnapshot(selectedRecord.id);
   }
 
   async function handleEditProcessModel(
@@ -1221,10 +1269,20 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     };
   }
 
-  async function handleSaveInterviewAnswer(fieldId: string, recordAnswer: string) {
+  async function handleSaveInterviewAnswer(
+    fieldId: string,
+    recordAnswer: string,
+    baseStateVersion: number,
+  ) {
     if (!selectedRecord?.id) return;
     try {
-      await updateInterviewAnswer(selectedRecord.id, fieldId, recordAnswer);
+      const response = await updateInterviewAnswer(
+        selectedRecord.id,
+        fieldId,
+        recordAnswer,
+        baseStateVersion,
+      );
+      applyManualCorrectionRecordStatus(selectedRecord.id, response.recordStatus);
       await loadInterviewSnapshot(selectedRecord.id);
       setRecordNotice(t("errors.answerSaved"));
     } catch (error) {
@@ -1621,6 +1679,8 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
     onBulkApproveRecords: handleBulkApproveRecords,
     onSaveInterviewDraft: handleSaveInterviewDraft,
     onSaveInterviewAnswer: handleSaveInterviewAnswer,
+    onSaveRequirementStateCorrections: handleSaveRequirementStateCorrections,
+    onSaveQuestionAnswerCorrection: handleSaveQuestionAnswerCorrection,
     onDeleteInterviewAnswers: handleDeleteInterviewAnswers,
     onDeleteInterviewChat: handleDeleteInterviewChat,
     onSaveInterviewLocale: handleSaveInterviewLocale,

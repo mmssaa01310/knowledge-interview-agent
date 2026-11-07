@@ -13,6 +13,7 @@ from ai_interviewer_api.routers.documents import (
     update_read_status,
 )
 from ai_interviewer_api.routers.admin_dashboard import router as admin_dashboard_router
+from ai_interviewer_api.routers.application_settings import router as application_settings_router
 from ai_interviewer_api.routers.dev_tools import router as dev_tools_router
 from ai_interviewer_api.routers.health import health, me, router as health_router
 from ai_interviewer_api.routers.interview_prompt_profiles import (
@@ -94,6 +95,7 @@ from ai_interviewer_api.routers.voice_sessions import (
 
 router = APIRouter()
 router.include_router(auth_router)
+router.include_router(application_settings_router)
 router.include_router(health_router)
 router.include_router(dev_tools_router)
 router.include_router(interview_prompt_profiles_router)

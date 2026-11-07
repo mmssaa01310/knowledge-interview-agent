@@ -100,7 +100,7 @@ def edit_user(user_id: str, payload: UserUpdate, user: UserContext = Depends(get
     require_admin_role(user)
     if not payload.model_fields_set:
         raise HTTPException(status_code=422, detail="empty_update")
-    updated = update_account(user_id, user.tenant_id, user.user_id, login_id=payload.loginId, display_name=payload.displayName, role=payload.role, password=payload.password)
+    updated = update_account(user_id, user.tenant_id, user.user_id, login_id=payload.loginId, display_name=payload.displayName, role=payload.role, password=payload.password, actor_is_application_settings_admin=user.application_settings_admin)
     write_audit_log(user, "update", "user", user_id, {"fields": sorted(payload.model_fields_set), "actorDisplayName": user.display_name, "targetDisplayName": updated["displayName"]})
     return updated
 
@@ -108,6 +108,6 @@ def edit_user(user_id: str, payload: UserUpdate, user: UserContext = Depends(get
 @router.delete("/users/{user_id}")
 def delete_user(user_id: str, user: UserContext = Depends(get_current_user)) -> dict:
     require_admin_role(user)
-    deleted = update_account(user_id, user.tenant_id, user.user_id, delete=True)
+    deleted = update_account(user_id, user.tenant_id, user.user_id, delete=True, actor_is_application_settings_admin=user.application_settings_admin)
     write_audit_log(user, "delete", "user", user_id, {"actorDisplayName": user.display_name, "targetDisplayName": deleted["displayName"]})
     return {"ok": True}

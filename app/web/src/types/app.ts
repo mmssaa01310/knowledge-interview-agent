@@ -81,6 +81,7 @@ export type InterviewQuestionAnswer = {
   coveredTopics?: string[];
   askedProbeTopics?: string[];
   missingInformation?: string[];
+  evidence?: Array<{ aspectId: string; text: string }>;
 };
 
 export type InterviewFieldState = {

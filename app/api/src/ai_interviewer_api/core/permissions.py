@@ -46,6 +46,11 @@ def require_admin_role(user: UserContext) -> None:
     require_roles(user, {"admin"})
 
 
+def require_application_settings_admin(user: UserContext) -> None:
+    if user.role != "admin" or not user.application_settings_admin:
+        raise HTTPException(status_code=403, detail="application_settings_admin_required")
+
+
 def ensure_record_access(record: dict, user: UserContext, *, operation: str = "read") -> None:
     ensure_tenant_scope(user, record["tenantId"])
 

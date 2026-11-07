@@ -4,6 +4,7 @@ import { OptionPicker } from "../components/ui/OptionPicker";
 import { useI18n } from "../i18n";
 import { ApiError, createUser, deleteUser, listUserAudit, listUsersPage, updateUser, type ManagedUser, type ManagedUserPage, type UserAuditPage, type UserProfile } from "../lib/api";
 import { formatDate, formatNumber } from "../lib/date";
+import { ApplicationSettingsPanel } from "./ApplicationSettingsPanel";
 
 const roles: UserRole[] = ["admin", "knowledge_manager", "interviewer", "viewer"];
 const pageSize = 20;
@@ -11,7 +12,7 @@ const emptyPage: ManagedUserPage = { items: [], total: 0, activeCount: 0, adminC
 
 export function SettingsPage({ user: currentUser, onNavigate }: { user: UserProfile | null; onNavigate: (path: string) => void }) {
   const { t, locale } = useI18n();
-  const [tab, setTab] = useState<"users" | "audit">("users");
+  const [tab, setTab] = useState<"users" | "audit" | "gpt-live">("users");
   const [page, setPage] = useState<ManagedUserPage>(emptyPage);
   const [audit, setAudit] = useState<UserAuditPage>({ items: [], total: 0 });
   const [searchInput, setSearchInput] = useState("");
@@ -127,6 +128,7 @@ export function SettingsPage({ user: currentUser, onNavigate }: { user: UserProf
       <div className="dashboard-tabs account-tabs" role="tablist" aria-label={t("common.account.users")}>
         <button id="account-tab-users" type="button" role="tab" aria-controls="account-tabpanel" aria-selected={tab === "users"} className="dashboard-tab" onClick={() => { setTab("users"); setError(""); }}>{t("common.account.management.usersTab")}</button>
         <button id="account-tab-audit" type="button" role="tab" aria-controls="account-tabpanel" aria-selected={tab === "audit"} className="dashboard-tab" onClick={() => { setTab("audit"); setError(""); }}>{t("common.account.management.auditTab")}</button>
+        {currentUser?.applicationSettingsAdmin ? <button id="account-tab-gpt-live" type="button" role="tab" aria-controls="account-tabpanel" aria-selected={tab === "gpt-live"} className="dashboard-tab" onClick={() => { setTab("gpt-live"); setError(""); }}>{t("common.applicationSettings.tab")}</button> : null}
       </div>
       {error ? <p role="alert" className="account-error">{error}</p> : null}
       <div id="account-tabpanel" role="tabpanel" aria-labelledby={`account-tab-${tab}`} className="account-tabpanel">
@@ -151,7 +153,7 @@ export function SettingsPage({ user: currentUser, onNavigate }: { user: UserProf
             </div>;
           })}
         </div>
-      </> : <>
+      </> : tab === "audit" ? <>
         <p className="account-audit-note">{t("common.account.management.auditScope")}</p>
         <div className="dashboard-filters account-filters"><label><span>{t("common.account.management.action")}</span><OptionPicker value={auditAction} options={[{ value: "", label: t("common.account.management.allActions") }, ...["create", "update", "delete", "recover_password"].map((value) => ({ value, label: t(`common.account.management.actions.${value}`) }))]} onChange={(value) => { setAuditAction(value); setAuditOffset(0); }} ariaLabel={t("common.account.management.action")} /></label></div>
         <div className="table-list account-table" role="table" aria-label={t("common.account.management.auditTab")}>
@@ -163,8 +165,8 @@ export function SettingsPage({ user: currentUser, onNavigate }: { user: UserProf
             <span role="cell" data-label={t("common.account.management.action")}><strong>{["create", "update", "delete", "recover_password"].includes(event.action) ? t(`common.account.management.actions.${event.action}`) : event.action}</strong>{event.role ? <small>{t(`navigation.roles.${event.role}`)}</small> : null}{event.fields.length ? <small>{event.fields.map((field) => t(`common.account.management.fields.${field}`)).join("、")}</small> : null}<small>{event.result === "success" ? t("common.account.management.auditSuccess") : event.result}</small></span>
           </div>)}
         </div>
-      </>}
-      <div className="account-pagination"><span>{t("common.account.management.range", { start: formatNumber(shownTotal ? shownOffset + 1 : 0, locale), end: formatNumber(Math.min(shownOffset + pageSize, shownTotal), locale), total: formatNumber(shownTotal, locale) })}</span><div className="inline-actions"><button className="ghost compact" type="button" disabled={shownLoading || shownOffset === 0} onClick={() => changeOffset(Math.max(0, shownOffset - pageSize))}>{t("common.account.management.previous")}</button><button className="ghost compact" type="button" disabled={shownLoading || shownOffset + pageSize >= shownTotal} onClick={() => changeOffset(shownOffset + pageSize)}>{t("common.account.management.next")}</button></div></div>
+      </> : <ApplicationSettingsPanel />}
+      {tab !== "gpt-live" ? <div className="account-pagination"><span>{t("common.account.management.range", { start: formatNumber(shownTotal ? shownOffset + 1 : 0, locale), end: formatNumber(Math.min(shownOffset + pageSize, shownTotal), locale), total: formatNumber(shownTotal, locale) })}</span><div className="inline-actions"><button className="ghost compact" type="button" disabled={shownLoading || shownOffset === 0} onClick={() => changeOffset(Math.max(0, shownOffset - pageSize))}>{t("common.account.management.previous")}</button><button className="ghost compact" type="button" disabled={shownLoading || shownOffset + pageSize >= shownTotal} onClick={() => changeOffset(shownOffset + pageSize)}>{t("common.account.management.next")}</button></div></div> : null}
       </div>
       {formOpen ? <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) setFormOpen(false); }}>
         <div className="dialog-panel account-dialog" role="dialog" aria-modal="true" aria-labelledby="account-form-title">

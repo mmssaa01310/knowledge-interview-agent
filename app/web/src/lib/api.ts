@@ -15,7 +15,7 @@ import type {
 export const API_BASE_URL = "";
 
 type ApiRequestOptions = {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
 };
 
@@ -72,6 +72,7 @@ export type UserProfile = {
   tenantId: string;
   role: UserRole;
   displayName: string;
+  applicationSettingsAdmin?: boolean;
   /** UI表示言語。AIインタビューの言語とは独立して扱う。 */
   uiLocale?: string | null;
   /** 将来のAIインタビュー言語設定。uiLocale変更では更新しない。 */
@@ -196,6 +197,7 @@ export type FieldSuggestionChatMessage = {
 
 export type InterviewStateResponse = {
   status: "in_progress" | "completed";
+  recordStatus?: "draft" | "in_progress" | "submitted" | "returned" | "approved";
   interviewState: InterviewState;
   messages: Array<{
     id: string;
@@ -551,16 +553,93 @@ export async function updateRecord(recordId: string, payload: Partial<InterviewR
   });
 }
 
-export async function updateInterviewAnswer(recordId: string, fieldId: string, recordAnswer: string) {
+export async function updateInterviewAnswer(recordId: string, fieldId: string, recordAnswer: string, baseStateVersion: number) {
   return apiRequest<{
     recordId: string;
     fieldId: string;
     answerState: "CONFIRMED";
     recordAnswer: string;
+    recordStatus?: "draft" | "in_progress" | "submitted" | "returned" | "approved";
   }>(`/api/records/${recordId}/interview-answers/${fieldId}`, {
     method: "PATCH",
-    body: { recordAnswer }
+    body: { recordAnswer, baseStateVersion }
   });
+}
+
+export async function updateRequirementStateCorrections(
+  recordId: string,
+  changes: Record<string, string>,
+  baseStateVersion: number,
+) {
+  return apiRequest<InterviewStateResponse>(`/api/records/${recordId}/requirement-states`, {
+    method: "PATCH",
+    body: { changes, baseStateVersion },
+  });
+}
+
+export async function updateQuestionAnswerCorrection(
+  recordId: string,
+  questionId: string,
+  answer: string,
+  baseStateVersion: number,
+) {
+  return apiRequest<{
+    recordId: string;
+    questionId: string;
+    answer: string;
+    answerStatus: "ANSWERED" | "PARTIAL";
+    recordStatus?: "draft" | "in_progress" | "submitted" | "returned" | "approved";
+  }>(`/api/records/${recordId}/question-answers/${encodeURIComponent(questionId)}`, {
+    method: "PATCH",
+    body: { answer, baseStateVersion },
+  });
+}
+
+export type GptLiveSettingsStatus = {
+  configured: boolean;
+  maskedApiKey: string | null;
+  updatedAt: string | null;
+};
+export type ApplicationSettingsAdmin = {
+  id: string;
+  loginId: string;
+  displayName: string;
+  applicationSettingsAdmin: boolean;
+};
+
+export function getGptLiveSettings() {
+  return apiRequest<GptLiveSettingsStatus>("/api/application-settings/gpt-live");
+}
+
+export function checkGptLiveConnection(apiKey: string) {
+  return apiRequest<{ connected: boolean }>("/api/application-settings/gpt-live/connection-check", {
+    method: "POST",
+    body: { apiKey },
+  });
+}
+
+export function saveGptLiveSettings(apiKey: string) {
+  return apiRequest<GptLiveSettingsStatus>("/api/application-settings/gpt-live", {
+    method: "PUT",
+    body: { apiKey },
+  });
+}
+
+export function deleteGptLiveSettings() {
+  return apiRequest<GptLiveSettingsStatus>("/api/application-settings/gpt-live", {
+    method: "DELETE",
+  });
+}
+
+export function listApplicationSettingsAdmins() {
+  return apiRequest<{ items: ApplicationSettingsAdmin[] }>("/api/application-settings/admins");
+}
+
+export function setApplicationSettingsAdmin(userId: string, enabled: boolean) {
+  return apiRequest<{ id: string; applicationSettingsAdmin: boolean }>(
+    `/api/application-settings/admins/${userId}`,
+    { method: "PUT", body: { enabled } },
+  );
 }
 
 export async function approveAllProposals(recordId: string) {

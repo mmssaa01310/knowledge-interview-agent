@@ -8,6 +8,7 @@
   },
   "answerStatus": {
     "candidate": "Needs follow-up",
+    "partial": "Partially answered",
     "tentative": "Tentatively accepted",
     "awaiting": "Checking",
     "confirmed": "Answered",
@@ -181,7 +182,19 @@
     "statusCandidate": "Suggestion",
     "statusPending": "Not confirmed",
     "statusPresent": "Present",
-    "statusNotApplicable": "Not applicable"
+    "statusNotApplicable": "Not applicable",
+    "editConfirmed": "Correct confirmed requirements",
+    "saved": "Requirement corrections were saved.",
+    "saveFailed": "Could not save the requirements. Reload the latest state and try again.",
+    "noChanges": "There are no changes."
+  },
+  "questionAnswers": {
+    "title": "Interview answers",
+    "description": "Review completed answers and correct them by keyboard when needed. Original speech and evidence are preserved.",
+    "unnamed": "Question",
+    "answerAria": "Answer to {question}",
+    "saved": "The answer correction was saved.",
+    "saveFailed": "Could not save the answer. Reload the latest state and try again."
   },
   "proposal": {
     "title": "Structured suggestions",

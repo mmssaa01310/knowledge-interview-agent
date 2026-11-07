@@ -63,6 +63,7 @@ type ProcessFlowInfoProps = {
 type ProcessModelPanelProps = {
   interviewState: InterviewState | null;
   canEdit?: boolean;
+  canCommand?: boolean;
   onSaveProcessModel: (
     processState: ProcessModelState,
     baseProcessVersion: number,
@@ -827,6 +828,7 @@ function ProcessEditor({
                 value={text(node.label, "")}
                 onChange={(event) => onChange("nodes", index, { label: event.target.value })}
                 aria-label={t("interview.process.nodeNameAria", { index: index + 1 })}
+                disabled={node.confirmationStatus !== "confirmed"}
               />
             </label>
           ))}
@@ -841,6 +843,7 @@ function ProcessEditor({
                 onChange={(event) => onChange("edges", index, { label: event.target.value })}
                 aria-label={t("interview.process.edgeConditionAria", { index: index + 1 })}
                 placeholder={t("interview.process.optionalCondition")}
+                disabled={edge.confirmationStatus !== "confirmed"}
               />
             </label>
           ))}
@@ -860,6 +863,7 @@ function ProcessEditor({
               value={text(participant.name, "")}
               onChange={(event) => onChange("participants", index, { name: event.target.value })}
               aria-label={t("interview.process.participantNameAria", { index: index + 1 })}
+              disabled={participant.confirmationStatus !== "confirmed"}
             />
           </label>
         ))}
@@ -879,6 +883,7 @@ function ProcessEditor({
                   value={text(interaction.action, "")}
                   onChange={(event) => onChange("interactions", sourceIndex, { action: event.target.value })}
                   aria-label={t("interview.process.interactionContentAria", { index: index + 1 })}
+                  disabled={interaction.confirmationStatus !== "confirmed"}
                 />
               </label>
             );
@@ -932,6 +937,7 @@ function processModelErrorMessage(error: unknown, action: "save" | "command", t:
 export function ProcessModelPanel({
   interviewState,
   canEdit = false,
+  canCommand = canEdit,
   onSaveProcessModel,
   onEditProcessModel,
 }: ProcessModelPanelProps) {
@@ -1082,7 +1088,7 @@ export function ProcessModelPanel({
     />
   ) : null;
 
-  const commandBar = canEdit ? (
+  const commandBar = canCommand ? (
     <div className="process-command-bar">
       <input
         value={commandInput}

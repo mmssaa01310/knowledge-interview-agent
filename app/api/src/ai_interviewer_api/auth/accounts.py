@@ -62,8 +62,10 @@ def create_account(login_id: str, display_name: str, role: str, password: str, *
         if _find_login(login_id):
             raise HTTPException(status_code=409, detail="login_id_exists")
         user_id = str(uuid4())
-        user = {"id": user_id, "tenantId": tenant_id, "loginId": login_id, "displayName": display_name, "role": role, "active": True, "passwordHash": password_hash, "sessionVersion": 0, "failedAttempts": 0, "lockedUntil": 0, "createdByUserId": actor or user_id, "updatedByUserId": actor or user_id}
+        user = {"id": user_id, "tenantId": tenant_id, "loginId": login_id, "displayName": display_name, "role": role, "active": True, "applicationSettingsAdmin": False, "passwordHash": password_hash, "sessionVersion": 0, "failedAttempts": 0, "lockedUntil": 0, "createdByUserId": actor or user_id, "updatedByUserId": actor or user_id}
         store.upsert("users", user)
+        if role == "admin":
+            store.ensure_initial_application_settings_admin()
     return public_user(user)
 
 
@@ -121,7 +123,7 @@ def revoke_session(token: str | None) -> None:
         store.delete("auth_sessions", hashlib.sha256(token.encode()).hexdigest())
 
 
-def update_account(user_id: str, tenant_id: str, actor_id: str, *, login_id: str | None = None, display_name: str | None = None, role: str | None = None, password: str | None = None, delete: bool = False, require_admin_target: bool = False) -> dict:
+def update_account(user_id: str, tenant_id: str, actor_id: str, *, login_id: str | None = None, display_name: str | None = None, role: str | None = None, password: str | None = None, delete: bool = False, require_admin_target: bool = False, actor_is_application_settings_admin: bool = False) -> dict:
     password_hash = None
     if password is not None:
         validate_password(password)
@@ -132,6 +134,24 @@ def update_account(user_id: str, tenant_id: str, actor_id: str, *, login_id: str
             raise HTTPException(status_code=404, detail="user_not_found")
         if require_admin_target and user.get("role") != "admin":
             raise HTTPException(status_code=403, detail="admin_recovery_target_required")
+        loses_admin_role = delete or (role is not None and role != "admin")
+        revoke_settings_admin = bool(
+            user.get("applicationSettingsAdmin") and loses_admin_role
+        )
+        if revoke_settings_admin:
+            if not actor_is_application_settings_admin:
+                raise HTTPException(
+                    status_code=403,
+                    detail="application_settings_admin_required",
+                )
+            settings_admins = [
+                row for row in store.list_all_users()
+                if row.get("active")
+                and row.get("role") == "admin"
+                and row.get("applicationSettingsAdmin")
+            ]
+            if len(settings_admins) <= 1:
+                raise HTTPException(status_code=409, detail="last_application_settings_admin")
         if (delete or (role is not None and role != "admin")) and user["role"] == "admin":
             admins = [u for u in store.list("users", tenant_id) if u.get("active") and u.get("role") == "admin"]
             if len(admins) <= 1:
@@ -163,8 +183,39 @@ def update_account(user_id: str, tenant_id: str, actor_id: str, *, login_id: str
             user["lockedUntil"] = 0
         if delete:
             user["active"] = False
+        if revoke_settings_admin:
+            user["applicationSettingsAdmin"] = False
         if delete or login_changed or role_changed or password_hash is not None:
             user["sessionVersion"] = int(user.get("sessionVersion", 0)) + 1
         user["updatedByUserId"] = actor_id
         store.upsert("users", user)
     return public_user(user)
+
+
+def set_application_settings_admin(
+    user_id: str,
+    *,
+    actor_id: str,
+    enabled: bool,
+) -> dict:
+    with store.live_capture_lock("accounts-global"):
+        target = store.get("users", user_id)
+        if not target or not target.get("active"):
+            raise HTTPException(status_code=404, detail="user_not_found")
+        if target.get("role") != "admin":
+            raise HTTPException(status_code=422, detail="application_settings_admin_target_must_be_admin")
+        current = bool(target.get("applicationSettingsAdmin"))
+        if current == enabled:
+            return public_user(target)
+        active_settings_admins = [
+            row for row in store.list_all_users()
+            if row.get("active")
+            and row.get("role") == "admin"
+            and row.get("applicationSettingsAdmin")
+        ]
+        if not enabled and len(active_settings_admins) <= 1:
+            raise HTTPException(status_code=409, detail="last_application_settings_admin")
+        target["applicationSettingsAdmin"] = enabled
+        target["updatedByUserId"] = actor_id
+        store.upsert("users", target)
+    return public_user(target)

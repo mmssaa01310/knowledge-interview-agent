@@ -769,7 +769,17 @@ select:hover {
 .login-panel form, .account-form { display: grid; gap: 14px; }
 .login-panel form label, .account-form label { display: grid; gap: 6px; font-weight: 600; }
 .login-panel form input, .account-form input { width: 100%; }
+.configured-key-field { display: grid; gap: 6px; }
+.configured-key-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
+.configured-key-label { color: var(--ki-ink); font-weight: 600; }
+.configured-key-updated { color: var(--ki-muted); font-size: 12px; }
 .account-management { display: grid; gap: 16px; min-width: 0; }
+.application-settings-panel { display: grid; gap: 16px; min-width: 0; }
+.application-settings-panel .settings-section { display: grid; gap: 16px; }
+.application-settings-panel h3 { margin: 0; }
+.app-settings-admin-row { grid-template-columns: minmax(150px, 1.3fr) minmax(150px, 1fr) minmax(160px, 1fr); min-width: 550px; }
+.inline-checkbox { display: inline-flex !important; align-items: center; gap: 8px !important; font-weight: 500 !important; }
+.inline-checkbox input { width: auto !important; }
 .account-management-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .account-management-header p { margin: 6px 0 0; color: var(--ki-muted); }
 .account-management-header .eyebrow { margin: 0 0 4px; }
@@ -800,8 +810,10 @@ select:hover {
   .account-filters label, .account-filters .dashboard-filter-actions { width: 100%; }
   .account-table { overflow: visible; }
   .account-user-table-row:not(.table-head), .account-audit-table-row:not(.table-head) { min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-settings-admin-row:not(.table-head) { min-width: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .account-user-table-row > span:last-child { grid-column: 1 / -1; }
-  .account-user-table-row > span::before, .account-audit-table-row > span::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--ki-muted); font-size: 11px; font-weight: 700; }
+  .account-user-table-row > span::before, .account-audit-table-row > span::before, .app-settings-admin-row > span::before { content: attr(data-label); display: block; margin-bottom: 3px; color: var(--ki-muted); font-size: 11px; font-weight: 700; }
+  .app-settings-admin-row > span:last-child { grid-column: 1 / -1; }
 }
 
 .help-page {

@@ -19,7 +19,25 @@ GPT Live (唯一のInterviewer)
                       └─ validate / persist / state_version
 ```
 
-Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、DataChannelでJSONイベントを送受信する。FastAPIは認証済み`record_id`から質問定義・現在Stateを組み立て、OpenAI Python SDKの`client.live.create()`でLive sessionを作成する。`OPENAI_SECRET_KEY`はAPIだけで保持する。
+Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、DataChannelでJSONイベントを送受信する。FastAPIは認証済み`record_id`から質問定義・現在Stateを組み立て、OpenAI Python SDKの`client.live.create()`でLive sessionを作成する。GPT-Live APIキーは全テナントで共有するアプリ設定としてAPIだけで保持し、BrowserやVoice Gatewayへ渡さない。APIキーは専用のOpenAI Project service account keyを使用する。
+
+## APIキー設定と保管
+
+アプリ全体の設定管理者は、システム設定画面からGPT-Live APIキーを登録・差し替え、接続確認を実行できる。GPT-Liveモデル`gpt-live-1`は固定し、Provider、モデル、音声の選択UIは設けない。音声Runtimeのデプロイ時選択は既存の設定に従う。
+
+`GET /api/application-settings/gpt-live`はキーの登録状態、最終更新日時、先頭8文字と末尾4文字を残し、その間をキーの実際の文字数に合わせた`*`で隠したプレビューを返す。`POST /api/application-settings/gpt-live/connection-check`は入力されたキーでOpenAIの`GET /v1/models/gpt-live-1`を呼び、API認証とモデルアクセスを確認する。これはLive WebRTC Sessionの作成・接続交渉までは確認しない。`PUT /api/application-settings/gpt-live`は同じ確認に成功した後だけ新しいキーを保存し、失敗時は既存キーを保持する。`DELETE`は共有キーを削除する。確認APIはLive sessionを作成しない。確認に成功した場合は成否、時刻、操作主体だけを監査し、キーやOpenAI応答本文は記録しない。
+
+APIキーはローカルPostgreSQLの全テナント共通`application_settings`へ暗号文として保存する。APIサーバーはAES-256-GCMで暗号化し、暗号鍵はAPIプロセスだけに渡す`GPT_LIVE_SETTINGS_ENCRYPTION_KEY`環境変数からBase64形式で読み込む32 byteの鍵とする。暗号鍵はPostgreSQL、Frontend、Voiceサービスへ保存・転送しない。nonceは暗号化ごとに新規生成し、認証tagを含む暗号文と共に保存する。暗号鍵が未設定、形式不正、または復号できない場合はGPT-Liveセッションをfail closedし、環境変数の平文APIキーへフォールバックしない。暗号鍵を失った場合はGPT-Live APIキーを再登録する。
+
+設定画面は生のAPIキーを再取得・再表示せず、登録状態、最終更新日時、先頭8文字と末尾4文字を残して実際のキー長に合わせた`*`で隠したプレビューを表示する。入力中のキーはマスクし、保存後に画面stateから消去する。キー設定・確認APIの応答に`Cache-Control: no-store`を指定する。BackendとFrontendのログ、エラー応答、監査履歴へ生のキーを含めてはならない。監査履歴には操作主体、対象設定、接続確認成否、日時だけを記録する。
+
+初期セットアップで作成する最初の有効な`admin`には`applicationSettingsAdmin`を付与する。アプリ全体設定管理者だけが、他の有効な`admin`へこの権限を付与・解除できる。最後の1名は解除・無効化・削除できない。既存DBの移行時に権限者がいなければ、作成日時が最も古い有効な`admin`を初期管理者にする。
+
+OpenAI API仕様:
+
+* [Retrieve a model](https://developers.openai.com/api/reference/resources/models/methods/retrieve)
+* [Create a Live WebRTC session](https://developers.openai.com/api/reference/resources/live/methods/create)
+* [API keys and service accounts](https://developers.openai.com/api/docs/guides/api-keys)
 
 記録付きsessionは次のDelegationを設定する。
 

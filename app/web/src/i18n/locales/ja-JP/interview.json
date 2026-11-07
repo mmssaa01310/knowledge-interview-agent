@@ -8,6 +8,7 @@
   },
   "answerStatus": {
     "candidate": "追加確認中",
+    "partial": "一部回答",
     "tentative": "仮確定",
     "awaiting": "確認中",
     "confirmed": "回答済み",
@@ -181,7 +182,19 @@
     "statusCandidate": "候補",
     "statusPending": "未確認",
     "statusPresent": "あり",
-    "statusNotApplicable": "対象外"
+    "statusNotApplicable": "対象外",
+    "editConfirmed": "確定済み要件を訂正",
+    "saved": "要件の訂正を保存しました。",
+    "saveFailed": "要件を保存できませんでした。最新の内容を読み直して再度お試しください。",
+    "noChanges": "変更はありません。"
+  },
+  "questionAnswers": {
+    "title": "インタビュー回答",
+    "description": "確定した質問回答を確認し、必要な場合はキーボードで訂正します。元の発話と根拠は保持されます。",
+    "unnamed": "質問",
+    "answerAria": "{question}への回答",
+    "saved": "回答の訂正を保存しました。",
+    "saveFailed": "回答を保存できませんでした。最新の内容を読み直して再度お試しください。"
   },
   "proposal": {
     "title": "構造化提案",

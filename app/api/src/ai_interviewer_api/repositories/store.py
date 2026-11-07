@@ -30,6 +30,7 @@ POSTGRES_SCHEMA_STATEMENTS = (
                 'users',
                 'auth_sessions',
                 'auth_attempts',
+                'application_settings',
                 'document_read_status',
                 'documents',
                 'document_chunks',
@@ -64,6 +65,7 @@ POSTGRES_SCHEMA_STATEMENTS = (
             'users',
             'auth_sessions',
             'auth_attempts',
+            'application_settings',
             'document_read_status',
             'documents',
             'document_chunks',
@@ -154,8 +156,32 @@ class InMemoryStore:
     def ensure_schema(self) -> None:
         return None
 
+    def ensure_initial_application_settings_admin(self) -> None:
+        with self.live_capture_lock("application-settings-admin-bootstrap"):
+            users = list(self.tables["users"].values())
+            if any(
+                row.get("active")
+                and row.get("role") == "admin"
+                and row.get("applicationSettingsAdmin")
+                for row in users
+            ):
+                return
+            first_admin = next(
+                (
+                    row for row in users
+                    if row.get("active") and row.get("role") == "admin"
+                ),
+                None,
+            )
+            if first_admin:
+                first_admin["applicationSettingsAdmin"] = True
+                self.upsert("users", first_admin)
+
     def list(self, table: str, tenant_id: str) -> list[dict[str, Any]]:
         return [row for row in self.tables[table].values() if row["tenantId"] == tenant_id]
+
+    def list_all_users(self) -> list[dict[str, Any]]:
+        return list(self.tables["users"].values())
 
     def list_users_page(self, tenant_id: str, search: str, role: str, limit: int, offset: int) -> dict[str, Any]:
         active = [row for row in self.list("users", tenant_id) if row.get("active")]
@@ -187,6 +213,28 @@ class InMemoryStore:
         current_version = int(existing.get("stateVersion", 0) or 0)
         if current_version != expected_state_version:
             return False
+        self.tables["interview_states"][item["id"]] = item
+        return True
+
+    def compare_and_swap_interview_state_with_record_status_reset(
+        self,
+        item: dict[str, Any],
+        expected_state_version: int,
+        record_id: str,
+        actor_user_id: str,
+        updated_at: str,
+    ) -> bool:
+        existing = self.tables["interview_states"].get(item["id"])
+        record = self.tables["records"].get(record_id)
+        if existing is None or not record or record.get("status") != "approved":
+            return False
+        current_version = int(existing.get("stateVersion", 0) or 0)
+        if current_version != expected_state_version:
+            return False
+        item_record = self.tables["records"][record_id]
+        item_record["status"] = "submitted"
+        item_record["updatedByUserId"] = actor_user_id
+        item_record["updatedAt"] = updated_at
         self.tables["interview_states"][item["id"]] = item
         return True
 
@@ -244,6 +292,31 @@ class PostgresStore:
             for statement in POSTGRES_SCHEMA_STATEMENTS:
                 connection.execute(statement)
 
+    def ensure_initial_application_settings_admin(self) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("application-settings-admin-bootstrap",),
+            )
+            rows = connection.execute(
+                """SELECT entity_id, payload FROM kikiori.entity_store
+                WHERE entity_type = 'users' AND payload ->> 'active' = 'true'
+                  AND payload ->> 'role' = 'admin'
+                ORDER BY created_at, entity_id FOR UPDATE"""
+            ).fetchall()
+            if any(dict(row["payload"]).get("applicationSettingsAdmin") for row in rows):
+                return
+            if not rows:
+                return
+            row = rows[0]
+            item = dict(row["payload"])
+            item["applicationSettingsAdmin"] = True
+            connection.execute(
+                """UPDATE kikiori.entity_store SET payload = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE entity_type = 'users' AND entity_id = %s""",
+                (Jsonb(item), row["entity_id"]),
+            )
+
     def list(self, table: str, tenant_id: str) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
@@ -254,6 +327,14 @@ class PostgresStore:
                 ORDER BY created_at, entity_id
                 """,
                 (table, tenant_id),
+            ).fetchall()
+        return [dict(row["payload"]) for row in rows]
+
+    def list_all_users(self) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT payload FROM kikiori.entity_store
+                WHERE entity_type = 'users' ORDER BY created_at, entity_id"""
             ).fetchall()
         return [dict(row["payload"]) for row in rows]
 
@@ -329,6 +410,43 @@ class PostgresStore:
                 ),
             )
         return result.rowcount == 1
+
+    def compare_and_swap_interview_state_with_record_status_reset(
+        self,
+        item: dict[str, Any],
+        expected_state_version: int,
+        record_id: str,
+        actor_user_id: str,
+        updated_at: str,
+    ) -> bool:
+        with self._connection() as connection:
+            result = connection.execute(
+                """UPDATE kikiori.entity_store
+                SET tenant_id = %s, payload = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE entity_type = 'interview_states' AND entity_id = %s
+                  AND COALESCE((payload ->> 'stateVersion')::integer, 0) = %s""",
+                (item["tenantId"], Jsonb(item), item["id"], expected_state_version),
+            )
+            if result.rowcount != 1:
+                connection.rollback()
+                return False
+            record_result = connection.execute(
+                """UPDATE kikiori.entity_store
+                SET payload = jsonb_set(
+                    jsonb_set(
+                        jsonb_set(payload, '{status}', to_jsonb('submitted'::text)),
+                        '{updatedByUserId}', to_jsonb(%s::text)
+                    ),
+                    '{updatedAt}', to_jsonb(%s::text)
+                ), updated_at = CURRENT_TIMESTAMP
+                WHERE entity_type = 'records' AND entity_id = %s
+                  AND payload ->> 'status' = 'approved'""",
+                (actor_user_id, updated_at, record_id),
+            )
+            if record_result.rowcount != 1:
+                connection.rollback()
+                return False
+        return True
 
     def delete(self, table: str, item_id: str) -> bool:
         with self._connection() as connection:

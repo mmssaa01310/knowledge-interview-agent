@@ -32,6 +32,8 @@ InterviewRecord
 
 Frontendは`GET /api/me`で取得したロールを使用し、ワークスペースと操作を表示制御する。
 
+アプリ全体の設定管理は、テナント単位の`admin`ロールと分離した`applicationSettingsAdmin`権限で判定する。この権限はユーザーが送信する値を信用せず、Backendが保存済みユーザーから取得する。初期管理者作成時に最初の管理者へ付与し、権限者だけが他の有効な`admin`へ付与・解除できる。最後の1名を解除、無効化、削除してはならない。設定変更APIと全テナント共通のGPT-Live APIキーAPIは、各リクエストでこの権限を検証する。
+
 画面上のナビゲーションは、全ロールで「左サイドバー1列＋メイン画面」とする。グローバルナビゲーション列とワークスペースナビゲーション列を併置してはいけない。全ロールで左サイドバーに権限範囲内のナレッジ一覧を直接表示する。
 
 管理者系ロールがナレッジ管理の入口を開いた場合、最後に開いたナレッジの「インタビュー」を開く。最後に開いたナレッジがない場合は最初のナレッジを開き、ナレッジがない場合だけ作成案内を表示する。ナレッジ一覧をサイドバーとメイン画面へ重複表示してはいけない。
@@ -72,13 +74,17 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 4. `InterviewRecord`操作では、ロールに応じた担当または閲覧許可の範囲に入ること。
 5. 記録状態で許可された操作であること。
 
+全テナント共通のアプリ設定APIでは、テナント一致条件を適用する代わりに、保存済みユーザーの`applicationSettingsAdmin`権限を確認する。この例外は全テナント共通GPT-Live API設定とアプリ全体設定管理者の指定だけに限定し、テナント業務データを返してはならない。
+
 記録作成、旧`draft`から`in_progress`への互換移行、テキストの開始・回答、音声セッションの開始では、対象`Knowledge`のインタビュー設定完了も確認する。インタビュー状態が`completed`になった場合、Backendは記録状態を`submitted`へ変更する。設定未完了時は`409 interview_configuration_required`を返す。
 
 `interviewer`が記録へアクセスする場合、`ownerUserId`が認証ユーザーIDと一致しなければならない。`interviewer`は有効なナレッジから記録を新規作成できるが、Backendは`ownerUserId`を認証ユーザーへ固定し、他ユーザーの担当者・閲覧者を指定する要求を拒否する。`admin`と`knowledge_manager`はテナント内の管理対象記録にアクセスできる。`viewer`は明示的に閲覧を許可された`approved`状態の記録だけを取得できる。
 
 記録一覧APIは、Frontendで一覧を取得してから絞り込んではいけない。Backendがロールごとの対象記録だけを返す。
 
-ProcessModelの手動保存と編集指示は、`admin`と`knowledge_manager`だけに許可する。Backendは通常のRecord参照に加えて`manage`認可を確認し、`approved`状態のRecordを編集対象から除外する。`interviewer`と`viewer`はProcessModelを全画面で閲覧できるが、編集APIを実行できない。編集APIは`baseProcessVersion`を検証し、変更した要素、実行ユーザー、使用モデル、指示内容を監査ログへ保存する。
+インタビュー成果物の手動訂正とAI編集指示は別の操作とする。手動訂正は、`interviewer`が自身の`in_progress`・`returned`記録、`admin`と`knowledge_manager`がテナント内のレビュー可能な記録で実行できる。`ANSWERED`または`PARTIAL`のquestion answer、確定済み回答フィールド、確定済みRequirementState、確定済みProcessStateを手動訂正できる。回答状態、未確定候補、確認状態は訂正操作で昇格させず、元の`originalAnswer`、メッセージ、Transcript、Evidenceは変更しない。Backendは対象記録、対象フィールド、Record状態、`stateVersion`、必要な`baseProcessVersion`を検証し、実行ユーザー、変更対象、日時を監査する。
+
+`approved`状態の記録を管理者系ロールが手動訂正した場合、同じ保存処理内で`submitted`へ戻して再レビューを要求する。`interviewer`は`approved`記録を編集できない。AIによるProcessModel・RequirementState編集指示は`admin`と`knowledge_manager`だけに許可し、従来どおり指示内容・モデル・変更主体を監査する。`viewer`は編集できない。
 
 音声セッションの作成・取得・停止・WebRTC接続では、Record APIと同じ記録アクセス判定を再利用する。`VoiceSession.ownerUserId`だけでRecordへのアクセスを許可してはいけない。
 
@@ -90,9 +96,10 @@ ProcessModelの手動保存と編集指示は、`admin`と`knowledge_manager`だ
 | `in_progress` → `submitted` | 担当`interviewer`、`admin`、`knowledge_manager` | Profileの完了条件を満たしている。 |
 | `submitted` → `returned` | `admin`、`knowledge_manager` | 差し戻し理由が空でない。 |
 | `submitted` → `approved` | `admin`、`knowledge_manager` | 承認対象の必須情報と承認条件を満たしている。 |
+| `approved` → `submitted` | `admin`、`knowledge_manager` | 確定済み成果物を手動訂正し、再レビューが必要になった。 |
 | `returned` → `in_progress` | 担当`interviewer`、`admin`、`knowledge_manager` | 差し戻し後の再開操作である。 |
 
-`approved`は終端状態である。再編集が必要な場合は、承認済み記録を直接書き換えず、管理者が新しい記録を作成する。
+`approved`記録は通常の回答操作では編集できない。管理者系ロールが確定済み成果物を明示的に手動訂正した場合は、結果の更新と`approved`から`submitted`への再レビュー遷移を同一操作で行う。再承認までは`viewer`へ承認済み記録として公開しない。
 
 インタビュー状態が`completed`になった場合の`in_progress` → `submitted`は、Backendが自動実行する。Frontendに提出操作を残してはいけない。記録の削除は`admin`だけに許可する。
 
@@ -121,7 +128,9 @@ ProcessModelの手動保存と編集指示は、`admin`と`knowledge_manager`だ
 * `viewer`が許可されていない記録と、`approved`以外の記録を取得できない。
 * 権限のない画面ルートを直接開いた場合も、操作可能なデータを取得できない。
 * `approved`状態の記録を対象者が変更できない。
-* `interviewer`と`viewer`がProcessModelの手動保存・編集指示を実行できない。
+* `interviewer`が他者のRecordや`approved`Recordの成果物を編集できない。
+* `interviewer`が自身の`in_progress`・`returned`Recordの確定成果物をキーボードで訂正できる。
+* `approved`Recordを管理者系ロールが訂正すると、結果更新と同時に`submitted`へ戻り、再承認まで`viewer`へ承認済みとして公開されない。
 * 管理者系ロールがProcessModelを保存でき、古いバージョンは409で拒否される。
 * `interviewer`と`viewer`がナレッジ分析画面（集計API）を取得できない。
 * `interviewer`と`viewer`がナレッジ分析または学習支援分析を取得・生成できない。

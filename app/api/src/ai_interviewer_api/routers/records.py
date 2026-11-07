@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 import json
 from uuid import uuid4
 
@@ -29,8 +30,10 @@ from ai_interviewer_api.routers.common import (
 from ai_interviewer_api.schemas.requests import (
     ChatMessageCreate,
     InterviewAnswerUpdate,
+    ManualQuestionAnswerUpdate,
     ProcessModelCommand,
     ProcessModelUpdate,
+    RequirementStatesManualUpdate,
     RecordCreate,
     RecordUpdate,
 )
@@ -44,7 +47,10 @@ from ai_interviewer_api.services.process_model import (
     edit_process_model,
     save_process_model,
 )
-from ai_interviewer_api.services.interview_state_transition import commit_interview_state
+from ai_interviewer_api.services.manual_corrections import (
+    commit_manual_correction_state,
+    require_manual_correction_access,
+)
 from ai_interviewer_api.services.record_lifecycle import (
     sync_record_status_after_interview,
 )
@@ -384,10 +390,14 @@ def update_record_interview_answer(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     record = get_scoped_item("records", record_id, user, "record_not_found")
-    require_record_action(record, user, "answer")
-    interview_state = store.get("interview_states", f"interview-state-{record_id}")
-    if not interview_state:
+    require_manual_correction_access(record, user)
+    existing_state = store.get("interview_states", f"interview-state-{record_id}")
+    if not existing_state:
         raise HTTPException(status_code=404, detail="interview_state_not_found")
+    interview_state = deepcopy(existing_state)
+    current_state_version = int(interview_state.get("stateVersion", 0) or 0)
+    if payload.baseStateVersion != current_state_version:
+        raise HTTPException(status_code=409, detail="interview_state_version_conflict")
 
     field_state = interview_state.get("fieldStates", {}).get(field_id)
     if not field_state:
@@ -417,21 +427,24 @@ def update_record_interview_answer(
             question_answer["answer"] = record_answer
             question_answer["answerSource"] = "MANUAL"
             question_answer["updatedAt"] = utc_now()
-    commit_interview_state(interview_state, user, source="record_answer_update")
-
-    confirmed_messages = [
-        message
-        for message in store.list("messages", user.tenant_id)
-        if message.get("recordId") == record_id
-        and message.get("messageType") == "confirmed_answer"
-        and message.get("answerToFieldId") == field_id
-    ]
-    if confirmed_messages:
-        confirmed_message = confirmed_messages[-1]
-        confirmed_message["content"] = record_answer
-        confirmed_message["updatedByUserId"] = user.user_id
-        confirmed_message["updatedAt"] = utc_now()
-        store.upsert("messages", confirmed_message)
+    commit_manual_correction_state(
+        interview_state,
+        record,
+        user,
+        source="record_answer_manual_correction",
+        expected_state_version=payload.baseStateVersion,
+    )
+    write_audit_log(
+        user,
+        "interview_result_manual_correction",
+        "record",
+        record_id,
+        {
+            "artifact": "question_answer",
+            "fieldId": field_id,
+            "recordStatus": record.get("status"),
+        },
+    )
 
     return {
         "recordId": record["id"],
@@ -440,6 +453,135 @@ def update_record_interview_answer(
         "recordAnswer": record_answer,
         "answerSource": "MANUAL",
         "answerSummary": None,
+        "recordStatus": record.get("status"),
+    }
+
+
+@router.patch("/records/{record_id}/requirement-states")
+def update_record_requirement_states(
+    record_id: str,
+    payload: RequirementStatesManualUpdate,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_manual_correction_access(record, user)
+    existing_state = store.get("interview_states", f"interview-state-{record_id}")
+    if not existing_state:
+        raise HTTPException(status_code=404, detail="interview_state_not_found")
+    state = deepcopy(existing_state)
+    if state.get("interviewProfile") != "system_requirement":
+        raise HTTPException(status_code=409, detail="requirement_state_not_available")
+    if int(state.get("stateVersion", 0) or 0) != payload.baseStateVersion:
+        raise HTTPException(status_code=409, detail="interview_state_version_conflict")
+    requirement_states = state.get("requirementStates")
+    if not isinstance(requirement_states, dict):
+        raise HTTPException(status_code=409, detail="requirement_state_not_available")
+
+    changed_ids: list[str] = []
+    for requirement_id, raw_value in payload.changes.items():
+        value = raw_value.strip()
+        if not requirement_id or len(requirement_id) > 128 or not value or len(value) > 10000:
+            raise HTTPException(status_code=422, detail="invalid_requirement_correction")
+        current = requirement_states.get(requirement_id)
+        if not isinstance(current, dict):
+            raise HTTPException(status_code=404, detail="requirement_entity_not_found")
+        if current.get("status") != "CONFIRMED":
+            raise HTTPException(status_code=409, detail="requirement_not_confirmed")
+        if current.get("value") != value:
+            current["value"] = value
+            changed_ids.append(requirement_id)
+
+    if changed_ids:
+        commit_manual_correction_state(
+            state,
+            record,
+            user,
+            source="requirement_state_manual_correction",
+            expected_state_version=payload.baseStateVersion,
+        )
+        write_audit_log(
+            user,
+            "interview_result_manual_correction",
+            "record",
+            record_id,
+            {
+                "artifact": "requirement_state",
+                "requirementIds": sorted(changed_ids),
+                "recordStatus": record.get("status"),
+            },
+        )
+    result = get_interview_state_snapshot(record, user, persist=False)
+    result["recordStatus"] = record.get("status")
+    return result
+
+
+@router.patch("/records/{record_id}/question-answers/{question_id}")
+def update_record_question_answer(
+    record_id: str,
+    question_id: str,
+    payload: ManualQuestionAnswerUpdate,
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    record = get_scoped_item("records", record_id, user, "record_not_found")
+    require_manual_correction_access(record, user)
+    existing_state = store.get("interview_states", f"interview-state-{record_id}")
+    if not existing_state:
+        raise HTTPException(status_code=404, detail="interview_state_not_found")
+    state = deepcopy(existing_state)
+    if int(state.get("stateVersion", 0) or 0) != payload.baseStateVersion:
+        raise HTTPException(status_code=409, detail="interview_state_version_conflict")
+    question_answers = state.get("questionAnswers")
+    if not isinstance(question_answers, dict):
+        raise HTTPException(status_code=404, detail="question_answer_not_found")
+    question_answer = question_answers.get(question_id)
+    if not isinstance(question_answer, dict):
+        raise HTTPException(status_code=404, detail="question_answer_not_found")
+    if question_answer.get("answerStatus") not in {"ANSWERED", "PARTIAL"}:
+        raise HTTPException(status_code=409, detail="question_answer_not_final")
+    answer = payload.answer.strip()
+    if not answer:
+        raise HTTPException(status_code=422, detail="question_answer_required")
+    changed = answer != str(question_answer.get("answer") or "").strip()
+    if changed:
+        question_answer["answer"] = answer
+        question_answer["answerSource"] = "MANUAL"
+        question_answer["updatedAt"] = utc_now()
+        field_id = question_answer.get("fieldId")
+        field_states = state.get("fieldStates")
+        field_state = (
+            field_states.get(field_id)
+            if isinstance(field_states, dict) and isinstance(field_id, str)
+            else None
+        )
+        if isinstance(field_state, dict) and field_state.get("answerState") == "CONFIRMED":
+            field_state["recordAnswer"] = answer
+            field_state["answerSummary"] = None
+            field_state["answer"] = answer
+            field_state["answerSource"] = "MANUAL"
+        commit_manual_correction_state(
+            state,
+            record,
+            user,
+            source="question_answer_manual_correction",
+            expected_state_version=payload.baseStateVersion,
+        )
+        write_audit_log(
+            user,
+            "interview_result_manual_correction",
+            "record",
+            record_id,
+            {
+                "artifact": "question_answer",
+                "questionId": question_id,
+                "recordStatus": record.get("status"),
+            },
+        )
+    return {
+        "recordId": record_id,
+        "questionId": question_id,
+        "answer": answer,
+        "answerStatus": question_answer.get("answerStatus"),
+        "recordStatus": record.get("status"),
     }
 
 

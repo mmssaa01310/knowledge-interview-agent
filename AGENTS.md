@@ -125,3 +125,13 @@ Structured Interviewでは「判断はAI、保証はbackend」を原則とする
 * 依頼外の大規模リファクタリングを行う。
 * 既存コードを広範囲にフォーマットする。
 * 実装計画を確定仕様として扱う。
+
+## Agent skills
+
+### Issue tracker
+
+このリポジトリのIssueはGitHub Issuesで管理し、操作には`gh` CLIを使います。詳細は`docs/agents/issue-tracker.md`を参照してください。
+
+### Domain docs
+
+単一コンテキスト構成です。用語集はルートの`GLOSSARY.md`、ADRは`docs/adr/`に置きます。詳細は`docs/agents/domain.md`を参照してください。
