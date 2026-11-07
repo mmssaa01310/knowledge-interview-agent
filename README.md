@@ -1,6 +1,6 @@
-# MUSUBI
+# AIインタビュー
 
-「結び」。現場の人との対話から得た知恵を、チームで確認・活用できる知識につなぐAIインタビュー / ナレッジ構造化アプリです。
+現場の人との対話から得た知恵を、チームで確認・活用する知識へつなぐWebアプリです。
 
 ## Structure
 
@@ -8,48 +8,37 @@
 app/
 ├── web/      # React + Vite frontend
 ├── api/      # FastAPI backend
-├── voice/    # WebRTC / 音声I/O service
 └── worker/   # document ingestion sample worker
 packages/
 └── shared-types/
 infra/
-├── cdk/
 ├── docker-compose.yml
-└── postgres/ # ローカルPostgreSQL初期スキーマ
-docs/
-└── ...       # 仕様、設計、開発ガイド、コードベースガイド
+└── postgres/ # local PostgreSQL setup
 ```
 
 ## Quick Start
 
+通常のローカル開発はDocker Composeを使います。
+
+```bash
+cp .env.example .env
+# OPENAI_SETTINGS_ENCRYPTION_KEYにBase64形式の32-byte鍵を設定
+docker compose --env-file .env -f infra/docker-compose.yml up --build
+```
+
+Webは`http://localhost:5173`、APIは`http://localhost:8001`で利用できます。ComposeはWeb、FastAPI、PostgreSQLを起動します。初回ログイン後、アプリ全体設定画面からOpenAI Project APIキーを登録してください。キーはAPIが暗号化してPostgreSQLに保存し、テキスト生成、質問設計、GPT Live音声インタビューに使用します。
+
+APIキーの暗号化鍵はOpenAI APIキーとは別の値です。暗号化鍵はAPIサーバーの環境設定だけに置き、OpenAI APIキーを`.env`や`VITE_*`へ記載しないでください。
+
+直接起動する場合:
+
 - Web: `cd app/web && pnpm install && pnpm dev`
 - API: `cd app/api && uv sync && uv run uvicorn ai_interviewer_api.main:app --reload --port 8001`
-- Voice: `cd app/voice && uv sync && VOICE_API_BASE_URL=http://127.0.0.1:8001 uv run uvicorn ai_interviewer_voice.main:app --reload --port 8010`
 - Worker sample: `cd app/worker && uv sync && uv run python -m ai_interviewer_worker.main`（Composeでは起動しません）
 
-通常のローカル開発はDocker Composeを推奨します。ブラウザからは `http://localhost:5173` だけを開きます。
-Vite dev server が `/api` を `app/api`、`/voice` を `app/voice` へproxyするため、FrontendコードでAPI/Voiceのポートを直接指定しません。
-APIの保存先はComposeで起動するPostgreSQLです。データベース接続先は`DATABASE_URL`で変更できます。
+Viteは`/api`をFastAPIへproxyします。データベース接続先は`DATABASE_URL`で変更できます。
 
-初回起動後は[アプリ内ログインの手順](docs/guides/local-auth.md)に従って最初の管理者を作成してください。
-
-事前知識本文・チャンクの検索先は`DOCUMENT_KNOWLEDGE_BACKEND=postgres`（既定）です。Elastic Cloudを使用する場合は、`.env`へ`DOCUMENT_KNOWLEDGE_BACKEND=elasticsearch`、`ELASTICSEARCH_CLOUD_ID`、`ELASTICSEARCH_API_KEY`を設定してAPIを再起動してください。Knowledge・Recordなどの業務データと事前知識メタデータは引き続きPostgreSQLが正本です。Backend切替後に既存データを使う場合は、対象Repositoryへの再インデックス処理が必要です。
-
-## Docker Compose (Development)
-
-- 初回ビルド込み起動: `docker compose --env-file .env -f infra/docker-compose.yml up --build`
-- バックグラウンド起動: `docker compose --env-file .env -f infra/docker-compose.yml up -d --build`
-- 停止: `docker compose --env-file .env -f infra/docker-compose.yml down`
-
-開発用 compose は以下をまとめて起動します。
-
-- Frontend: Vite 開発サーバー `http://localhost:5173`
-- API: FastAPI + `uvicorn --reload` `http://localhost:8001`
-- Voice: FastAPI + `uvicorn --reload` `http://localhost:8010`
-- Database: PostgreSQL `localhost:5432`（`kikiori`データベース）
-
-ソースコードは bind mount されるため、`app/web`、`app/api`、`app/voice` の変更はコンテナ内でホットリロードされます。依存関係は dev 用イメージ build 時に入るため、通常の再起動で毎回 `pnpm install` / `pip install` は走りません。
-既定ポートは`5173`（Web）、`8001`（API）、`8010`（Voice）で固定しています。ソースコードの変更は各開発サーバーのホットリロードで反映されます。別のポートが必要な場合だけ、`WEB_PORT` / `API_PORT`を明示的に変更してください。
+事前知識の検索先はPostgreSQLが既定です。Elastic Cloudを利用する場合は`.env`へ`DOCUMENT_KNOWLEDGE_BACKEND=elasticsearch`と接続情報を設定できます。AI処理は管理画面に登録したOpenAI Project APIキーを使い、キーはBackendで暗号化して保存します。
 
 ## Documentation
 

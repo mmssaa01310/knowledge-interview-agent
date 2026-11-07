@@ -186,7 +186,6 @@ export type FieldSuggestionResponse = {
   fields: KnowledgeField[];
   interviewPlan?: InterviewPlan;
   modelId: string;
-  bedrockInvoked?: boolean;
   retrievedSources?: RetrievedSourceReference[];
 };
 
@@ -595,7 +594,7 @@ export async function updateQuestionAnswerCorrection(
   });
 }
 
-export type GptLiveSettingsStatus = {
+export type OpenAISettingsStatus = {
   configured: boolean;
   maskedApiKey: string | null;
   updatedAt: string | null;
@@ -607,26 +606,26 @@ export type ApplicationSettingsAdmin = {
   applicationSettingsAdmin: boolean;
 };
 
-export function getGptLiveSettings() {
-  return apiRequest<GptLiveSettingsStatus>("/api/application-settings/gpt-live");
+export function getOpenAISettings() {
+  return apiRequest<OpenAISettingsStatus>("/api/application-settings/openai");
 }
 
-export function checkGptLiveConnection(apiKey: string) {
-  return apiRequest<{ connected: boolean }>("/api/application-settings/gpt-live/connection-check", {
+export function checkOpenAIConnection(apiKey: string) {
+  return apiRequest<{ connected: boolean }>("/api/application-settings/openai/connection-check", {
     method: "POST",
     body: { apiKey },
   });
 }
 
-export function saveGptLiveSettings(apiKey: string) {
-  return apiRequest<GptLiveSettingsStatus>("/api/application-settings/gpt-live", {
+export function saveOpenAISettings(apiKey: string) {
+  return apiRequest<OpenAISettingsStatus>("/api/application-settings/openai", {
     method: "PUT",
     body: { apiKey },
   });
 }
 
-export function deleteGptLiveSettings() {
-  return apiRequest<GptLiveSettingsStatus>("/api/application-settings/gpt-live", {
+export function deleteOpenAISettings() {
+  return apiRequest<OpenAISettingsStatus>("/api/application-settings/openai", {
     method: "DELETE",
   });
 }

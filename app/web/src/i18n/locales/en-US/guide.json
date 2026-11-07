@@ -1,5 +1,5 @@
 {
-  "title": "MUSUBI quick guide",
+  "title": "AIインタビュー quick guide",
   "progress": "{current} / {total}",
   "previous": "Back",
   "next": "Next",
@@ -23,7 +23,7 @@
   },
   "catalog": {
     "gettingStarted": {
-      "title": "First steps in MUSUBI",
+      "title": "First steps in AIインタビュー",
       "description": "Get a short orientation to the main screen areas and where to start."
     },
     "createKnowledge": {

@@ -1,8 +1,8 @@
-# GPT-Live WebRTC
+# GPT Live WebRTC
 
-GPT-Live-1のWeb音声会話経路。GPT Liveが唯一のインタビュアーとして会話、質問進行、Clarification、深掘りを担当し、Responses Delegationはユーザー回答の意味評価だけを行う。Application Backendは評価結果を検証してInterview Stateへ保存する。
+GPT Live-1のWeb音声会話経路。GPT Liveが唯一のインタビュアーとして会話、質問進行、Clarification、深掘りを担当し、Responses Delegationはユーザー回答の意味評価だけを行う。Application Backendは評価結果を検証してInterview Stateへ保存する。
 
-既存の`openai_realtime`（旧Realtime API）とTranscribe + Pollyは後方互換のため残すが、GPT Liveの会話制御や状態評価を共有しない。
+音声インタビューはGPT Live経路に固定し、別の音声ProviderやVoice Gatewayは使用しない。
 
 ## 責務と接続構成
 
@@ -19,15 +19,15 @@ GPT Live (唯一のInterviewer)
                       └─ validate / persist / state_version
 ```
 
-Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、DataChannelでJSONイベントを送受信する。FastAPIは認証済み`record_id`から質問定義・現在Stateを組み立て、OpenAI Python SDKの`client.live.create()`でLive sessionを作成する。GPT-Live APIキーは全テナントで共有するアプリ設定としてAPIだけで保持し、BrowserやVoice Gatewayへ渡さない。APIキーは専用のOpenAI Project service account keyを使用する。
+Browserは`RTCPeerConnection`でマイクとリモート音声を接続し、DataChannelでJSONイベントを送受信する。FastAPIは認証済み`record_id`から質問定義・現在Stateを組み立て、OpenAI Python SDKの`client.live.create()`でLive sessionを作成する。OpenAI APIキーは全テナントで共有するアプリ設定としてAPIだけで保持し、Browserへ渡さない。APIキーはOpenAI Project API keyを使用する。
 
 ## APIキー設定と保管
 
-アプリ全体の設定管理者は、システム設定画面からGPT-Live APIキーを登録・差し替え、接続確認を実行できる。GPT-Liveモデル`gpt-live-1`は固定し、Provider、モデル、音声の選択UIは設けない。音声Runtimeのデプロイ時選択は既存の設定に従う。
+アプリ全体の設定管理者は、システム設定画面から全テナント共通のOpenAI APIキーを登録・差し替え、GPT Liveへの接続確認を実行できる。現在このキーはGPT Liveモデル`gpt-live-1`に使用し、Provider、モデル、音声の選択UIは設けない。同じ保存済みキーをテキスト生成と質問設計にも使用する。
 
-`GET /api/application-settings/gpt-live`はキーの登録状態、最終更新日時、先頭8文字と末尾4文字を残し、その間をキーの実際の文字数に合わせた`*`で隠したプレビューを返す。`POST /api/application-settings/gpt-live/connection-check`は入力されたキーでOpenAIの`GET /v1/models/gpt-live-1`を呼び、API認証とモデルアクセスを確認する。これはLive WebRTC Sessionの作成・接続交渉までは確認しない。`PUT /api/application-settings/gpt-live`は同じ確認に成功した後だけ新しいキーを保存し、失敗時は既存キーを保持する。`DELETE`は共有キーを削除する。確認APIはLive sessionを作成しない。確認に成功した場合は成否、時刻、操作主体だけを監査し、キーやOpenAI応答本文は記録しない。
+`GET /api/application-settings/openai`はキーの登録状態、最終更新日時、先頭8文字と末尾4文字を残し、その間をキーの実際の文字数に合わせた`*`で隠したプレビューを返す。`POST /api/application-settings/openai/connection-check`は入力されたキーで`gpt-6-luna`、`gpt-6.1-terra`、`gpt-live-1`へのアクセスを確認する。これはLive WebRTC Sessionの作成・接続交渉までは確認しない。`PUT /api/application-settings/openai`は同じ確認に成功した後だけ新しいキーを保存し、失敗時は既存キーを保持する。`DELETE /api/application-settings/openai`は共有キーを削除する。確認APIはLive sessionを作成しない。確認に成功した場合は成否、時刻、操作主体だけを監査し、キーやOpenAI応答本文は記録しない。
 
-APIキーはローカルPostgreSQLの全テナント共通`application_settings`へ暗号文として保存する。APIサーバーはAES-256-GCMで暗号化し、暗号鍵はAPIプロセスだけに渡す`GPT_LIVE_SETTINGS_ENCRYPTION_KEY`環境変数からBase64形式で読み込む32 byteの鍵とする。暗号鍵はPostgreSQL、Frontend、Voiceサービスへ保存・転送しない。nonceは暗号化ごとに新規生成し、認証tagを含む暗号文と共に保存する。暗号鍵が未設定、形式不正、または復号できない場合はGPT-Liveセッションをfail closedし、環境変数の平文APIキーへフォールバックしない。暗号鍵を失った場合はGPT-Live APIキーを再登録する。
+APIキーはローカルPostgreSQLの全テナント共通`application_settings`へ暗号文として保存する。APIサーバーはAES-256-GCMで暗号化し、暗号鍵はAPIプロセスだけに渡す`OPENAI_SETTINGS_ENCRYPTION_KEY`環境変数からBase64形式で読み込む32 byteの鍵とする。暗号鍵はPostgreSQL、Frontend、Browserへ保存・転送しない。nonceは暗号化ごとに新規生成し、認証tagを含む暗号文と共に保存する。暗号鍵が未設定、形式不正、または復号できない場合はGPT Liveセッションをfail closedし、環境変数の平文APIキーへフォールバックしない。暗号鍵を失った場合はGPT Live APIキーを再登録する。
 
 設定画面は生のAPIキーを再取得・再表示せず、登録状態、最終更新日時、先頭8文字と末尾4文字を残して実際のキー長に合わせた`*`で隠したプレビューを表示する。入力中のキーはマスクし、保存後に画面stateから消去する。キー設定・確認APIの応答に`Cache-Control: no-store`を指定する。BackendとFrontendのログ、エラー応答、監査履歴へ生のキーを含めてはならない。監査履歴には操作主体、対象設定、接続確認成否、日時だけを記録する。
 
@@ -39,13 +39,13 @@ OpenAI API仕様:
 * [Create a Live WebRTC session](https://developers.openai.com/api/reference/resources/live/methods/create)
 * [API keys and service accounts](https://developers.openai.com/api/docs/guides/api-keys)
 
-記録付きsessionは次のDelegationを設定する。
+記録付きSessionは次のDelegationを設定する。
 
 ```json
 {
   "type": "responses",
   "responses": {
-    "model": "gpt-5.6-luna",
+    "model": "gpt-6-luna",
     "instructions": "semantic assessment only",
     "tools": [{"type": "function", "name": "update_interview_state"}],
     "tool_choice": {"type": "function", "name": "update_interview_state"},
@@ -54,7 +54,7 @@ OpenAI API仕様:
 }
 ```
 
-GPT-LiveのResponses Delegationは`gpt-5.6-luna`に固定する。旧Terraスタックへ切り替える環境変数は設けない。GPT LiveにはJSONや特殊マーカーを発話させず、Liveの自然言語から正規表現でStateを抽出しない。これはResponses Delegationの意味評価モデルであり、GPT-Live音声セッションのモデル設定ではない。
+GPT LiveのResponses Delegationは`gpt-6-luna`に固定する。音声Sessionは`gpt-live-1`を使用する。GPT LiveにはJSONや特殊マーカーを発話させず、Liveの自然言語から正規表現でStateを抽出しない。これはResponses Delegationの意味評価モデルであり、GPT Live音声セッションのモデル設定ではない。
 
 ## Browserの接続順
 
@@ -98,4 +98,4 @@ Frontendはユーザー発話終了からGPT Liveのresponse開始と最初の�
 
 ## 既存経路との境界
 
-GPT Liveでは質問本文をBackendから受け取らない。通常のStructured Interview、Transcribe + Polly、Nova Sonic、旧Realtimeの実装とState評価・質問生成を混ぜない。GPT Liveの音声はWebRTC MediaTrack、イベントとFunction Tool結果はDataChannelで扱い、独自VADや音声バイトのDataChannel送信は行わない。
+GPT Liveでは質問本文をBackendから受け取らない。テキストStructured InterviewとはState評価・質問進行の責務を分ける。GPT Liveの音声はWebRTC MediaTrack、イベントとFunction Tool結果はDataChannelで扱い、独自VADや音声バイトのDataChannel送信は行わない。

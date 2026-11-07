@@ -29,10 +29,10 @@
     "notSet": "Not set"
   },
   "model": {
-    "luna": "GPT-5.6 Luna",
-    "terra": "GPT-5.6 Terra",
-    "lunaStandard": "GPT-5.6 Luna (standard)",
-    "terraAccurate": "GPT-5.6 Terra (accuracy first)"
+    "luna": "GPT-6 Luna",
+    "terra": "GPT-6.1 Terra",
+    "lunaStandard": "GPT-6 Luna (standard)",
+    "terraAccurate": "GPT-6.1 Terra (accuracy first)"
   },
   "title": "AI interview",
   "modelLabel": "Execution model: {model}",

@@ -59,8 +59,8 @@
     "system_requirement": "Confirm the purpose, request, and constraints, then organize a process when needed."
   },
   "models": {
-    "luna": "GPT-5.6 Luna",
-    "terra": "GPT-5.6 Terra",
+    "luna": "GPT-6 Luna",
+    "terra": "GPT-6.1 Terra",
     "standard": "Standard · lower cost",
     "accuracyPriority": "Meaning and accuracy first"
   },

@@ -12,7 +12,7 @@
 InterviewRecord
 ├── ownerUserId                 # 回答を担当するインタビュー対象者
 ├── InterviewState              # 質問ごとの回答状態
-├── Message / VoiceTurn         # 会話と確定発話
+├── Message / LiveCapture       # 会話と確定発話
 ├── AiProposal                  # AI提案と承認状態
 └── record status                # 記録のレビュー状態
 ```
@@ -32,7 +32,7 @@ InterviewRecord
 
 Frontendは`GET /api/me`で取得したロールを使用し、ワークスペースと操作を表示制御する。
 
-アプリ全体の設定管理は、テナント単位の`admin`ロールと分離した`applicationSettingsAdmin`権限で判定する。この権限はユーザーが送信する値を信用せず、Backendが保存済みユーザーから取得する。初期管理者作成時に最初の管理者へ付与し、権限者だけが他の有効な`admin`へ付与・解除できる。最後の1名を解除、無効化、削除してはならない。設定変更APIと全テナント共通のGPT-Live APIキーAPIは、各リクエストでこの権限を検証する。
+アプリ全体の設定管理は、テナント単位の`admin`ロールと分離した`applicationSettingsAdmin`権限で判定する。この権限はユーザーが送信する値を信用せず、Backendが保存済みユーザーから取得する。初期管理者作成時に最初の管理者へ付与し、権限者だけが他の有効な`admin`へ付与・解除できる。最後の1名を解除、無効化、削除してはならない。設定変更APIと全テナント共通のOpenAI APIキーAPIは、各リクエストでこの権限を検証する。
 
 画面上のナビゲーションは、全ロールで「左サイドバー1列＋メイン画面」とする。グローバルナビゲーション列とワークスペースナビゲーション列を併置してはいけない。全ロールで左サイドバーに権限範囲内のナレッジ一覧を直接表示する。
 
@@ -86,7 +86,7 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 
 `approved`状態の記録を管理者系ロールが手動訂正した場合、同じ保存処理内で`submitted`へ戻して再レビューを要求する。`interviewer`は`approved`記録を編集できない。AIによるProcessModel・RequirementState編集指示は`admin`と`knowledge_manager`だけに許可し、従来どおり指示内容・モデル・変更主体を監査する。`viewer`は編集できない。
 
-音声セッションの作成・取得・停止・WebRTC接続では、Record APIと同じ記録アクセス判定を再利用する。`VoiceSession.ownerUserId`だけでRecordへのアクセスを許可してはいけない。
+GPT Liveセッションの作成とTranscript受付では、Record APIと同じ記録アクセス判定を再利用する。Browserから渡されたRecord IDだけを根拠に接続を許可してはいけない。
 
 ## 5. 記録状態の遷移責務
 
@@ -109,7 +109,7 @@ Backendはすべてのユーザー向けAPIで、次の順に確認する。
 * `app/api/auth`と`app/api/core`: 認証済みユーザー、ロール、テナント、記録アクセスの共通判定を担当する。
 * `app/api/routers`: 共通認可判定を呼び出し、個別ルートで独自のロール判定を複製しない。
 * `app/api/services`: 記録状態遷移と承認条件を検証する。UIから渡された状態値だけを信頼してはいけない。
-* `app/voice`: APIが許可したRecordとVoiceSessionだけを扱う。インタビュー評価や認可ロジックを複製しない。
+* GPT Liveのクライアント接続: Backendが認可したRecordに対してだけセッションを作成する。BrowserへOpenAI Project APIキーを渡さない。
 
 `viewer`が記録の状態を表示する場合、Backendは表示用の一時スナップショットだけを返す。状態の初期化、移行、更新を保存してはいけない。
 

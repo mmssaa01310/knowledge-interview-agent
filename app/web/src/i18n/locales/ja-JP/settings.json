@@ -59,8 +59,8 @@
     "system_requirement": "目的、要求、制約を確認し、必要に応じて処理の流れを整理します。"
   },
   "models": {
-    "luna": "GPT-5.6 Luna",
-    "terra": "GPT-5.6 Terra",
+    "luna": "GPT-6 Luna",
+    "terra": "GPT-6.1 Terra",
     "standard": "標準・低コスト",
     "accuracyPriority": "意味理解・精度優先"
   },

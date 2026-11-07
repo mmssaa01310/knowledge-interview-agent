@@ -29,10 +29,10 @@
     "notSet": "未设置"
   },
   "model": {
-    "luna": "GPT-5.6 Luna",
-    "terra": "GPT-5.6 Terra",
-    "lunaStandard": "GPT-5.6 Luna（标准）",
-    "terraAccurate": "GPT-5.6 Terra（精度优先）"
+    "luna": "GPT-6 Luna",
+    "terra": "GPT-6.1 Terra",
+    "lunaStandard": "GPT-6 Luna（标准）",
+    "terraAccurate": "GPT-6.1 Terra（精度优先）"
   },
   "title": "AI访谈",
   "modelLabel": "执行模型：{model}",

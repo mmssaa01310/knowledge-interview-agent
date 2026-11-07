@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { ApiError, checkGptLiveConnection, deleteGptLiveSettings, getGptLiveSettings, listApplicationSettingsAdmins, saveGptLiveSettings, setApplicationSettingsAdmin, type ApplicationSettingsAdmin, type GptLiveSettingsStatus } from "../lib/api";
+import { ApiError, checkOpenAIConnection, deleteOpenAISettings, getOpenAISettings, listApplicationSettingsAdmins, saveOpenAISettings, setApplicationSettingsAdmin, type ApplicationSettingsAdmin, type OpenAISettingsStatus } from "../lib/api";
 import { useI18n } from "../i18n";
 
-const emptyStatus: GptLiveSettingsStatus = { configured: false, maskedApiKey: null, updatedAt: null };
+const emptyStatus: OpenAISettingsStatus = { configured: false, maskedApiKey: null, updatedAt: null };
 
 function formatUpdatedAt(value: string) {
   const parts = new Intl.DateTimeFormat("ja-JP", {
@@ -31,7 +31,7 @@ export function ApplicationSettingsPanel() {
 
   async function reload() {
     const [nextStatus, nextAdmins] = await Promise.all([
-      getGptLiveSettings(),
+      getOpenAISettings(),
       listApplicationSettingsAdmins(),
     ]);
     setStatus(nextStatus);
@@ -40,7 +40,7 @@ export function ApplicationSettingsPanel() {
 
   useEffect(() => {
     let active = true;
-    Promise.all([getGptLiveSettings(), listApplicationSettingsAdmins()])
+    Promise.all([getOpenAISettings(), listApplicationSettingsAdmins()])
       .then(([nextStatus, nextAdmins]) => {
         if (!active) return;
         setStatus(nextStatus);
@@ -53,10 +53,10 @@ export function ApplicationSettingsPanel() {
 
   function errorMessage(errorValue: unknown) {
     if (errorValue instanceof ApiError) {
-      if (errorValue.detail === "gpt_live_api_key_connection_failed") {
+      if (errorValue.detail === "openai_api_key_connection_failed") {
         return t("common.applicationSettings.connectionFailed");
       }
-      if (errorValue.detail === "gpt_live_encryption_key_unavailable") {
+      if (errorValue.detail === "openai_encryption_key_unavailable") {
         return t("common.applicationSettings.encryptionUnavailable");
       }
       if (errorValue.detail === "last_application_settings_admin") {
@@ -73,7 +73,7 @@ export function ApplicationSettingsPanel() {
     if (!apiKey.trim() || busy) return;
     setBusy(true); setError(""); setNotice(""); setConnectionDialogOpen(false);
     try {
-      await checkGptLiveConnection(apiKey.trim());
+      await checkOpenAIConnection(apiKey.trim());
       setConnectionDialogOpen(true);
     } catch (errorValue) {
       setError(errorMessage(errorValue));
@@ -87,7 +87,7 @@ export function ApplicationSettingsPanel() {
     if (!apiKey.trim() || busy) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      const nextStatus = await saveGptLiveSettings(apiKey.trim());
+      const nextStatus = await saveOpenAISettings(apiKey.trim());
       setStatus(nextStatus);
       setApiKey("");
       setNotice(t("common.applicationSettings.saved"));
@@ -102,7 +102,7 @@ export function ApplicationSettingsPanel() {
     if (busy || !window.confirm(t("common.applicationSettings.deleteConfirm"))) return;
     setBusy(true); setError(""); setNotice("");
     try {
-      setStatus(await deleteGptLiveSettings());
+      setStatus(await deleteOpenAISettings());
       setApiKey("");
       setNotice(t("common.applicationSettings.deleted"));
     } catch (errorValue) {
@@ -134,8 +134,8 @@ export function ApplicationSettingsPanel() {
         <header className="account-management-header">
           <div>
             <p className="eyebrow">{t("common.applicationSettings.eyebrow")}</p>
-            <h3>{t("common.applicationSettings.gptLiveTitle")}</h3>
-            <p>{t("common.applicationSettings.gptLiveDescription")}</p>
+            <h3>{t("common.applicationSettings.openaiTitle")}</h3>
+            <p>{t("common.applicationSettings.openaiDescription")}</p>
           </div>
           <span className={`status-pill ${status.configured ? "confirmed" : "muted"}`}>
             {status.configured ? t("common.applicationSettings.configured") : t("common.applicationSettings.notConfigured")}

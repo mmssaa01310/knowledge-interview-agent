@@ -1,5 +1,5 @@
 {
-  "title": "MUSUBIの操作ガイド",
+  "title": "AIインタビューの操作ガイド",
   "progress": "{current} / {total}",
   "previous": "戻る",
   "next": "次へ",
@@ -23,7 +23,7 @@
   },
   "catalog": {
     "gettingStarted": {
-      "title": "初めてMUSUBIを使う",
+      "title": "初めてAIインタビューを使う",
       "description": "画面の基本構成と、最初に選ぶ場所を短く確認します。"
     },
     "createKnowledge": {

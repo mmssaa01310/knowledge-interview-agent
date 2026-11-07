@@ -2,8 +2,8 @@ from dataclasses import dataclass
 import os
 
 
-GPT_LIVE_RESPONSES_MODEL = "gpt-5.6-luna"
-DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID = "global.openai.gpt-5.6-luna"
+GPT_LIVE_RESPONSES_MODEL = "gpt-6-luna"
+DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID = "gpt-6-luna"
 DEFAULT_QUESTION_DESIGN_MODEL_ID = DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID
 
 
@@ -11,8 +11,9 @@ DEFAULT_QUESTION_DESIGN_MODEL_ID = DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID
 class Settings:
     app_name: str = os.getenv("APP_NAME", "KIKIORI API")
     app_env: str = os.getenv("APP_ENV", "local")
-    gpt_live_settings_encryption_key: str = os.getenv(
-        "GPT_LIVE_SETTINGS_ENCRYPTION_KEY", ""
+    openai_settings_encryption_key: str = os.getenv(
+        "OPENAI_SETTINGS_ENCRYPTION_KEY",
+        os.getenv("GPT_LIVE_SETTINGS_ENCRYPTION_KEY", ""),
     )
     dev_auto_seed_voice_demo: bool = (
         os.getenv("DEV_AUTO_SEED_VOICE_DEMO", "false").lower() == "true"
@@ -23,9 +24,6 @@ class Settings:
     dev_auto_seed_system_requirement_demo: bool = (
         os.getenv("DEV_AUTO_SEED_SYSTEM_REQUIREMENT_DEMO", "false").lower() == "true"
     )
-    cognito_user_pool_id: str = os.getenv("COGNITO_USER_POOL_ID", "local-placeholder")
-    cognito_region: str = os.getenv("COGNITO_REGION", "ap-northeast-1")
-    cognito_app_client_id: str = os.getenv("COGNITO_APP_CLIENT_ID", "local-placeholder")
     database_url: str = os.getenv(
         "DATABASE_URL",
         "postgresql://kikiori:kikiori@localhost:5432/kikiori",
@@ -59,14 +57,6 @@ class Settings:
     document_chunk_overlap_chars: int = int(
         os.getenv("DOCUMENT_CHUNK_OVERLAP_CHARS", "150")
     )
-    bedrock_enabled: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
-    bedrock_aws_region: str = os.getenv("BEDROCK_AWS_REGION", "ap-northeast-1")
-    bedrock_model_id: str = os.getenv(
-        "BEDROCK_MODEL_ID",
-        "apac.amazon.nova-pro-v1:0",
-    )
-    bedrock_max_tokens: int = int(os.getenv("BEDROCK_MAX_TOKENS", "2400"))
-    bedrock_temperature: float = float(os.getenv("BEDROCK_TEMPERATURE", "0.2"))
     structured_interview_model_id: str = os.getenv(
         "STRUCTURED_INTERVIEW_MODEL_ID",
         DEFAULT_STRUCTURED_INTERVIEW_MODEL_ID,
@@ -124,9 +114,6 @@ class Settings:
     )
     question_design_max_output_tokens: int = int(
         os.getenv("QUESTION_DESIGN_MAX_OUTPUT_TOKENS", "6000")
-    )
-    question_design_temperature: float = float(
-        os.getenv("QUESTION_DESIGN_TEMPERATURE", "0.0")
     )
     internal_api_token: str = os.getenv("INTERNAL_API_TOKEN", "dev-internal-token")
 
