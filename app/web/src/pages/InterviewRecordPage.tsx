@@ -6,10 +6,7 @@ import {
 } from "../features/interviews/answerVisibility.js";
 import { VoiceConversationButton } from "../features/realtime-voice/components/VoiceConversationButton";
 import { VoiceConversationStatus } from "../features/realtime-voice/components/VoiceConversationStatus";
-import { useRealtimeVoiceInterview } from "../features/realtime-voice/hooks/useRealtimeVoiceInterview";
 import { useGPTLiveVoiceConversation } from "../features/realtime-voice/hooks/useGPTLiveVoiceConversation";
-import { VOICE_RUNTIME_PROVIDER } from "../features/realtime-voice/api/realtimeVoiceClient";
-import type { VoiceProvider } from "../features/realtime-voice/types";
 import { AssistantLabel, type AssistantLabelState } from "../features/interview-chat/components/AssistantLabel";
 import { ProcessModelPanel } from "../features/interviews/components/ProcessModelPanel";
 import { QuestionAnswerCorrectionsPanel } from "../features/interviews/components/QuestionAnswerCorrectionsPanel";
@@ -40,6 +37,11 @@ type InterviewSidebarItem = {
   answer?: string;
   probes?: InterviewProbe[];
   status: "answered" | "active" | "pending";
+};
+
+type PendingInterviewMessage = {
+  text: string;
+  messageCount: number;
 };
 
 function toSpokenQuestionFromLabel(label: string, t: Translate) {
@@ -94,12 +96,12 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [isResettingDemo, setIsResettingDemo] = useState(false);
   const [isTextSendPreparing, setIsTextSendPreparing] = useState(false);
+  const [pendingInterviewMessage, setPendingInterviewMessage] = useState<PendingInterviewMessage | null>(null);
   const [savingFieldId, setSavingFieldId] = useState<string | null>(null);
   const [summaryView, setSummaryView] = useState<"requirements" | "process">("requirements");
   const [isInterviewContextOpen, setIsInterviewContextOpen] = useState(false);
   const [isMoreActionsOpen, setIsMoreActionsOpen] = useState(false);
   const [selectedInterviewLocale, setSelectedInterviewLocale] = useState<InterviewLocale>(resolvedInterviewLocale);
-  const voiceProvider: VoiceProvider = normalizeVoiceProvider(VOICE_RUNTIME_PROVIDER);
   const isManagementUser = props.user?.role === "admin" || props.user?.role === "knowledge_manager";
   const isInterviewConfigured = isInterviewConfigurationComplete(props.selectedKnowledge);
   const canAnswerRecord = Boolean(
@@ -169,7 +171,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       const answer = getInterviewDisplayAnswer(
         fieldState,
         props.structuredDraft[field.name],
-      ) || (voiceProvider === "gpt_live" && fieldState?.candidateAnswer
+      ) || (fieldState?.candidateAnswer
         ? `（補足・確認待ち）${fieldState.candidateAnswer}` : undefined);
       const status: InterviewSidebarItem["status"] = fieldState?.answerState === "CONFIRMED"
         ? "answered"
@@ -191,36 +193,22 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
         status,
       };
     }),
-    [configuredQuestionMessages, props.interviewState, props.sortedFields, props.structuredDraft, t, voiceProvider],
+    [configuredQuestionMessages, props.interviewState, props.sortedFields, props.structuredDraft, t],
   );
   const interviewProfile = props.interviewState?.interviewProfile
     ?? props.selectedKnowledge?.interviewPlan?.profile;
   const usesProcessModel = interviewProfile === "business_process" || interviewProfile === "system_requirement";
   const isChatOnlyInterview = interviewProfile === "system_requirement";
-  const hasVoiceQuestions = !isChatOnlyInterview && (
-    props.sortedFields.some((field) => field.name.trim())
-      || interviewProfile === "business_process"
-  );
   useEffect(() => {
     setSelectedInterviewLocale(resolvedInterviewLocale);
   }, [props.selectedRecord?.id, props.selectedRecord?.interviewLocale, resolvedInterviewLocale]);
-  const legacyVoiceProvider = voiceProvider === "gpt_live" ? "transcribe_polly" : voiceProvider;
-  const realtimeVoice = useRealtimeVoiceInterview({
-    recordId: props.selectedRecord?.id,
-    provider: legacyVoiceProvider,
-    hasQuestions: hasVoiceQuestions,
-    remoteAudioRef,
-    onMessage: props.onAppendInterviewMessage,
-    onInterviewStateChanged: props.onRefreshInterviewSnapshot,
-    onCompleted: props.onRefreshInterviewSnapshot,
-  });
   const gptLiveVoice = useGPTLiveVoiceConversation({
-    enabled: voiceProvider === "gpt_live",
+    enabled: true,
     remoteAudioRef,
     recordId: props.selectedRecord?.id,
     onInterviewStateChanged: props.onRefreshInterviewSnapshot,
   });
-  const activeVoice = voiceProvider === "gpt_live" ? gptLiveVoice : realtimeVoice;
+  const activeVoice = gptLiveVoice;
 
   const isAssistantError = props.interviewError || activeVoice.status === "error";
   const isAssistantThinking = props.isInterviewStreaming || [
@@ -245,7 +233,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       return;
     }
     container.scrollTop = container.scrollHeight;
-  }, [gptLiveVoice.transcriptLines, props.interviewMessages.length, props.streamingInterviewReply]);
+  }, [gptLiveVoice.transcriptLines, pendingInterviewMessage, props.interviewMessages.length, props.streamingInterviewReply]);
 
   useEffect(() => {
     document.body.classList.toggle("interview-context-open", isInterviewContextOpen);
@@ -322,6 +310,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     }
     const target = resolveInterviewAnswerTarget();
     setIsTextSendPreparing(true);
+    setPendingInterviewMessage({ text: content, messageCount: props.interviewMessages.length });
     try {
       if (activeVoice.isActive) {
         await activeVoice.stop();
@@ -331,6 +320,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       console.error("Failed to stop voice before sending an interview message", error);
     } finally {
       setIsTextSendPreparing(false);
+      setPendingInterviewMessage(null);
     }
   }
 
@@ -418,7 +408,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
         <div className="interview-page-title">
           <div className="interview-title-status">
             <h2>{t("interview.title")}</h2>
-            <span className="interview-model-badge">{t("interview.modelLabel", { model: props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-terra" ? t("interview.model.terra") : props.selectedKnowledge?.interviewPlan?.modelId === "global.openai.gpt-5.6-luna" ? t("interview.model.luna") : t("interview.profile.notSet") })}</span>
+            <span className="interview-model-badge">{t("interview.modelLabel", { model: props.selectedKnowledge?.interviewPlan?.modelId === "gpt-6.1-terra" ? t("interview.model.terra") : props.selectedKnowledge?.interviewPlan?.modelId === "gpt-6-luna" ? t("interview.model.luna") : t("interview.profile.notSet") })}</span>
             {props.selectedRecord ? (
               <span className={props.selectedRecord.status === "approved" ? "status-pill" : "status-pill muted"}>
                 {t(`interview.status.${props.selectedRecord.status}`)}
@@ -755,7 +745,14 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                   ) : null}
                 </div>
               ))}
-              {voiceProvider === "gpt_live" ? gptLiveVoice.transcriptLines.map((line) => {
+              {pendingInterviewMessage && !props.interviewMessages
+                .slice(pendingInterviewMessage.messageCount)
+                .some((message) => message.role === "user" && message.text === pendingInterviewMessage.text) ? (
+                <div className="bubble user" aria-live="polite">
+                  <p>{pendingInterviewMessage.text}</p>
+                </div>
+              ) : null}
+              {gptLiveVoice.transcriptLines.map((line) => {
                 const isUserLine = line.role === "user";
                 const isAlreadyPersisted = isUserLine && props.interviewMessages.some(
                   (message) => message.role === "user" && message.text === line.text,
@@ -777,7 +774,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                     <p>{line.text}</p>
                   </div>
                 );
-              }) : null}
+              })}
               {props.streamingInterviewReply ? (
                 <div className="bubble ai">
                   <div className="message-meta">
@@ -814,7 +811,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
                 <VoiceConversationStatus
                   status={activeVoice.status}
                   message={activeVoice.message}
-                  partialTranscript={voiceProvider === "gpt_live" ? "" : activeVoice.partialTranscript}
+                  partialTranscript=""
                 />
               ) : null}
               <textarea
@@ -918,11 +915,4 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       </div>
     </section>
   );
-}
-
-function normalizeVoiceProvider(value: string): VoiceProvider {
-  if (value === "nova_sonic" || value === "openai_realtime" || value === "gpt_live") {
-    return value;
-  }
-  return "transcribe_polly";
 }
