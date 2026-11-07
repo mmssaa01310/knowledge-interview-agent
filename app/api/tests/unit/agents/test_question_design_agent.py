@@ -562,6 +562,6 @@ def test_question_design_validation_prompt_contains_required_contract() -> None:
 
 
 def test_question_design_provider_import_is_lazy() -> None:
-    from ai_interviewer_api.agents.question_design.provider import BedrockQuestionDesignRunner
+    from ai_interviewer_api.agents.question_design.provider import OpenAIQuestionDesignRunner
 
-    assert BedrockQuestionDesignRunner._resolve_contract(QuestionDesignOutput)[0] is QuestionDesignOutput
+    assert OpenAIQuestionDesignRunner._resolve_contract(QuestionDesignOutput)[0] is QuestionDesignOutput

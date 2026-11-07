@@ -54,12 +54,10 @@ def run_question_design(
     validator_factory: Callable[..., Any] | None = None,
     validator_runner: Callable[..., Any] | None = None,
     model_id: str | None = None,
-    region_name: str | None = None,
-    temperature: float | None = None,
 ) -> QuestionDesignOutput:
     if agent_runner is None:
         factory = agent_factory or build_question_design_runner
-        agent_runner = factory(model_id=model_id, region_name=region_name, temperature=temperature)
+        agent_runner = factory(model_id=model_id)
 
     logger.info("question_design_generation_started model_id=%s retry=0", model_id)
     try:
@@ -93,8 +91,6 @@ def run_question_design(
         factory = validator_factory or build_question_design_runner
         validator_runner = factory(
             model_id=model_id,
-            region_name=region_name,
-            temperature=temperature,
         )
 
     logger.info("question_design_validation_started retry=0")

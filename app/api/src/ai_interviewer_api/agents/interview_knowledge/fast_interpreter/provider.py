@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockResponsesStructuredProvider,
+    OpenAIResponsesStructuredProvider,
     StructuredInterviewProviderError,
     _retry_max_output_tokens,
 )
@@ -18,24 +18,16 @@ class FastInterpreterProvider(Protocol):
     def assess(self, *, context: Mapping[str, Any]) -> FastAnswerAssessment: ...
 
 
-class BedrockFastInterpreterProvider:
-    """Bedrock adapter for the deliberately small provisional assessment."""
+class OpenAIFastInterpreterProvider:
+    """OpenAI adapter for the deliberately small provisional assessment."""
 
     def __init__(
         self,
         *,
         model_id: str | None = None,
-        region_name: str | None = None,
-        endpoint_url: str | None = None,
-        session: Any | None = None,
-        http_client_factory: Any | None = None,
     ) -> None:
-        self._provider = BedrockResponsesStructuredProvider(
-            model_id=model_id or settings.structured_interview_fast_model_id,
-            region_name=region_name,
-            endpoint_url=endpoint_url,
-            session=session,
-            http_client_factory=http_client_factory,
+        self._provider = OpenAIResponsesStructuredProvider(
+            model_id=model_id or settings.structured_interview_fast_model_id
         )
 
     def assess(self, *, context: Mapping[str, Any]) -> FastAnswerAssessment:

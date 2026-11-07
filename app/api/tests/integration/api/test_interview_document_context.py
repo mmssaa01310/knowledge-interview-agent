@@ -43,7 +43,7 @@ def _seed_interview_context(
         "description": "設備の荷重ばらつきと発生条件を確認する",
         "purpose": "設備の発生条件を整理する",
         "targetEquipment": "med900",
-        "interviewPlan": {"profile": profile, "modelId": "global.openai.gpt-5.6-terra"},
+        "interviewPlan": {"profile": profile, "modelId": "gpt-6.1-terra"},
     }
     record = {
         "id": "document-context-record",

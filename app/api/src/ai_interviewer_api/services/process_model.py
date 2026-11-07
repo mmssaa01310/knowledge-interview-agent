@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockResponsesStructuredProvider,
+    OpenAIResponsesStructuredProvider,
     ProcessModelEditProvider,
     StructuredInterviewProviderError,
 )
@@ -144,7 +144,7 @@ def edit_process_model(
     _store_process_command(record, user, command_id, instruction)
     knowledge = store.get("knowledges", str(record["knowledgeId"])) or {}
     model_id = resolve_structured_model_id(knowledge)
-    structured_provider = provider or BedrockResponsesStructuredProvider(model_id=model_id)
+    structured_provider = provider or OpenAIResponsesStructuredProvider(model_id=model_id)
     try:
         output = structured_provider.edit_process_model(
             context={

@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ai_interviewer_api.agents.interview_knowledge.provider import BedrockResponsesStructuredProvider
+from ai_interviewer_api.agents.interview_knowledge.provider import OpenAIResponsesStructuredProvider
 from ai_interviewer_api.agents.question_design.prompt_loader import (
     load_question_design_prompt,
     load_question_design_validation_prompt,
@@ -14,7 +14,7 @@ from ai_interviewer_api.agents.question_design.schemas import QuestionDesignOutp
 from ai_interviewer_api.core.config import settings
 
 
-class BedrockQuestionDesignRunner:
+class OpenAIQuestionDesignRunner:
     """Direct Responses API runner for question design and validation.
 
     Retrieval is performed by the Backend before this runner is called. The
@@ -26,14 +26,8 @@ class BedrockQuestionDesignRunner:
         self,
         *,
         model_id: str | None = None,
-        region_name: str | None = None,
-        temperature: float | None = None,
     ) -> None:
-        del temperature  # GPT-5.6 Global profiles do not accept temperature.
-        self._provider = BedrockResponsesStructuredProvider(
-            model_id=model_id,
-            region_name=region_name,
-        )
+        self._provider = OpenAIResponsesStructuredProvider(model_id=model_id)
 
     def __call__(
         self,
@@ -68,11 +62,5 @@ class BedrockQuestionDesignRunner:
 def build_question_design_runner(
     *,
     model_id: str | None = None,
-    region_name: str | None = None,
-    temperature: float | None = None,
 ) -> Callable[..., BaseModel]:
-    return BedrockQuestionDesignRunner(
-        model_id=model_id,
-        region_name=region_name,
-        temperature=temperature,
-    )
+    return OpenAIQuestionDesignRunner(model_id=model_id)

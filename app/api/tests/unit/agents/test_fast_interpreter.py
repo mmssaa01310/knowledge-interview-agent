@@ -13,7 +13,7 @@ from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.schemas impo
     FastAnswerAssessment,
 )
 from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.provider import (
-    BedrockFastInterpreterProvider,
+    OpenAIFastInterpreterProvider,
 )
 from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.service import (
     build_fast_interpreter_context,
@@ -192,7 +192,7 @@ def test_fast_provider_retries_only_a_technical_schema_failure(
                 "reason": "短い回答",
             }
 
-    fast_provider = object.__new__(BedrockFastInterpreterProvider)
+    fast_provider = object.__new__(OpenAIFastInterpreterProvider)
     fast_provider._provider = StubProvider()
     monkeypatch.setattr(
         fast_provider_module,

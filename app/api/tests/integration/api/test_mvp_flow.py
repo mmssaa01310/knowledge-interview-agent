@@ -1,5 +1,4 @@
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi import HTTPException
 
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
@@ -52,7 +51,7 @@ from ai_interviewer_api.schemas.requests import (
 from ai_interviewer_api.agents.question_design.prompt_loader import load_question_design_prompt
 from ai_interviewer_api.agents.question_design.schemas import QuestionDesignOutput, QuestionFieldSuggestion
 from ai_interviewer_api.agents.question_design.service import DEFAULT_CLARIFICATION
-from ai_interviewer_api.services.field_suggestions import suggest_fields_with_bedrock
+from ai_interviewer_api.services.field_suggestions import suggest_fields_with_openai
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +68,7 @@ def create_test_knowledge(knowledge_db_id: str, user: UserContext) -> dict:
             targetEquipment="圧入機A",
             interviewPlan=InterviewPlan(
                 profile="fixed_form",
-                modelId="global.openai.gpt-5.6-terra",
+                modelId="gpt-6.1-terra",
             ),
         ),
         user,
@@ -259,13 +258,13 @@ def test_knowledge_model_can_change_after_interview_started() -> None:
         KnowledgeUpdate(
             interviewPlan=InterviewPlan(
                 profile="fixed_form",
-                modelId="global.openai.gpt-5.6-luna",
+                modelId="gpt-6-luna",
             )
         ),
         user,
     )
 
-    assert updated["interviewPlan"]["modelId"] == "global.openai.gpt-5.6-luna"
+    assert updated["interviewPlan"]["modelId"] == "gpt-6-luna"
 
 
 def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -281,7 +280,7 @@ def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -
     ) -> dict:
         assert current_user == user
         assert knowledge_id == knowledge["id"]
-        assert payload.context.defaultModelId == "global.openai.gpt-5.6-luna"
+        assert payload.context.defaultModelId == "gpt-6-luna"
         assert [message.content for message in payload.recentMessages] == [
             "設備別に項目を分けたい",
             "設備名と現象の聞き取りを重視します。",
@@ -304,7 +303,7 @@ def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -
         }
 
     monkeypatch.setattr(
-        "ai_interviewer_api.routers.knowledge_fields.suggest_fields_with_bedrock",
+        "ai_interviewer_api.routers.knowledge_fields.suggest_fields_with_openai",
         fake_suggest,
     )
 
@@ -314,7 +313,7 @@ def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -
             content="保全ノウハウ用の項目を作って",
             context={
                 "name": "保全",
-                "defaultModelId": "global.openai.gpt-5.6-luna",
+                "defaultModelId": "gpt-6-luna",
             },
             recentMessages=[
                 {"role": "user", "content": "設備別に項目を分けたい"},
@@ -324,7 +323,7 @@ def test_field_suggestions_use_selected_model(monkeypatch: pytest.MonkeyPatch) -
         user,
     )
 
-    assert result["modelId"] == "global.openai.gpt-5.6-luna"
+    assert result["modelId"] == "gpt-6-luna"
     assert result["fields"][0]["name"] == "判断基準"
 
 
@@ -363,7 +362,7 @@ def test_field_suggestions_accept_context_system_prompt(monkeypatch: pytest.Monk
         fake_run_question_design,
     )
 
-    result = suggest_fields_with_bedrock(
+    result = suggest_fields_with_openai(
         FieldSuggestionRequest(
             content="こんちは",
             context={
@@ -374,86 +373,11 @@ def test_field_suggestions_accept_context_system_prompt(monkeypatch: pytest.Monk
         DEV_TOKENS["dev-manager"],
     )
 
-    assert result["bedrockInvoked"] is True
     assert result["fields"] == []
     assert result["reply"] == DEFAULT_CLARIFICATION
 
 
-def test_field_suggestions_raise_504_when_bedrock_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run_question_design(*args, **kwargs):
-        raise EndpointConnectionError(endpoint_url="https://bedrock-runtime.ap-northeast-1.amazonaws.com")
-
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.field_suggestions.run_question_design",
-        fake_run_question_design,
-    )
-
-    with pytest.raises(HTTPException) as exc_info:
-        suggest_fields_with_bedrock(
-            FieldSuggestionRequest(
-                content="月次請求処理の質問項目を作って",
-                context={"name": "保全ノウハウ"},
-            ),
-            DEV_TOKENS["dev-manager"],
-        )
-
-    assert exc_info.value.status_code == 504
-    assert exc_info.value.detail == "bedrock_unreachable"
-
-
-def test_field_suggestions_raise_503_for_bedrock_throttling(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run_question_design(*args, **kwargs):
-        raise ClientError(
-            error_response={"Error": {"Code": "ThrottlingException", "Message": "rate exceeded"}},
-            operation_name="Converse",
-        )
-
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.field_suggestions.run_question_design",
-        fake_run_question_design,
-    )
-
-    with pytest.raises(HTTPException) as exc_info:
-        suggest_fields_with_bedrock(
-            FieldSuggestionRequest(
-                content="月次請求処理の質問項目を作って",
-                context={"name": "保全ノウハウ"},
-            ),
-            DEV_TOKENS["dev-manager"],
-        )
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "bedrock_ThrottlingException"
-
-
-def test_field_suggestions_raise_502_for_non_transient_bedrock_client_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_run_question_design(*args, **kwargs):
-        raise ClientError(
-            error_response={"Error": {"Code": "ValidationException", "Message": "bad request"}},
-            operation_name="Converse",
-        )
-
-    monkeypatch.setattr(
-        "ai_interviewer_api.services.field_suggestions.run_question_design",
-        fake_run_question_design,
-    )
-
-    with pytest.raises(HTTPException) as exc_info:
-        suggest_fields_with_bedrock(
-            FieldSuggestionRequest(
-                content="月次請求処理の質問項目を作って",
-                context={"name": "保全ノウハウ"},
-            ),
-            DEV_TOKENS["dev-manager"],
-        )
-
-    assert exc_info.value.status_code == 502
-    assert exc_info.value.detail == "bedrock_ValidationException"
-
-
-def test_field_suggestions_invoke_bedrock_for_greeting_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_field_suggestions_invoke_openai_for_greeting_only(monkeypatch: pytest.MonkeyPatch) -> None:
     runner_called = False
 
     def fake_run_question_design(question_input, **kwargs):
@@ -471,7 +395,7 @@ def test_field_suggestions_invoke_bedrock_for_greeting_only(monkeypatch: pytest.
         fake_run_question_design,
     )
 
-    result = suggest_fields_with_bedrock(
+    result = suggest_fields_with_openai(
         FieldSuggestionRequest(
             content="こんにちは！",
             context={
@@ -484,7 +408,6 @@ def test_field_suggestions_invoke_bedrock_for_greeting_only(monkeypatch: pytest.
     )
 
     assert result["fields"] == []
-    assert result["bedrockInvoked"] is True
     assert "テーマや目的" in result["reply"]
     assert runner_called is True
 
@@ -506,13 +429,12 @@ def test_field_suggestions_allow_reply_only_turn_without_field_candidates(monkey
         fake_run_question_design,
     )
 
-    result = suggest_fields_with_bedrock(
+    result = suggest_fields_with_openai(
         FieldSuggestionRequest(content="まず何を決めればいい？"),
         user,
     )
 
     assert result["fields"] == []
-    assert result["bedrockInvoked"] is True
     assert result["reply"] == DEFAULT_CLARIFICATION
 
 
@@ -543,7 +465,7 @@ def test_field_suggestions_keep_conversational_reply_when_suggestions_duplicate(
         fake_run_question_design,
     )
 
-    result = suggest_fields_with_bedrock(
+    result = suggest_fields_with_openai(
         FieldSuggestionRequest(
             content="あなたは誰？",
             existingFields=[
@@ -568,7 +490,6 @@ def test_field_suggestions_keep_conversational_reply_when_suggestions_duplicate(
     )
 
     assert result["fields"] == []
-    assert result["bedrockInvoked"] is True
     assert "AI設定アシスタント" in result["reply"]
 
 
@@ -590,15 +511,14 @@ def test_field_suggestions_return_reply_only_when_question_design_needs_more_mat
         fake_run_question_design,
     )
 
-    result = suggest_fields_with_bedrock(
+    result = suggest_fields_with_openai(
         FieldSuggestionRequest(content="こんにちは"),
         DEV_TOKENS["dev-manager"],
     )
 
-    assert result.keys() == {"reply", "fields", "modelId", "bedrockInvoked"}
+    assert result.keys() == {"reply", "fields", "modelId"}
     assert result["fields"] == []
     assert result["reply"] == "質問項目を作るために、まず今回のインタビューのテーマや目的を教えてください。"
-    assert result["bedrockInvoked"] is True
     assert runner_called is True
 
 

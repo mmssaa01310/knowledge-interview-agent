@@ -53,7 +53,7 @@ def ensure_dev_system_requirement_demo() -> dict[str, str]:
                 category="システム要件",
                 targetBusiness="営業",
                 language="ja",
-                defaultModelId="apac.amazon.nova-pro-v1:0",
+                defaultModelId="gpt-6-luna",
                 interviewPlan=InterviewPlan(
                     profile="system_requirement",
                     modelId=settings.structured_interview_model_id,
@@ -83,26 +83,14 @@ def ensure_dev_system_requirement_demo() -> dict[str, str]:
 
 def reset_dev_system_requirement_demo() -> dict[str, str]:
     identifiers = ensure_dev_system_requirement_demo()
-    voice_session_ids = {
-        item["id"]
-        for item in store.list("voice_sessions", DEV_TENANT_ID)
-        if item.get("recordId") == SYSTEM_REQUIREMENT_DEMO_RECORD_ID
-    }
     scoped_tables = (
         "messages",
         "proposals",
         "interview_states",
-        "voice_sessions",
-        "voice_turns",
-        "voice_assistant_events",
-        "voice_connection_events",
     )
     for table_name in scoped_tables:
         for item in list(store.list(table_name, DEV_TENANT_ID)):
-            if (
-                item.get("recordId") == SYSTEM_REQUIREMENT_DEMO_RECORD_ID
-                or item.get("voiceSessionId") in voice_session_ids
-            ):
+            if item.get("recordId") == SYSTEM_REQUIREMENT_DEMO_RECORD_ID:
                 store.delete(table_name, item["id"])
     return identifiers
 

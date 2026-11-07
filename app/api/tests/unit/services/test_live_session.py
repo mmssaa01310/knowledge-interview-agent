@@ -75,7 +75,7 @@ def test_create_live_session_uses_gpt_live_webrtc_and_short_prompt(monkeypatch) 
         "settings",
         SimpleNamespace(
             openai_secret_key="server-only-test-key",
-            gpt_live_responses_model="gpt-5.6-terra",
+            gpt_live_responses_model="gpt-6.1-terra",
         ),
     )
 
@@ -142,7 +142,7 @@ def test_create_live_session_adds_server_owned_checklist_delegation(monkeypatch)
 
     delegation = captured["session"]["delegation"]
     assert delegation["type"] == "responses"
-    assert delegation["responses"]["model"] == "gpt-5.6-luna"
+    assert delegation["responses"]["model"] == "gpt-6-luna"
     assert delegation["responses"]["tool_choice"] == "auto"
     assert delegation["responses"]["reasoning"] == {"effort": "low"}
     assert delegation["responses"]["max_output_tokens"] == 600

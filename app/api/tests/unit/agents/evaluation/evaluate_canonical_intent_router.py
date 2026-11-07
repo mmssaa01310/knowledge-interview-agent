@@ -1,4 +1,4 @@
-"""Run the real Bedrock router against the human-labelled intent set.
+"""Run the real OpenAI router against the human-labelled intent set.
 
 This is an evaluation harness, not an application entry point.  It calls the
 same ``resolve_canonical_intent`` policy used by the API, but does not create a
@@ -30,12 +30,12 @@ from time import monotonic
 from typing import Any, Iterable, Mapping
 
 from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockResponsesStructuredProvider,
+    OpenAIResponsesStructuredProvider,
     StructuredInterviewProviderError,
 )
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.services.conversation_policy import (
-    BedrockCanonicalIntentProvider,
+    OpenAICanonicalIntentProvider,
     resolve_canonical_action,
     resolve_canonical_intent,
 )
@@ -257,7 +257,7 @@ def _full_interpreter_context(case: CanonicalIntentCase) -> dict[str, Any]:
 
 def _run_router_case(
     case: CanonicalIntentCase,
-    router: BedrockCanonicalIntentProvider,
+    router: OpenAICanonicalIntentProvider,
     capture: ProviderLogCapture,
 ) -> dict[str, Any]:
     context = build_case_context(case)
@@ -292,7 +292,7 @@ def _run_router_case(
 
 def _run_structured_case(
     case: CanonicalIntentCase,
-    provider: BedrockResponsesStructuredProvider,
+    provider: OpenAIResponsesStructuredProvider,
     capture: ProviderLogCapture,
 ) -> dict[str, Any]:
     capture.reset()
@@ -439,14 +439,14 @@ def _print_report(report: Mapping[str, Any]) -> None:
 
 
 def run(*, output_path: Path | None, skip_structured: bool) -> int:
-    router_provider = BedrockResponsesStructuredProvider(
+    router_provider = OpenAIResponsesStructuredProvider(
         model_id=settings.structured_interview_fast_model_id,
     )
-    router = BedrockCanonicalIntentProvider(provider=router_provider)
+    router = OpenAICanonicalIntentProvider(provider=router_provider)
     structured_provider = (
         None
         if skip_structured
-        else BedrockResponsesStructuredProvider(
+        else OpenAIResponsesStructuredProvider(
             model_id=settings.structured_interview_model_id,
         )
     )

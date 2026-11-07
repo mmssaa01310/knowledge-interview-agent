@@ -44,7 +44,7 @@ def _create_process_record(user: UserContext) -> dict[str, Any]:
         KnowledgeCreate(
             name="ProcessModelテスト",
             purpose="処理モデルの編集を確認する",
-            interviewPlan=InterviewPlan(profile="business_process", modelId="global.openai.gpt-5.6-luna"),
+            interviewPlan=InterviewPlan(profile="business_process", modelId="gpt-6-luna"),
         ),
         user,
     )

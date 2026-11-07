@@ -1,10 +1,8 @@
-# MUSUBI 仕様
+# AIインタビュー 仕様
 
 ## アプリ名
 
-正式名称は`MUSUBI`とする。
-
-`MUSUBI`（ムスビ）は「結び」を表す。現場の人と対話し、そこで得た知恵を確認・共有できる知識へつなぐという意味である。
+正式名称は「AIインタビュー」とする。
 
 ## 1. アプリの目的
 
@@ -104,7 +102,7 @@ AI機能の責務分離は、`docs/architecture/agents/agent-architecture.md`に
 
 最新発話は、現在の質問と会話状態を参照して`USER_RESPONSE`、`QUESTION_CLARIFICATION`、`QUESTION_INTENT_CONFIRMATION`、`ASR_CLARIFICATION_REQUEST`、`ANSWER_CLARIFICATION`、`META_QUESTION`、`DECLINE_OR_SKIP`等の意味的な`userIntent`へ分類する。ユーザーがAIへ質問している発話をインタビュー回答として評価せず、`conversationAction`を決めて短く応答した後、必要に応じて同じ基本質問へ戻る。発話・単語・質問IDの一致による個別分岐は設けない。
 
-質問単位では、基本回答の`originalAnswer`、採用中の統合`answer`、`probes[]`、`answerSource`、回答成立状態、Probe回数を保持する。手動編集では統合`answer`だけを変更し、会話から取得した`originalAnswer`と`probes[]`は保持する。詳細な状態契約とRuntime共通化は[AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)および[Conversation Algorithm](architecture/voice/conversation-algorithm.md)に従う。
+質問単位では、基本回答の`originalAnswer`、採用中の統合`answer`、`probes[]`、`answerSource`、回答成立状態、Probe回数を保持する。手動編集では統合`answer`だけを変更し、会話から取得した`originalAnswer`と`probes[]`は保持する。詳細な状態契約とRuntime共通化は[AIインタビュー構造化キャプチャ設計](architecture/agents/interview-knowledge-capture.md)および[リアルタイム音声仕様](architecture/voice/realtime-voice.md)に従う。
 
 ### 2.3 インタビュー実行画面
 
@@ -224,16 +222,14 @@ WebRTC接続の確立や制御に必要なシグナリング通信には、WebSo
 
 音声経路で取得した確定文字起こしは、テキスト経路と同じインタビュー処理へ渡す。
 
-音声RuntimeはNova Sonic方式とAmazon Transcribe Streaming + Amazon Polly方式を
-共通契約の下で分離し、Voice Session作成時に選択できるものとする。接続中Sessionの
-Provider自動fallbackは行わない。
+音声インタビューはOpenAIのGPT Liveモデルを使うWebRTC経路に固定する。音声認識・応答音声の生成・会話進行はGPT Liveが担当し、アプリケーションBackendはセッション作成、意味評価の委譲、状態検証・保存を担当する。
 
-GPT-Live-1は既存のStructured Interview音声経路から分離したWebRTC経路を使用する。
+GPT Liveは既存のStructured Interviewテキスト経路から分離したWebRTC経路を使用する。
 GPT-Liveを唯一のインタビュアー／会話進行者とし、Responses Delegationは現在の質問に対する意味評価とEvidence抽出だけを担当する。Application BackendはDelegationの結果を検証して保存するState Storeであり、GPT-Live経路のTranscriptを別のLLMで再評価したり、次質問本文やConversation Actionを生成したりしない。モデルの委譲イベントはState更新の唯一の成功条件ではなく、State Toolを呼ばないDelegation後もLive会話は継続できる。
 音声会話のユーザー向け応答はGPT-Liveが生成する。State Toolを実行した場合のResponses継続用`response.create`、Responses完了、LiveへのContext返却、Liveの出力・音声開始は別イベントとして扱う。State Toolがない場合も、Responsesの`output: []`やappend ACKだけで会話完了とせず、必要ならLiveへ一度だけcontinuationを渡す。
 未充足項目の回答は整理中として表示し、追加回答・訂正を同じ質問項目へ統合する。全必須詳細が揃うまでは回答済みとしない。
 接続、字幕、バックグラウンド保存の契約は[GPT-Live WebRTC](architecture/voice/gpt-live-phase1.md)に従う。
-共通Structured音声経路のDB受付済み字幕の整理・保存はページ離脱後もBackendで継続し、未処理分は再起動後も再試行する。GPT-Live経路では、Responses Delegationの評価結果をState Storeへ保存し、Liveモデルが会話を継続・終了する。未確定の回答候補は処理中と混同せず「補足・確認待ち」と表示する。
+GPT Live経路では、受付済み字幕の評価・状態保存をBackendが継続し、未処理分は再起動後も再試行する。Responses Delegationの評価結果をState Storeへ保存し、Liveモデルが会話を継続・終了する。未確定の回答候補は処理中と混同せず「補足・確認待ち」と表示する。
 
 Assistant音声への割り込みは音声出力の停止であり、コミット済みUser Turnの取消しを意味しない。
 未コミットTurnだけを取消可能とし、明示的な訂正は新しいTurnとして状態更新する。
@@ -358,9 +354,9 @@ Frontendでメニューを隠すことは操作補助であり、認可ではな
 
 アプリ全体の設定を管理する権限は、テナント内の`admin`ロールとは別の`applicationSettingsAdmin`権限として管理する。初期セットアップで作成した最初の管理者に付与し、その権限を持つ管理者だけが既存の`admin`へ権限を付与・解除できる。最後のアプリ全体設定管理者は解除・無効化・削除できない。権限変更は操作主体、対象、結果を記録する。
 
-システム設定にはGPT-Live API設定を置き、GPT-Live用のOpenAI Project APIキーを全テナントで共有する。GPT-Liveモデルは`gpt-live-1`に固定し、画面からProvider・モデル・音声を切り替えない。登録・差し替え時は接続確認を実行し、確認に成功したキーだけを有効化する。確認に失敗した場合は既存キーを維持する。接続確認は`gpt-live-1`モデルへのアクセスをサーバー側で確認し、Live音声Sessionを作成しない。
+システム設定にはOpenAI APIキー管理を置き、OpenAI Project APIキーを全テナントで共有する。このキーをテキスト生成、質問項目設計、GPT Live接続に使用する。GPT Liveモデルは`gpt-live-1`に固定し、画面からProvider・モデル・音声を切り替えない。登録・差し替え時は`gpt-6-luna`、`gpt-6.1-terra`、`gpt-live-1`へのアクセスをサーバー側で確認し、確認に成功したキーだけを有効化する。確認に失敗した場合は既存キーを維持する。接続確認でLive音声Sessionは作成しない。
 
-GPT-Live APIキーはローカルPostgreSQLへ暗号化して保存し、暗号鍵はAPIサーバーのローカル環境設定から供給する。AWSは使用しない。生のAPIキーはBrowserへ返さず、画面には登録状態、先頭8文字と末尾4文字を表示し、その間を実際のキー長に合わせた`*`で隠したプレビュー、接続確認結果を表示する。APIキー、暗号化前の値、OpenAIの応答本文をログ・監査履歴へ含めてはならない。
+OpenAI APIキーはローカルPostgreSQLへ暗号化して保存し、暗号鍵はAPIサーバーの`OPENAI_SETTINGS_ENCRYPTION_KEY`環境設定から供給する。生のAPIキーはBrowserへ返さず、画面には登録状態、先頭8文字と末尾4文字を表示し、その間を実際のキー長に合わせた`*`で隠したプレビュー、接続確認結果を表示する。APIキー、暗号化前の値、OpenAIの応答本文をログ・監査履歴へ含めてはならない。
 
 システム設定画面にはナレッジ一覧に戻る操作を表示する。
 
@@ -420,7 +416,7 @@ Backendは保存前に各タグの前後空白を除去し、空文字を除外�
 インタビュー設定は、`Knowledge.interviewPlan`に次の値を保存した時点で完了とする。
 
 * `profile`: `fixed_form`、`business_process`、`system_requirement`のいずれか
-* `modelId`: `global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`
+* `modelId`: `gpt-6.1-terra`または`gpt-6-luna`
 
 設定が完了していないナレッジでは、管理者と対象者は記録を作成してはいけない。既存の`draft`記録を回答可能な状態へ変更してはいけない。テキストインタビューの開始、回答送信、音声セッションの開始も許可してはいけない。
 
@@ -452,7 +448,7 @@ Frontendは設定未完了の状態を表示し、管理者系ロールには「
 
 本文はBackendで決定的に正規化してから保存・チャンク化する。改行コードをLFへ統一し、外側の空行と空白だけの行を整理し、連続する空行は最大2行までにする。本文中の非空行の字下げ、改行、末尾空白は意味を変えないため保持する。有効なJSONオブジェクトまたは配列だけは構造を変えずに2スペースのインデントへ整形し、JSONとして不正な本文は推測で整形しない。LLMによる書き換えや要約は保存時に実行しない。内部メタデータの`contentFormat`は本文から自動判定する表示・互換用の値であり、入力項目ではない。
 
-Backendは有効な事前知識を質問項目設計、インタビューの質問生成、回答解釈・非同期の回答整理へ渡す。テキスト、Transcribe + Polly、Nova Sonic 2ではこの共通Backend経路で利用方針を共通化する。GPT-Liveでは事前知識を初期会話コンテキストとResponses Delegationの評価Contextへ渡すが、GPT-LiveのTranscriptを共通Structured Interpreterで再評価したり、整理完了を待つためのBackendターン制御を追加したりしてはならない。
+Backendは有効な事前知識をOpenAI Responses APIによる質問項目設計、テキストインタビュー、回答解釈へ渡す。GPT Liveでは事前知識を初期会話コンテキストとResponses Delegationの評価Contextへ渡すが、GPT LiveのTranscriptを別のStructured Interpreterで再評価したり、整理完了を待つためのターン制御を追加したりしてはならない。
 
 * 既知の一般的な前提を最初から説明させず、未確認の内容、差分、具体例を質問する。例えば「承認には製品Aを使用」と登録済みなら、使用製品を聞き直すのではなく、運用上の課題などを聞く。
 * 対象者への適用確認や記録上の回答確認が必要な場合は「製品Aをお使いという理解で合っていますか？」のように既知情報を提示して短く確認する。事前知識だけで必須項目を回答済み・確認済みにしない。
@@ -495,7 +491,7 @@ Backendは有効な事前知識を質問項目設計、インタビューの質�
 | 記録の削除 | 可 | 不可 | 不可 | 不可 |
 | 担当記録の会話・音声回答・確定済み回答の編集 | 可 | 可 | 自分の担当記録だけ可 | 不可 |
 | 確定済みインタビュー成果物の手動訂正 | 可 | 可 | 自分の`in_progress`・`returned`記録だけ可 | 不可 |
-| GPT-Live全テナント共通APIキーの管理 | `applicationSettingsAdmin`権限者だけ可 | 不可 | 不可 | 不可 |
+| OpenAI全テナント共通APIキーの管理 | `applicationSettingsAdmin`権限者だけ可 | 不可 | 不可 | 不可 |
 | インタビュー完了時の記録状態更新 | 自動 | 自動 | 自動 | 不可 |
 | 提案・記録のレビュー、差し戻し、承認 | 可 | 可 | 不可 | 不可 |
 | 確定済み記録の閲覧 | テナント内で可 | 管理対象で可 | 自分の担当記録だけ可 | 明示的に閲覧を許可された記録だけ可 |
@@ -652,7 +648,7 @@ LLMは意味解釈、根拠候補の抽出、自然な指導案・学習案内�
 * RAG評価
 * Agentic RAG
 * リアルタイム音声インタビューの複数話者対応
-* Nova SonicおよびTranscribe + Polly以外の音声Provider追加
+* GPT Live以外の音声Provider追加
 * 音声セッションの複数インスタンス間引き継ぎ
 
 ## 9. インタビュー構造化拡張仕様
@@ -739,7 +735,7 @@ ProcessStateの要素は、インタビュー確認状態`candidate`または`co
 
 図の表示条件を満たした場合、処理モデル画面に「全画面」を表示する。全画面ではフローチャートとシーケンス図を切り替えて表示できる。対象者は自身の`in_progress`・`returned`記録、`admin`と`knowledge_manager`はレビュー対象の記録にある確定済み成果物をキーボードで手動訂正し、「保存」でProcessStateへ反映できる。手動訂正はBackendで検証し、Process要素を変更した場合だけProcessStateのバージョンを1つ進める。RequirementStateだけを変更した場合はProcessStateのバージョンを変更しない。承認済みRecordを管理者系ロールが訂正した場合は`submitted`へ戻して再レビューする。
 
-管理者系ロールには、全画面下部に要件・処理モデルへの指示入力を表示する。指示はBackendが現在の`RequirementState`と`ProcessState`とともにGPT-5.6 LunaまたはTerraへ渡し、`ProcessModelEditOutput`のStructured Outputとして受け取る。`requirementPatch`は既存RequirementStateの値だけを更新し、`processPatch`はProcessStateの意味構造だけを更新する。条件分岐、例外、権限、対象件数、非同期処理、通知、引き継ぎなどのProcessModel編集指示は、共有するProcessStateを通じてフローチャートとシーケンス図の両方へ反映する。Backendは要件ID、ProcessPatchのバージョン、要素ID、参照関係、`baseStateVersion`を検証してから適用する。要件だけを変更した場合はProcessStateのバージョンを変更しない。管理者編集で変更した要件とProcess要素は`confirmed`として保存するが、Recordの正式承認状態は変更しない。Mermaid、React Flowの座標、HTML、SVG、画像を保存してはならない。指示履歴と変更結果は監査用メッセージおよび監査ログへ保存し、通常チャットにも指示、更新対象、主な反映内容を表示する。
+管理者系ロールには、全画面下部に要件・処理モデルへの指示入力を表示する。指示はBackendが現在の`RequirementState`と`ProcessState`とともにGPT-6 LunaまたはGPT-6.1 Terraへ渡し、`ProcessModelEditOutput`のStructured Outputとして受け取る。`requirementPatch`は既存RequirementStateの値だけを更新し、`processPatch`はProcessStateの意味構造だけを更新する。条件分岐、例外、権限、対象件数、非同期処理、通知、引き継ぎなどのProcessModel編集指示は、共有するProcessStateを通じてフローチャートとシーケンス図の両方へ反映する。Backendは要件ID、ProcessPatchのバージョン、要素ID、参照関係、`baseStateVersion`を検証してから適用する。要件だけを変更した場合はProcessStateのバージョンを変更しない。管理者編集で変更した要件とProcess要素は`confirmed`として保存するが、Recordの正式承認状態は変更しない。Mermaid、React Flowの座標、HTML、SVG、画像を保存してはならない。指示履歴と変更結果は監査用メッセージおよび監査ログへ保存し、通常チャットにも指示、更新対象、主な反映内容を表示する。
 
 LLMに次の情報を生成させてはならない。
 
@@ -849,83 +845,41 @@ LLMは質問対象、優先順位、完了状態を返してはならない。LL
 
 事前知識由来の候補は、利用者が明示的に承認するまで正式回答へ保存してはならない。候補を持つ項目は`AWAITING_CONFIRMATION`として保持し、承認時だけ`CONFIRMED`へ移し、訂正時は候補を破棄して利用者発話の値へ置き換える。根拠がない、対象項目との意味的一致が弱い、または有効な参照情報でない場合は候補を作らず、通常の質問を行う。`retrievalPolicy=never`でも7.3.3の設定コンテキストに含まれる既知情報は確認候補に利用できるが、追加検索は行わない。
 
-### 9.8 モデル仕様
+### 9.8 OpenAI APIとモデル仕様
 
-初期のインタビュー意味処理には、Amazon Bedrock上のOpenAI GPT-5.6 Lunaを既定モデルとして使用する。
-呼び出しは`bedrock-runtime`のOpenAI互換Responses APIへ送信する。AWS SigV4で署名し、標準AWS認証情報チェーンから認証情報を取得する。OpenAI APIキーまたは画像生成モデルは使用しない。
-Structured OutputはResponses APIの`text.format`で指定する。この実装では、同じターンの構造化処理にネイティブConverse APIの`outputConfig.textFormat`を使用しない。
+テキスト生成、質問設計、回答解釈、管理者向け要件・処理モデル編集にはOpenAI Responses APIとStructured Outputsを使用する。API呼び出しはBackendのOpenAI SDKアダプターに集約し、保存済みのOpenAI Project APIキーで認証する。
 
-モデルには、Global Inference Profileの`global.openai.gpt-5.6-luna`を既定値として指定する。Global profileは、対応する商用AWSリージョンの容量へルーティングされる。処理リージョンを単一リージョンまたは特定地域に限定する要件がある場合は、このGlobal profileを使用してはならず、別途リージョン要件を満たすprofileを定義する。
-
-ナレッジ単位で、実行設定の「構造化インタビュー実行モデル」から次の2つを選択できる。選択したモデルはInterpreterとQuestion Generatorの両方に適用する。モデルの自動切り替えは行わない。設定がない既存ナレッジはBackend設定の`STRUCTURED_INTERVIEW_MODEL_ID`を使用し、その既定値はLunaとする。Interpreterの推論強度と、短い次質問を生成するQuestion Generatorの推論強度は別々に設定できる。
-
-質問項目設計では、実行設定の「質問項目の設計モデル」から同じ2つを選択できる。選択値はKnowledgeの`defaultModelId`に保存し、Question Design AgentとそのValidatorの両方に適用する。設定がない、または旧モデルが保存された既存ナレッジは、Backend設定の`QUESTION_DESIGN_MODEL_ID`を使用する。許可値はTerraとLunaだけであり、既定値はLunaとする。質問項目設計モデルとインタビュー実行モデルは別々に選択できる。
+インタビュー実行モデルは、ナレッジ単位で次のいずれかを選択する。モデル自動切り替えは行わず、設定がない場合は`STRUCTURED_INTERVIEW_MODEL_ID`の値を使用する。
 
 | 表示名 | `interviewPlan.modelId` | 用途 |
 |---|---|---|
-| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 既定。標準処理とコストを優先する |
-| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 意味解釈と構造化抽出の品質を優先する |
+| GPT-6 Luna | `gpt-6-luna` | 既定。標準処理を行う |
+| GPT-6.1 Terra | `gpt-6.1-terra` | 意味解釈・構造化抽出の品質を優先する |
 
-質問項目設計モデルの選択値は次のとおりである。
+質問項目設計も同じモデルを選択できる。選択値はKnowledgeの`defaultModelId`に保存し、Question Design AgentとValidatorへ適用する。未設定または旧モデルIDが保存された既存ナレッジは、`QUESTION_DESIGN_MODEL_ID`の値へ解決する。旧モデルIDは`gpt-6-luna`、`gpt-6.1-terra`へ解決してからOpenAI APIへ送信する。
 
-| 表示名 | `Knowledge.defaultModelId` | 用途 |
-|---|---|---|
-| OpenAI GPT-5.6 Luna（Global） | `global.openai.gpt-5.6-luna` | 既定。標準的な質問項目設計とコストを優先する |
-| OpenAI GPT-5.6 Terra（Global） | `global.openai.gpt-5.6-terra` | 複雑な意味解釈と検証品質を優先する |
+Responses APIでは`text.format.type=json_schema`、`text.format.name`、`text.format.strict=true`、`text.format.schema`を指定する。Backendは返却JSONをPydantic Schemaで検証し、検証成功後だけ状態へ適用する。Provider障害時に別モデルへ自動fallbackしない。モデルが対応しないパラメーターを送信しない。
 
-インタビュー実行モデル（`interviewPlan.modelId`）は、インタビュー開始後も変更できる。保存後の次回処理から、選択したモデルをInterpreterとQuestion Generatorに適用する。既に保存済みの質問、回答、構造化状態は変更しない。質問項目設計モデル（`Knowledge.defaultModelId`）は、保存後に実行する質問項目設計から適用し、既に作成済みの候補には適用しない。
+質問設計・回答処理の前に、Backendは同じテナントかつ同じKnowledgeに属する情報だけを検索し、関連する取り込み済み文書・承認済み記録などを`retrieved_knowledge`としてモデルへ渡す。LLMにDBアクセスやDB更新を許可しない。GPT Liveは音声会話と質問進行を担い、初期指示またはResponses Delegationへ必要な事前知識を渡す。Delegation結果をBackendが検証してStateへ保存する。
 
-Responses APIのStructured Outputは、`text.format.type=json_schema`、`text.format.name`、`text.format.strict=true`、`text.format.schema`で指定する。Structured Outputは返却形式を固定する仕組みであり、BackendがLLM呼び出し前に検索を実行することを禁止しない。LLMの返却JSONはBackendがPydantic Schemaで検証し、検証成功後だけ状態へ適用する。
+アプリ全体設定管理者は、設定画面からOpenAI APIキーの接続確認・保存・削除を行う。キーは全テナント共通の`application_settings`として保存し、AES-GCMで暗号化する。暗号鍵はアプリホストの`OPENAI_SETTINGS_ENCRYPTION_KEY`から取得し、ブラウザーへは生キーを返さない。保存済みキーは画面に実際の長さに合わせてマスク表示し、ログ・監査履歴へAPIキーやOpenAIの応答本文を含めない。接続確認は`gpt-6-luna`、`gpt-6.1-terra`、`gpt-live-1`をサーバー側で照会し、Live音声Sessionは作成しない。
 
-次の処理表は、モデル未選択時の既定動作を示す。Terraを選択した場合は、同じ処理、同じSchema、同じ推論強度でモデルIDだけをTerraへ置き換える。
-
-| 処理 | 初期モデル | `reasoning.effort` |
-|---|---|---|
-| Dialogue Act判定 | `global.openai.gpt-5.6-luna` | `low` |
-| Field抽出 | `global.openai.gpt-5.6-luna` | `low` |
-| Requirement抽出 | `global.openai.gpt-5.6-luna` | `low` |
-| Process抽出 | `global.openai.gpt-5.6-luna` | `low` |
-| 矛盾・曖昧性判定 | `global.openai.gpt-5.6-luna` | `low` |
-| 次の質問文生成 | `global.openai.gpt-5.6-luna` | `none` |
-
-質問項目設計では、通常時も検証時もKnowledgeで選択された`defaultModelId`を使用する。未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。質問項目設計においてTerraとLunaを自動切り替えしてはならない。
-
-質問項目設計は、BedrockのOpenAI互換Responses APIへ直接送信する。GPT-5.6 Terra／Lunaは`temperature`を使用せず、Structured OutputのJSON Schemaを指定する。GPT-5.6以外のモデルを追加する場合は、モデルが対応する場合に限り温度設定を別仕様で定義する。
-
-質問項目設計の生成前に、Backendは同じテナントかつ同じKnowledgeに属する情報だけを読み取る。検索対象は、既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済みの文書・文書チャンクである。未承認の記録・提案、取り込み中の文書、別Knowledgeの情報をLLMへ渡してはならない。検索結果は`retrieved_knowledge`として入力へ埋め込み、LLMにDBアクセスやDB更新を許可してはならない。
-
-インタビューの次質問生成でも、Backendは同じテナントかつ同じKnowledgeに属する`indexed`または取り込み完了状態の本文・チャンクを共通検索サービスから取得し、Structured InterviewのQuestion Generatorへ`retrieved_knowledge`として渡す。`retrievalPolicy=never`の項目では追加検索せず、`auto`または`required`では質問・項目・会話文脈に関連する情報を検索する。設定として渡す事前知識の扱いは7.3.3に従う。生成された質問には`retrievedSources`として出典ID、タイトル、改訂識別子と検索時のスコアを記録する。`app/voice`は検索・質問進行を実装せず、共通Structured音声経路ではBackendが生成した同じ質問と出典を利用する。GPT-LiveはLiveモデルが質問進行を担い、検索・事前知識のContextは初期指示またはResponses Delegationへ渡す。
-
-Question Design AgentとValidatorは、同じ選択モデルへそれぞれStructured Outputリクエストを送る。生成結果と検証結果はBackendがPydantic Schemaで検証し、検証失敗時は各段階で1回だけ再実行する。Provider障害時に別モデルや別の自動フォールバックへ切り替えてはならない。
-
-既存状態との矛盾、複数フロー、大量更新、大量要求、既存ProcessStateの大幅変更をBackendが検知した場合だけ、ナレッジで選択されたTerraまたはLunaを`medium`で再実行する。
-
-初期実装ではTerraとLunaの自動ルーティングを行わない。Solは選択肢に含めず、利用しない。Solを追加する場合、または自動ルーティングを追加する場合は、Terraとの比較評価、ルーティング条件、失敗時の挙動を別仕様で定義する。
-
-画像生成モデルはインタビュー処理、図生成、図表示のいずれにも使用しない。
-
-インタビュー実行はStructured Interview経路だけを正式サポートする。テキストと音声（Transcribe + Polly）の両方が同じStructured Interpreter、Coordinator、Question Generatorを使用し、旧Interview Agent経路や切替用Feature Flagは持たない。GPT-Liveはこの共通音声経路とは分離したWebRTC経路で、Liveモデルが会話・質問進行、Responses Delegationが意味評価、Application BackendがState保存を担当する。AWS認証情報またはIAM権限が不足している場合は状態を更新せず、エラーとして扱う。
-
-構造化インタビューの環境変数は次のとおりである。
+OpenAI API設定の環境変数は次のとおりである。
 
 | 環境変数 | 必須 | 既定値 | 用途 |
 |---|---:|---|---|
-| `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` | Bedrock Runtimeへ接続する呼び出し元リージョン |
-| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` | Bedrock inference profile IDまたはARN |
-| `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` | 通常時の推論強度 |
+| `OPENAI_SETTINGS_ENCRYPTION_KEY` | はい | なし | 保存済みAPIキーを暗号化する32-byte鍵のBase64表現 |
+| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `gpt-6-luna` | インタビュー実行モデルの既定値 |
+| `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` | Interpreterの推論強度 |
 | `STRUCTURED_INTERVIEW_QUESTION_REASONING_EFFORT` | いいえ | `none` | Question Generatorの推論強度 |
-| `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` | 複雑条件検知時の推論強度 |
-| `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000` | Interpreterの1回のLLM出力上限。長文回答でJSONが上限に達した場合、最大10000トークンまで増やして1回だけ再試行する |
-| `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` | Question Generatorの1回のLLM出力上限。短い質問文のStructured Outputに適用する |
-| `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` | 質問項目の設計モデル。TerraまたはLunaを指定する |
+| `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` | 複雑条件の処理に使う推論強度 |
+| `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000` | Interpreterの出力上限 |
+| `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` | Question Generatorの出力上限 |
+| `QUESTION_DESIGN_MODEL_ID` | いいえ | `gpt-6-luna` | 質問項目設計モデル |
 | `QUESTION_DESIGN_REASONING_EFFORT` | いいえ | `low` | 質問項目設計の推論強度 |
-| `QUESTION_DESIGN_MAX_OUTPUT_TOKENS` | いいえ | `6000` | 質問項目設計の生成・検証出力上限 |
-| `STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS` | いいえ | `5` | HTTP接続タイムアウト |
-| `STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS` | いいえ | `120` | HTTP応答読み取りタイムアウト |
-
-ユーザーが提示したprofile ARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。コードの既定値は、呼び出し元リージョンを変更しても同じ指定を使えるprofile IDの`global.openai.gpt-5.6-luna`とする。ARNを設定する場合は、ARNの呼び出し元リージョンと`BEDROCK_AWS_REGION`を一致させる。
-
-Global profileのIAM許可には、少なくとも対象inference profileへの`bedrock:InvokeModel`、アカウントの`project/default`、呼び出し元リージョンのfoundation model、Global profileが参照するGlobal foundation modelへの許可が必要である。組織のSCPでリージョン制限を行っている場合は、Global profileの宛先リージョンおよび`aws:RequestedRegion=unspecified`を考慮する。
+| `QUESTION_DESIGN_MAX_OUTPUT_TOKENS` | いいえ | `6000` | 質問項目設計の出力上限 |
+| `STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS` | いいえ | `5` | OpenAI API接続タイムアウト |
+| `STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS` | いいえ | `120` | OpenAI API応答読み取りタイムアウト |
 
 ### 9.9 LLMとBackendの責務
 
@@ -964,8 +918,7 @@ Backendの責務は次のとおりである。
 * 確定transcriptだけを`app/api`へ渡す。
 * 確定transcriptでも、意味的に未完了なら現在の質問を維持し、次質問へ進めない。
 * `rawTranscript`と`normalizedTranscript`を分け、意味を変更する補正は確認前に確定しない。
-* `app/voice`にInterviewの意味判断を実装しない。
-* `app/voice`から`app/api`のPythonモジュールを直接importしない。
+* ブラウザーはOpenAI APIキーを保持せず、音声SessionをBackend経由で作成する。
 * Terraへ音声データを直接送信しない。
 * 音声経路専用の完了条件、質問優先順位、回答評価を作らない。
 
@@ -999,7 +952,7 @@ ProcessModelとRequirementStateの直接編集は、インタビュー回答の�
 
 フローチャートまたはシーケンス図の有効化条件を満たした場合、処理モデル画面に「全画面」を表示する。全画面では、2種類の図の切り替え、図の拡大確認、確定済み成果物のキーボード訂正を行える。インタビュー対象者は自身の`in_progress`・`returned`記録を編集でき、管理者系ロールは承認前の記録を編集できる。編集対象は既存要素の名称、条件、関係者、やり取りなどの意味属性とする。保存時はBackendが要素ID、参照関係、Record状態、`baseProcessVersion`、`baseStateVersion`を検証する。`approved`記録を管理者系ロールが編集した場合は`submitted`へ戻して再レビューする。
 
-`admin`または`knowledge_manager`には、全画面下部に要件・処理モデルへの指示入力を表示する。指示は現在の`RequirementState`と`ProcessState`とともにGPT-5.6 LunaまたはTerraへ渡し、`ProcessModelEditOutput`のStructured Outputとして受け取る。Backendは`requirementPatch`と`processPatch`を検証してから各状態へ適用し、指示内容、変更内容、実行ユーザー、使用モデルを監査する。`baseStateVersion`が古い指示は状態競合として拒否する。Mermaid、React Flowの座標、HTML、SVG、画像は生成・保存しない。AIによる編集指示は管理者系ロールだけに許可する。対象者のキーボード訂正は自身の`in_progress`・`returned`記録に限る。`viewer`は閲覧だけを行う。承認済みRecordを管理者系ロールが手動編集した場合は`submitted`へ戻して再レビューする。
+`admin`または`knowledge_manager`には、全画面下部に要件・処理モデルへの指示入力を表示する。指示は現在の`RequirementState`と`ProcessState`とともにGPT-6 LunaまたはGPT-6.1 Terraへ渡し、`ProcessModelEditOutput`のStructured Outputとして受け取る。Backendは`requirementPatch`と`processPatch`を検証してから各状態へ適用し、指示内容、変更内容、実行ユーザー、使用モデルを監査する。`baseStateVersion`が古い指示は状態競合として拒否する。Mermaid、React Flowの座標、HTML、SVG、画像は生成・保存しない。AIによる編集指示は管理者系ロールだけに許可する。対象者のキーボード訂正は自身の`in_progress`・`returned`記録に限る。`viewer`は閲覧だけを行う。承認済みRecordを管理者系ロールが手動編集した場合は`submitted`へ戻して再レビューする。
 
 テキスト経路の同一回答の再送、SSE再接続、音声経路の再送によって、同じ回答を二重に処理したり、同じ質問を二重発行したりしてはならない。
 
@@ -1017,7 +970,7 @@ ProcessModelとRequirementStateの直接編集は、インタビュー回答の�
 
 Web UIの表示言語は`uiLocale`として管理し、AIインタビューの会話言語`interviewLocale`および表示タイムゾーン`timezone`と分離する。`uiLocale`を変更しても、インタビュー言語、AI回答、ユーザー回答、ナレッジ本文、既存Knowledgeの`language`は変更しない。
 
-AIインタビューの会話言語はインタビュー開始時に記録単位で選択し、`InterviewRecord.interviewLocale`へ保存する。初期対応は`ja-JP`、`en-US`、`zh-CN`、`pt-BR`とし、テキスト経路と音声経路（Amazon Transcribe + Polly）へ同じ言語設定を渡す。
+AIインタビューの会話言語はインタビュー開始時に記録単位で選択し、`InterviewRecord.interviewLocale`へ保存する。初期対応は`ja-JP`、`en-US`、`zh-CN`、`pt-BR`とし、テキスト経路とGPT Live音声経路へ同じ言語設定を渡す。
 
 UI Localeの初期対応は`ja-JP`、`en-US`、`zh-CN`、`th-TH`とする。Localeメタデータは一元管理し、機能単位の翻訳JSONを使用する。Fallbackは`ja-JP`とし、翻訳Key不足・余分なKey・空文字・JSON構文エラーはBuild前の検査で失敗させる。
 

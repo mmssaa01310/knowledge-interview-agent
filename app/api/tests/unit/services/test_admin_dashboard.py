@@ -40,7 +40,7 @@ def _create_knowledge(user: UserContext) -> dict:
             purpose="根拠付きレビューを確認する",
             interviewPlan=InterviewPlan(
                 profile="fixed_form",
-                modelId="global.openai.gpt-5.6-luna",
+                modelId="gpt-6-luna",
             ),
         ),
         user,

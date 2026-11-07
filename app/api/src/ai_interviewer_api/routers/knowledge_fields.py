@@ -10,7 +10,7 @@ from ai_interviewer_api.routers.common import (
     interview_context_fields,
 )
 from ai_interviewer_api.schemas.requests import FieldSuggestionRequest, KnowledgeFieldCreate, KnowledgeFieldUpdate
-from ai_interviewer_api.services.field_suggestions import suggest_fields_with_bedrock
+from ai_interviewer_api.services.field_suggestions import suggest_fields_with_openai
 
 router = APIRouter(prefix="/api")
 
@@ -89,7 +89,7 @@ def suggest_fields(
 ) -> dict:
     require_management_role(user)
     get_scoped_item("knowledges", knowledge_id, user, "knowledge_not_found")
-    return suggest_fields_with_bedrock(payload, user, knowledge_id=knowledge_id)
+    return suggest_fields_with_openai(payload, user, knowledge_id=knowledge_id)
 
 
 @router.patch("/knowledge-fields/{field_id}")

@@ -37,11 +37,11 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     target_key,
 )
 from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockResponsesStructuredProvider,
+    OpenAIResponsesStructuredProvider,
     StructuredInterviewProvider,
 )
 from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.provider import (
-    BedrockFastInterpreterProvider,
+    OpenAIFastInterpreterProvider,
     FastInterpreterProvider,
 )
 from ai_interviewer_api.agents.interview_knowledge.fast_interpreter.schemas import (
@@ -529,7 +529,7 @@ def start_fast_interview_turn(
         prior_knowledge=build_prior_knowledge_context(knowledge, user),
     )
     structured_provider = _get_structured_provider(provider, model_id=model_id)
-    selected_fast_provider = fast_provider or BedrockFastInterpreterProvider()
+    selected_fast_provider = fast_provider or OpenAIFastInterpreterProvider()
     source_turn_id = str(latest_user_message.get("voiceTurnId") or latest_user_message.get("turnId") or "")
     source_message_id = str(latest_user_message.get("id") or "")
     source_turn_sequence = _optional_int(latest_user_message.get("voiceTurnSequence"))
@@ -3019,8 +3019,8 @@ def preview_structured_interview_output(
     """Interpret a candidate answer without writing messages or state.
 
     This is intentionally narrower than the foreground coordinator.  It
-    provides the expensive semantic interpretation for the Transcribe soft
-    endpoint; the formal path still owns validation, target selection, state
+    provides the expensive semantic interpretation for the Live transcript
+    capture path; the formal path still owns validation, target selection, state
     transition, question generation, and persistence.
     """
 
@@ -5600,7 +5600,7 @@ def _get_structured_provider(
 ) -> StructuredInterviewProvider:
     if provider is not None:
         return provider
-    return BedrockResponsesStructuredProvider(model_id=model_id)
+    return OpenAIResponsesStructuredProvider(model_id=model_id)
 
 
 def _target_from_question(question: Mapping[str, Any] | None) -> dict[str, Any] | None:

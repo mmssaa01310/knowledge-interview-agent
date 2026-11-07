@@ -38,7 +38,7 @@ def _create_knowledge(user: UserContext) -> dict:
         KnowledgeCreate(
             name="アクセス制御テスト",
             purpose="記録の権限を確認する",
-            interviewPlan=InterviewPlan(profile="fixed_form", modelId="global.openai.gpt-5.6-terra"),
+            interviewPlan=InterviewPlan(profile="fixed_form", modelId="gpt-6.1-terra"),
         ),
         user,
     )

@@ -86,7 +86,7 @@ def ensure_dev_voice_demo() -> dict[str, str]:
                 description="人物の業務経験、強み、課題、今後の目標を順番に確認する",
                 purpose="人物インタビューの質問設計とリアルタイム音声会話の動作確認",
                 language="ja",
-                defaultModelId="apac.amazon.nova-pro-v1:0",
+                defaultModelId="gpt-6-luna",
                 interviewPlan=InterviewPlan(
                     profile="fixed_form",
                     modelId=settings.structured_interview_model_id,
@@ -270,25 +270,10 @@ def ensure_dev_voice_demo() -> dict[str, str]:
 
 def reset_dev_voice_demo() -> dict[str, str]:
     identifiers = ensure_dev_voice_demo()
-    voice_session_ids = {
-        item["id"]
-        for item in store.list("voice_sessions", DEV_TENANT_ID)
-        if item.get("recordId") == VOICE_DEMO_RECORD_ID
-    }
-    scoped_tables = (
-        "messages",
-        "proposals",
-        "voice_sessions",
-        "voice_turns",
-        "voice_assistant_events",
-        "voice_connection_events",
-    )
+    scoped_tables = ("messages", "proposals")
     for table_name in scoped_tables:
         for item in list(store.list(table_name, DEV_TENANT_ID)):
-            if (
-                item.get("recordId") == VOICE_DEMO_RECORD_ID
-                or item.get("voiceSessionId") in voice_session_ids
-            ):
+            if item.get("recordId") == VOICE_DEMO_RECORD_ID:
                 store.delete(table_name, item["id"])
     store.delete("interview_states", f"interview-state-{VOICE_DEMO_RECORD_ID}")
     return identifiers

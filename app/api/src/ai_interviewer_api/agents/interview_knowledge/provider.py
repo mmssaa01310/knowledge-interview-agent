@@ -2,27 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
-import math
-import random
-import re
-import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
-import boto3
 import httpx
-from botocore.auth import SigV4Auth
-from botocore.awsrequest import AWSRequest
-from botocore.exceptions import BotoCoreError
+from openai import OpenAI
 
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
-    ProcessModelEditOutput,
-    QuestionHelpOutput,
-    QuestionGenerationOutput,
-    StructuredInterviewOutput,
     LiveObservationOutput,
+    ProcessModelEditOutput,
+    QuestionGenerationOutput,
+    QuestionHelpOutput,
+    StructuredInterviewOutput,
 )
 from ai_interviewer_api.core.config import settings
 from ai_interviewer_api.core.interview_locale import (
@@ -30,21 +21,18 @@ from ai_interviewer_api.core.interview_locale import (
     interview_language_instruction,
     normalize_interview_locale,
 )
+from ai_interviewer_api.services.application_settings import get_openai_api_key
 
 
 class StructuredInterviewProviderError(RuntimeError):
     """Raised when the configured structured-output provider cannot respond."""
 
 
-class BedrockAPIError(StructuredInterviewProviderError):
-    """Raised for Bedrock HTTP/API failures that should not trigger output retries."""
+class OpenAIAPIError(StructuredInterviewProviderError):
+    """Raised for OpenAI API failures that should not trigger output retries."""
 
 
 logger = logging.getLogger(__name__)
-
-_RETRYABLE_BEDROCK_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-_BEDROCK_MAX_REQUEST_ATTEMPTS = 3
-_BEDROCK_MAX_RETRY_AFTER_SECONDS = 5.0
 
 
 class StructuredInterviewProvider(Protocol):
@@ -84,39 +72,41 @@ class ProcessModelEditProvider(Protocol):
     ) -> ProcessModelEditOutput: ...
 
 
-class BedrockResponsesStructuredProvider:
-    """Amazon Bedrock OpenAI-compatible Responses API adapter.
+class OpenAIResponsesStructuredProvider:
+    """OpenAI Responses API adapter for structured interview agents."""
 
-    GPT-5.6 Terra or Luna is invoked through the Bedrock Runtime endpoint with
-    an inference profile model ID. AWS credentials are used for SigV4
-    signing; the adapter does not require an OpenAI or Bedrock API key.
-
-    This adapter owns provider-specific HTTP details. Interview state,
-    priority decisions, and output validation remain in the backend
-    coordinator.
-    """
-
-    def __init__(
-        self,
-        *,
-        model_id: str | None = None,
-        region_name: str | None = None,
-        endpoint_url: str | None = None,
-        session: Any | None = None,
-        http_client_factory: Any | None = None,
-    ) -> None:
-        self.model_id = (model_id or settings.structured_interview_model_id).strip()
-        self.region_name = (region_name or settings.bedrock_aws_region).strip()
-        self.endpoint_url = (
-            endpoint_url
-            or f"https://bedrock-runtime.{self.region_name}.amazonaws.com/openai/v1"
-        ).rstrip("/")
-        self.session = session or boto3.Session(region_name=self.region_name)
-        self.http_client_factory = http_client_factory or httpx.Client
+    def __init__(self, *, model_id: str | None = None) -> None:
+        selected_model_id = (model_id or settings.structured_interview_model_id).strip()
+        self.model_id = {
+            "global.openai.gpt-5.6-luna": "gpt-6-luna",
+            "global.openai.gpt-5.6-terra": "gpt-6.1-terra",
+            "gpt-5.6-luna": "gpt-6-luna",
+            "gpt-5.6-terra": "gpt-6.1-terra",
+        }.get(selected_model_id, selected_model_id)
         self.timeout = httpx.Timeout(
             timeout=settings.structured_interview_read_timeout_seconds,
             connect=settings.structured_interview_connect_timeout_seconds,
         )
+
+    def _client(self) -> OpenAI:
+        api_key = get_openai_api_key()
+        if not api_key:
+            raise OpenAIAPIError("OpenAI API key is not configured")
+        return OpenAI(api_key=api_key, timeout=self.timeout, max_retries=2)
+
+    def _api_failure(self, exc: Exception, *, schema_name: str, model: str) -> OpenAIAPIError:
+        status_code = getattr(exc, "status_code", None)
+        request_id = getattr(exc, "request_id", None)
+        logger.warning(
+            "openai_responses_request_failed schema=%s model_id=%s status_code=%s "
+            "request_id=%s error_type=%s",
+            schema_name,
+            model,
+            status_code,
+            request_id,
+            type(exc).__name__,
+        )
+        return OpenAIAPIError("OpenAI Responses API request failed")
 
     def interpret(
         self,
@@ -124,7 +114,7 @@ class BedrockResponsesStructuredProvider:
         profile: str,
         context: Mapping[str, Any],
         reasoning_effort: str,
-    ) -> StructuredInterviewOutput:
+    ) -> StructuredInterviewOutput | LiveObservationOutput:
         error: Exception | None = None
         max_output_tokens = settings.structured_interview_max_output_tokens
         observation_instructions = (
@@ -148,7 +138,7 @@ class BedrockResponsesStructuredProvider:
                     max_output_tokens=max_output_tokens,
                 )
                 return output_type.model_validate(payload)
-            except BedrockAPIError:
+            except OpenAIAPIError:
                 raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
@@ -183,7 +173,7 @@ class BedrockResponsesStructuredProvider:
                 if not output.questionText.strip():
                     raise StructuredInterviewProviderError("structured question text is empty")
                 return output
-            except BedrockAPIError:
+            except OpenAIAPIError:
                 raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
@@ -216,7 +206,7 @@ class BedrockResponsesStructuredProvider:
                 if not all(item.strip() for item in output.examples + output.perspectives):
                     raise StructuredInterviewProviderError("question help contains empty guidance")
                 return output
-            except BedrockAPIError:
+            except OpenAIAPIError:
                 raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
@@ -233,24 +223,12 @@ class BedrockResponsesStructuredProvider:
         reasoning_effort: str,
         on_delta: Callable[[str], None],
     ) -> QuestionGenerationOutput:
-        """Stream a plain question for targets that do not use document RAG.
-
-        The ordinary question contract is structured JSON because document
-        candidates must be validated by the backend.  For ``retrievalPolicy``
-        ``never`` the candidate fields are not applicable, so the same Bedrock
-        Responses endpoint can safely stream the user-facing question text.
-        Callers still receive a validated ``QuestionGenerationOutput`` after
-        the stream has completed.
-        """
-
+        """Stream a validated question through OpenAI Responses."""
         stream_system_prompt = _question_stream_system_prompt(
             profile,
             normalize_interview_locale(context.get("interviewLocale")) or "ja-JP",
         )
-        stream_user_payload_text = json.dumps(
-            {"context": context, "target": target},
-            ensure_ascii=False,
-        )
+        stream_user_payload_text = json.dumps({"context": context, "target": target}, ensure_ascii=False)
         logger.info(
             "structured_question_request model_id=%s reasoning_effort=%s streaming=true "
             "prompt_chars=%s estimated_input_tokens=%s max_output_tokens=%s",
@@ -260,79 +238,36 @@ class BedrockResponsesStructuredProvider:
             _estimated_input_tokens(stream_system_prompt, stream_user_payload_text),
             settings.structured_interview_question_max_output_tokens,
         )
-        request_body = {
-            "model": self.model_id,
-            "reasoning": {"effort": reasoning_effort},
-            "input": [
-                {
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": stream_system_prompt,
-                        }
-                    ],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": stream_user_payload_text,
-                        }
-                    ],
-                },
-            ],
-            "max_output_tokens": settings.structured_interview_question_max_output_tokens,
-            "stream": True,
-        }
-        request_url = f"{self.endpoint_url}/responses"
-        request_body_text = json.dumps(
-            request_body,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
         output_text = ""
-        usage: Mapping[str, Any] | None = None
+        usage: Any = None
         try:
-            headers = self._signed_headers(request_url, request_body_text)
-            with self.http_client_factory(timeout=self.timeout) as client:
-                with client.stream(
-                    "POST",
-                    request_url,
-                    headers=headers,
-                    content=request_body_text.encode("utf-8"),
-                ) as response:
-                    response.raise_for_status()
-                    for event in _iter_sse_events(response):
-                        event_usage = event.get("usage")
-                        if not isinstance(event_usage, Mapping):
-                            event_response = event.get("response")
-                            event_usage = (
-                                event_response.get("usage")
-                                if isinstance(event_response, Mapping)
-                                else None
-                            )
-                        if isinstance(event_usage, Mapping):
-                            usage = event_usage
-                        if event.get("type") != "response.output_text.delta":
-                            continue
-                        delta = event.get("delta")
-                        if not isinstance(delta, str) or not delta:
-                            continue
-                        output_text += delta
-                        on_delta(delta)
-        except StructuredInterviewProviderError:
+            stream = self._client().responses.create(
+                model=self.model_id,
+                reasoning={"effort": reasoning_effort},
+                input=[
+                    {"role": "system", "content": [{"type": "input_text", "text": stream_system_prompt}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": stream_user_payload_text}]},
+                ],
+                max_output_tokens=settings.structured_interview_question_max_output_tokens,
+                stream=True,
+            )
+            with stream:
+                for event in stream:
+                    event_type = getattr(event, "type", None)
+                    if event_type == "response.output_text.delta":
+                        delta = getattr(event, "delta", None)
+                        if isinstance(delta, str) and delta:
+                            output_text += delta
+                            on_delta(delta)
+                    elif event_type == "response.completed":
+                        usage = getattr(getattr(event, "response", None), "usage", None)
+        except OpenAIAPIError:
             raise
-        except (BotoCoreError, httpx.HTTPError, ValueError) as exc:
-            raise StructuredInterviewProviderError(
-                "Amazon Bedrock question streaming request failed"
-            ) from exc
+        except Exception as exc:
+            raise self._api_failure(exc, schema_name="interview_question", model=self.model_id) from exc
         question_text = output_text.strip()
         if not question_text:
-            raise StructuredInterviewProviderError(
-                "Amazon Bedrock question streaming response is empty"
-            )
+            raise StructuredInterviewProviderError("OpenAI question streaming response is empty")
         _log_provider_usage(
             schema_name="interview_question",
             model=self.model_id,
@@ -365,7 +300,7 @@ class BedrockResponsesStructuredProvider:
                 if not output.reply.strip():
                     raise StructuredInterviewProviderError("process model edit reply is empty")
                 return output
-            except BedrockAPIError:
+            except OpenAIAPIError:
                 raise
             except (StructuredInterviewProviderError, ValueError) as exc:
                 error = exc
@@ -385,13 +320,6 @@ class BedrockResponsesStructuredProvider:
         reasoning_effort: str,
         max_output_tokens: int,
     ) -> dict[str, Any]:
-        """Request a validated JSON-shaped response for another agent contract.
-
-        The HTTP/SigV4 and strict-schema handling is shared with the structured
-        interview provider. Callers remain responsible for validating the
-        returned payload with their own Pydantic model.
-        """
-
         return self._request(
             model=self.model_id,
             reasoning_effort=reasoning_effort,
@@ -424,143 +352,48 @@ class BedrockResponsesStructuredProvider:
             _estimated_input_tokens(system_prompt, user_payload_text),
             max_output_tokens,
         )
-        request_body = {
-            "model": model,
-            "reasoning": {"effort": reasoning_effort},
-            "input": [
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": system_prompt}],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": user_payload_text,
-                        }
-                    ],
-                },
-            ],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": schema_name,
-                    "strict": True,
-                    "schema": _make_strict_schema(schema),
-                }
-            },
-            "max_output_tokens": max_output_tokens,
-        }
-        request_url = f"{self.endpoint_url}/responses"
-        request_body_text = json.dumps(request_body, ensure_ascii=False, separators=(",", ":"))
         try:
-            for attempt in range(_BEDROCK_MAX_REQUEST_ATTEMPTS):
-                try:
-                    signed_headers = self._signed_headers(request_url, request_body_text)
-                    with self.http_client_factory(timeout=self.timeout) as client:
-                        response = client.post(
-                            request_url,
-                            headers=signed_headers,
-                            content=request_body_text.encode("utf-8"),
-                        )
-                    response.raise_for_status()
-                    response_json = response.json()
-                    break
-                except httpx.HTTPStatusError as exc:
-                    response = exc.response
-                    status_code = response.status_code
-                    error_type = _safe_bedrock_header(
-                        response.headers.get("x-amzn-errortype")
-                        or response.headers.get("x-amzn-ErrorType")
-                    )
-                    request_id = _safe_bedrock_header(
-                        response.headers.get("x-amzn-requestid")
-                        or response.headers.get("x-amz-request-id")
-                        or response.headers.get("x-amz-apigw-id")
-                    )
-                    should_retry = (
-                        status_code in _RETRYABLE_BEDROCK_STATUS_CODES
-                        and attempt + 1 < _BEDROCK_MAX_REQUEST_ATTEMPTS
-                    )
-                    delay = (
-                        _bedrock_retry_delay_seconds(
-                            attempt,
-                            response.headers.get("retry-after"),
-                        )
-                        if should_retry
-                        else None
-                    )
-                    should_retry = should_retry and delay is not None
-                    logger.warning(
-                        "structured_bedrock_http_error schema=%s model_id=%s "
-                        "status_code=%s error_type=%s aws_request_id=%s attempt=%s retrying=%s",
-                        schema_name,
-                        model,
-                        status_code,
-                        error_type or "unknown",
-                        request_id or "unknown",
-                        attempt + 1,
-                        should_retry,
-                    )
-                    if should_retry and delay is not None:
-                        logger.info(
-                            "structured_bedrock_retry schema=%s model_id=%s "
-                            "attempt=%s delay_ms=%s",
-                            schema_name,
-                            model,
-                            attempt + 1,
-                            round(delay * 1000),
-                        )
-                        time.sleep(delay)
-                        continue
-                    raise BedrockAPIError(
-                        "Amazon Bedrock Structured Outputs request failed "
-                        f"(status_code={status_code}, error_type={error_type or 'unknown'})"
-                    ) from exc
-            else:
-                raise BedrockAPIError("Amazon Bedrock Structured Outputs request failed")
-        except BedrockAPIError:
+            response = self._client().responses.create(
+                model=model,
+                reasoning={"effort": reasoning_effort},
+                input=[
+                    {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": user_payload_text}]},
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": schema_name,
+                        "strict": True,
+                        "schema": _make_strict_schema(schema),
+                    }
+                },
+                max_output_tokens=max_output_tokens,
+            )
+        except OpenAIAPIError:
             raise
-        except (BotoCoreError, httpx.HTTPError, ValueError) as exc:
-            logger.warning(
-                "structured_bedrock_request_failed schema=%s model_id=%s error_type=%s",
-                schema_name,
-                model,
-                type(exc).__name__,
-            )
-            raise BedrockAPIError(
-                "Amazon Bedrock Structured Outputs request failed"
-            ) from exc
+        except Exception as exc:
+            raise self._api_failure(exc, schema_name=schema_name, model=model) from exc
 
-        response_status = response_json.get("status")
-        incomplete_details = response_json.get("incomplete_details")
-        if response_status == "incomplete" or incomplete_details:
-            reason = (
-                incomplete_details.get("reason")
-                if isinstance(incomplete_details, Mapping)
-                else None
-            )
+        status = getattr(response, "status", None)
+        incomplete_details = getattr(response, "incomplete_details", None)
+        if status == "incomplete" or incomplete_details:
             logger.warning(
-                "structured_interview_provider_incomplete model_id=%s status=%s reason=%s",
+                "openai_structured_response_incomplete model_id=%s status=%s reason=%s request_id=%s",
                 model,
-                response_status,
-                reason,
+                status,
+                getattr(incomplete_details, "reason", None),
+                getattr(response, "_request_id", None),
             )
-
-        text = _extract_response_text(response_json)
-        if not text:
-            raise StructuredInterviewProviderError(
-                "Amazon Bedrock Structured Outputs response is empty"
-            )
+        text = getattr(response, "output_text", "")
+        if not isinstance(text, str) or not text.strip():
+            raise StructuredInterviewProviderError("OpenAI Structured Outputs response is empty")
         _log_provider_usage(
             schema_name=schema_name,
             model=model,
             reasoning_effort=reasoning_effort,
             output_chars=len(text),
-            usage=response_json.get("usage")
-            if isinstance(response_json.get("usage"), Mapping)
-            else None,
+            usage=getattr(response, "usage", None),
         )
         try:
             parsed = json.loads(text)
@@ -568,87 +401,22 @@ class BedrockResponsesStructuredProvider:
             logger.warning(
                 "structured_interview_provider_invalid_json model_id=%s status=%s output_chars=%s",
                 model,
-                response_status,
+                status,
                 len(text),
             )
-            raise StructuredInterviewProviderError(
-                "Amazon Bedrock Structured Outputs response is not JSON"
-            ) from exc
+            raise StructuredInterviewProviderError("OpenAI Structured Outputs response is not JSON") from exc
         if not isinstance(parsed, dict):
-            raise StructuredInterviewProviderError(
-                "Amazon Bedrock Structured Outputs response is not an object"
-            )
+            raise StructuredInterviewProviderError("OpenAI Structured Outputs response is not an object")
         return parsed
-
-    def _signed_headers(self, request_url: str, request_body_text: str) -> dict[str, str]:
-        credentials = self.session.get_credentials()
-        if credentials is None:
-            raise BedrockAPIError(
-                "AWS credentials are not configured for Bedrock"
-            )
-        signed_request = AWSRequest(
-            method="POST",
-            url=request_url,
-            data=request_body_text.encode("utf-8"),
-            headers={"content-type": "application/json"},
-        )
-        SigV4Auth(
-            credentials.get_frozen_credentials(),
-            "bedrock",
-            self.region_name,
-        ).add_auth(signed_request)
-        return dict(signed_request.headers)
 
 
 def _retry_max_output_tokens(current: int) -> int:
     """Give a truncated structured response a larger retry budget."""
-
     return max(current, min(current * 2, 10_000))
 
 
-def _safe_bedrock_header(value: str | None) -> str | None:
-    if not value:
-        return None
-    return re.sub(r"[^A-Za-z0-9_.:/-]", "", value)[:128] or None
-
-
-def _bedrock_retry_delay_seconds(attempt: int, retry_after: str | None) -> float | None:
-    """Return a bounded jittered delay, or skip retry when Retry-After is too long."""
-
-    retry_after_seconds: float | None = None
-    if retry_after:
-        try:
-            retry_after_seconds = float(retry_after)
-            if not math.isfinite(retry_after_seconds):
-                retry_after_seconds = None
-        except ValueError:
-            try:
-                retry_at = parsedate_to_datetime(retry_after)
-                if retry_at.tzinfo is None:
-                    retry_at = retry_at.replace(tzinfo=timezone.utc)
-                retry_after_seconds = max(
-                    0.0,
-                    (retry_at - datetime.now(timezone.utc)).total_seconds(),
-                )
-            except (TypeError, ValueError, OverflowError):
-                retry_after_seconds = None
-
-    if retry_after_seconds is not None:
-        if retry_after_seconds < 0:
-            retry_after_seconds = None
-        elif retry_after_seconds > _BEDROCK_MAX_RETRY_AFTER_SECONDS:
-            return None
-        else:
-            jitter_limit = min(0.25, _BEDROCK_MAX_RETRY_AFTER_SECONDS - retry_after_seconds)
-            return retry_after_seconds + random.uniform(0.0, jitter_limit)
-
-    backoff_limit = min(2.0, 0.5 * (2**attempt))
-    return random.uniform(0.0, backoff_limit)
-
-
 def _estimated_input_tokens(system_prompt: str, user_payload_text: str) -> int:
-    """Return a coarse, explicitly estimated prompt-token count for telemetry."""
-
+    """Return a coarse estimated prompt-token count for telemetry."""
     prompt_chars = len(system_prompt) + len(user_payload_text)
     return max(1, (prompt_chars + 3) // 4)
 
@@ -659,8 +427,13 @@ def _log_provider_usage(
     model: str,
     reasoning_effort: str,
     output_chars: int,
-    usage: Mapping[str, Any] | None,
+    usage: Any,
 ) -> None:
+    def value(name: str) -> Any:
+        if isinstance(usage, Mapping):
+            return usage.get(name)
+        return getattr(usage, name, None) if usage is not None else None
+
     logger.info(
         "structured_llm_usage schema=%s model_id=%s reasoning_effort=%s output_chars=%s "
         "input_tokens=%s output_tokens=%s total_tokens=%s",
@@ -668,52 +441,10 @@ def _log_provider_usage(
         model,
         reasoning_effort,
         output_chars,
-        usage.get("input_tokens") if usage is not None else None,
-        usage.get("output_tokens") if usage is not None else None,
-        usage.get("total_tokens") if usage is not None else None,
+        value("input_tokens"),
+        value("output_tokens"),
+        value("total_tokens"),
     )
-
-
-def _iter_sse_events(response: Any) -> Iterator[dict[str, Any]]:
-    """Decode JSON data records emitted by Responses streaming."""
-
-    for raw_line in response.iter_lines():
-        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else str(raw_line)
-        if not line.startswith("data:"):
-            continue
-        payload = line[5:].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            logger.debug("structured_question_stream_invalid_event")
-            continue
-        if isinstance(event, dict):
-            yield event
-
-
-def _extract_response_text(response: Mapping[str, Any]) -> str:
-    direct = response.get("output_text")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-    output = response.get("output")
-    if not isinstance(output, Sequence):
-        return ""
-    chunks: list[str] = []
-    for item in output:
-        if not isinstance(item, Mapping):
-            continue
-        content = item.get("content")
-        if not isinstance(content, Sequence):
-            continue
-        for block in content:
-            if not isinstance(block, Mapping):
-                continue
-            text = block.get("text")
-            if isinstance(text, str):
-                chunks.append(text)
-    return "".join(chunks).strip()
 
 
 def _make_strict_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
@@ -781,7 +512,7 @@ def _interpreter_system_prompt(profile: str, locale: InterviewLocale = "ja-JP") 
 - probeQuestionは「具体的に教えてください」の繰り返しにせず、元回答で分かっている内容を前置きにして不足観点を直接聞いてください。新しい事実を推測してはいけません。
 - currentTurnType=PROBEの場合は、最新発話をそのprobeへの回答として扱い、元の基本回答を上書きしないでください。integratedAnswerを返す場合は、originalAnswerとprobe回答に明示されている情報だけで統合し、事実を補完しないでください。
 - utteranceCompletenessは、発話の終端が途中で切れているかを表します。ただし、途中の断片より前に独立して評価できる回答観点がある場合、その観点は必ず抽出し、answerEvaluationをPARTIALLY_ANSWEREDまたはANSWEREDにしてください。独立して評価できる回答内容がなく、発話全体が途中で終わっている場合だけINCOMPLETEにします。末尾のためらいだけで、既に完結した回答をINCOMPLETE扱いに戻さないでください。判断できない場合はUNCERTAINにします。
-- Transcribe由来の発話ではtranscriptAssessment.rawTranscriptに最新発話をそのまま入れ、意味を変えない句読点・空白・表記揺れだけをNONEとしてnormalizedTranscriptに反映します。単語や意味を変更する場合はCORRECTEDにし、normalizedTranscriptへ最有力の自然な候補を入れます。候補が一意でない場合はUNCERTAINにし、correctionCandidatesを列挙します。発話にない情報は追加しません。
+- 音声認識された発話ではtranscriptAssessment.rawTranscriptに最新発話をそのまま入れ、意味を変えない句読点・空白・表記揺れだけをNONEとしてnormalizedTranscriptに反映します。単語や意味を変更する場合はCORRECTEDにし、normalizedTranscriptへ最有力の自然な候補を入れます。候補が一意でない場合はUNCERTAINにし、correctionCandidatesを列挙します。発話にない情報は追加しません。
 - 直前までの同じ質問への回答と照合して、今回の語句が質問目的に対して矛盾し、会話履歴にただ1つの一貫した候補がある場合は、その履歴を根拠に意味を解決して構いません。その場合も推測では補正せず、一意に決められないときだけambiguousSpansへ具体的なspanを入れてください。
 - transcriptAssessment.recognitionStatusは、文字起こしが内容を保持している場合はCLEARにしてください。音声認識結果が途中で欠落した根拠がある場合だけPARTIAL、文字起こし自体が空または評価不能な場合だけMISSING、語句の候補が複数あり音声上の判別不能が根拠にある場合だけAMBIGUOUSにします。回答の意味が不足しているだけの場合はCLEARのままにし、NOT_HEARDにしてはいけません。recognitionEvidenceには、入力コンテキストに実際に存在する認識上の根拠だけを入れてください。
 - transcriptAssessment.ambiguousSpansには、実際に聞き分けられない語句だけを最大5件入れてください。spanはrawTranscriptにある文字列、semanticRoleは「technology_name」「person_name」「organization_name」「number」「date」など、その語句が質問内で担う意味です。質問目的を満たすうえでその語句が重要な場合だけimportant=trueにし、重要でない曖昧語はimportant=falseにしてください。重要な曖昧語がある場合は、元質問全体を再説明せず、その語句の役割だけを短く聞き返せるようにしてください。音声自体は明瞭で情報が不足している場合、ambiguousSpansは空にしてください。

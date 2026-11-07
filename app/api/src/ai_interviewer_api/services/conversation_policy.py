@@ -18,7 +18,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockResponsesStructuredProvider,
+    OpenAIResponsesStructuredProvider,
     StructuredInterviewProviderError,
 )
 from ai_interviewer_api.agents.interview_knowledge.schemas import (
@@ -62,15 +62,15 @@ class CanonicalIntentProvider(Protocol):
     def classify(self, *, context: Mapping[str, Any]) -> CanonicalIntentOutput: ...
 
 
-class BedrockCanonicalIntentProvider:
-    """Bedrock adapter for the foreground, intent-only classification call."""
+class OpenAICanonicalIntentProvider:
+    """OpenAI adapter for the foreground, intent-only classification call."""
 
     def __init__(
         self,
         *,
-        provider: BedrockResponsesStructuredProvider | None = None,
+        provider: OpenAIResponsesStructuredProvider | None = None,
     ) -> None:
-        self._provider = provider or BedrockResponsesStructuredProvider(
+        self._provider = provider or OpenAIResponsesStructuredProvider(
             model_id=settings.structured_interview_fast_model_id,
         )
 
@@ -308,7 +308,7 @@ def resolve_canonical_intent(
         interview_state=interview_state,
     )
     started_at = monotonic()
-    provider_name = provider.__class__.__name__ if provider is not None else "bedrock"
+    provider_name = provider.__class__.__name__ if provider is not None else "openai"
     logger.info(
         "conversation_router_start utterance_chars=%s question_id=%s target_id=%s "
         "pending_confirmation=%s provider=%s",
@@ -319,7 +319,7 @@ def resolve_canonical_intent(
         provider_name,
     )
     try:
-        selected_provider = provider or BedrockCanonicalIntentProvider()
+        selected_provider = provider or OpenAICanonicalIntentProvider()
         output = selected_provider.classify(context=context)
         dialogue_act = output.dialogueAct
         user_intent = output.userIntent

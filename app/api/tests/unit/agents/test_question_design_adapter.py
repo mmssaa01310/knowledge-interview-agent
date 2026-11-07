@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi import HTTPException
 
 from ai_interviewer_api.auth.deps import DEV_TOKENS
@@ -126,7 +125,7 @@ def test_adapt_question_design_output_maps_to_existing_response_shape() -> None:
     assert result.fields[0].aiQuestionExamples == ["正常と異常をどのように見分けますか。"]
 
 
-def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatch) -> None:
+def test_suggest_fields_with_openai_keeps_existing_endpoint_contract(monkeypatch) -> None:
     before_proposals = dict(store.tables["proposals"])
     before_fields = dict(store.tables["knowledge_fields"])
     captured_temperature = None
@@ -157,7 +156,7 @@ def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatc
         fake_run_question_design,
     )
 
-    result = field_suggestions.suggest_fields_with_bedrock(
+    result = field_suggestions.suggest_fields_with_openai(
         FieldSuggestionRequest(
             content="質問項目を考えて",
             existingFields=[
@@ -172,15 +171,14 @@ def test_suggest_fields_with_bedrock_keeps_existing_endpoint_contract(monkeypatc
         DEV_TOKENS["dev-manager"],
     )
 
-    assert result["bedrockInvoked"] is True
     assert result["modelId"] == field_suggestions.settings.question_design_model_id
-    assert captured_temperature == 0.0
+    assert captured_temperature is None
     assert [field["name"] for field in result["fields"]] == ["判断基準"]
     assert store.tables["proposals"] == before_proposals
     assert store.tables["knowledge_fields"] == before_fields
 
 
-def test_suggest_fields_with_bedrock_uses_selected_gpt_model(monkeypatch) -> None:
+def test_suggest_fields_with_openai_uses_selected_gpt_model(monkeypatch) -> None:
     captured_model_id = None
 
     def fake_run_question_design(*args, **kwargs):
@@ -199,19 +197,19 @@ def test_suggest_fields_with_bedrock_uses_selected_gpt_model(monkeypatch) -> Non
 
     monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
 
-    result = field_suggestions.suggest_fields_with_bedrock(
+    result = field_suggestions.suggest_fields_with_openai(
         FieldSuggestionRequest(
             content="保全業務の質問項目を作って",
-            context={"defaultModelId": "global.openai.gpt-5.6-luna"},
+            context={"defaultModelId": "gpt-6-luna"},
         ),
         DEV_TOKENS["dev-manager"],
     )
 
-    assert captured_model_id == "global.openai.gpt-5.6-luna"
-    assert result["modelId"] == "global.openai.gpt-5.6-luna"
+    assert captured_model_id == "gpt-6-luna"
+    assert result["modelId"] == "gpt-6-luna"
 
 
-def test_suggest_fields_with_bedrock_passes_retrieved_context_to_design_engine(monkeypatch) -> None:
+def test_suggest_fields_with_openai_passes_retrieved_context_to_design_engine(monkeypatch) -> None:
     retrieved = RetrievedKnowledgeContext(
         source_type="approved_record",
         source_id="record-1",
@@ -242,7 +240,7 @@ def test_suggest_fields_with_bedrock_passes_retrieved_context_to_design_engine(m
     monkeypatch.setattr(field_suggestions, "retrieve_question_design_context", fake_retrieve)
     monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
 
-    result = field_suggestions.suggest_fields_with_bedrock(
+    result = field_suggestions.suggest_fields_with_openai(
         FieldSuggestionRequest(content="故障原因の切り分けをする質問を考えて"),
         DEV_TOKENS["dev-manager"],
         knowledge_id="knowledge-1",
@@ -261,7 +259,7 @@ def test_suggest_fields_with_bedrock_passes_retrieved_context_to_design_engine(m
     ]
 
 
-def test_suggest_fields_with_bedrock_passes_prior_knowledge_to_design_engine(monkeypatch) -> None:
+def test_suggest_fields_with_openai_passes_prior_knowledge_to_design_engine(monkeypatch) -> None:
     knowledge_id = "prior-knowledge-design"
     user = DEV_TOKENS["dev-manager"]
     store.upsert(
@@ -298,7 +296,7 @@ def test_suggest_fields_with_bedrock_passes_prior_knowledge_to_design_engine(mon
     monkeypatch.setattr(field_suggestions, "retrieve_question_design_context", lambda *args, **kwargs: [])
     monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
 
-    field_suggestions.suggest_fields_with_bedrock(
+    field_suggestions.suggest_fields_with_openai(
         FieldSuggestionRequest(content="製品管理の質問を考えて"),
         user,
         knowledge_id=knowledge_id,
@@ -309,7 +307,7 @@ def test_suggest_fields_with_bedrock_passes_prior_knowledge_to_design_engine(mon
     assert "PLM" in captured_input.prior_knowledge[0].content
 
 
-def test_suggest_fields_with_bedrock_migrates_legacy_model_to_gpt_default(monkeypatch) -> None:
+def test_suggest_fields_with_openai_migrates_legacy_model_to_gpt_default(monkeypatch) -> None:
     captured_model_id = None
 
     def fake_run_question_design(*args, **kwargs):
@@ -323,10 +321,10 @@ def test_suggest_fields_with_bedrock_migrates_legacy_model_to_gpt_default(monkey
 
     monkeypatch.setattr(field_suggestions, "run_question_design", fake_run_question_design)
 
-    result = field_suggestions.suggest_fields_with_bedrock(
+    result = field_suggestions.suggest_fields_with_openai(
         FieldSuggestionRequest(
             content="保全業務の質問項目を作って",
-            context={"defaultModelId": "apac.amazon.nova-pro-v1:0"},
+            context={"defaultModelId": "legacy.provider.model"},
         ),
         DEV_TOKENS["dev-manager"],
     )
@@ -335,7 +333,7 @@ def test_suggest_fields_with_bedrock_migrates_legacy_model_to_gpt_default(monkey
     assert result["modelId"] == field_suggestions.settings.question_design_model_id
 
 
-def test_suggest_fields_with_bedrock_returns_empty_fields_when_validation_failed(monkeypatch) -> None:
+def test_suggest_fields_with_openai_returns_empty_fields_when_validation_failed(monkeypatch) -> None:
     monkeypatch.setattr(
         field_suggestions,
         "run_question_design",
@@ -345,7 +343,7 @@ def test_suggest_fields_with_bedrock_returns_empty_fields_when_validation_failed
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        field_suggestions.suggest_fields_with_bedrock(
+        field_suggestions.suggest_fields_with_openai(
             FieldSuggestionRequest(content="質問考えて"),
             DEV_TOKENS["dev-manager"],
         )
@@ -354,7 +352,7 @@ def test_suggest_fields_with_bedrock_returns_empty_fields_when_validation_failed
     assert exc_info.value.detail == "question_design_validation_failed"
 
 
-def test_suggest_fields_with_bedrock_maps_structured_provider_failure(monkeypatch) -> None:
+def test_suggest_fields_with_openai_maps_structured_provider_failure(monkeypatch) -> None:
     monkeypatch.setattr(
         field_suggestions,
         "run_question_design",
@@ -364,7 +362,7 @@ def test_suggest_fields_with_bedrock_maps_structured_provider_failure(monkeypatc
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        field_suggestions.suggest_fields_with_bedrock(
+        field_suggestions.suggest_fields_with_openai(
             FieldSuggestionRequest(content="故障原因の切り分けをする質問を考えて"),
             DEV_TOKENS["dev-manager"],
         )
@@ -373,7 +371,7 @@ def test_suggest_fields_with_bedrock_maps_structured_provider_failure(monkeypatc
     assert exc_info.value.detail == "question_design_provider_error"
 
 
-def test_suggest_fields_with_bedrock_returns_internal_error_when_provider_fails(monkeypatch) -> None:
+def test_suggest_fields_with_openai_returns_internal_error_when_provider_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         field_suggestions,
         "run_question_design",
@@ -381,7 +379,7 @@ def test_suggest_fields_with_bedrock_returns_internal_error_when_provider_fails(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        field_suggestions.suggest_fields_with_bedrock(
+        field_suggestions.suggest_fields_with_openai(
             FieldSuggestionRequest(content="質問項目を考えて"),
             DEV_TOKENS["dev-manager"],
         )
@@ -390,7 +388,7 @@ def test_suggest_fields_with_bedrock_returns_internal_error_when_provider_fails(
     assert exc_info.value.detail == "question_design_internal_error"
 
 
-def test_suggest_fields_with_bedrock_returns_reply_only_when_materials_are_insufficient(monkeypatch) -> None:
+def test_suggest_fields_with_openai_returns_reply_only_when_materials_are_insufficient(monkeypatch) -> None:
     runner_called = False
 
     def fake_runner(*args, **kwargs):
@@ -405,63 +403,12 @@ def test_suggest_fields_with_bedrock_returns_reply_only_when_materials_are_insuf
 
     monkeypatch.setattr(field_suggestions, "run_question_design", fake_runner)
 
-    result = field_suggestions.suggest_fields_with_bedrock(
+    result = field_suggestions.suggest_fields_with_openai(
         FieldSuggestionRequest(content="こんにちは"),
         DEV_TOKENS["dev-manager"],
     )
 
     assert result["fields"] == []
-    assert result["bedrockInvoked"] is True
     assert result["reply"] == DEFAULT_CLARIFICATION
     assert "業務の概要" not in result["reply"]
     assert runner_called is True
-
-
-def test_suggest_fields_with_bedrock_maps_endpoint_connection_error(monkeypatch) -> None:
-    monkeypatch.setattr(
-        field_suggestions,
-        "run_question_design",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            EndpointConnectionError(endpoint_url="https://bedrock-runtime.ap-northeast-1.amazonaws.com")
-        ),
-    )
-
-    try:
-        field_suggestions.suggest_fields_with_bedrock(
-            FieldSuggestionRequest(content="月次請求処理の質問項目を作って"),
-            DEV_TOKENS["dev-manager"],
-        )
-    except HTTPException as exc:
-        assert exc.status_code == 504
-        assert exc.detail == "bedrock_unreachable"
-    else:
-        raise AssertionError("HTTPException was expected")
-
-
-def test_suggest_fields_with_bedrock_maps_client_error_without_legacy_fallback(monkeypatch) -> None:
-    monkeypatch.setattr(
-        field_suggestions,
-        "run_question_design",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            ClientError(
-                error_response={"Error": {"Code": "ValidationException", "Message": "bad request"}},
-                operation_name="Converse",
-            )
-        ),
-    )
-
-    try:
-        field_suggestions.suggest_fields_with_bedrock(
-            FieldSuggestionRequest(content="月次請求処理の質問項目を作って"),
-            DEV_TOKENS["dev-manager"],
-        )
-    except HTTPException as exc:
-        assert exc.status_code == 502
-        assert exc.detail == "bedrock_ValidationException"
-    else:
-        raise AssertionError("HTTPException was expected")
-
-
-def test_direct_bedrock_symbols_are_not_used_outside_provider() -> None:
-    assert not hasattr(field_suggestions, "_invoke_bedrock_model")
-    assert not hasattr(field_suggestions, "_repair_json_with_bedrock")

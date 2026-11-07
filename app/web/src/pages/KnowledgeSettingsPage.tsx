@@ -18,13 +18,13 @@ import { buildKnowledgeTagOptions } from "../features/knowledge/tagOptions";
 import { useGuide } from "../features/guides/GuideProvider";
 
 const modelOptions = [
-  { value: "global.openai.gpt-5.6-luna", labelKey: "interview.model.lunaStandard" },
-  { value: "global.openai.gpt-5.6-terra", labelKey: "interview.model.terraAccurate" },
+  { value: "gpt-6-luna", labelKey: "interview.model.lunaStandard" },
+  { value: "gpt-6.1-terra", labelKey: "interview.model.terraAccurate" },
 ] as const;
 
 const structuredInterviewModelOptions = [
-  { value: "global.openai.gpt-5.6-luna", labelKey: "settings.models.luna", descriptionKey: "settings.models.standard" },
-  { value: "global.openai.gpt-5.6-terra", labelKey: "settings.models.terra", descriptionKey: "settings.models.accuracyPriority" },
+  { value: "gpt-6-luna", labelKey: "settings.models.luna", descriptionKey: "settings.models.standard" },
+  { value: "gpt-6.1-terra", labelKey: "settings.models.terra", descriptionKey: "settings.models.accuracyPriority" },
 ] as const;
 
 const interviewProfileOptions = [

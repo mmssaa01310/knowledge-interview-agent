@@ -59,7 +59,7 @@ def ensure_dev_maintenance_demo() -> dict[str, str]:
                 targetBusiness="保全",
                 targetEquipment="圧入機A",
                 language="ja",
-                defaultModelId="apac.amazon.nova-pro-v1:0",
+                defaultModelId="gpt-6-luna",
                 interviewPlan=InterviewPlan(
                     profile="fixed_form",
                     modelId=settings.structured_interview_model_id,

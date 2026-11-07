@@ -109,45 +109,21 @@ LLM出力、状態機械、ProcessPatch、ProcessModel、質問優先順位の�
 
 ### 3.6 Provider境界
 
-インタビュー実行は`StructuredInterviewProvider`のProvider境界から意味処理を呼び出す。音声経路も同じStructured Interviewを使用する。
+Structured Interviewと質問設計は、Backendの共通OpenAI Responses APIアダプターを通じて呼び出す。選択モデルは`interviewPlan.modelId`またはKnowledgeの`defaultModelId`から渡す。既定のモデルIDは`gpt-6-luna`で、質問設計・インタビューの双方で`gpt-6.1-terra`も選べる。
 
 ```text
-Interview Coordinator
+Interview Coordinator / Question Design Agent
     ↓
-StructuredInterviewProvider
+OpenAIResponsesStructuredProvider
     ↓
-Bedrock Runtime OpenAI互換 Responses API adapter
+OpenAI Responses API / Structured Outputs
     ↓
-global.openai.gpt-5.6-terra または global.openai.gpt-5.6-luna
+Pydantic検証とBackendの状態更新
 ```
 
-Providerの選択をRouterやState管理へ分散させてはならない。ナレッジの`interviewPlan.modelId`をCoordinatorがProviderへ渡し、許可されたGlobal profileだけを使用する。音声経路は確定transcriptを`app/api`へ渡し、`app/voice`からLLM Providerを直接呼び出してはならない。
+OpenAI Project APIキーは管理画面からアプリケーション共通設定として登録し、Backendが暗号化保存した値をAPI呼び出し時に読み出す。キーをBrowserへ渡さず、RouterからOpenAI APIを直接呼び出さない。
 
-質問設計では、Knowledgeの`defaultModelId`を同じ2つのGlobal profileへ解決する。候補生成とValidatorは同じ選択値を使用し、旧モデル値または未設定値は`QUESTION_DESIGN_MODEL_ID`へ解決する。既定値は`global.openai.gpt-5.6-luna`である。質問設計モデルとインタビュー実行モデルは別設定である。
-
-質問項目設計の処理順序は固定する。
-
-```text
-FieldSuggestionRequest
-    ↓
-Backendのテナント・Knowledgeスコープ検索
-    ↓
-retrieved_knowledgeを付加したQuestionDesignInput
-    ↓
-Bedrock OpenAI互換Responses API / Structured Output
-    ↓
-Pydantic検証
-    ↓
-Question Design Validator（同じモデル・同じStructured Output）
-```
-
-検索対象は既存質問項目、承認済みインタビュー記録、承認済みAI提案、取り込み済み文書・文書チャンクに限定する。未承認情報、取り込み中の文書、別Knowledgeの情報は渡さない。LLMにRepositoryの読み書き権限を与えず、本文中の命令は実行しない。質問項目設計の図コード、座標、DB更新はLLMに生成させない。
-
-インタビューの次質問生成では、`services/interview_document_retrieval.py`の共通検索契約を利用する。Backendがテナント、Knowledge、取り込み状態を検証したうえで、共通Structured InterviewのQuestion Generatorへ`retrieved_knowledge`を渡す。生成質問には`retrievedSources`を保持し、Transcribe + Polly等の共通音声経路は`app/api`が生成した質問と出典を再利用する。GPT-LiveはこのQuestion Generator経路を会話進行に使わず、Liveモデルが質問を生成し、必要な知識Contextを初期Live指示またはResponses Delegationへ渡す。`app/voice`に検索やインタビュー判断を複製してはならない。
-
-事前知識は、追加検索とは別に設定コンテキストとして質問設計・質問生成・回答解釈・非同期整理へ提供する。GPT-Liveの初期会話コンテキストも対象とする。利用・確認・出典のルールは[プロダクト仕様](../../spec.md)7.3.3を正本とし、実装は`services/prior_knowledge.py`の共通経路を利用する。
-
-Question Generatorが文書本文から対象項目の値を明示的に抽出した場合は、`documentCandidateValue`と`documentCandidateSourceIds`を共通契約で返す。Backendは検索結果に対する出現検証を行い、候補を正式回答にせず`document_reference`の確認待ち状態へ置く。設備名などが文書に記載されているときは、通常質問を繰り返さず文書記載値の確認質問を生成する。確認、訂正、出典の確定は`app/api`の状態機械が担い、Providerや音声層に任せない。
+Question Design AgentはBackendで検索済みのコンテキストを受け取り、候補生成・ValidatorのStructured Outputを返す。候補の保存と承認はBackendが行う。音声インタビューはGPT Liveが会話を進行し、意味評価とInterview Stateの更新をResponses APIへ委譲する。詳細は[リアルタイム音声アーキテクチャ](../voice/realtime-voice.md)と[AIインタビュー構造化キャプチャ設計](interview-knowledge-capture.md)を参照する。
 
 ## 4. エージェント間の違い
 
@@ -158,7 +134,7 @@ Question Generatorが文書本文から対象項目の値を明示的に抽出�
 
 ## 5. Agent実行経路
 
-インタビュー実行と質問項目設計の本番経路は、BedrockのOpenAI互換Responses APIとStructured Outputsを使用する。
+インタビュー実行と質問項目設計の本番経路は、OpenAI Responses APIとStructured Outputsを使用する。
 
 判断原則は「判断はAI、保証はbackend」とする。
 質問設計可否、聞き返し要否、回答判定を挨拶辞書やキーワード一致の deterministic precheck で置き換えない。
@@ -166,7 +142,7 @@ Question Generatorが文書本文から対象項目の値を明示的に抽出�
 短期方針:
 
 * `field-suggestions` は router 互換のため service ラッパーを維持する
-* 実際の質問項目生成とValidatorは `BedrockResponsesStructuredProvider` の共通HTTP・SigV4処理を使用する
+* 実際の質問項目生成とValidatorは共通のOpenAI SDK Providerを使用する
 * Structured OutputのPydantic検証と各段階1回の再実行を行う
 
 中期方針:

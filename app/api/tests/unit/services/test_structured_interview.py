@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from copy import deepcopy
 
-import httpx
 import pytest
-from botocore.credentials import Credentials
 
 from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     apply_structured_output,
@@ -15,8 +12,6 @@ from ai_interviewer_api.agents.interview_knowledge.coordinator import (
     select_next_question_target,
 )
 from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockAPIError,
-    BedrockResponsesStructuredProvider,
     _make_strict_schema,
     _interpreter_system_prompt,
 )
@@ -96,113 +91,6 @@ class FakeStructuredProvider:
             ],
             exampleMode="single",
         )
-
-
-class FakeBedrockSession:
-    def get_credentials(self) -> Credentials:
-        return Credentials("access-key", "secret-key", "session-token")
-
-
-class FakeHttpResponse:
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict[str, str]:
-        return {"output_text": '{"questionText":"利用者は誰ですか？"}'}
-
-
-class CaptureHttpClient:
-    def __init__(self, captured: dict[str, object]) -> None:
-        self.captured = captured
-
-    def __enter__(self) -> "CaptureHttpClient":
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-    def post(self, url: str, **kwargs: object) -> FakeHttpResponse:
-        self.captured["url"] = url
-        self.captured.update(kwargs)
-        return FakeHttpResponse()
-
-
-class CaptureHttpClientFactory:
-    def __init__(self, captured: dict[str, object]) -> None:
-        self.captured = captured
-
-    def __call__(self, **_: object) -> CaptureHttpClient:
-        return CaptureHttpClient(self.captured)
-
-
-class StreamingHttpResponse:
-    def raise_for_status(self) -> None:
-        return None
-
-    def iter_lines(self) -> list[str]:
-        return [
-            'data: {"type":"response.output_text.delta","delta":"利用者は"}',
-            'data: {"type":"response.output_text.delta","delta":"誰ですか？"}',
-            'data: [DONE]',
-        ]
-
-
-class StreamingHttpClient(CaptureHttpClient):
-    def stream(self, _method: str, _url: str, **kwargs: object) -> "StreamingHttpResponseContext":
-        self.captured.update(kwargs)
-        return StreamingHttpResponseContext()
-
-
-class StreamingHttpResponseContext:
-    def __enter__(self) -> StreamingHttpResponse:
-        return StreamingHttpResponse()
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-
-class StreamingHttpClientFactory:
-    def __init__(self, captured: dict[str, object]) -> None:
-        self.captured = captured
-
-    def __call__(self, **_: object) -> StreamingHttpClient:
-        return StreamingHttpClient(self.captured)
-
-
-class SequenceHttpResponse:
-    def __init__(self, payload: dict[str, object]) -> None:
-        self.payload = payload
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict[str, object]:
-        return self.payload
-
-
-class SequenceHttpClient:
-    def __init__(self, responses: list[SequenceHttpResponse], captured: list[dict[str, object]]) -> None:
-        self.responses = responses
-        self.captured = captured
-
-    def __enter__(self) -> "SequenceHttpClient":
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-    def post(self, _url: str, **kwargs: object) -> SequenceHttpResponse:
-        self.captured.append(json.loads(bytes(kwargs["content"]).decode("utf-8")))
-        return self.responses.pop(0)
-
-
-class SequenceHttpClientFactory:
-    def __init__(self, responses: list[SequenceHttpResponse], captured: list[dict[str, object]]) -> None:
-        self.responses = responses
-        self.captured = captured
-
-    def __call__(self, **_: object) -> SequenceHttpClient:
-        return SequenceHttpClient(self.responses, self.captured)
 
 
 @pytest.fixture(autouse=True)
@@ -312,7 +200,7 @@ def test_speculative_preview_without_source_message_id_uses_generated_evidence_i
 def test_structured_model_selection_uses_luna_when_configured() -> None:
     assert resolve_structured_model_id(
         {"interviewPlan": {"modelId": "global.openai.gpt-5.6-luna"}}
-    ) == "global.openai.gpt-5.6-luna"
+    ) == "gpt-6-luna"
 
 
 def test_interpreter_prompt_separates_question_help_from_answer_unavailability() -> None:
@@ -357,282 +245,6 @@ def test_question_help_uses_at_most_one_example_and_never_reads_answer_guides() 
     assert "追加の例2" not in additional_reply
     assert "回答するときは" not in default_reply
     assert "時期や状況" not in default_reply
-
-
-def test_bedrock_responses_provider_uses_global_profile_and_sigv4() -> None:
-    captured: dict[str, object] = {}
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-luna",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=CaptureHttpClientFactory(captured),
-    )
-
-    result = provider.generate_question(
-        profile="system_requirement",
-        context={"currentState": {}},
-        target={"targetType": "requirement", "targetId": "requirement.users", "label": "利用者"},
-        reasoning_effort="low",
-    )
-
-    request_body = json.loads(bytes(captured["content"]).decode("utf-8"))
-    assert result.questionText == "利用者は誰ですか？"
-    assert captured["url"] == "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses"
-    assert str(captured["headers"]["Authorization"]).startswith("AWS4-HMAC-SHA256")
-    assert request_body["model"] == "global.openai.gpt-5.6-luna"
-    assert request_body["reasoning"] == {"effort": "low"}
-    assert request_body["max_output_tokens"] == 600
-    assert request_body["text"]["format"]["type"] == "json_schema"
-    assert request_body["text"]["format"]["strict"] is True
-
-
-def test_bedrock_responses_provider_retries_503_and_logs_safe_diagnostics(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    captured: list[dict[str, object]] = []
-    failed_response = httpx.Response(
-        503,
-        headers={
-            "x-amzn-errortype": "ServiceUnavailableException",
-            "x-amzn-requestid": "request-id-503",
-            "retry-after": "0",
-        },
-        json={"message": "sensitive-provider-body"},
-        request=httpx.Request("POST", "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses"),
-    )
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-luna",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=SequenceHttpClientFactory(
-            [
-                failed_response,
-                SequenceHttpResponse(
-                    {"output_text": '{"questionText":"利用者は誰ですか？"}'}
-                ),
-            ],
-            captured,
-        ),
-    )
-    monkeypatch.setattr(
-        "ai_interviewer_api.agents.interview_knowledge.provider.time.sleep",
-        lambda _: None,
-    )
-
-    with caplog.at_level("WARNING", logger="ai_interviewer_api.agents.interview_knowledge.provider"):
-        result = provider.generate_question(
-            profile="system_requirement",
-            context={"currentState": {}},
-            target={"targetType": "requirement", "targetId": "requirement.users", "label": "利用者"},
-            reasoning_effort="low",
-        )
-
-    assert result.questionText == "利用者は誰ですか？"
-    assert len(captured) == 2
-    assert "status_code=503" in caplog.text
-    assert "ServiceUnavailableException" in caplog.text
-    assert "request-id-503" in caplog.text
-    assert "sensitive-provider-body" not in caplog.text
-
-
-def test_bedrock_responses_provider_does_not_retry_non_transient_http_errors(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    captured: list[dict[str, object]] = []
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-luna",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=SequenceHttpClientFactory(
-            [
-                httpx.Response(
-                    400,
-                    headers={"x-amzn-errortype": "ValidationException"},
-                    json={"message": "sensitive-provider-body"},
-                    request=httpx.Request(
-                        "POST",
-                        "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses",
-                    ),
-                )
-            ],
-            captured,
-        ),
-    )
-
-    with (
-        caplog.at_level("WARNING", logger="ai_interviewer_api.agents.interview_knowledge.provider"),
-        pytest.raises(BedrockAPIError, match="status_code=400"),
-    ):
-        provider.generate_question(
-            profile="system_requirement",
-            context={"currentState": {}},
-            target={"targetType": "requirement", "targetId": "requirement.users", "label": "利用者"},
-            reasoning_effort="low",
-        )
-
-    assert len(captured) == 1
-    assert "ValidationException" in caplog.text
-    assert "sensitive-provider-body" not in caplog.text
-
-
-def test_bedrock_responses_provider_stops_after_bounded_503_retries(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    captured: list[dict[str, object]] = []
-    url = "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses"
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-luna",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=SequenceHttpClientFactory(
-            [
-                httpx.Response(503, request=httpx.Request("POST", url))
-                for _ in range(3)
-            ],
-            captured,
-        ),
-    )
-    monkeypatch.setattr(
-        "ai_interviewer_api.agents.interview_knowledge.provider.time.sleep",
-        lambda _: None,
-    )
-
-    with (
-        caplog.at_level("WARNING", logger="ai_interviewer_api.agents.interview_knowledge.provider"),
-        pytest.raises(BedrockAPIError, match="status_code=503"),
-    ):
-        provider.generate_question(
-            profile="system_requirement",
-            context={"currentState": {}},
-            target={"targetType": "requirement", "targetId": "requirement.users", "label": "利用者"},
-            reasoning_effort="low",
-        )
-
-    assert len(captured) == 3
-    assert caplog.text.count("structured_bedrock_http_error") == 3
-
-
-def test_bedrock_responses_provider_generates_question_help_from_structured_contract() -> None:
-    captured: list[dict[str, object]] = []
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-luna",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=SequenceHttpClientFactory(
-            [
-                SequenceHttpResponse(
-                    {
-                        "output_text": json.dumps(
-                            {
-                                "topic": "仕事の進め方に影響した転機",
-                                "examples": [
-                                    "大きなトラブルを経験して進め方が変わったこと",
-                                ],
-                                "perspectives": [
-                                    "いつ何が起きたか",
-                                ],
-                            },
-                            ensure_ascii=False,
-                        )
-                    }
-                )
-            ],
-            captured,
-        ),
-    )
-
-    result = provider.generate_question_help(
-        profile="fixed_form",
-        context={"interviewLocale": "ja-JP"},
-        target={"targetType": "field", "targetId": "experience", "label": "転機"},
-        reasoning_effort="low",
-    )
-
-    assert result.examples[0].startswith("大きなトラブル")
-    assert len(result.examples) == 1
-    assert captured[0]["text"]["format"]["name"] == "interview_question_help"
-    assert captured[0]["text"]["format"]["strict"] is True
-
-
-def test_bedrock_responses_provider_streams_question_deltas() -> None:
-    captured: dict[str, object] = {}
-    deltas: list[str] = []
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-luna",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=StreamingHttpClientFactory(captured),
-    )
-
-    result = provider.generate_question_stream(
-        profile="fixed_form",
-        context={"interviewLocale": "ja-JP"},
-        target={"targetType": "field", "targetId": "name", "label": "利用者"},
-        reasoning_effort="low",
-        on_delta=deltas.append,
-    )
-
-    request_body = json.loads(bytes(captured["content"]).decode("utf-8"))
-    assert result.questionText == "利用者は誰ですか？"
-    assert deltas == ["利用者は", "誰ですか？"]
-    assert request_body["stream"] is True
-    assert "text" not in request_body
-
-
-def test_bedrock_responses_provider_uses_process_model_edit_schema() -> None:
-    captured: list[dict[str, object]] = []
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-terra",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=SequenceHttpClientFactory(
-            [SequenceHttpResponse({"output_text": '{"reply":"名称を変更しました。","processPatch":{}}'})],
-            captured,
-        ),
-    )
-
-    result = provider.edit_process_model(
-        context={"instruction": "最初の処理名を変更する", "processModel": {"version": 0}},
-        reasoning_effort="low",
-    )
-
-    request_body = captured[0]
-    assert result.reply == "名称を変更しました。"
-    assert request_body["model"] == "global.openai.gpt-5.6-terra"
-    assert request_body["reasoning"] == {"effort": "low"}
-    assert request_body["text"]["format"]["name"] == "process_model_edit_output"
-    assert request_body["text"]["format"]["strict"] is True
-
-
-def test_bedrock_responses_provider_retries_invalid_json_with_larger_budget() -> None:
-    captured: list[dict[str, object]] = []
-    provider = BedrockResponsesStructuredProvider(
-        model_id="global.openai.gpt-5.6-terra",
-        region_name="us-east-1",
-        session=FakeBedrockSession(),
-        http_client_factory=SequenceHttpClientFactory(
-            [
-                SequenceHttpResponse({"output_text": '{"dialogueAct":"ANSWER"'}),
-                SequenceHttpResponse({"output_text": "{}"}),
-            ],
-            captured,
-        ),
-    )
-
-    result = provider.interpret(
-        profile="system_requirement",
-        context={"currentState": {}},
-        reasoning_effort="low",
-    )
-
-    assert result.dialogueAct == "ANSWER"
-    assert captured[1]["max_output_tokens"] > captured[0]["max_output_tokens"]
-    assert captured[1]["max_output_tokens"] == min(
-        int(captured[0]["max_output_tokens"]) * 2,
-        10_000,
-    )
 
 
 def test_priority_is_backend_controlled_and_only_one_candidate_is_confirmed() -> None:
@@ -1719,7 +1331,7 @@ def test_purpose_proposal_waits_for_users_and_request_context() -> None:
         "name": "CSV出力要件",
         "interviewPlan": {
             "profile": "system_requirement",
-            "modelId": "global.openai.gpt-5.6-luna",
+            "modelId": "gpt-6-luna",
         },
     }
     store.upsert("records", {**record, "tenantId": user.tenant_id})
@@ -2535,7 +2147,7 @@ def test_system_requirement_conversation_routes_one_target_and_records_terra() -
         "name": "受注実績CSV出力要件",
         "interviewPlan": {
             "profile": "system_requirement",
-            "modelId": "global.openai.gpt-5.6-terra",
+            "modelId": "gpt-6.1-terra",
         },
     }
     store.upsert("records", {**record, "tenantId": user.tenant_id})
@@ -2661,7 +2273,7 @@ def test_system_requirement_conversation_routes_one_target_and_records_terra() -
     )
     candidate = generate_structured_interview_result(record, knowledge, user, provider=provider)
     assert candidate["question"]["targetId"] == "requirement.purpose_problem"
-    assert candidate["interviewState"]["lastStructuredModelId"] == "global.openai.gpt-5.6-terra"
+    assert candidate["interviewState"]["lastStructuredModelId"] == "gpt-6.1-terra"
 
     current = candidate
     for index, expected_target_id in enumerate(
@@ -2694,8 +2306,8 @@ def test_system_requirement_conversation_routes_one_target_and_records_terra() -
     assert after_process["question"]["targetId"] == "process.trigger"
     assert after_process["interviewState"]["applicabilityState"]["process"]["status"] == "present"
     assert after_process["interviewState"]["processState"]["version"] == 1
-    assert after_process["interviewState"]["lastStructuredModelId"] == "global.openai.gpt-5.6-terra"
-    assert after_process["interviewState"]["lastQuestionModelId"] == "global.openai.gpt-5.6-terra"
+    assert after_process["interviewState"]["lastStructuredModelId"] == "gpt-6.1-terra"
+    assert after_process["interviewState"]["lastQuestionModelId"] == "gpt-6.1-terra"
 
 
 def test_system_requirement_confirms_process_presence_before_process_details() -> None:

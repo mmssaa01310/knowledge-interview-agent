@@ -38,7 +38,7 @@ backend が保証する invariant の例:
 * 次の質問対象、質問優先順位、完了判定をBackendで決定する
 * DB保存しないものを保存しない
 * LLMにRepositoryの読み書き権限を渡さない
-* 通常pytestでは Bedrock / real LLM を呼ばない
+* 通常pytestでは OpenAI APIなどの実LLMを呼ばない
 * prompt全文や `user_message` 全文をログに出さない
 
 ## 避けるべき実装

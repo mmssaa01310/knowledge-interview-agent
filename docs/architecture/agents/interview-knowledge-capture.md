@@ -1,4 +1,4 @@
-# MUSUBI — AIインタビュー構造化キャプチャ設計
+# AIインタビュー — AIインタビュー構造化キャプチャ設計
 
 ## 1. 文書の位置づけ
 
@@ -78,7 +78,7 @@
 
 ### 4.2 Profile設定
 
-Profile設定はKnowledgeの`interviewPlan.profile`に保存する。インタビュー実行モデルは同じ`interviewPlan.modelId`に保存する。`modelId`に指定できる値は`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`だけである。実行モデルはインタビュー開始後も変更でき、保存後の次回処理から新しいモデルを使用する。既存の質問、回答、構造化状態は変更しない。質問項目設計モデルはKnowledgeの`defaultModelId`に保存し、同じ2つの値から選択する。`defaultModelId`が未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。Profileごとの必須対象、Applicability確認順、完了条件はBackendの固定定義から読み込む。ユーザーの追加プロンプトで、これらの定義を変更してはならない。
+Profile設定はKnowledgeの`interviewPlan.profile`に保存する。インタビュー実行モデルは同じ`interviewPlan.modelId`に保存する。`modelId`に指定できる値は`gpt-6.1-terra`または`gpt-6-luna`だけである。実行モデルはインタビュー開始後も変更でき、保存後の次回処理から新しいモデルを使用する。既存の質問、回答、構造化状態は変更しない。質問項目設計モデルはKnowledgeの`defaultModelId`に保存し、同じ2つの値から選択する。`defaultModelId`が未設定または旧モデル値の場合は`QUESTION_DESIGN_MODEL_ID`へ解決する。Profileごとの必須対象、Applicability確認順、完了条件はBackendの固定定義から読み込む。ユーザーの追加プロンプトで、これらの定義を変更してはならない。
 
 Profileごとの必須対象は次のとおりである。
 
@@ -120,114 +120,45 @@ flowchart TD
 
 LLMは情報の抽出と自然文の生成を担当する。Backendは状態、検証、完了判定、質問対象、Patch適用可否を担当する。
 
-## 6. LLMモデル仕様
+## 6. OpenAI APIとモデル仕様
 
-### 6.1 初期モデル
+### 6.1 モデル
 
-インタビュー実行に関係するすべてのLLM呼び出しは、初期実装では次の設定を使用する。
+テキスト生成、質問設計、回答解釈にはOpenAI Responses APIのStructured Outputsを使用する。モデル呼び出しはBackendのOpenAI SDKアダプターへ集約し、システム設定に暗号化保存したOpenAI Project APIキーで認証する。
 
-| 設定 | 値 |
+| 用途 | モデル |
 |---|---|
-| Provider | Amazon Bedrock |
-| Endpoint | `bedrock-runtime.{BEDROCK_AWS_REGION}.amazonaws.com/openai/v1` |
-| API | OpenAI互換 Responses API |
-| 主モデルID | `global.openai.gpt-5.6-luna` |
-| Interpreterの`reasoning.effort` | `low` |
-| Question Generatorの`reasoning.effort` | `none` |
-| Structured Output | 必須 |
-| 画像生成 | 使用しない |
+| 既定のインタビュー実行・質問設計 | `gpt-6-luna` |
+| 精度を優先するインタビュー実行・質問設計 | `gpt-6.1-terra` |
+| GPT Live音声インタビュー | `gpt-live-1` |
 
-Structured OutputはResponses APIの`text.format`で指定する。構造化インタビューでは、ネイティブConverse APIの`outputConfig.textFormat`を使用しない。
+インタビュー実行モデルは`interviewPlan.modelId`、質問設計モデルは`Knowledge.defaultModelId`から選択する。モデル自動切り替えは行わず、未設定時はBackendの既定モデル`gpt-6-luna`を使用する。GPT Liveは`gpt-live-1`に固定する。
 
-対象処理は次のとおりである。
+### 6.2 推論強度
 
-* Dialogue Act判定
-* Field抽出
-* Requirement抽出
-* ProcessPatch抽出
-* 矛盾判定
-* Applicability判定
-* 次の質問文生成
+Interpreterの通常推論強度は`low`、Question Generatorは`none`とする。複雑な既存状態、矛盾、多数の更新などの構造条件をBackendが検知した場合に限り、選択済みモデルを`medium`で再実行する。構造条件の判定にキーワード、挨拶辞書、文字数を使用しない。
 
-モデルIDと`reasoning.effort`はBackendの設定から読み込む。値をソースコードへ直接埋め込んではならない。
+### 6.3 Structured Outputs
 
-### 6.2 reasoning effortの引き上げ
+Responses APIの`text.format`でJSON Schemaを指定し、Backendは返却JSONをPydantic Schemaで検証する。検証に成功した出力だけを状態へ適用する。モデルが対応しないパラメーターを送信せず、Provider障害時に別モデル・別APIへ自動fallbackしない。
 
-Backendが次の構造条件を検知した場合、Interpreterをナレッジで選択されたTerraまたはLunaの`medium`で再実行する。
+### 6.4 APIキーの管理
 
-* 既存の`contradictions`または`openIssues`がある。
-* Interpreterの出力に矛盾がある。
-* Interpreterの出力に複数の非連結Processノードがある。
-* `fieldUpdates`と`requirementUpdates`の合計が6件以上である。
-* ProcessPatchの追加・変更・削除操作が8件以上である。
-* 既存ProcessStateの要素数が4件以上で、Patch操作数が既存要素数の半分以上である。
-* 既存ProcessStateのノードが10件以上、またはエッジが12件以上である。
+アプリ全体設定管理者だけがOpenAI APIキーを登録・接続確認・削除できる。キーは全テナントで共有し、ローカルPostgreSQLにAES-GCMで暗号化保存する。暗号鍵はAPIプロセスの`OPENAI_SETTINGS_ENCRYPTION_KEY`環境変数から取得する。ブラウザーに返す値はマスク済みの表示用文字列だけとし、APIキーやプロンプト全文・ユーザー発話全文をログへ出さない。
 
-判定にはキーワード、文字数、挨拶辞書を使用してはならない。判定は既存状態、LLM出力件数、Patch構造、矛盾対象を使用する。初回の`low`出力が複雑条件に該当した場合は、同じ入力を`medium`で1回再実行し、`medium`の出力だけを採用する。
+接続確認では`gpt-6-luna`、`gpt-6.1-terra`、`gpt-live-1`の利用可否をサーバー側で確認する。Live音声Sessionは作成しない。接続確認に失敗した場合、既存のキーを維持する。
 
-`low`の出力と`medium`の出力を混在させてはならない。再実行した場合は、`medium`の出力だけを採用する。
-
-### 6.3 LunaとSol
-
-Lunaはナレッジ設定から明示的に選択できる。TerraとLunaの自動ルーティングは行わない。Solは初期実装の選択肢に含めない。
-
-| モデル | 初期実装での扱い | 将来の候補 |
-|---|---|---|
-| `global.openai.gpt-5.6-luna` | 既定モデル。ナレッジ単位で選択可能 | 標準処理および低コスト処理 |
-| `global.openai.gpt-5.6-terra` | ナレッジ単位で選択可能 | 複雑な意味解釈および中難度処理 |
-| `global.openai.gpt-5.6-sol` | 使用しない | Terraで解決できない高難度の要件整理 |
-
-Solを追加する場合、またはTerraとLunaの自動ルーティングを追加する場合は、比較評価、対象条件、失敗時の挙動を別仕様で定義する。
-
-### 6.4 Provider境界
-
-現在のコードはBedrockのOpenAI互換Responses APIを使用している。Structured Output契約では、LLM Providerを次の境界で分離する。
-
-```text
-Interview Coordinator
-        ↓
-StructuredInterviewProvider interface
-        ↓
-Bedrock Responses API adapter
-        ↓
-global.openai.gpt-5.6-terra または global.openai.gpt-5.6-luna
-```
-
-次のルールを適用する。
-
-1. Router、Repository、状態機械からBedrock APIを直接呼び出してはならない。
-2. `app/voice`からBedrock APIを呼び出してはならない。
-3. 同じターンを2つのProviderで処理してはならない。
-4. 構造化インタビューのProvider失敗時に、別モデルや別経路へ自動フォールバックしてはならない。Providerフォールバックは別仕様で定義する。
-5. 本番ではモデルのスナップショットIDを設定する。利用可能なスナップショットがないモデルは、使用したモデルIDを設定値と監査ログへ保存する。
-6. AWS認証情報、署名情報、プロンプト全文、ユーザー発話全文をログへ出力してはならない。
-
-GPT-5.6 Terra、BedrockのOpenAI互換Responses API、Structured Outputの仕様はAWS公式ドキュメントを参照する。
-
-### 6.5 有効化設定
-
-インタビュー実行はStructured Interview経路だけを正式サポートする。テキストと音声（Transcribe + Polly）の両方がBedrock RuntimeのOpenAI互換Responses APIを使用し、旧Interview Agent経路や切替用Feature Flagは持たない。AWS認証情報またはIAM権限が不足している場合は、状態を更新せずエラーにする。
-
-次の環境変数を使用する。
+### 6.5 環境設定
 
 | 環境変数 | 必須 | 既定値 |
 |---|---:|---|
-| `BEDROCK_AWS_REGION` | いいえ | `ap-northeast-1` |
-| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
-| `QUESTION_DESIGN_MODEL_ID` | いいえ | `global.openai.gpt-5.6-luna` |
+| `OPENAI_SETTINGS_ENCRYPTION_KEY` | はい | なし |
+| `STRUCTURED_INTERVIEW_MODEL_ID` | いいえ | `gpt-6-luna` |
 | `STRUCTURED_INTERVIEW_REASONING_EFFORT` | いいえ | `low` |
 | `STRUCTURED_INTERVIEW_QUESTION_REASONING_EFFORT` | いいえ | `none` |
 | `STRUCTURED_INTERVIEW_MEDIUM_REASONING_EFFORT` | いいえ | `medium` |
-| `STRUCTURED_INTERVIEW_MAX_OUTPUT_TOKENS` | いいえ | `6000`。長文回答でJSONが上限に達した場合、最大10000トークンまで増やして1回だけ再試行する |
-| `STRUCTURED_INTERVIEW_QUESTION_MAX_OUTPUT_TOKENS` | いいえ | `600` |
+| `QUESTION_DESIGN_MODEL_ID` | いいえ | `gpt-6-luna` |
 | `QUESTION_DESIGN_REASONING_EFFORT` | いいえ | `low` |
-| `QUESTION_DESIGN_MAX_OUTPUT_TOKENS` | いいえ | `6000` |
-| `STRUCTURED_INTERVIEW_CONNECT_TIMEOUT_SECONDS` | いいえ | `5` |
-| `STRUCTURED_INTERVIEW_READ_TIMEOUT_SECONDS` | いいえ | `120` |
-
-Docker Composeで起動する場合は、上記の値をリポジトリルートの`.env`から`infra/docker-compose.yml`のAPIコンテナへ渡す。AWS認証情報、対象リージョンのBedrockモデルアクセス、Global inference profileのIAM許可を設定する。
-
-`STRUCTURED_INTERVIEW_MODEL_ID`には、既定の`global.openai.gpt-5.6-luna`または対象リージョンで利用できるGlobal inference profile ARNを指定する。ユーザーが提示したARNは、Terraが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-terra`、Lunaが`arn:aws:bedrock:us-east-1:755974828484:inference-profile/global.openai.gpt-5.6-luna`である。ARNを使用する場合は`BEDROCK_AWS_REGION=us-east-1`に設定する。東京など別の呼び出し元リージョンでは、既定のprofile IDを使用する。
 
 ## 7. Interpreter Structured Output契約
 
@@ -318,7 +249,7 @@ Schemaは`additionalProperties=false`を設定し、定義済みの全プロパ�
 
 `utteranceCompleteness`は`COMPLETE`、`INCOMPLETE`、`UNCERTAIN`のいずれかとする。文法的に途中で切れている発話、続きが明らかな発話は`INCOMPLETE`または`UNCERTAIN`とする。回答の情報量が不足しているだけの完結した文は`INCOMPLETE`にしない。`INCOMPLETE`でも、発話内に独立して評価できる完結した回答観点がある場合は、`aspectAssessments`でその観点を示し、Backendは根拠のある部分だけを候補として保持して不足観点を尋ねる。発話全体が評価不能で完結した観点もない場合だけ、`fieldUpdates`、`requirementUpdates`、`processPatch`を適用せず現在の質問を維持して短く続行を依頼する。発話末尾の単語や特定の言い回しをBackendの文字列一致で`INCOMPLETE`へ変更してはならない。
 
-`transcriptAssessment.rawTranscript`はBackendが受け取ったTranscribe結果を記録する。句読点・空白・明らかな表記揺れだけの補正は`correctionStatus=NONE`とし、意味を変える単語の補正は`CORRECTED`として`normalizedTranscript`と候補を返す。候補が一意でない場合は`UNCERTAIN`とし、補正前の文字列も補正候補も正式回答へ確定しない。`CORRECTED`の場合も、Backendが自然な補正候補を確認質問として提示し、対象者が肯定するまで状態を確定しない。
+`transcriptAssessment.rawTranscript`はBackendが受け取ったGPT Liveの文字起こし結果を記録する。句読点・空白・明らかな表記揺れだけの補正は`correctionStatus=NONE`とし、意味を変える単語の補正は`CORRECTED`として`normalizedTranscript`と候補を返す。候補が一意でない場合は`UNCERTAIN`とし、補正前の文字列も補正候補も正式回答へ確定しない。`CORRECTED`の場合も、Backendが自然な補正候補を確認質問として提示し、対象者が肯定するまで状態を確定しない。
 
 `UNCERTAIN`の発話に補正対象とは独立した明確な項目が含まれる場合、その項目だけは`TENTATIVE`の候補として保持してよい。ただし、補正対象を値に含めず、現在の質問と次質問の選択は維持する。補正候補や曖昧な項目を正式回答へ進めてはならない。
 
@@ -341,7 +272,7 @@ Schemaは`additionalProperties=false`を設定し、定義済みの全プロパ�
 | `ASR_TARGET` | 直前の音声認識で何が不明だったかの確認 | 保存済み`clarificationTarget`の役割だけを短く説明 |
 | `MISSING_INFORMATION_TARGET` | どの観点が不足しているかの確認 | 保存済みの不足観点だけを短く説明 |
 
-`ASR_TARGET`や`MISSING_INFORMATION_TARGET`は、特定言語の語句一致で判定してはならない。Interpreterが発話の目的を構造化分類し、Backendは`clarificationKind`と保存済みの対象だけで応答を選択する。質問全体の説明を許可するのは`QUESTION_MEANING`の場合だけである。`QUESTION_MEANING`でも、`expectedInformation`のうちユーザーが尋ねた対象だけを選び、`capturedItemIds`にある回答済み観点は説明・再質問しない。説明は原則1文、長くても2文までとし、長い回答ガイドや複数例を読み上げない。Transcribe + Polly、テキスト、旧Realtimeは同じ分類結果と`clarificationTarget`を利用する。GPT-Liveは同じAspect意味契約をResponses Delegationで評価し、Liveモデルが質問意図への応答と会話復帰を担う。
+`ASR_TARGET`や`MISSING_INFORMATION_TARGET`は、特定言語の語句一致で判定してはならない。Interpreterが発話の目的を構造化分類し、Backendは`clarificationKind`と保存済みの対象だけで応答を選択する。質問全体の説明を許可するのは`QUESTION_MEANING`の場合だけである。`QUESTION_MEANING`でも、`expectedInformation`のうちユーザーが尋ねた対象だけを選び、`capturedItemIds`にある回答済み観点は説明・再質問しない。説明は原則1文、長くても2文までとし、長い回答ガイドや複数例を読み上げない。テキスト経路はStructured Interpreterを使い、GPT Live経路はResponses Delegationで同じAspect意味契約を評価する。Liveモデルが質問意図への応答と会話復帰を担う。
 
 ### 7.1.2 回答充足性とProbe
 
@@ -687,7 +618,7 @@ Backendは質問を発行するとき、`questionId`、`targetType`、`targetId`
 
 #### 8.1.2 会話制御のターン記録
 
-各ターンは、少なくとも次の診断情報を同じ会話制御契約で保持する。`runtime`が`transcribe_polly`、`gpt_live`、テキスト等で異なっても、同じ確定transcriptに対する意味評価と次アクションの値は共通とする。
+各ターンは、少なくとも次の診断情報を同じ会話制御契約で保持する。`runtime`が`gpt_live`またはテキストで異なっても、評価結果とBackendの状態契約は共通とする。
 
 * `runtime`
 * `rawTranscript`、`finalTranscript`
@@ -1148,45 +1079,17 @@ ProcessModelをインタビューの正本として保存してはならない�
 
 ## 13. テキスト経路と音声経路
 
-テキスト経路と音声経路は、Interpreter以降の意味処理を共通化する。
+テキストインタビューはBackendのStructured Interviewサービスを通じて、Responses APIで意味解釈と質問生成を行う。音声インタビューはOpenAI GPT LiveのWebRTC経路を使い、`gpt-live-1`が会話と質問進行を担当する。別の音声Gateway、音声認識サービス、音声合成サービスは設けない。
 
-現行の実行UIでは、`system_requirement`はテキストチャット専用とする。音声会話の開始操作、音声状態、音声再生は表示しない。`fixed_form`と`business_process`では、必要に応じてテキストまたは音声を選択できる。これは状態機械をProfileごとに分岐することを意味しない。将来`system_requirement`へ音声を追加する場合も、本節の共通契約をそのまま使用する。
-
-```mermaid
-sequenceDiagram
-    participant User as 利用者
-    participant Input as Text / Voice Input
-    participant API as app/api
-    participant Interpreter as Interpreter
-    participant State as Interview State
-    participant Backend as Priority / Completion
-    participant Question as Question Generator
-    participant View as Process View
-
-    User->>Input: 発話
-    Input->>API: 確定テキスト
-    API->>Interpreter: Profile + 状態 + 発話
-    Interpreter-->>API: Structured Output
-    API->>State: 検証済み状態更新
-    State->>View: ProcessStateから派生
-    API->>Backend: 完了・質問優先順位評価
-    Backend->>Question: 決定済み質問対象
-    Question-->>API: 自然な質問文
-    API-->>Input: 応答
-    Input-->>User: テキスト表示または音声再生
-```
+GPT Liveの音声SessionはBackendが保存済みOpenAI APIキーを使って作成する。ブラウザーはLive音声をWebRTC MediaTrackで送信し、LiveイベントとFunction Toolの結果をDataChannelで扱う。BackendはResponses Delegationの意味評価を検証し、認可済みのRecord Stateへ保存する。
 
 音声経路では次のルールを適用する。
 
-* `app/voice`は音声入出力、WebRTC、文字起こし、音声合成だけを担当する。
-* `app/api`がInterpreter、状態更新、完了判定、質問対象決定を担当する。
-* partial transcriptを正式な回答として処理してはならない。
-* 確定transcriptだけを共通Interview Coordinatorへ渡す。
-* Terraへ音声データを直接送信しない。文字起こし済みテキストを送信する。
-* 音声だけ別の回答評価、質問優先順位、完了条件を持ってはならない。
-* `app/voice`から`app/api`のPythonモジュールを直接importしてはならない。
-
-音声の責務は、音声入力、確定文字起こし、共通Interview処理への引き渡し、返却文の音声化に限定する。Transcribe + Pollyは`audio → final transcript → 共通会話制御 → reply → Polly`の順で処理し、`NOT_HEARD`を生成できるのは空文字、結果欠落、音声上の候補衝突など認識品質の根拠がある場合だけとする。認識できた回答の不足は`PARTIALLY_ANSWERED`として共通処理で不足情報を質問する。
+* partial transcriptは正式回答として処理しない。
+* 確定transcriptと根拠をBackendが検証してから状態へ適用する。
+* GPT LiveのTranscriptを、別のStructured Interpreterで再評価しない。
+* GPT Liveの会話状態、質問進行、音声出力をBackendのState保存と区別する。
+* 音声データをインタビュー実行モデルへ直接送信しない。Live以外の処理には必要なテキストだけを送る。
 
 ## 14. プロンプトの責務
 
@@ -1289,7 +1192,7 @@ contradiction
 
 ### 16.1 LLM出力検証
 
-1. Bedrock RuntimeのOpenAI互換Responses APIからStructured Outputを受け取る。
+1. OpenAI Responses APIからStructured Outputを受け取る。
 2. JSON Schemaを検証する。
 3. ID、根拠、Patch参照、Profile適用範囲をBackendで検証する。
 4. 検証成功後だけ状態更新する。
@@ -1325,24 +1228,23 @@ contradiction
 
 ## 17. 現行コードとの対応
 
-現行コードで確認できる構造と、追加実装の対応を次のように定義する。
+| 現行箇所 | 現在の責務 |
+|---|---|
+| `models/interview_plan.py` | InterviewPlanとField単位のQuestionPlanを保持する |
+| `agents/interview_knowledge/schemas.py` | Structured OutputのPydantic Schemaを定義する |
+| `agents/interview_knowledge/provider.py` | OpenAI Responses API呼び出しとStructured Outputsを担当する |
+| `services/application_settings.py` | OpenAI APIキーの暗号化、復号、接続確認、マスク表示を担当する |
+| `services/live_session.py` | 保存済みキーでGPT Live WebRTC Sessionを作成する |
+| `services/process_model.py` | 管理者向けProcessModel編集を検証・適用する |
+| `agents/interview_knowledge/coordinator.py` | 状態更新、Patch検証、完了判定、質問対象決定を担当する |
+| `agents/interview_knowledge/service.py` | Structured Interviewを実行する |
+| `services/ai_interview.py` | テキストインタビューの入口としてStructured Interviewへ委譲する |
+| `services/live_interview.py` | GPT Liveの質問・回答評価と状態更新を補助する |
+| `models/domain.py`の`AiProposal` | AI提案のレビュー状態を保持する |
+| `pages/KnowledgeSettingsPage.tsx` | ナレッジ情報、質問項目、実行モデルを設定する |
+| `pages/InterviewRecordPage.tsx` | テキスト・GPT Live音声UIを提供する |
 
-| 現行箇所 | 現在の責務 | 追加仕様での扱い |
-|---|---|---|
-| `models/interview_plan.py` | InterviewPlan、Field単位のQuestionPlan | `interviewPlan.profile`と`interviewPlan.modelId`を保持する |
-| `agents/interview_knowledge/schemas.py` | Structured OutputのPydantic Schema | Interpreter、ProcessPatch、Question Generatorの契約を保持する |
-| `agents/interview_knowledge/provider.py` | Bedrock Runtime OpenAI互換Responses APIアダプター | AWS SigV4署名、Structured Outputsの送受信、Schema再実行を担当する |
-| `services/process_model.py` | ProcessModel編集サービス | 管理者認可、手動保存、編集指示のStructured Output適用、バージョン競合、監査を担当する |
-| `agents/interview_knowledge/coordinator.py` | 共通Coordinator | 状態更新、Patch検証、完了判定、質問対象決定を担当する |
-| `agents/interview_knowledge/service.py` | 構造化インタビューサービス | テキスト・音声から共通Coordinatorを呼び出す |
-| `services/ai_interview.py` | テキストインタビューの入口 | Structured Interviewサービスへ委譲する |
-| `services/voice_interview.py` | 音声ターンのI/O境界と保存 | 確定transcriptをStructured Interviewサービスへ渡す |
-| `models/domain.py`の`AiProposal` | AI提案の汎用保存 | 構造化候補のレビュー公開で使用する |
-| `pages/KnowledgeSettingsPage.tsx` | ナレッジ情報と実行設定 | 利用者向けProfile選択を追加する |
-| `pages/InterviewRecordPage.tsx` | チャットと音声UI | Process Viewの表示領域を追加する |
-| `types/app.ts` | Field中心のFrontend型 | Requirement、Process、Applicability型を追加する |
-
-Structured InterviewのProvider、状態機械、音声I/O境界を、テキストと音声で別々に実装してはならない。
+質問進行、意味判断、状態更新の正本はBackendであり、GPT Live音声を別の評価Runtimeへ分岐させない。
 
 ## 18. 受け入れ条件
 
@@ -1398,8 +1300,8 @@ Structured InterviewのProvider、状態機械、音声I/O境界を、テキス�
 
 ### モデル
 
-* 初期の既定インタビュー意味処理モデルはBedrock Global inference profile `global.openai.gpt-5.6-luna`である。
-* ナレッジ設定で`global.openai.gpt-5.6-terra`または`global.openai.gpt-5.6-luna`を選択できる。選択値はInterpreterとQuestion Generatorの両方に適用する。
+* 初期の既定インタビュー意味処理モデルは`gpt-6-luna`である。
+* ナレッジ設定で`gpt-6.1-terra`または`gpt-6-luna`を選択できる。選択値はInterpreterとQuestion Generatorの両方に適用する。
 * Interpreterの初期`reasoning.effort`は`low`、Question Generatorの初期`reasoning.effort`は`none`である。
 * 構造条件を検知した場合は、選択済みのTerraまたはLunaを`medium`で再実行する。
 * TerraとLunaの自動ルーティングおよびSolの利用を行わない。
@@ -1409,9 +1311,9 @@ Structured InterviewのProvider、状態機械、音声I/O境界を、テキス�
 ### 承認と音声
 
 * 候補と正式承認済み情報を区別する。
-* テキストと音声が同じ状態、完了条件、質問優先順位を使用する。
+* Backend Stateと承認条件は共通化し、音声の会話進行はGPT Liveが担当する。
 * partial transcriptを正式回答として保存しない。
-* 音声データをTerraへ直接送信しない。
+* 音声データを構造化Responsesモデルへ送信しない。
 
 ## 19. 対象外
 
@@ -1432,6 +1334,3 @@ Structured InterviewのProvider、状態機械、音声I/O境界を、テキス�
 * [エージェントアーキテクチャ](./agent-architecture.md)
 * [Question Design Agent仕様](../../agents/question-design-agent-strands.md)
 * [リアルタイム音声仕様](../voice/realtime-voice.md)
-* [GPT-5.6 Terra - Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-terra.html)
-* [GPT-5.6モデルのクロスリージョン推論](https://aws.amazon.com/blogs/machine-learning/introducing-cross-region-inference-for-openai-gpt-5-6-models-on-amazon-bedrock/)
-* [Amazon Bedrock Structured Outputs](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html)

@@ -2,18 +2,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ai_interviewer_api.core.interview_locale import InterviewLocale
 
 
 InterviewProfile = Literal["fixed_form", "business_process", "system_requirement"]
 StructuredInterviewModelId = Literal[
-    "global.openai.gpt-5.6-terra",
-    "global.openai.gpt-5.6-luna",
+    "gpt-6.1-terra",
+    "gpt-6-luna",
 ]
 STRUCTURED_INTERVIEW_MODEL_IDS = frozenset(
-    {"global.openai.gpt-5.6-terra", "global.openai.gpt-5.6-luna"}
+    {"gpt-6.1-terra", "gpt-6-luna"}
 )
 
 
@@ -28,6 +28,16 @@ class InterviewPlan(BaseModel):
     modelId: StructuredInterviewModelId | None = None
     # The interview conversation language is independent from the UI locale.
     interviewLocale: InterviewLocale | None = None
+
+    @field_validator("modelId", mode="before")
+    @classmethod
+    def migrate_legacy_model_id(cls, value: object) -> object:
+        return {
+            "global.openai.gpt-5.6-luna": "gpt-6-luna",
+            "global.openai.gpt-5.6-terra": "gpt-6.1-terra",
+            "gpt-5.6-luna": "gpt-6-luna",
+            "gpt-5.6-terra": "gpt-6.1-terra",
+        }.get(value, value) if isinstance(value, str) else value
 
 
 class InterviewPlanItem(BaseModel):

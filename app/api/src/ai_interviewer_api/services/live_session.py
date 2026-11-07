@@ -17,7 +17,7 @@ from ai_interviewer_api.schemas.live import (
     LiveSessionResponse,
     LiveTransportInfo,
 )
-from ai_interviewer_api.services.application_settings import get_gpt_live_api_key
+from ai_interviewer_api.services.application_settings import get_openai_api_key
 
 
 logger = logging.getLogger(__name__)
@@ -335,7 +335,7 @@ def create_live_session(
     offer_sdp = payload.offer_sdp
     if not offer_sdp.strip().startswith("v=0"):
         raise HTTPException(status_code=422, detail="invalid_sdp_offer")
-    api_key = get_gpt_live_api_key()
+    api_key = get_openai_api_key()
     if not api_key:
         raise HTTPException(status_code=503, detail="openai_api_key_missing")
 

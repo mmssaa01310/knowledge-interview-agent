@@ -13,7 +13,7 @@ from ai_interviewer_api.agents.learning_support.prompt_loader import (
     load_learning_support_personal_advice_prompt,
 )
 from ai_interviewer_api.agents.interview_knowledge.provider import (
-    BedrockResponsesStructuredProvider,
+    OpenAIResponsesStructuredProvider,
     StructuredInterviewProviderError,
 )
 from ai_interviewer_api.auth.deps import DEV_TOKENS, UserContext
@@ -25,6 +25,7 @@ from ai_interviewer_api.core.permissions import (
     require_management_role,
 )
 from ai_interviewer_api.models.base import utc_now
+from ai_interviewer_api.models.interview_plan import STRUCTURED_INTERVIEW_MODEL_IDS
 from ai_interviewer_api.repositories.store import store
 from ai_interviewer_api.schemas.dashboard import (
     AdminDashboardResponse,
@@ -326,7 +327,7 @@ def generate_guidance_draft(
     ]
     objectives = build_learning_assessments(record, state, fields)
     model_id = _resolve_guidance_model_id(knowledge)
-    structured_provider = provider or BedrockResponsesStructuredProvider(model_id=model_id)
+    structured_provider = provider or OpenAIResponsesStructuredProvider(model_id=model_id)
 
     context = {
         "record": {
@@ -534,7 +535,7 @@ def generate_learning_analysis(
         record_contexts,
     )
     model_id = _resolve_guidance_model_id(knowledge)
-    structured_provider = provider or BedrockResponsesStructuredProvider(model_id=model_id)
+    structured_provider = provider or OpenAIResponsesStructuredProvider(model_id=model_id)
 
     try:
         raw_output = structured_provider.request_structured_output(
@@ -1491,8 +1492,14 @@ def _sort_guidance(rows: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
 def _resolve_guidance_model_id(knowledge: Mapping[str, Any]) -> str:
     plan = knowledge.get("interviewPlan")
     model_id = plan.get("modelId") if isinstance(plan, Mapping) else None
-    if model_id in {"global.openai.gpt-5.6-luna", "global.openai.gpt-5.6-terra"}:
+    legacy_models = {
+        "global.openai.gpt-5.6-luna": "gpt-6-luna",
+        "global.openai.gpt-5.6-terra": "gpt-6.1-terra",
+    }
+    if model_id in STRUCTURED_INTERVIEW_MODEL_IDS:
         return str(model_id)
+    if model_id in legacy_models:
+        return legacy_models[str(model_id)]
     return settings.structured_interview_model_id
 
 
