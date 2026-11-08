@@ -2,6 +2,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from ai_interviewer_api.core.interview_locale import InterviewLocale
 from ai_interviewer_api.models.base import BaseEntity
 from ai_interviewer_api.models.interview_plan import InterviewPlan, InterviewQuestionPlan
 
