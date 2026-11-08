@@ -511,9 +511,9 @@ def test_process_live_state_update_accepts_the_next_unasked_live_question(
             base_state_version=1,
             question_id="live-field-field-profile",
             answer_status="ANSWERED",
-            covered_aspects=[{"aspect_id": "department", "evidence": "スマート技術開発部"}],
-            evidence=[{"aspect_id": "department", "text": "スマート技術開発部"}],
-            transcript="スマート技術開発部です。",
+            covered_aspects=[{"aspect_id": "department", "evidence": "サンプル開発部"}],
+            evidence=[{"aspect_id": "department", "text": "サンプル開発部"}],
+            transcript="サンプル開発部です。",
         ),
         record=record,
         knowledge=knowledge,
@@ -541,7 +541,7 @@ def test_process_live_state_update_accepts_the_next_unasked_live_question(
     assert first["status"] == "applied"
     assert second["status"] == "applied"
     assert persisted["currentQuestionId"] == "live-field-field-role"
-    assert persisted["fieldStates"]["field-profile"]["recordAnswer"] == "スマート技術開発部"
+    assert persisted["fieldStates"]["field-profile"]["recordAnswer"] == "サンプル開発部"
     assert persisted["fieldStates"]["field-role"]["recordAnswer"] == "シニアエンジニア"
     assert len(store.list("messages", user.tenant_id)) == 2
 

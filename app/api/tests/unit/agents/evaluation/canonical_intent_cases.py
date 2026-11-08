@@ -42,7 +42,7 @@ _EQUIPMENT_TARGET = {
 }
 _PROFILE_QUESTION = {
     "questionId": "question-profile-confirmation",
-    "text": "基本プロフィールは、宮崎さんがスマート技術開発部のエンジニアという理解でよろしいですか？",
+    "text": "基本プロフィールは、甲野さんがサンプル開発部のエンジニアという理解でよろしいですか？",
     "targetType": "field",
     "targetId": "field-profile",
     "targetLabel": "基本プロフィール",
@@ -188,7 +188,7 @@ def build_case_context(case: CanonicalIntentCase) -> dict[str, Any]:
 CASES: tuple[CanonicalIntentCase, ...] = (
     # ANSWER.  The utterance is an answer to the active question, even when
     # it is short or starts with an acknowledgement word.
-    CanonicalIntentCase("answer-01", "ANSWER", "宮崎です。スマート技術開発部でエンジニアをしています。", "answer"),
+    CanonicalIntentCase("answer-01", "ANSWER", "甲野です。サンプル開発部でエンジニアをしています。", "answer"),
     CanonicalIntentCase("answer-02", "ANSWER", "担当は設備保全で、主に軸受を見ています。", "answer"),
     CanonicalIntentCase("answer-03", "ANSWER", "異常振動が出たら、まず軸受温度を確認します。", "answer_equipment"),
     CanonicalIntentCase("answer-04", "ANSWER", "判断の目安は80度です。", "answer_equipment"),
@@ -196,7 +196,7 @@ CASES: tuple[CanonicalIntentCase, ...] = (
     CanonicalIntentCase("answer-06", "ANSWER", "はい、現在は品質保証部です。", "answer"),
     CanonicalIntentCase("answer-07", "ANSWER", "昨年からこの設備を担当しています。", "answer"),
     CanonicalIntentCase("answer-08", "ANSWER", "定期点検は毎週月曜日に実施しています。", "answer_equipment"),
-    CanonicalIntentCase("answer-09", "ANSWER", "私は大阪工場の保全チームに所属しています。", "answer"),
+    CanonicalIntentCase("answer-09", "ANSWER", "私はサンプル工場Bの保全チームに所属しています。", "answer"),
     CanonicalIntentCase("answer-10", "ANSWER", "主な役割は原因を切り分けて復旧手順を決めることです。", "answer"),
 
     # CONFIRMATION is only expected when the assistant has presented a
@@ -259,7 +259,7 @@ CASES: tuple[CanonicalIntentCase, ...] = (
     CanonicalIntentCase("correction-07", "CORRECTION", "言い方が違いました、軸受温度のことです。", "correction"),
     CanonicalIntentCase("correction-08", "CORRECTION", "前に答えた内容を修正したいです。", "correction"),
     CanonicalIntentCase("correction-09", "CORRECTION", "それではなく、別の設備について話しています。", "correction"),
-    CanonicalIntentCase("correction-10", "CORRECTION", "私の回答を取り違えています。正しくは大阪工場です。", "correction"),
+    CanonicalIntentCase("correction-10", "CORRECTION", "私の回答を取り違えています。正しくはサンプル工場Bです。", "correction"),
 
     # HESITATION represents thinking/holding the turn, not an answer failure.
     CanonicalIntentCase("hesitation-01", "HESITATION", "えーっと……", "hesitation"),

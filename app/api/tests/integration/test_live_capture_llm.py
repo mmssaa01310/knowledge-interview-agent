@@ -66,7 +66,7 @@ def test_gpt_live_capture_consumer_does_not_run_backend_interpreter(
         record_id=record["id"],
         capture_id="capture-integration-session",
         revision=1,
-        fragments=[{"role": "user", "text": "田中です。"}],
+        fragments=[{"role": "user", "text": "乙野です。"}],
     )
     capture_service.receive_live_capture(
         payload,

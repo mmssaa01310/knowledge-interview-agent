@@ -43,7 +43,7 @@ def capture_context(clean_interview_store):
     return user, record, knowledge
 
 
-def _payload(revision: int, text: str = "田中です。", capture_id: str = "session"):
+def _payload(revision: int, text: str = "乙野です。", capture_id: str = "session"):
     return LiveCaptureCreate(
         record_id="r",
         capture_id=capture_id,
@@ -79,7 +79,7 @@ def test_live_capture_is_receipt_only_and_does_not_run_backend_llm(capture_conte
     assert result["semanticSource"] == "responses_delegation"
     message = store.list("messages", user.tenant_id)[0]
     assert message["liveCaptureApplied"] is True
-    assert message["rawTranscript"] == "田中です。"
+    assert message["rawTranscript"] == "乙野です。"
 
 
 def test_live_capture_coalesces_receipts_without_changing_interview_state(capture_context, monkeypatch):

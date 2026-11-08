@@ -50,3 +50,7 @@ uv run --group dev mkdocs build --strict
 ```
 
 仕様、現行実装、開発手順の入口は[docs/index.md](docs/index.md)です。
+
+## ソースの外部配布
+
+ソース・説明・テストデータの架空化と、Git履歴・設定ファイル・実データの取り扱いは、[ソース配布時の情報管理](docs/guides/source-distribution.md)を参照してください。

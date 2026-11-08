@@ -16,7 +16,7 @@ GitHubのサブIssueとIssue依存関係を利用します。利用中の`gh`が
 
 ## 登録先の確認
 
-Issueを初めて作成する前に`gh repo view --json nameWithOwner`で対象を確認します。対象は`mmssaa01310/knowledge-interview-agent`です。異なるリポジトリが表示された場合は、作成前に利用者へ確認します。
+Issueを初めて作成する前に`gh repo view --json nameWithOwner`で対象を確認します。対象は現在の作業リポジトリのリモート設定から判断します。登録先が依頼対象と一致しない場合は、作成前に利用者へ確認します。
 
 ## ラベル
 

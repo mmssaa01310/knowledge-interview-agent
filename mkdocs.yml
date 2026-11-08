@@ -29,6 +29,7 @@ nav:
       - リファクタリング: guides/refactoring.md
       - 検証: guides/verification.md
       - ドキュメント運用: guides/documentation.md
+      - ソース配布時の情報管理: guides/source-distribution.md
   - リファレンス:
       - 技術スタック: reference/technology-stack.md
       - リポジトリ構成: reference/repository-structure.md

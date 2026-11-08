@@ -135,7 +135,7 @@ function setup(refresh = () => {}, stateUpdate = () => Promise.resolve({
 test("Live transcripts continue while the Responses state update and UI refresh are pending", async () => {
   const app = setup(() => new Promise(() => {}));
   await app.hook.start();
-  app.receive({ type: "session.input_transcript.delta", delta: "田中です。" });
+  app.receive({ type: "session.input_transcript.delta", delta: "乙野です。" });
   app.tick();
   await flush();
   app.receive({ type: "session.output_transcript.delta", delta: "所属を教えてください。" });
@@ -346,7 +346,7 @@ test("a late PARTIAL handoff resumes without a second interruption boundary", as
   // The previous turn has ended, but its activeTurn record is still present.
   // The next input must detach that record before a late Responses delegation
   // can produce Live output for the new transcript revision.
-  app.receive({ type: "session.input_transcript.delta", delta: "宮崎です。" });
+  app.receive({ type: "session.input_transcript.delta", delta: "甲野です。" });
   app.receive({
     type: "session.delegation.created",
     delegation: { id: "delegation-partial-new-turn", target: "responses" },
@@ -375,7 +375,7 @@ test("a late PARTIAL handoff resumes without a second interruption boundary", as
         arguments: JSON.stringify({
           turn_id: "turn-partial-new-turn", base_state_version: 1,
           question_id: "question-1", answer_status: "PARTIAL",
-          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          covered_aspects: [{ aspect_id: "name", evidence: "甲野です" }],
           missing_aspects: ["department"], evidence: [],
         }),
       },
@@ -468,7 +468,7 @@ test("an input interruption is followed by one State resume for a PARTIAL handof
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
   app.receive({ type: "session.output_transcript.delta", delta: "次の質問です。" });
   app.receive({ type: "input_audio_buffer.speech_started" });
-  app.receive({ type: "session.input_transcript.delta", delta: "宮崎です。" });
+  app.receive({ type: "session.input_transcript.delta", delta: "甲野です。" });
 
   const inputInterrupt = app.sent.find((event) => (
     event.type === "session.instructions.append"
@@ -493,7 +493,7 @@ test("an input interruption is followed by one State resume for a PARTIAL handof
         arguments: JSON.stringify({
           turn_id: "turn-next-partial", base_state_version: 1,
           question_id: "question-1", answer_status: "PARTIAL",
-          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          covered_aspects: [{ aspect_id: "name", evidence: "甲野です" }],
           missing_aspects: ["department"], evidence: [],
         }),
       },
@@ -766,7 +766,7 @@ test("late output during delegation keeps the State resume correlated", async ()
         arguments: JSON.stringify({
           turn_id: "turn-stale-output", base_state_version: 1,
           question_id: "question-1", answer_status: "PARTIAL",
-          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          covered_aspects: [{ aspect_id: "name", evidence: "甲野です" }],
           missing_aspects: ["department"], evidence: [],
         }),
       },
@@ -831,7 +831,7 @@ test("post-delegation Live output does not discard the pending State resume", as
         arguments: JSON.stringify({
           turn_id: "turn-post-output", base_state_version: 1,
           question_id: "question-1", answer_status: "PARTIAL",
-          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          covered_aspects: [{ aspect_id: "name", evidence: "甲野です" }],
           missing_aspects: ["department"], evidence: [],
         }),
       },
@@ -992,7 +992,7 @@ test("watchdog keeps the second delegation wait from racing a late handoff", asy
 test("a late PARTIAL Delegation keeps the watchdog bounded and sends one Live recovery", async () => {
   const app = setup();
   await app.hook.start();
-  app.receive({ type: "session.input_transcript.delta", delta: "宮崎です" });
+  app.receive({ type: "session.input_transcript.delta", delta: "甲野です" });
   app.receive({ type: "session.input_audio_buffer.speech_stopped" });
 
   // Reproduce the race: the wait notice is spoken first, the Responses
@@ -1036,9 +1036,9 @@ test("a late PARTIAL Delegation keeps the watchdog bounded and sends one Live re
         arguments: JSON.stringify({
           turn_id: "turn-late-recovery", base_state_version: 1,
           question_id: "question-1", answer_status: "PARTIAL",
-          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          covered_aspects: [{ aspect_id: "name", evidence: "甲野です" }],
           missing_aspects: ["department"],
-          evidence: [{ aspect_id: "name", text: "宮崎です" }],
+          evidence: [{ aspect_id: "name", text: "甲野です" }],
         }),
       },
     },
@@ -1129,7 +1129,7 @@ test("a watchdog Live recovery is not treated as Live output before a Live delta
         arguments: JSON.stringify({
           turn_id: "turn-watchdog-only", base_state_version: 1,
           question_id: "question-1", answer_status: "PARTIAL",
-          covered_aspects: [{ aspect_id: "name", evidence: "宮崎です" }],
+          covered_aspects: [{ aspect_id: "name", evidence: "甲野です" }],
           missing_aspects: ["department"], evidence: [],
         }),
       },
@@ -2149,7 +2149,7 @@ test("a disconnected session cannot send late results into the next session", as
 test("failed saving automatically retries the identical batch before trailing fragments", async () => {
   const app = setup();
   await app.hook.start();
-  app.receive({ type: "session.input_transcript.delta", delta: "田中です。" });
+  app.receive({ type: "session.input_transcript.delta", delta: "乙野です。" });
   app.receive({ type: "session.delegation.created", delegation_id: "failed" });
   await flush();
   app.requests[0].reject(new Error("unavailable"));

@@ -13,7 +13,7 @@ test("raw voice transcript is hidden from answer area before confirmation", () =
   assert.equal(
     isRawVoiceUserMessageHiddenFromAnswer({
       role: "user",
-      text: "宮崎です",
+      text: "甲野です",
       voiceSessionId: "vs-1",
       answerToQuestionId: "q-001",
     }),
@@ -26,8 +26,8 @@ test("confirmed record answer is visible in answer area", () => {
     shouldUseVoiceAnswerSummary({
       fieldId: "field-1",
       status: "asking",
-      answerSummary: "自己紹介として、宮崎健一という名前が回答されました。",
-      recordAnswer: "宮崎です",
+      answerSummary: "自己紹介として、甲野一郎という名前が回答されました。",
+      recordAnswer: "甲野です",
       missingInformation: [],
       answerState: "CONFIRMED",
     }),
@@ -53,11 +53,11 @@ test("only confirmed record answer is returned for answer area", () => {
     getInterviewAnswerValue({
       fieldId: "field-1",
       status: "asking",
-      answerSummary: "自己紹介として、宮崎正之という名前が回答されました。",
-      recordAnswer: "宮崎正之です",
+      answerSummary: "自己紹介として、甲野二郎という名前が回答されました。",
+      recordAnswer: "甲野二郎です",
       answerState: "CONFIRMED",
     }),
-    "宮崎正之です",
+    "甲野二郎です",
   );
   assert.equal(
     getInterviewAnswerValue({
@@ -75,7 +75,7 @@ test("answer summary alone is never displayed as a formal answer", () => {
   assert.equal(
     getInterviewAnswerValue({
       answerState: "CONFIRMED",
-      answerSummary: "自己紹介として、宮崎という名前が回答されました。",
+      answerSummary: "自己紹介として、甲野という名前が回答されました。",
       recordAnswer: null,
     }),
     "",
@@ -83,7 +83,7 @@ test("answer summary alone is never displayed as a formal answer", () => {
   assert.equal(
     shouldUseVoiceAnswerSummary({
       answerState: "CONFIRMED",
-      answerSummary: "自己紹介として、宮崎という名前が回答されました。",
+      answerSummary: "自己紹介として、甲野という名前が回答されました。",
       recordAnswer: null,
     }),
     false,

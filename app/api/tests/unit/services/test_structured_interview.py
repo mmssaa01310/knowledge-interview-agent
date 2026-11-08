@@ -351,7 +351,7 @@ def test_partial_question_plan_asks_only_missing_items_and_advances_after_comple
                     FieldUpdate(
                         fieldId="field-profile",
                         itemId="name",
-                        value="宮崎",
+                        value="甲野",
                         evidenceTranscriptIds=["partial-profile-name"],
                         answerResolution="AUTO_CONFIRM",
                     )
@@ -386,7 +386,7 @@ def test_partial_question_plan_asks_only_missing_items_and_advances_after_comple
         user,
         message_id="partial-profile-name",
         question=first["question"],
-        content="宮崎です。",
+        content="甲野です。",
     )
 
     partial = generate_structured_interview_result(record, knowledge, user, provider=provider)
@@ -801,12 +801,12 @@ def test_confirmation_does_not_reopen_field_when_provider_repeats_field_update()
         {
             "answerState": "AWAITING_CONFIRMATION",
             "status": "asking",
-            "candidateAnswer": "Masa Miyazaki",
+            "candidateAnswer": "Sample Example",
             "candidateSource": "user_statement",
             "candidateItems": [
                 {
                     "itemId": "field-name",
-                    "value": "Masa Miyazaki",
+                    "value": "Sample Example",
                     "evidenceTranscriptIds": ["answer-1"],
                 }
             ],
@@ -820,7 +820,7 @@ def test_confirmation_does_not_reopen_field_when_provider_repeats_field_update()
             fieldUpdates=[
                 {
                     "fieldId": "field-name",
-                    "value": "Masa Miyazaki",
+                    "value": "Sample Example",
                     "evidenceTranscriptIds": ["confirmation-1"],
                 }
             ],
@@ -838,7 +838,7 @@ def test_confirmation_does_not_reopen_field_when_provider_repeats_field_update()
 
     assert field_state["answerState"] == "CONFIRMED"
     assert field_state["status"] == "completed"
-    assert field_state["recordAnswer"] == "Masa Miyazaki"
+    assert field_state["recordAnswer"] == "Sample Example"
     assert field_state["candidateAnswer"] is None
     assert field_state["candidateItems"] == []
     assert state["completedFieldIds"] == ["field-name"]
@@ -902,7 +902,7 @@ def test_confirmation_of_field_contradiction_confirms_candidate_and_advances() -
                     "questionId": "q-contradiction",
                     "questionType": "structured",
                     "fieldId": None,
-                    "text": "To confirm, is your name Miyazaki Masashi rather than Masa Miyazaki?",
+                    "text": "To confirm, is your name Example Sample rather than Sample Example?",
                     "targetType": "contradiction",
                     "targetId": "name-conflict",
                 }
@@ -922,12 +922,12 @@ def test_confirmation_of_field_contradiction_confirms_candidate_and_advances() -
         {
             "answerState": "AWAITING_CONFIRMATION",
             "status": "asking",
-            "candidateAnswer": "Miyazaki Masashi",
+            "candidateAnswer": "Example Sample",
             "candidateSource": "user_statement",
             "candidateItems": [
                 {
                     "itemId": "field-name",
-                    "value": "Miyazaki Masashi",
+                    "value": "Example Sample",
                     "evidenceTranscriptIds": ["name-answer"],
                 }
             ],
@@ -958,7 +958,7 @@ def test_confirmation_of_field_contradiction_confirms_candidate_and_advances() -
 
     confirmed_state = result["interviewState"]["fieldStates"]["field-name"]
     assert confirmed_state["answerState"] == "CONFIRMED"
-    assert confirmed_state["recordAnswer"] == "Miyazaki Masashi"
+    assert confirmed_state["recordAnswer"] == "Example Sample"
     assert confirmed_state["candidateAnswer"] is None
     assert result["interviewState"]["contradictions"][0]["status"] == "resolved"
     assert result["question"]["targetId"] == "field-role"
@@ -1015,7 +1015,7 @@ def test_state_snapshot_repairs_generic_question_for_pending_candidate() -> None
     state["fieldStates"]["field-name"].update(
         {
             "answerState": "AWAITING_CONFIRMATION",
-            "candidateAnswer": "Miyazaki Masashi",
+            "candidateAnswer": "Example Sample",
             "candidateSource": "user_statement",
         }
     )
@@ -1028,7 +1028,7 @@ def test_state_snapshot_repairs_generic_question_for_pending_candidate() -> None
         if question["questionId"] == "q-name"
     )
 
-    assert current_question["text"] == 'To confirm, is your answer “Miyazaki Masashi”?'
+    assert current_question["text"] == 'To confirm, is your answer “Example Sample”?'
     persisted_state = store.get("interview_states", state["id"])
     assert persisted_state["askedQuestions"][0]["text"] == current_question["text"]
 
@@ -3913,7 +3913,7 @@ def test_generated_reply_does_not_echo_a_long_answer_with_a_fixed_reaction() -> 
         (("field-role", "現在の役割"), ("field-department", "部署")),
     )
     long_answer = (
-        "山田太郎です。開発部に所属しており、社内システムの設計と開発を担当しています。"
+        "甲野太郎です。開発部に所属しており、社内システムの設計と開発を担当しています。"
     )
 
     class EchoingQuestionProvider(FakeStructuredProvider):
@@ -4071,7 +4071,7 @@ def test_one_answer_can_confirm_multiple_fields_without_reasking_them() -> None:
                 fieldUpdates=[
                     FieldUpdate(
                         fieldId="field-name",
-                        value="山田太郎",
+                        value="甲野太郎",
                         evidenceTranscriptIds=["multiple-answer"],
                         answerResolution="AUTO_CONFIRM",
                     ),
@@ -4097,7 +4097,7 @@ def test_one_answer_can_confirm_multiple_fields_without_reasking_them() -> None:
         user,
         message_id="multiple-answer",
         question=first["question"],
-        content="山田太郎です。開発部の主任で、社内システムの設計と開発を担当しています。",
+        content="甲野太郎です。開発部の主任で、社内システムの設計と開発を担当しています。",
     )
 
     result = generate_structured_interview_result(record, knowledge, user, provider=provider)
@@ -4115,7 +4115,7 @@ def test_safe_transcript_normalization_keeps_raw_text_and_only_changes_formattin
         "record-safe-transcript-normalization",
         (("field-name", "氏名"), ("field-department", "部署")),
     )
-    raw = " 山田  太郎 です。 "
+    raw = " 甲野  太郎 です。 "
     provider = FakeStructuredProvider(
         [
             StructuredInterviewOutput(
@@ -4126,7 +4126,7 @@ def test_safe_transcript_normalization_keeps_raw_text_and_only_changes_formattin
                 fieldUpdates=[
                     FieldUpdate(
                         fieldId="field-name",
-                        value="山田太郎",
+                        value="甲野太郎",
                         evidenceTranscriptIds=["safe-normalization-answer"],
                         answerResolution="AUTO_CONFIRM",
                     )
@@ -4147,9 +4147,9 @@ def test_safe_transcript_normalization_keeps_raw_text_and_only_changes_formattin
     stored_message = store.get("messages", "safe-normalization-answer")
 
     assert stored_message["rawTranscript"] == raw.strip()
-    assert stored_message["normalizedTranscript"] == "山田太郎です。"
+    assert stored_message["normalizedTranscript"] == "甲野太郎です。"
     assert stored_message["correctionStatus"] == "NONE"
-    assert result["interviewState"]["fieldStates"]["field-name"]["recordAnswer"] == "山田太郎"
+    assert result["interviewState"]["fieldStates"]["field-name"]["recordAnswer"] == "甲野太郎"
 
 
 def test_semantically_partial_answer_is_a_probe_candidate_not_a_confirmed_answer() -> None:
