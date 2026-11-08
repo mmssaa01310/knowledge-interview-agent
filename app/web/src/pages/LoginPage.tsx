@@ -39,9 +39,21 @@ export function LoginPage({ onLogin }: LoginPageProps) {
           <p className="login-story-description">{t("common.productDescription")}</p>
         </div>
         <div className="login-story-art" aria-hidden="true">
-          <span className="login-story-card login-story-card-a" />
-          <span className="login-story-card login-story-card-b" />
-          <span className="login-story-card login-story-card-c" />
+          <svg className="login-voice-illustration" viewBox="0 0 460 190" focusable="false">
+            <circle className="login-voice-orbit" cx="230" cy="95" r="76" />
+            <circle className="login-voice-orbit login-voice-orbit-inner" cx="230" cy="95" r="57" />
+            <g className="login-voice-wave">
+              {[10, 17, 25, 35, 47, 57, 44, 31, 21, 13, 18, 29, 42, 56, 48, 37, 27, 18, 12].map((height, index) => (
+                <rect key={index} x={107 + index * 13} y={95 - height / 2} width="5" height={height} rx="2.5" />
+              ))}
+            </g>
+            <g className="login-voice-microphone">
+              <rect x="217" y="46" width="26" height="59" rx="13" />
+              <path d="M202 88v6a28 28 0 0 0 56 0v-6M230 122v20m-16 0h32" />
+            </g>
+            <circle className="login-voice-signal" cx="117" cy="58" r="4" />
+            <circle className="login-voice-signal login-voice-signal-secondary" cx="344" cy="132" r="3" />
+          </svg>
         </div>
       </section>
       <section className="login-panel" aria-labelledby="login-title">

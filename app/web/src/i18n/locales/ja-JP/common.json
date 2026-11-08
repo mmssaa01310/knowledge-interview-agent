@@ -96,7 +96,7 @@
   "appName": "AIインタビュー",
   "tagline": "現場の声を、チームの知恵に。",
   "productDescription": "会話をAIで整理し、確認した知識をチームで使える形にします。",
-  "loginTitle": "いつもの作業を続ける",
+  "loginTitle": "ログイン",
   "developmentAuthNotice": "開発環境ではデモユーザーでログインします。本番認証は運用環境に合わせて設定します。",
   "language": "表示言語",
   "selectLanguage": "表示言語を選択",

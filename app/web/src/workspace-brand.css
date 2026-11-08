@@ -635,16 +635,16 @@ select:hover {
 .login-story-kicker {
   margin: 0 0 17px;
   color: var(--brand-citrus);
-  font-size: 11px;
+  font-size: clamp(14px, 1.15vw, 16px);
   font-weight: 850;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.1em;
 }
 
 .login-story-copy h1 {
   max-width: 620px;
   margin: 0;
   color: #f5f2df;
-  font-size: clamp(34px, 5.3vw, 70px);
+  font-size: clamp(40px, 5.8vw, 76px);
   font-weight: 780;
   letter-spacing: -0.055em;
   line-height: 1.12;
@@ -666,53 +666,52 @@ select:hover {
   margin: 28px 0 5px auto;
 }
 
-.login-story-card {
-  position: absolute;
-  display: grid;
-  gap: 10px;
-  width: 47%;
-  height: 72%;
-  padding: 15px;
-  border: 1px solid rgba(35, 62, 39, 0.12);
-  border-radius: 16px;
-  background: #f4f0d9;
-  box-shadow: 0 16px 28px rgba(8, 29, 18, 0.22);
-  transform: rotate(-7deg);
-}
-
-.login-story-card::before,
-.login-story-card::after {
+.login-voice-illustration {
   display: block;
-  height: 6px;
-  border-radius: 999px;
-  background: #a8b98d;
-  content: "";
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 
-.login-story-card::after {
-  width: 65%;
-  background: #d1c258;
+.login-voice-orbit {
+  fill: none;
+  stroke: rgba(231, 239, 207, 0.2);
+  stroke-width: 1.5;
 }
 
-.login-story-card-a {
-  top: 19%;
-  left: 5%;
-  background: #e5eccf;
-  transform: rotate(-10deg);
+.login-voice-orbit-inner {
+  stroke: rgba(231, 239, 207, 0.12);
+  stroke-dasharray: 4 8;
 }
 
-.login-story-card-b {
-  top: 3%;
-  left: 31%;
-  z-index: 1;
-  background: #f0d866;
-  transform: rotate(5deg);
+.login-voice-wave rect {
+  fill: rgba(188, 211, 165, 0.75);
 }
 
-.login-story-card-c {
-  top: 23%;
-  right: 1%;
-  transform: rotate(11deg);
+.login-voice-wave rect:nth-child(4n + 2) {
+  fill: #e8ce4d;
+}
+
+.login-voice-microphone rect {
+  fill: #e8ce4d;
+  stroke: rgba(255, 250, 217, 0.8);
+  stroke-width: 2;
+}
+
+.login-voice-microphone path {
+  fill: none;
+  stroke: #e9efdb;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 6;
+}
+
+.login-voice-signal {
+  fill: #e8ce4d;
+}
+
+.login-voice-signal-secondary {
+  fill: #bcd3a5;
 }
 
 .login-panel {
@@ -737,6 +736,8 @@ select:hover {
 
 .login-panel-heading .eyebrow {
   margin: 0 0 13px;
+  font-size: 14px;
+  letter-spacing: 0.1em;
 }
 
 .login-panel h2 {
@@ -763,12 +764,14 @@ select:hover {
   width: 100%;
   min-height: 50px;
   margin-top: 0;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .login-panel form, .account-form { display: grid; gap: 14px; }
-.login-panel form label, .account-form label { display: grid; gap: 6px; font-weight: 600; }
-.login-panel form input, .account-form input { width: 100%; }
+.login-panel form label { display: grid; gap: 8px; font-size: 16px; font-weight: 650; }
+.account-form label { display: grid; gap: 6px; font-weight: 600; }
+.login-panel form input { width: 100%; min-height: 50px; padding: 12px 14px; font-size: 16px; }
+.account-form input { width: 100%; }
 .configured-key-field { display: grid; gap: 6px; }
 .configured-key-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }
 .configured-key-label { color: var(--ki-ink); font-weight: 600; }
@@ -959,13 +962,14 @@ select:hover {
   }
 
   .login-story-kicker {
-    margin-bottom: 11px;
-    font-size: 9px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    letter-spacing: 0.07em;
   }
 
   .login-story-copy h1 {
     max-width: 440px;
-    font-size: clamp(31px, 9vw, 48px);
+    font-size: clamp(36px, 10vw, 52px);
   }
 
   .login-story-description {
@@ -981,18 +985,7 @@ select:hover {
     width: 53%;
     height: 120px;
     margin: 0;
-    opacity: 0.47;
-  }
-
-  .login-story-card {
-    gap: 7px;
-    padding: 10px;
-    border-radius: 11px;
-  }
-
-  .login-story-card::before,
-  .login-story-card::after {
-    height: 4px;
+    opacity: 0.56;
   }
 
   .login-panel {
