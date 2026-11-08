@@ -1353,7 +1353,6 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
   async function handleSendInterviewMessage(
     target?: InterviewAnswerTarget | null,
     contentOverride?: string,
-    interviewLocale?: InterviewLocale,
   ) {
     const content = (contentOverride ?? chatInput).trim();
     if (!selectedRecord || !content || isInterviewStreaming) return;
@@ -1363,9 +1362,7 @@ export function useKnowledgeWorkspaceController(args: UseKnowledgeWorkspaceContr
         || interviewState?.askedQuestions.length
         || interviewState?.lastProcessedUserMessageId,
     );
-    if (interviewLocale && !interviewHasStarted && !(await handleSaveInterviewLocale(interviewLocale))) {
-      return;
-    }
+    if (!interviewHasStarted) return;
     const previousPending = pendingInterviewSubmissionRef.current;
     const isRetry = previousPending?.content === content
       && (!target || isSameInterviewAnswerTarget(previousPending.target, target));

@@ -152,6 +152,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       && message.isActualUtterance !== false
       && Boolean(message.text.trim()),
   );
+  const hasInterviewStarted = hasInterviewConversationMessages || hasStructuredInterviewProgress;
   const configuredQuestionMessages = useMemo(
     () => assistantMessages.filter(
       (message) => (message.questionType === "configured_field" || message.questionType === "structured") && message.fieldId,
@@ -301,6 +302,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
     const content = props.chatInput.trim();
     if (
       !content
+      || !hasInterviewStarted
       || props.isInterviewStreaming
       || isTextSendPreparing
       || props.interviewState?.status === "completed"
@@ -315,7 +317,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
       if (activeVoice.isActive) {
         await activeVoice.stop();
       }
-      await props.onSendInterviewMessage(target, content, selectedInterviewLocale);
+      await props.onSendInterviewMessage(target, content);
     } catch (error) {
       console.error("Failed to stop voice before sending an interview message", error);
     } finally {
@@ -382,6 +384,7 @@ export function InterviewRecordPage(props: KnowledgeLayoutProps) {
   const hasReviewActions = isManagementUser && props.selectedRecord?.status === "submitted";
   const isTextInputDisabled = !canAnswerRecord || isCompleted;
   const isTextSendDisabled = isTextInputDisabled
+    || !hasInterviewStarted
     || props.isInterviewStreaming
     || isTextSendPreparing;
   const interviewLaunchPath = props.selectedKnowledgeDb && props.selectedKnowledge

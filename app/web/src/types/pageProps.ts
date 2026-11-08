@@ -147,7 +147,6 @@ export type KnowledgeLayoutProps = {
   onSendInterviewMessage: (
     target?: InterviewAnswerTarget | null,
     content?: string,
-    interviewLocale?: InterviewLocale,
   ) => Promise<void>;
   onAppendInterviewMessage: (message: ChatMessage) => void;
   onRefreshInterviewSnapshot: (stateVersion?: number) => void;
